@@ -510,6 +510,9 @@ const mirrorExportStepsPerRow = 400
 func TestMirrorExportReadsEachRowOnce(t *testing.T) {
 	t.Parallel()
 	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: 400, parents: true})
+	// A link per ticket and a worklog of the viewer's per two, beside as
+	// many of another person's.
+	seedRelationsAtScale(t, s, root, 400, 400, 200)
 	ctx := context.Background()
 	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, 0, CardShapeForTest))
 	rows := 400
@@ -552,8 +555,12 @@ func TestMirrorExportReadsEachRowOnce(t *testing.T) {
 // board of each size AO_TRACKER_SCALE names (comma-separated, each at
 // least 100), parented as a scrum board's (benchParented), with real
 // times and every issue changed inside the window, or 10% of them: its VM
-// steps and the best of five runs' time. It checks how many tickets count under
-// an epic, each sub-task under its story's, and how many epics there are.
+// steps and the best of five runs' time, with 2,000 threads linked to its
+// tickets, 1,000 worklogs of the viewer's and 1,000 of another person's,
+// and 180 read days of each (seedRelationsAtScale). It checks how many
+// tickets count under an epic, each sub-task under its story's, how many
+// epics there are, and that the viewer's logged time and the links are
+// copied whole.
 // Skipped without AO_TRACKER_SCALE.
 func TestMirrorExportFillsAtScale(t *testing.T) {
 	env := os.Getenv("AO_TRACKER_SCALE")
@@ -574,6 +581,7 @@ func TestMirrorExportFillsAtScale(t *testing.T) {
 // times of n issues, recent percent of them changed inside the window.
 func exportFillsAtScale(t *testing.T, n, recent int) {
 	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: n, parents: true, recent: recent})
+	seedRelationsAtScale(t, s, root, n, 2000, 1000)
 	window := BenchWindowForTest
 	ctx := context.Background()
 	// A ticket's epic is its parent when the fixture names the parent an
@@ -648,6 +656,9 @@ func exportFillsAtScale(t *testing.T, n, recent int) {
 				got = exportRows(t, conn, `SELECT (SELECT count(*) FROM tickets WHERE epic IS NOT NULL) || '|' || (SELECT count(*) FROM epics)`)
 				if got[0] != wantEpics {
 					t.Errorf("%d issues: tickets under an epic|epics = %s; want %s", n, got[0], wantEpics)
+				}
+				if got := exportRows(t, conn, `SELECT (SELECT count(*) FROM threads) || '|' || (SELECT count(*) FROM worklogs) || '|' || (SELECT count(*) FROM worklog_days)`); got[0] != "2000|1000|180" {
+					t.Errorf("%d issues: threads|worklogs|read days = %s; want 2000|1000|180", n, got[0])
 				}
 				intervals = exportRows(t, conn, `SELECT (SELECT count(*) FROM status_intervals) || ' status intervals, ' ||
 				  (SELECT count(*) FROM sprint_intervals) || ' sprint intervals'`)[0]

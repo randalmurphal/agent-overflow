@@ -103,3 +103,32 @@ func TestTheExportHoldsNoLoggedTimeWithoutAnAccount(t *testing.T) {
 		t.Fatalf("worklogs|days = %s; want none", got[0])
 	}
 }
+
+// seedRelationsAtScale gives the sized mirror's board (issues tickets)
+// links threads of this computer linked to its tickets in turn, each with
+// two turns; worklogs of the connection's verified account on its tickets
+// and as many of another person's; and 180 read days of each, all from
+// the window's first day.
+func seedRelationsAtScale(t testing.TB, s *Store, root int64, issues, links, worklogs int) {
+	t.Helper()
+	mustExec(t, s.db, `UPDATE tracker_connections SET verified_account_id = 'me' WHERE id = (SELECT connection_id FROM tracker_cache_roots WHERE id = ?)`, root)
+	mustExec(t, s.db, `INSERT INTO threads(id, title, provider, workspace_path, mode, archived, deleting, created_at, updated_at)
+		WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?)
+		SELECT 'scale-' || i, 'Thread ' || i, 'claude', '/p', 'chat', 0, 0, 10, 10 FROM n`, links)
+	mustExec(t, s.db, `INSERT INTO turns(turn_id, thread_id, turn_index, started_at)
+		SELECT th.id || '-' || k.k, th.id, k.k, 100 + k.k FROM threads th CROSS JOIN (SELECT 0 AS k UNION ALL SELECT 1) k WHERE th.id LIKE 'scale-%'`)
+	mustExec(t, s.db, `INSERT INTO thread_tickets(thread_id, kind, site, issue_id, issue_key, origin, linked_at)
+		SELECT th.id, c.kind, c.site, CAST(100000 + CAST(substr(th.id, 7) AS INTEGER) % ? AS TEXT), 'WEB-' || th.id, 'manual', 50
+		FROM threads th CROSS JOIN tracker_cache_roots r CROSS JOIN tracker_connections c ON c.id = r.connection_id
+		WHERE th.id LIKE 'scale-%' AND r.id = ?`, issues, root)
+	first := time.UnixMilli(BenchWindowForTest).UTC().Format(time.DateOnly)
+	for _, author := range []string{"me", "someone"} {
+		mustExec(t, s.db, `INSERT INTO tracker_cache_worklogs(root_id, worklog_id, issue_id, author_id, day, spent_seconds)
+			WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?1)
+			SELECT ?2, ?3 || '-' || i, CAST(100000 + i % ?4 AS TEXT), ?3, date(?5, '+' || (i % 180) || ' days'), 1800 FROM n`,
+			worklogs, root, author, issues, first)
+		mustExec(t, s.db, `INSERT INTO tracker_cache_worklog_days(root_id, author_id, day, read_at)
+			WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < 180)
+			SELECT ?, ?, date(?, '+' || i || ' days'), 1 FROM n`, root, author, first)
+	}
+}
