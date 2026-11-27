@@ -292,7 +292,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
         answered = { source: s, request: r };
         settledKey = key;
         error = null;
-        if (opts.shown()) void readWorklogs(s, a);
+        void readWorklogs(s, a);
         // An open drill of this dashboard counted in another unit (the
         // project changed what it counts in) reads its first page again
         // in this answer's: its numbers would be in the old one.

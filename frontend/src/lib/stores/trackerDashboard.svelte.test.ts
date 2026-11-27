@@ -615,3 +615,72 @@ describe('the board\'s own dashboards', () => {
     expect(s.ask).toBe('');
   });
 });
+
+describe('your logged time', () => {
+  /** An answer whose one widget counts your logged time with days not read. */
+  function unreadAnswer(unread: string[], at = 2): Answer {
+    return { ...answerFor('sprints_5', at), viewer: 'acc-1', widgets: [{ id: 'w', unread }] } as unknown as Answer;
+  }
+  function daysFrom(first: string, n: number): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < n; i += 1) out.push(new Date(Date.parse(`${first}T00:00:00Z`) + i * 86_400_000).toISOString().slice(0, 10));
+    return out;
+  }
+  const read = { worklogs: [] };
+
+  it('reads 180 days not read in 6 reads on the board\'s computer, says it is reading, then counts again, and a later day in 1', async () => {
+    const { s, evaluate } = await opened();
+    const refresh = held<unknown>('RefreshTrackerWorklogs');
+    s.refresh();
+    await flush();
+    evaluate.answer(unreadAnswer(daysFrom('2026-05-30', 180)));
+    await flush();
+    expect(s.logged.reading).toBe(true);
+    for (let i = 0; i < 6; i += 1) {
+      refresh.answer(read);
+      await flush();
+    }
+    expect(refresh.calls.map((c) => [c[0], c[1], c[2], c[3]])).toEqual([
+      ['conn-1', 'acc-1', '2026-05-30', '2026-06-29'], ['conn-1', 'acc-1', '2026-06-30', '2026-07-30'], ['conn-1', 'acc-1', '2026-07-31', '2026-08-30'],
+      ['conn-1', 'acc-1', '2026-08-31', '2026-09-30'], ['conn-1', 'acc-1', '2026-10-01', '2026-10-31'], ['conn-1', 'acc-1', '2026-11-01', '2026-11-25'],
+    ]);
+    expect(refresh.pins.every((p) => p === 'peer-1')).toBe(true);
+    expect(s.logged.reading).toBe(false);
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    expect(evaluate.calls).toHaveLength(3);
+    evaluate.answer(unreadAnswer(['2026-11-26'], 3));
+    await flush();
+    refresh.answer(read);
+    await flush();
+    expect(refresh.calls.at(-1)?.slice(2)).toEqual(['2026-11-26', '2026-11-26']);
+    expect(refresh.calls).toHaveLength(7);
+  });
+
+  it('never asks for a day twice without the person: a failure says why and waits for the retry', async () => {
+    const { s, evaluate } = await opened();
+    const refresh = held<unknown>('RefreshTrackerWorklogs');
+    s.refresh();
+    await flush();
+    evaluate.answer(unreadAnswer(['2026-11-24', '2026-11-25']));
+    await flush();
+    refresh.answer({ worklogs: [], failure: { kind: 'rate_limited', message: 'Jira asked to wait', at: 1 } });
+    await flush();
+    expect(s.logged.failure).toBe('Jira asked to wait');
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    evaluate.answer(unreadAnswer(['2026-11-24', '2026-11-25'], 3));
+    await flush();
+    expect(refresh.calls).toHaveLength(1);
+    s.logged.retry();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    expect(s.logged.failure).toBe('');
+    evaluate.answer(unreadAnswer(['2026-11-24', '2026-11-25'], 4));
+    await flush();
+    expect(refresh.calls).toHaveLength(2);
+    refresh.fail(new Error('the computer is not connected'));
+    await flush();
+    expect(s.logged.failure).toBe('the computer is not connected');
+  });
+});
