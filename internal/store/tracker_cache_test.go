@@ -120,7 +120,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 // board.
 func TestMirrorDrainCoversEveryTable(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerParentsMigrationVersion)
+	db := migrateThrough(t, migrations[len(migrations)-1].Version)
 	tables, err := queryIDs(db, `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'tracker\_cache\_%' ESCAPE '\'
 		AND name <> 'tracker_cache_roots' ORDER BY name`)
 	if err != nil {

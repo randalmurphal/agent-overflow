@@ -34,6 +34,8 @@ var mirrorTableKeys = []struct{ table, keys string }{
 	{"tracker_cache_issue_sprints", "issue_id, sprint_id"},
 	{"tracker_cache_changes", "issue_id, gen, kind, seq"},
 	{"tracker_cache_issue_bodies", "rowid"},
+	{"tracker_cache_issue_act_reads", "issue_id, source"},
+	{"tracker_cache_issue_acts", "issue_id, source, act_id"},
 	{"tracker_cache_issue_missing", "issue_id"},
 	{"tracker_cache_parents", "issue_id"},
 	{"tracker_cache_open_tickets", "session, pump"},
@@ -397,14 +399,18 @@ func (s *Store) sweepMirrorRoot(rootID int64, between func() error) error {
 }
 
 // mirrorSweepCandidatesSQL reads a page of a root's unkept issues by ID
-// after ?2, from idx_tracker_cache_issues_boardless, each with its changes
-// and its sprints (each counted to at most one more than a chunk) and
-// whether it has a body: with the issue itself, what its delete cascades
-// to. A board row cannot cascade: the issue has none.
+// after ?2, from idx_tracker_cache_issues_boardless, each with its changes,
+// its sprints, its act receipts and its acts (each counted to at most one
+// more than a chunk) and whether it has a body: with the issue itself,
+// what its delete cascades to. A board row cannot cascade: the issue has
+// none.
 var mirrorSweepCandidatesSQL = `SELECT i.issue_id,
 	  (SELECT count(*) FROM (SELECT 1 FROM tracker_cache_changes c WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id
 	    LIMIT ` + strconv.Itoa(clearMirrorChunk+1) + `)),
 	  (SELECT count(*) FROM (SELECT 1 FROM tracker_cache_issue_sprints m WHERE m.root_id = i.root_id AND m.issue_id = i.issue_id
+	    LIMIT ` + strconv.Itoa(clearMirrorChunk+1) + `)),
+	  (SELECT count(*) FROM tracker_cache_issue_act_reads ar WHERE ar.root_id = i.root_id AND ar.issue_id = i.issue_id),
+	  (SELECT count(*) FROM (SELECT 1 FROM tracker_cache_issue_acts a WHERE a.root_id = i.root_id AND a.issue_id = i.issue_id
 	    LIMIT ` + strconv.Itoa(clearMirrorChunk+1) + `)),
 	  i.body_read_at > 0
 	FROM tracker_cache_issues i
@@ -420,7 +426,9 @@ var mirrorSweepCandidatesSQL = `SELECT i.issue_id,
 // again has its history read again and never shows it in part. Removing
 // sprints sets sprint_set to mirrorSprintSetPartial, so the next write
 // that admits the issue's card replaces its sprints whatever it names.
-var mirrorSweepSQL = struct{ resetHistory, changes, partialSprints, sprints string }{
+// The act receipts go before any act, so an issue kept again reads as
+// not read, never as read in part, and its next read replaces its acts.
+var mirrorSweepSQL = struct{ resetHistory, changes, partialSprints, sprints, actReads, acts string }{
 	resetHistory: `UPDATE tracker_cache_issues SET history_from = 0, history_for = 0, history_answered_at = 0, history_wait = 0,
 		status_since = 0, status_final_for = 0, status_floor_at = 0, status_read_at = 0, history_receipt = history_receipt + 1
 		WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2
@@ -434,13 +442,20 @@ var mirrorSweepSQL = struct{ resetHistory, changes, partialSprints, sprints stri
 	sprints: `DELETE FROM tracker_cache_issue_sprints WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2
 		AND sprint_id <= (SELECT sprint_id FROM tracker_cache_issue_sprints WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2
 		                   ORDER BY sprint_id LIMIT 1 OFFSET ?3 - 1)`,
+	actReads: `DELETE FROM tracker_cache_issue_act_reads WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2
+		AND source <= (SELECT source FROM tracker_cache_issue_act_reads WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2
+		                ORDER BY source LIMIT 1 OFFSET ?3 - 1)`,
+	acts: `DELETE FROM tracker_cache_issue_acts WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2
+		AND (source, act_id) <= (SELECT source, act_id FROM tracker_cache_issue_acts WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2
+		                          ORDER BY source, act_id LIMIT 1 OFFSET ?3 - 1)`,
 }
 
 // sweepMirrorPage removes, in one transaction of at most clearMirrorChunk
 // deleted rows, the unkept issues after after that fit, leaf first: an
-// issue's changes and sprints, then the issue with its body. Of the
-// first issue that does not fit it removes what the rest of the budget
-// holds, changes first, then sprints (mirrorSweepSQL), so a page never
+// issue's changes and sprints, then the issue with its body, act receipts
+// and acts. Of the first issue that does not fit it removes what the rest
+// of the budget holds, changes first, then sprints, then act receipts,
+// then acts (mirrorSweepSQL), so a page never
 // stops at an issue it cannot finish: the page's first issue always
 // leaves it with a row deleted. A page that deletes anything advances the
 // root's sweep in its transaction, so a card, body or history read
@@ -453,14 +468,14 @@ func (s *Store) sweepMirrorPage(rootID int64, after string) (next string, more b
 	next = after
 	err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
 		type candidate struct {
-			id               string
-			changes, sprints int
-			body             bool
+			id                               string
+			changes, sprints, actReads, acts int
+			body                             bool
 		}
 		var page []candidate
 		err := scanMirrorRows(tx, mirrorSweepCandidatesSQL, []any{rootID, after}, func(r rowScanner) error {
 			var c candidate
-			err := r.Scan(&c.id, &c.changes, &c.sprints, &c.body)
+			err := r.Scan(&c.id, &c.changes, &c.sprints, &c.actReads, &c.acts, &c.body)
 			page = append(page, c)
 			return err
 		})
@@ -474,7 +489,7 @@ func (s *Store) sweepMirrorPage(rootID int64, after string) (next string, more b
 		var whole []string
 		var partial candidate
 		for _, c := range page {
-			cost := c.changes + c.sprints + 1
+			cost := c.changes + c.sprints + c.actReads + c.acts + 1
 			if c.body {
 				cost++
 			}
@@ -497,13 +512,17 @@ func (s *Store) sweepMirrorPage(rootID int64, after string) (next string, more b
 			}{
 				{"changes", partial.changes, mirrorSweepSQL.resetHistory, mirrorSweepSQL.changes},
 				{"sprints", partial.sprints, mirrorSweepSQL.partialSprints, mirrorSweepSQL.sprints},
+				{"act receipts", partial.actReads, "", mirrorSweepSQL.actReads},
+				{"acts", partial.acts, "", mirrorSweepSQL.acts},
 			} {
 				n := min(budget, step.held)
 				if n == 0 {
 					continue
 				}
-				if _, err := tx.Exec(step.mark, rootID, partial.id); err != nil {
-					return fmt.Errorf("mark %s of %s removed in part: %w", step.what, partial.id, err)
+				if step.mark != "" {
+					if _, err := tx.Exec(step.mark, rootID, partial.id); err != nil {
+						return fmt.Errorf("mark %s of %s removed in part: %w", step.what, partial.id, err)
+					}
 				}
 				removed, err := execCountTx(tx, step.delete, rootID, partial.id, n)
 				if err != nil {

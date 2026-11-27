@@ -338,6 +338,10 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 		{ID: "w1", IssueID: "10001", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 3600}}); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 7), []MirrorIssueActs{{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 7,
+		Acts: []MirrorAct{{ID: "w1", Person: "acc-user1", At: 3, Seconds: 3600}}}}, MirrorCatalog{}); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadOf(root, 7)); err != nil {
 		t.Fatal(err)
 	}
