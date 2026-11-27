@@ -275,6 +275,57 @@ describe('the Credit group', () => {
     expect(saves[1].credit!.rules.map((r) => r.review_actions)).toEqual([['commented', 'logged_time'], ['commented', 'approved', 'logged_time']]);
   });
 
+  /** Makes the page's held setup stale: a reread fails and the page keeps
+   * showing the last setup read, so the next save reads it again first;
+   * that read answers when the returned function is called. */
+  async function staleSetup(): Promise<(view: SetupView) => void> {
+    let failed = false;
+    setBindingMock('ProjectTrackerSetup', async () => {
+      failed = true;
+      throw new Error('the computer did not answer');
+    });
+    trackerSetupUpdated(HOME_BACKEND);
+    await waitFor(() => expect(failed).toBe(true));
+    let answer!: (view: SetupView) => void;
+    setBindingMock('ProjectTrackerSetup', () => new Promise<SetupView>((resolve) => { answer = resolve; }));
+    return (view) => answer(view);
+  }
+
+  it('makes an edit in the scope chosen when it was made, though the scope changes while its save waits', async () => {
+    answerTypes();
+    const held = setupWith(undefined, { on: true, rules: [rules(), rules({ from: 1_800_000_000_000, hours_per_point: 6 })], support: [] });
+    stored = held;
+    render(TrackerPointsSettings);
+    await screen.findByTestId('tracker-credit-hours');
+    const answer = await staleSetup();
+    await change('tracker-credit-hours', 8);
+    // This sprint on was chosen; Every sprint is picked before the read
+    // the save waits for answers.
+    await fireEvent.click(screen.getByRole('radio', { name: 'Every sprint' }));
+    answer(held);
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(saves[0].credit!.rules.map((r) => r.hours_per_point)).toEqual([4, 6, 8]);
+  });
+
+  it('picks a support board or type as the page showed it, whatever the setup read before the save picked', async () => {
+    answerTypes();
+    stored = setupWith(undefined, { on: true, rules: [rules()], support: [] });
+    paces = () => [paceOf(), paceOf({ board: '2', name: 'Support board' })];
+    render(TrackerPointsSettings);
+    const type = async (id: string) => (await screen.findAllByTestId('tracker-credit-type')).find((b) => b.dataset.type === id)!;
+    await type('10004');
+    const answer = await staleSetup();
+    // Another window picked board 2 and type 10004; this page still shows
+    // neither and picks both.
+    const site = 'https://example.atlassian.net';
+    const other = setupWith(undefined, { on: true, rules: [rules()], support: [{ tracker: 'jira', site, types: ['10004'], labels: [], boards: ['2'] }] });
+    await fireEvent.click(screen.getAllByTestId('tracker-credit-board').find((b) => b.dataset.board === '2')!);
+    answer({ ...other, revision: 'other' });
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(saves[0].credit!.support).toEqual([{ tracker: 'jira', site, types: ['10004'], labels: [], boards: ['2'] }]);
+    await waitFor(() => expect((screen.getAllByTestId('tracker-credit-board').find((b) => b.dataset.board === '2')!).getAttribute('aria-pressed')).toBe('true'));
+  });
+
   it('lowers the actions needed with the actions counted, and keeps one', async () => {
     answerTypes();
     stored = setupWith(undefined, { on: true, rules: [rules()], support: [] });
@@ -317,6 +368,15 @@ describe('the Credit group', () => {
     await screen.findByTestId('tracker-credit-review');
     expect(line('tracker-credit-review-line')).toContain("of a finished ticket's points");
     expect(line('tracker-credit-support-line')).toBe('1 point for every 4 hours logged on support tickets, which carry no points. On OPS board, which counts tickets, a point is a ticket.');
+  });
+
+  it('says a board estimated in time counts its support hours as they are in a project that counts tickets', async () => {
+    answerTypes();
+    stored = setupWith({ count: 'tickets' }, { on: true, rules: [rules()], support: [] });
+    paces = () => [paceOf({ estimate: 'time', counts: 'none' })];
+    render(TrackerPointsSettings);
+    await screen.findByTestId('tracker-credit-review');
+    expect(line('tracker-credit-support-line')).toBe('1 ticket for every 4 hours logged on support tickets, which carry no estimate. On a board estimated in time, the hours count as they are.');
   });
 
   it('says hours count as they are on a board estimated in time', async () => {
@@ -366,6 +426,26 @@ describe('the Credit group', () => {
     await change('tracker-credit-share', 101);
     expect((await screen.findByTestId('settings-tracker-points-save-note')).textContent).toContain('the share is 0 to 100');
     await waitFor(() => expect((screen.getByTestId('tracker-credit-share') as HTMLInputElement).value).toBe('10'));
+  });
+
+  it('keeps a number typed while an earlier save of the field was out', async () => {
+    answerTypes();
+    stored = setupWith(undefined, { on: true, rules: [rules()], support: [] });
+    let refuse!: () => void;
+    setBindingMock('SetProjectTrackerSetup', (_project: string, _revision: string, setup: Setup) => new Promise((resolve) => {
+      saves.push(setup);
+      refuse = () => resolve({ saved: false, refused: 'the setup changed', stored });
+    }));
+    render(TrackerPointsSettings);
+    const hours = (await screen.findByTestId('tracker-credit-hours')) as HTMLInputElement;
+    hours.value = '6';
+    await fireEvent.change(hours);
+    await waitFor(() => expect(saves).toHaveLength(1));
+    // The person types 7 before the save of 6 is refused.
+    hours.value = '7';
+    refuse();
+    expect((await screen.findByTestId('settings-tracker-points-save-note')).textContent).toContain('The setup changed.');
+    expect(hours.value).toBe('7');
   });
 
   it('says a number field takes a whole number, saves nothing, and shows what it stores', async () => {

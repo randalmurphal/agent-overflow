@@ -954,9 +954,10 @@ the worklog's description once posted.
   credit is 1 point for every 1 to 16 hours (4 at first) logged on a
   support ticket. A change counts from this sprint on, and finished
   sprints keep the rule they were counted with, or for every sprint, as
-  the person picks beside the rules: rules saved again before a sprint of
-  the project's Jira boards has completed replace the ones saved before
-  them. Which tickets are support is picked for each Jira site of the
+  the person picks beside the rules, the pick read when the change is
+  made: a save that changes the rules keeps every rule saved before it,
+  and a finished sprint counts with the rules in effect when it
+  completed. Which tickets are support is picked for each Jira site of the
   project's boards: issue types (those of the boards' projects, read
   from the tracker), labels (typed) and the project's boards. A ticket is
   a support ticket while the pick names it and it has no estimate; on a

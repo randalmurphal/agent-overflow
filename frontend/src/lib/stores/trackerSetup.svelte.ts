@@ -563,13 +563,26 @@ export function withCreditRules(setup: Setup, change: CreditChange, everySprint:
   return { ...setup, credit: { ...credit, rules } };
 }
 
+/** One change to which tickets of a site are support, as the person
+ * chose it: whether a type, a label or a board is picked. Like a
+ * CreditChange it holds no flip, so the setup it is made in ends with the
+ * pick chosen, whatever that setup picked. */
+export interface SupportChange {
+  readonly list: 'types' | 'labels' | 'boards';
+  readonly id: string;
+  readonly on: boolean;
+}
+
 /** `setup` with `change` made to which tickets of `tracker`'s site `site`
  * are support. The computer drops an entry that names none. */
-export function withSupport(setup: Setup, tracker: string, site: string, change: (support: SiteSupport) => SiteSupport): Setup {
+export function withSupport(setup: Setup, tracker: string, site: string, change: SupportChange): Setup {
   const credit = setup.credit!;
   const i = credit.support.findIndex((s) => s.tracker === tracker && s.site === site);
   const support = [...credit.support];
-  const next = change(i >= 0 ? support[i] : { tracker, site, types: [], labels: [], boards: [] });
+  const entry = i >= 0 ? support[i] : { tracker, site, types: [], labels: [], boards: [] };
+  const list = entry[change.list].filter((id) => id !== change.id);
+  if (change.on) list.push(change.id);
+  const next = { ...entry, [change.list]: list };
   if (i >= 0) support[i] = next;
   else support.push(next);
   return { ...setup, credit: { ...credit, support } };

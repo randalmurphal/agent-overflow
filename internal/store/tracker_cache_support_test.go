@@ -272,38 +272,58 @@ func TestEveryIssueColumnTheTotalsReadMovesThem(t *testing.T) {
 }
 
 // The board pass of the section totals hands the sprint pass the support
-// rows that are members of a sprint and no other: a support row outside
-// every sprint is not part of the sprint pass.
+// rows that are members of one of the counted board's sprints and no
+// other: a support row outside every sprint, or only in another board's,
+// is not part of that board's sprint pass.
 func TestTheSprintPassIsGivenOnlySupportSprintMembers(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
+	// Board 12 shares board 10's tickets and has no sprint of its own.
+	shared := webStructure()
+	shared.Board.ID, shared.Sprints = "12", nil
+	mustReplaceStructure(t, s, root, shared, true)
 	typed := sectionRow("10001", "a", "1", -1)
 	typed.Card.TypeID = "10004"
 	labeled := sectionRow("10002", "b", "1", -1, "21")
 	labeled.Card.Labels = []string{"support"}
-	mustWriteRowPage(t, s, root, webPage("10", typed, labeled, sectionRow("10003", "c", "1", -1, "21")), nil)
+	rows := []MirrorRow{typed, labeled, sectionRow("10003", "c", "1", -1, "21")}
+	mustWriteRowPage(t, s, root, webPage("10", rows...), nil)
+	mustWriteRowPage(t, s, root, webPage("12", rows...), nil)
 	rule, err := MirrorRegroup{}.WithSupport(MirrorSupportRule{Types: []string{"10004"}, Labels: []string{"support"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []string
-	err = scanMirrorRows(s.db, mirrorCountRowsSQL, []any{root, "10", int64(0), nil, rule.supportArg()}, func(r rowScanner) error {
-		var backlog bool
-		var status sql.RawBytes
-		var estimate sql.NullFloat64
-		var support sql.NullString
-		if err := r.Scan(&backlog, &status, &estimate, &support); err != nil {
-			return err
+	handed := func(board string) []string {
+		t.Helper()
+		var got []string
+		err := scanMirrorRows(s.db, mirrorCountRowsSQL, []any{root, board, int64(0), nil, rule.supportArg()}, func(r rowScanner) error {
+			var backlog bool
+			var status sql.RawBytes
+			var estimate sql.NullFloat64
+			var support sql.NullString
+			if err := r.Scan(&backlog, &status, &estimate, &support); err != nil {
+				return err
+			}
+			got = append(got, fmt.Sprintf("%v %q", support.Valid, support.String))
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-		got = append(got, fmt.Sprintf("%v %q", support.Valid, support.String))
-		return nil
-	})
-	if want := []string{`true ""`, `true "10002"`, `false ""`}; err != nil || !slices.Equal(got, want) {
-		t.Fatalf("the board pass's support column %q, %v; want %q", got, err, want)
+		return got
+	}
+	if got, want := handed("10"), []string{`true ""`, `true "10002"`, `false ""`}; !slices.Equal(got, want) {
+		t.Fatalf("board 10's pass's support column %q; want %q", got, want)
+	}
+	if got, want := handed("12"), []string{`true ""`, `true ""`, `false ""`}; !slices.Equal(got, want) {
+		t.Fatalf("board 12's pass's support column %q; want %q", got, want)
 	}
 	c, err := s.CountMirrorSections(root, "10", rule)
 	if err != nil || c.All.Unestimated != 1 || c.Sprints["21"].Unestimated != 1 || c.Backlog.Unestimated != 0 {
-		t.Fatalf("counts %+v, %v; want one without an estimate, in sprint 21", c, err)
+		t.Fatalf("board 10's counts %+v, %v; want one without an estimate, in sprint 21", c, err)
+	}
+	if c, err := s.CountMirrorSections(root, "12", rule); err != nil || c.All.Unestimated != 1 || len(c.Sprints) != 0 {
+		t.Fatalf("board 12's counts %+v, %v; want one without an estimate and no sprint", c, err)
 	}
 }

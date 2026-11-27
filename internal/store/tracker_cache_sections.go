@@ -517,7 +517,8 @@ type MirrorSectionCounts struct {
 // countMirrorSectionsTx sums: a GROUP BY would sort every row, in memory
 // that grows with the board. Its last column is NULL for a row the
 // support rule ?5 does not name, and for one it names the row's issue
-// when the issue is a member of a sprint, else empty. mirrorRegroupedCountRowsSQL
+// when the issue is a member of one of the board's sprints, the ones the
+// sprint statements total, else empty. mirrorRegroupedCountRowsSQL
 // does the same under the regrouping ?4 (its list built once), with one
 // more column before it: the issue of a row left out of counts, NULL for
 // every other. mirrorCountSprintsSQL totals each sprint of the board from
@@ -533,6 +534,7 @@ var (
 		CROSS JOIN tracker_cache_issues i INDEXED BY idx_tracker_cache_issues_status ON i.root_id = b.root_id AND i.issue_id = b.issue_id
 		WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`
 	mirrorCountSupportSQL = `iif(` + mirrorSupportSQL("?5", "?2", mirrorRowEstimate("?3")) + `, iif(EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
+		CROSS JOIN tracker_cache_sprints sp ON sp.root_id = m.root_id AND sp.board_id = ?2 AND sp.sprint_id = m.sprint_id
 		WHERE m.root_id = b.root_id AND m.issue_id = b.issue_id), b.issue_id, ''), NULL)`
 	mirrorCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, mirrorNotDoneSQL) + `, i.status_id, ` + mirrorRowEstimate("?3") + `, ` +
 		mirrorCountSupportSQL + mirrorCountRowsFromSQL

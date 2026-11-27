@@ -18,7 +18,7 @@
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { isLocalEnter } from '../../utils/localEnter';
   import { settingsComputerName } from '../../stores/settings.svelte';
-  import { countsTickets, creditOn, withCreditOn, withCreditRules, withSupport, type CreditChange } from '../../stores/trackerSetup.svelte';
+  import { countsTickets, creditOn, withCreditOn, withCreditRules, withSupport, type CreditChange, type SupportChange } from '../../stores/trackerSetup.svelte';
   import { boardProjects, boardWriteContext, loadBoardProjects, loadProjectIssueTypes, projectIssueTypes } from '../../stores/trackerTicketWrites.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import Segmented from '../primitives/Segmented.svelte';
@@ -56,13 +56,19 @@
   const tickets = $derived(readBoards.length > 0 ? readBoards.every((b) => b.counts === 'none') : countsTickets(page.setup));
   // The boards that count tickets beside others that count points.
   const ticketBoards = $derived(tickets ? [] : readBoards.filter((b) => b.counts === 'none'));
-  // A board estimated in time counts its support hours as they are.
-  const timeBoards = $derived(readBoards.some((b) => b.counts === 'time'));
+  // A board estimated in time counts its support hours as they are,
+  // whatever unit the project counts it in (trackerapp's ProjectSupport).
+  const timeBoards = $derived(readBoards.some((b) => b.estimate === 'time'));
 
   let every = $state<'from' | 'every'>('from');
 
+  // An edit is what the person chose when they acted: its value and its
+  // scope are read then, and the save makes it in the setup it builds on,
+  // which may be read again first (TrackerProjectSettings' save), with
+  // nothing read from the page's controls meanwhile.
   function rule(change: CreditChange): Promise<boolean> {
-    return page.save((held) => withCreditRules(held, change, every === 'every'));
+    const everySprint = every === 'every';
+    return page.save((held) => withCreditRules(held, change, everySprint));
   }
 
   function boardNames(list: readonly BoardPace[]): string {
@@ -90,6 +96,7 @@
    * failed save moves the value the field is given. */
   async function setNumber(input: HTMLInputElement, field: NumberField, name: string): Promise<void> {
     const n = input.valueAsNumber;
+    const sent = input.value;
     if (Number.isInteger(n)) {
       wholeNote = null;
       await rule({ [field]: n } as CreditChange);
@@ -97,7 +104,8 @@
     } else {
       wholeNote = { field, text: `${name} takes a whole number.` };
     }
-    if (newest && input.isConnected) input.value = String(newest[field]);
+    // A value typed since is the person's next edit, kept.
+    if (newest && input.isConnected && input.value === sent) input.value = String(newest[field]);
   }
 
   // Each Jira site of the project's boards, with its boards, in the
@@ -116,11 +124,7 @@
     return credit?.support.find((s) => s.tracker === 'jira' && s.site === site) ?? { tracker: 'jira', site, types: [], labels: [], boards: [] };
   }
 
-  function toggled(list: readonly string[], id: string): string[] {
-    return list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
-  }
-
-  function editSupport(site: string, change: (s: SiteSupport) => SiteSupport): void {
+  function editSupport(site: string, change: SupportChange): void {
     void page.save((held) => withSupport(held, 'jira', site, change));
   }
 
@@ -181,7 +185,7 @@
     if (!label) return;
     labelDraft[site] = '';
     if (supportOf(site).labels.includes(label)) return;
-    editSupport(site, (s) => ({ ...s, labels: [...s.labels, label] }));
+    editSupport(site, { list: 'labels', id: label, on: true });
   }
 
   const unit = $derived(tickets ? 'ticket' : 'point');
@@ -314,7 +318,7 @@
                     class="{CHIP_BASE_CLASS} {chosen ? CHIP_SELECTED_CLASS : CHIP_RESTING_CLASS}"
                     aria-pressed={chosen}
                     disabled={locked}
-                    onclick={() => editSupport(s.site, (x) => ({ ...x, types: toggled(x.types, t.id) }))}
+                    onclick={() => editSupport(s.site, { list: 'types', id: t.id, on: !chosen })}
                     data-testid="tracker-credit-type"
                     data-type={t.id}
                   >{t.name}</button>
@@ -338,7 +342,7 @@
                     title="Remove"
                     aria-label="Remove label {label}"
                     disabled={locked}
-                    onclick={() => editSupport(s.site, (x) => ({ ...x, labels: x.labels.filter((l) => l !== label) }))}
+                    onclick={() => editSupport(s.site, { list: 'labels', id: label, on: false })}
                     data-testid="tracker-credit-label"
                   >{label} ×</button>
                 {/each}
@@ -361,7 +365,7 @@
                     class="{CHIP_BASE_CLASS} {chosen ? CHIP_SELECTED_CLASS : CHIP_RESTING_CLASS}"
                     aria-pressed={chosen}
                     disabled={locked}
-                    onclick={() => editSupport(s.site, (x) => ({ ...x, boards: toggled(x.boards, b.board) }))}
+                    onclick={() => editSupport(s.site, { list: 'boards', id: b.board, on: !chosen })}
                     data-testid="tracker-credit-board"
                     data-board={b.board}
                   >{b.name || `Board ${b.board}`}</button>
