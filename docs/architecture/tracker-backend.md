@@ -2411,7 +2411,10 @@ a person or an epic, and lists them in a drill. A row whose value is
 NULL is not counted: a number says how many tickets it could not count
 (`Num.NC`, which leaves out a ticket another row of its series counts),
 and a number that counted nothing is not known (`V` absent) rather than
-zero. A row of a range metric with no `at` could have happened from its
+zero. Where the board is counted in tickets (it has no estimates, or its
+project counts tickets), each counted row of a metric in the estimate
+unit is one ticket, whatever its value (`evaluation.run`); the copy
+keeps each ticket's own estimate. A row of a range metric with no `at` could have happened from its
 ticket's creation to its last update: it belongs to each range that
 span meets, the range before included, is counted in none and in no
 period, and the range lists it in its numbers, their drills and a
