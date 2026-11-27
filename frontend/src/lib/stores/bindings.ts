@@ -960,6 +960,7 @@ import {
   SendMessageWithOptions as SendMessageWithOptionsRaw,
   StartTerminal as StartTerminalRaw,
   StartTicketThread as StartTicketThreadRaw,
+  StartTicketsThread as StartTicketsThreadRaw,
   StartTrackerDashboardThread as StartTrackerDashboardThreadRaw,
   UpdateNewThreadDefaults as UpdateNewThreadDefaultsRaw,
 } from '../../../bindings/agent-overflow/app.js';
@@ -970,6 +971,7 @@ import {
   SendMessageOptions as SendMessageOptionsClass,
   StartTerminalOptions as StartTerminalOptionsClass,
   StartTicketThreadRequest as StartTicketThreadRequestClass,
+  StartTicketsThreadRequest as StartTicketsThreadRequestClass,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { SourceDiffReview, SourceProposedPlan, Thread } from '../types/models';
 import type { DraftSnapshot } from '../types/draft';
@@ -1027,6 +1029,15 @@ export function StartTicketThread(
   req: { connectionId: string; issueId: string; origin: 'ask' | 'start_work'; branch?: string },
 ): Promise<Thread> {
   return StartTicketThreadRaw(projectId, new StartTicketThreadRequestClass(req)) as unknown as Promise<Thread>;
+}
+
+/** The thread on tickets selected together (stores/ticketWork.svelte.ts,
+ * `askAboutTickets`): its row, as CreateThread answers one. */
+export function StartTicketsThread(
+  projectId: string,
+  req: { connectionId: string; issueIds: string[]; text?: string },
+): Promise<Thread> {
+  return StartTicketsThreadRaw(projectId, new StartTicketsThreadRequestClass(req)) as unknown as Promise<Thread>;
 }
 
 /** The thread of a board's Ask your agent (stores/trackerDashboard.svelte.ts):

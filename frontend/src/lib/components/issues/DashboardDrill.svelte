@@ -4,7 +4,9 @@
   // own, so the two always agree, a page of 100 at a time. A page asked
   // for after the rows changed starts again at the first, and says so. A
   // row opens its ticket, which closes the drill; Escape, Back and Close
-  // close it.
+  // close it, and so does a thread made on its selected rows
+  // (TicketListActions), before the thread opens; the selection keeps only
+  // the page's tickets.
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import type { TicketRow } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
@@ -12,6 +14,7 @@
   import Icon from '../primitives/Icon.svelte';
   import Modal from '../primitives/Modal.svelte';
   import ErrorNotice from '../shared/ErrorNotice.svelte';
+  import TicketListActions, { type TicketListSource } from './TicketListActions.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import type { DrillState } from '../../stores/trackerDashboard.svelte';
   import { drillCountWords, FIRST_READ_TEXT, numWords, type Num } from '../../stores/trackerDashboardModel';
@@ -21,10 +24,12 @@
     drill: DrillState;
     onPage: (page: number) => void;
     onTicket: (row: TicketRow) => void;
+    /** Where the selection of its rows is written. */
+    tickets: TicketListSource;
     onClose: () => void;
   }
 
-  let { drill, onPage, onTicket, onClose }: Props = $props();
+  let { drill, onPage, onTicket, tickets, onClose }: Props = $props();
 
   const answer = $derived(drill.answer);
   const unit = $derived((answer?.unit ?? 'tickets') as DashboardUnit);
@@ -67,35 +72,26 @@
       {#if answer.restarted}
         <p class="border-b border-border-subtle bg-surface-1 px-5 py-1.5 text-[0.75rem] text-fg-muted" role="status" data-testid="dashboard-drill-restarted">The tickets changed while you paged, so this is the first page again, counted now.</p>
       {/if}
-      <ul class="min-h-0 flex-1 overflow-y-auto" data-testid="dashboard-drill-rows">
-        {#each answer.rows as row (row.row)}
-          <li class="border-b border-border-subtle last:border-b-0">
-            <button
-              type="button"
-              class="flex w-full min-w-0 items-baseline gap-2 px-5 py-1.5 text-left text-[0.75rem] hover:bg-surface-1 focus:outline-none focus-visible:bg-surface-1"
-              data-testid="dashboard-drill-row"
-              data-counted={row.counted}
-              onclick={() => onTicket(row)}
-            >
-              <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{row.key}</span>
-              <!-- Under compact the note goes under the title, which keeps its width. -->
-              <span class="flex min-w-0 flex-1 items-baseline gap-2 compact:flex-col compact:items-start compact:gap-0">
-                <span class="w-full min-w-0 flex-1 truncate {row.counted ? 'text-fg' : 'text-fg-muted'}" data-testid="dashboard-drill-title">{row.title}</span>
-                {#if !row.counted}
-                  <span class="max-w-[16rem] shrink-0 truncate text-[0.6875rem] text-fg-muted compact:max-w-full" data-testid="dashboard-drill-not-counted">Not counted{row.note ? `: ${row.note}` : ''}</span>
-                {:else if row.note}
-                  <span class="max-w-[12rem] shrink-0 truncate text-[0.6875rem] text-fg-muted compact:max-w-full" data-testid="dashboard-drill-note">{row.note}</span>
-                {/if}
-              </span>
-              {#if row.period}<span class="max-w-[8rem] shrink-0 truncate text-[0.6875rem] text-fg-muted" data-testid="dashboard-drill-period">{row.period}</span>{/if}
-              {#if row.counted && rowValue(row)}<span class="shrink-0 tabular-nums text-[0.6875rem] text-fg" data-testid="dashboard-drill-row-value">{rowValue(row)}</span>{/if}
-              <span class="max-w-[8rem] shrink-0 truncate text-[0.6875rem] text-fg-muted">{row.status}</span>
-            </button>
-          </li>
-        {:else}
+      <TicketListActions rows={answer.rows} source={tickets} variant="drill" listTestId="dashboard-drill-rows" rowTestId="dashboard-drill-row" {onTicket} onThread={onClose}>
+        {#snippet row(r)}
+          <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{r.key}</span>
+          <!-- Under compact the note goes under the title, which keeps its width. -->
+          <span class="flex min-w-0 flex-1 items-baseline gap-2 compact:flex-col compact:items-start compact:gap-0">
+            <span class="w-full min-w-0 flex-1 truncate {r.counted ? 'text-fg' : 'text-fg-muted'}" data-testid="dashboard-drill-title">{r.title}</span>
+            {#if !r.counted}
+              <span class="max-w-[16rem] shrink-0 truncate text-[0.6875rem] text-fg-muted compact:max-w-full" data-testid="dashboard-drill-not-counted">Not counted{r.note ? `: ${r.note}` : ''}</span>
+            {:else if r.note}
+              <span class="max-w-[12rem] shrink-0 truncate text-[0.6875rem] text-fg-muted compact:max-w-full" data-testid="dashboard-drill-note">{r.note}</span>
+            {/if}
+          </span>
+          {#if r.period}<span class="max-w-[8rem] shrink-0 truncate text-[0.6875rem] text-fg-muted" data-testid="dashboard-drill-period">{r.period}</span>{/if}
+          {#if r.counted && rowValue(r)}<span class="shrink-0 tabular-nums text-[0.6875rem] text-fg" data-testid="dashboard-drill-row-value">{rowValue(r)}</span>{/if}
+          <span class="max-w-[8rem] shrink-0 truncate text-[0.6875rem] text-fg-muted">{r.status}</span>
+        {/snippet}
+        {#snippet empty()}
           <li class="px-5 py-4 text-[0.75rem] text-fg-muted">No tickets.</li>
-        {/each}
-      </ul>
+        {/snippet}
+      </TicketListActions>
       {#if answer.pages > 1}
         <div class="flex items-center gap-2 border-t border-border-subtle px-5 py-2 text-[0.75rem] text-fg-muted">
           <Button variant="ghost" size="sm" disabled={atFirst} onclick={() => answer && onPage(answer.page - 1)} testId="dashboard-drill-prev">
