@@ -69,7 +69,7 @@ func (p period) places(c contribution, bySprint bool) bool {
 // holdsState is whether state row c is in p: it holds at p's end
 // (holdsAt), in one of p's sprints for a metric by sprint (bySprint). The
 // widget and the drill place a period's states here (ranged.of), and the
-// row sink keeps those rows by it (heldAt).
+// row sink keeps those rows by it (reads.kept).
 func (p period) holdsState(c contribution, bySprint bool) bool {
 	return c.holdsAt(p.to) && (!bySprint || slices.Contains(p.sprints, c.bucket))
 }

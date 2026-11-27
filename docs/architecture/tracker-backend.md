@@ -2968,7 +2968,7 @@ statement.
   step, under a 1 s deadline counted from before its prepare, at most
   20,000 rows and 4 MiB of encoded rows. A row counts toward them only
   if a widget or drill of the evaluation takes it (`reads`), by the
-  rules the reduction places it by (`heldAt`, `period.holdsState`,
+  rules the reduction places it by (`reads.kept`, `period.holdsState`,
   `period.places`, `period.meets`): a state's if it holds now or where
   the range begins, or at the end of a period they show, in that
   period's sprint for a metric by sprint; an event's placed in periods

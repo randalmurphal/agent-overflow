@@ -1165,12 +1165,12 @@ included), credit off and on:
 
 | Board | Off | On |
 |---|---|---|
-| 2,000, estimated | 207,027 steps, 4.4 ms | 326,327 steps, 6.9 ms |
-| 2,000, none estimated | 192,827 steps, 4.5 ms | 326,603 steps, 7.6 ms |
-| 20,000, estimated | 2,018,727 steps, 66.3 ms | 2,497,127 steps, 74.4 ms |
-| 20,000, none estimated | 1,876,727 steps, 57.0 ms | 2,841,203 steps, 91.6 ms |
-| 5 boards of 4,000, estimated | 408,332 steps, 12.5 ms | 567,533 steps, 13.0 ms |
-| 5 boards of 4,000, none estimated | 379,932 steps, 8.5 ms | 606,009 steps, 16.3 ms |
+| 2,000, estimated | 207,227 steps, 4.3 ms | 326,527 steps, 6.3 ms |
+| 2,000, none estimated | 193,027 steps, 4.1 ms | 326,603 steps, 7.7 ms |
+| 20,000, estimated | 2,020,727 steps, 74.7 ms | 2,499,127 steps, 80.5 ms |
+| 20,000, none estimated | 1,878,727 steps, 69.2 ms | 2,841,203 steps, 94.6 ms |
+| 5 boards of 4,000, estimated | 408,732 steps, 9.4 ms | 567,933 steps, 13.4 ms |
+| 5 boards of 4,000, none estimated | 380,332 steps, 12.3 ms | 606,009 steps, 17.7 ms |
 
 With none estimated, most of the difference is the support rule telling
 each row of the sections, which a project counting no credit does not
@@ -1180,12 +1180,12 @@ The pace alone, credit off and on:
 
 | Board | Off | On |
 |---|---|---|
-| 2,000, estimated | 14,090 steps | 133,390 steps, 2.3 ms |
-| 2,000, none estimated | 13,890 steps | 65,652 steps, 1.5 ms |
-| 20,000, estimated | 129,290 steps, 9.0 ms | 607,690 steps, 20.2 ms |
-| 20,000, none estimated | 127,290 steps, 4.8 ms | 271,752 steps, 11.7 ms |
-| 5 boards of 4,000, estimated | 26,891 steps | 186,092 steps, 4.3 ms |
-| 5 boards of 4,000, none estimated | 26,491 steps | 88,554 steps, 3.0 ms |
+| 2,000, estimated | 14,290 steps | 133,590 steps, 2.3 ms |
+| 2,000, none estimated | 14,090 steps | 65,652 steps, 1.5 ms |
+| 20,000, estimated | 131,290 steps, 5.7 ms | 609,690 steps, 20.1 ms |
+| 20,000, none estimated | 129,290 steps, 7.6 ms | 271,752 steps, 11.8 ms |
+| 5 boards of 4,000, estimated | 27,291 steps | 186,492 steps, 4.5 ms |
+| 5 boards of 4,000, none estimated | 26,891 steps | 88,554 steps, 3.0 ms |
 
 Reading whether each member's history covers its card and reaches back
 to its finish, which decides whether its finish and its person are

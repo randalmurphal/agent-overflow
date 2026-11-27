@@ -281,83 +281,44 @@ type contribution struct {
 
 // rowSink gathers the rows of the metric that runs, charged against the
 // row limit and the byte budget. One metric runs at a time on a session.
-// It keeps only the rows its widgets take (reads, at): a state metric's
-// that hold at one of the instants they read, and an event metric's
-// placed in periods that fall in one of the periods they take, or have
-// no period to fall in (place lists those by their ticket's span); the
-// limit and the budget count the rows kept, and no other row is held.
+// It keeps only the rows the evaluation's widgets take (kept): the limit
+// and the budget count the rows kept, and no other row is held.
 type rowSink struct {
 	cols columns
 	// series is the metric's declared series, which a row's series is one of.
 	series []string
-	at     heldAt
+	kept   kept
 	rows   []contribution
 	bytes  int
 	err    error
 }
 
-func (s *rowSink) reset(cols columns, series []string, at heldAt) {
-	s.cols, s.series, s.at, s.rows, s.bytes, s.err = cols, series, at, nil, 0, nil
+func (s *rowSink) reset(cols columns, series []string, k kept) {
+	s.cols, s.series, s.kept, s.rows, s.bytes, s.err = cols, series, k, nil, 0, nil
 }
 
-// heldAt is what the sink keeps (rowSink), by the reduction's own rules:
-// for a state metric, the instants its widgets read in any sprint,
-// sorted (at), and the periods whose end they read in the period's own
-// sprints (ends, period.holdsState), with where they are in words for the
-// row limit's sentence (reads.instants); for an event metric placed in
-// periods (events), the periods they take, by sprint for a metric by
-// sprint (period.places), a row with no instant, when they take one
-// (unplaced), by its ticket's life (spanOf, period.meets), as place puts
-// them; and of a narrowed page, only the rows it keeps (keeps,
-// evaluation.keeps).
-type heldAt struct {
-	at       []int64
-	ends     []period
-	where    string
-	events   bool
-	takes    []period
-	bySprint bool
-	unplaced bool
-	spanOf   func(ticket string) (from, to int64)
-	keeps    func(c contribution) bool
-}
-
-// taken is whether event row c falls in a period the widgets take.
-func (in heldAt) taken(c contribution) bool {
-	if !in.bySprint && !c.hasAt {
-		if !in.unplaced {
-			return false
-		}
-		from, to := in.spanOf(c.ticket)
-		return slices.ContainsFunc(in.takes, func(p period) bool { return p.meets(from, to) })
-	}
-	return slices.ContainsFunc(in.takes, func(p period) bool { return p.places(c, in.bySprint) })
-}
-
-// holdAny is whether state row c holds at one of the instants (holdsAt),
-// or in one of the periods whose end is read (holdsState).
-func (in heldAt) holdAny(c contribution) bool {
-	i := 0
-	if c.hasAt {
-		i, _ = slices.BinarySearch(in.at, c.at)
-	}
-	if i < len(in.at) && c.holdsAt(in.at[i]) {
-		return true
-	}
-	return slices.ContainsFunc(in.ends, func(p period) bool { return p.holdsState(c, true) })
+// kept is which rows of a metric the sink keeps: keep is whether the
+// evaluation takes row c (reads.kept, by the reduction's own rules, and
+// evaluation.keeps for a narrowed page), nil for every row. where says
+// where a state metric's kept rows hold, for the row limit's sentence,
+// and shorter whether a shorter range holds fewer of them.
+type kept struct {
+	keep    func(c contribution) bool
+	where   string
+	shorter bool
 }
 
 // errRows is the row limit's failure: of a state metric, the rows that
 // hold where its widgets read it, which the sentence says.
-func (in heldAt) errRows(state bool) *MetricError {
+func (k kept) errRows(state bool) *MetricError {
 	if !state {
 		return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows, its limit. Pick a shorter range.", maxRows), Limit: true}
 	}
 	advice := " Pick a shorter range."
-	if len(in.at)+len(in.ends) == 1 {
+	if !k.shorter {
 		advice = ""
 	}
-	return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows that hold %s, its limit.%s", maxRows, in.where, advice), Limit: true}
+	return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows that hold %s, its limit.%s", maxRows, k.where, advice), Limit: true}
 }
 
 func (s *rowSink) take() []contribution {
@@ -395,11 +356,11 @@ func (s *rowSink) add(onBoard driver.Value, args []driver.Value) error {
 		return s.err
 	}
 
-	if s.cols.state() && !s.at.holdAny(c) || s.at.events && !s.at.taken(c) || s.at.keeps != nil && !s.at.keeps(c) {
+	if s.kept.keep != nil && !s.kept.keep(c) {
 		return nil
 	}
 	if len(s.rows) == maxRows {
-		s.err = s.at.errRows(s.cols.state())
+		s.err = s.kept.errRows(s.cols.state())
 		return s.err
 	}
 	if len(c.note) > maxNote {
