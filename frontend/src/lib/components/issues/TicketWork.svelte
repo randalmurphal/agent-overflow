@@ -8,7 +8,9 @@
   // development data links to it, with its failure, and the count of those
   // the app cannot open (`stores/ticketWork.svelte.ts`); Ask and Start
   // work, and a Start work run's steps until it ends. Each row opens what
-  // it names and has its menu on a right-click or long press.
+  // it names and has its menu on a right-click or long press: a pull
+  // request its review in the ticket's place when the ticket's computer
+  // names a project that can show it, else its page on the forge.
   import { untrack } from 'svelte';
   import Button from '../primitives/Button.svelte';
   import ContextMenu from '../primitives/ContextMenu.svelte';
@@ -49,13 +51,15 @@
   import type { Thread } from '../../types/models';
   import { copyToClipboard } from '../../utils/clipboard';
   import { ciStatusDotClass, ciStatusText } from '../../utils/ciStatus';
-  import { handleExternalURL } from '../../utils/externalLinks';
   import { pathBasename } from '../../utils/pathDisplay';
   import { lastKnownThreadStatusPill, resolveThreadStatusPill } from '../../utils/threadStatusPill';
   import { asSentence, userFacingError } from '../../utils/userFacingError';
   import { pullNumberLabel } from '../pulls/pullRowView';
   import PullsProjectError from '../pulls/PullsProjectError.svelte';
   import { forgeFailureFrom, forgeReadFailureCause, rateLimitRetryMessage } from '../../utils/forgeFailure';
+  import { prRefFromWire } from '../../utils/prReference';
+  import type { TicketPullRequestOpen } from '../../stores/issuesPane.svelte';
+  import { openPullOnForge } from './ticketPullOnForge';
 
   interface Props {
     attachment: TrackerTicketAttachment;
@@ -74,9 +78,11 @@
     startWorkAsked: boolean;
     /** Work took that ask. */
     onStartWorkTaken: () => void;
+    /** Shows a pull request in the ticket's place. */
+    onOpenPullRequest: (pr: TicketPullRequestOpen) => void;
   }
 
-  let { attachment, project: ticketProject, onProject, me, startWorkAsked, onStartWorkTaken }: Props = $props();
+  let { attachment, project: ticketProject, onProject, me, startWorkAsked, onStartWorkTaken, onOpenPullRequest }: Props = $props();
 
   const ref = $derived(attachment.ref);
   const ticketState = $derived(attachment.current);
@@ -140,8 +146,22 @@
 
   const PR_STATE: Readonly<Record<string, string>> = { draft: 'Draft', open: 'Open', merged: 'Merged', closed: 'Closed' };
 
-  async function openOnForge(pr: TicketPullRequest): Promise<void> {
-    if (!(await handleExternalURL(pr.url))) addToast('error', `Could not open ${pullNumberLabel(pr.ref.Forge, pr.ref.Number)}: its link ${pr.url} is not a web address.`);
+  function openOnForge(pr: TicketPullRequest): Promise<void> {
+    return openPullOnForge(pr.ref.Forge, pr.ref.Number, pr.url);
+  }
+
+  // The review a row opens in the ticket's place: the computer names the
+  // project whose checkout can show it (`reviewProjectId`), else none and
+  // the row opens on the forge.
+  function reviewOf(pr: TicketPullRequest): TicketPullRequestOpen | null {
+    const ref = pr.reviewProjectId ? prRefFromWire(pr.ref) : null;
+    return ref && pr.reviewProjectId ? { pr: ref, projectId: pr.reviewProjectId, url: pr.url } : null;
+  }
+
+  function openPull(pr: TicketPullRequest): void {
+    const review = reviewOf(pr);
+    if (review) onOpenPullRequest(review);
+    else void openOnForge(pr);
   }
 
   async function copy(text: string, what: string): Promise<void> {
@@ -216,9 +236,11 @@
     event.preventDefault();
     menu = { x: event.clientX, y: event.clientY, of };
   }
+  // The action reads the row the menu names, so it runs before the menu
+  // closes.
   function act(action: () => void | Promise<void>): void {
-    menu = null;
     void action();
+    menu = null;
   }
 
   const asking = $derived(ticketAskPending(attachment.key));
@@ -324,13 +346,15 @@
   <div class="flex flex-col" data-testid="ticket-work-pulls">
     <span class="px-1 text-xs text-fg-muted">Pull requests</span>
     {#each work?.pullRequests ?? [] as pr (pr.url)}
+      {@const here = !!reviewOf(pr)}
       <button
         type="button"
         class="flex min-w-0 flex-col rounded-[var(--radius-control)] px-1 py-0.5 text-left hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:min-h-9 compact:select-none"
-        title="Open {pullNumberLabel(pr.ref.Forge, pr.ref.Number)} on the forge"
+        title="Open {pullNumberLabel(pr.ref.Forge, pr.ref.Number)} {here ? 'here' : 'on the forge'}"
         data-testid="ticket-work-pull"
         data-state={pr.state}
-        onclick={() => { void openOnForge(pr); }}
+        data-opens={here ? 'review' : 'forge'}
+        onclick={() => openPull(pr)}
         oncontextmenu={(e) => openMenu(e, { kind: 'pr', pr })}
       >
         <span class="flex min-w-0 items-center gap-1.5 text-sm text-fg">
@@ -357,9 +381,11 @@
     {#each work?.forgeProblems ?? [] as problem (`${problem.projectId}\n${problem.repo.Namespace}/${problem.repo.Repo}`)}
       {@const failure = forgeFailureFrom(problem)}
       {@const what = problem.repo.Repo ? `${problem.repo.Namespace}/${problem.repo.Repo}` : getProjectLabelText(problem.projectId)}
+      <!-- A repository's search may have read rows before it failed; a
+        project whose origin git could not read was not searched. -->
       <div data-testid="ticket-work-forge-problem">
         <PullsProjectError
-          message={failure?.kind === 'rate_limited' ? rateLimitRetryMessage(problem.repo.Forge, what, failure) : `Could not search ${what}: ${problem.error}`}
+          message={failure?.kind === 'rate_limited' ? rateLimitRetryMessage(problem.repo.Forge, what, failure) : problem.repo.Repo ? `Could not finish searching ${what}: ${problem.error}` : `Could not search ${what}: ${problem.error}`}
           {failure}
           polled={false}
           forge={problem.repo.Forge}

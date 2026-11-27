@@ -31,6 +31,7 @@ import { setBindingMock, setReviewDiffMock } from '../../test/mocks/bindings-app
 import { commitList } from '../../test/helpers/commitList';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../test/helpers/scopes';
 import { stageBackend } from '../../test/helpers/backends';
+import { displayRowCount, FILE_START, materializeRows } from '../utils/patchRows';
 
 const OWNER = 'tools-1';
 const PROJECT = 'project-1';
@@ -420,6 +421,33 @@ describe('pinned routing and grants', () => {
     expect(state.commentsGrant).toBe('granted');
     await commentOn(state, { filePath: 'src/app.ts', newLine: 2, side: 'new', selectedText: 'line 2' }, 'here');
     expect(new Set(drafts.routed)).toEqual(new Set(['laptop']));
+    revokeBackendScopes('laptop');
+  });
+
+  it('reads its commits and a diff\'s hidden lines on the computer that listed the PR, whatever this page\'s project index holds', async () => {
+    stageBackend();
+    await grantBackendScopes('laptop', ['threads:read', 'git:operate']);
+    await pairViewOnly();
+    installPRMocks();
+    const commits: string[] = [];
+    setBindingMock('ListPRCommits', async () => {
+      commits.push(String(takePinnedBackend() ?? ''));
+      return commitList([]);
+    });
+    // A hunk at line 10: lines 1 to 9 are a gap the person can open.
+    setReviewDiffMock('OpenPRDiff', async () => 'diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -10,2 +10,2 @@\n ctx\n-old\n+new\n');
+    const lines: string[] = [];
+    setBindingMock('GetDiffContextLines', async (_ws: unknown, req: { startLine: number; endLine: number }) => {
+      lines.push(String(takePinnedBackend() ?? ''));
+      return { lines: Array.from({ length: req.endLine - req.startLine + 1 }, (_, i) => `src ${req.startLine + i}`), startLine: req.startLine, eof: false, totalLines: 0 };
+    });
+    const state = pinned(5, 'laptop');
+    await waitLoaded(state);
+    expect(commits).toEqual(['laptop']);
+    const gap = materializeRows(state.files[0], FILE_START, displayRowCount(state.files[0])).rows.find((row) => row.gap)?.gap;
+    expect(gap).toBeTruthy();
+    await state.expandDiffContext('src/app.ts', gap!, 'all');
+    expect(lines).toEqual(['laptop']);
     revokeBackendScopes('laptop');
   });
 

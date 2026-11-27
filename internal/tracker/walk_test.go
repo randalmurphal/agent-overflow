@@ -265,7 +265,7 @@ func (f *probedTime) Worklogs(ctx context.Context, _ WorklogQuery) ([]Worklog, e
 	f.see(ctx)
 	return nil, nil
 }
-func (f *probedTime) AddWorklog(ctx context.Context, _ WorklogInput) Result {
+func (f *probedTime) AddWorklogs(ctx context.Context, _ []WorklogInput) Result {
 	f.see(ctx)
 	return Result{}
 }

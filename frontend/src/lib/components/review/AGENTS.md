@@ -21,7 +21,7 @@ PR stores; components own presentation and interaction.
   PR or thread and must not navigate a pane whose target changed.
 - A review is a companion of a thread pane (`ctx`, `reviewSubjectForPane`)
   or pinned to one PR with no thread (`pr`, `reviewSubjectForPR`, the Pull
-  requests page). A pinned review's workspace is the project root, its
+  requests page and a ticket's Work row, `issues/TicketReview.svelte`). A pinned review's workspace is the project root, its
   scope stays `pr`, and its PR, computer and `git:operate` check are the
   ones it was opened with, never the owner pane's git status, thread or
   composer. Its gates read the state (`pinned`, `commentsGrant`,

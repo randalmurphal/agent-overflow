@@ -54,16 +54,17 @@ export function rateLimitMessage(forge: string | null | undefined, failure: Forg
 }
 
 /**
- * What a rate-limited read that runs only when asked says (a ticket's
- * Work): what was not read, and when Retry can read it, in local time.
+ * What a rate-limited search that runs only when asked says (a ticket's
+ * Work): that the search of `what` did not finish, whether or not it read
+ * rows first, and when Retry can read it, in local time.
  */
 export function rateLimitRetryMessage(forge: string | null | undefined, what: string, failure: ForgeFailure): string {
   const name = forgeLabels(forge).name;
   const at = formatTimeOfDay(Date.parse(failure.resumeAt));
   if (failure.reserve) {
-    return `${name} rate limit nearly used up, so ${what} was not searched: the rest is kept for your own actions. Retry after ${at}.`;
+    return `${name} rate limit nearly used up, so the search of ${what} did not finish: the rest is kept for your own actions. Retry after ${at}.`;
   }
-  return `${name} rate limit reached, so ${what} was not searched. Retry after ${at}.`;
+  return `${name} rate limit reached, so the search of ${what} did not finish. Retry after ${at}.`;
 }
 
 /** A failed forge read as its wire carries it: the caller-safe sentence,

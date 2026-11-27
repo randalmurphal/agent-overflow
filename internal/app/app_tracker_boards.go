@@ -367,6 +367,10 @@ func trackerRefusal(err error) (code, message string) {
 		return "tracker_setup_newer", "this part of the setup was saved by a newer version of Agent Overflow; update this computer to change it"
 	case errors.As(err, &refusedSetup):
 		return "tracker_setup_refused", "this setup cannot be saved: " + refusedSetup.Reason
+	case errors.Is(err, trackerapp.ErrUnverified):
+		return "tracker_connection_unverified", "this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings"
+	case errors.Is(err, trackerapp.ErrTimeEntryStale):
+		return "tracker_time_entry_stale", "this time entry changed, was posted or was removed since it was read; read the day again"
 	case errors.Is(err, trackerapp.ErrUnknownAttachment):
 		return "tracker_attachment_unknown", "this ticket no longer shows that attachment; look at the ticket again"
 	}

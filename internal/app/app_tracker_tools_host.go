@@ -289,6 +289,32 @@ func (h trackerToolsHost) Wrote(threadID string, row trackertools.WriteRow) {
 	}
 }
 
+// Drafted writes the row of a time_draft call that changed the draft,
+// once: it names the call, whose entries a card reads live
+// (ThreadTimeEntries), and is never rewritten.
+func (h trackerToolsHost) Drafted(threadID string, row trackertools.TimeRow) {
+	a := h.a
+	if a.triage == nil {
+		return
+	}
+	meta, err := json.Marshal(struct {
+		Kind string `json:"kind"`
+		trackertools.TimeRow
+	}{Kind: "time_draft", TimeRow: row})
+	if err != nil {
+		log.Printf("tracker tools: encode the time draft row of %s: %v", threadID, err)
+		return
+	}
+	if err := a.triage.HandleSynthetic(provider.ProviderEvent{
+		Kind: provider.EventNotification, ThreadID: threadID, ItemID: trackerApprovalPrefix + row.ID, Content: "Drafted time for " + trackerapp.DayRange(row.Days),
+		Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		// The draft stands and its answer reaches the agent; the row the
+		// store refused is shown as unsaved (triage's report).
+		log.Printf("tracker tools: the time draft row of %s: %v", threadID, err)
+	}
+}
+
 func (h trackerToolsHost) CreateBoards(threadID, project string) ([]trackertools.CreateBoard, error) {
 	a := h.a
 	thread, err := a.store.GetThread(threadID)

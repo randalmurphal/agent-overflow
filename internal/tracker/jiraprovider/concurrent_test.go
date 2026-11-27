@@ -94,7 +94,7 @@ func TestCancelledCalls(t *testing.T) {
 		"comment":  p.AddComment(ctx, tracker.CommentInput{Issue: "10001", Markdown: "x"}),
 		"sprint":   p.CreateSprint(ctx, tracker.SprintInput{Board: "3", Name: "x"}),
 		"link":     p.Link(ctx, tracker.LinkInput{Type: "10000", Outward: "10001", Inward: "10002"}),
-		"worklog":  p.Time().AddWorklog(ctx, tracker.WorklogInput{Issue: "10001", Day: day(t, 2026, 11, 10), Spent: time.Hour}),
+		"worklog":  p.Time().AddWorklogs(ctx, []tracker.WorklogInput{{Issue: "10001", Day: day(t, 2026, 11, 10), Spent: time.Hour}}),
 	} {
 		checked(t, res)
 		if res.Tally().NotSent != len(res.Parts) {

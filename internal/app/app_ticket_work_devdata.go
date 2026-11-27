@@ -59,7 +59,7 @@ func (a *App) readTicketDevelopment(ctx context.Context, connectionID, issueID s
 // that no source read before it holds. They come after the stored list
 // and the forge's search, which read the forge itself, so a pull request
 // either listed stays as it is; one only a linked thread recorded, with no
-// title or author, takes the tracker's row. The tracker's link is the
+// title or author, takes the tracker's row under the record's project. The tracker's link is the
 // evidence that a pull request is the ticket's, so its rows are not held
 // to the key rule (namesTicketKey). A link whose URL names no pull
 // request the app can address is left out and counted. A failure is
@@ -79,8 +79,10 @@ func (r *ticketWorkRead) addDevelopment(dev ticketDevelopment) {
 		case at < 0:
 			r.work.PullRequests = append(r.work.PullRequests, row)
 		case r.recorded[id]:
-			// Jira's row takes the record's place; what Jira leaves out
-			// (a branch, a status) stays as the thread recorded it.
+			// Jira's row takes the record's place; the project it was
+			// listed under, and what Jira leaves out (a branch, a status),
+			// stay as the thread recorded them.
+			row.ProjectID = r.work.PullRequests[at].ProjectID
 			if row.Branch == "" {
 				row.Branch = r.work.PullRequests[at].Branch
 			}

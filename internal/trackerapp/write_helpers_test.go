@@ -166,8 +166,8 @@ func (tt *scriptedTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([
 	return out, nil
 }
 
-func (tt *scriptedTime) AddWorklog(ctx context.Context, in tracker.WorklogInput) tracker.Result {
-	return tt.p.answer(ctx, "AddWorklog", in)
+func (tt *scriptedTime) AddWorklogs(ctx context.Context, ins []tracker.WorklogInput) tracker.Result {
+	return tt.p.answer(ctx, "AddWorklogs", ins)
 }
 func (tt *scriptedTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) tracker.Result {
 	return tt.p.answer(ctx, "EditWorklog", in)

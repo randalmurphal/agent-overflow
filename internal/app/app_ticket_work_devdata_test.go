@@ -58,7 +58,8 @@ func lastTrackerSeq(f workSearchFixture) int {
 // whether or not it names the key (a merged one whose branch is gone); one
 // the forge found stays as the forge answered it, a linked thread's
 // record of it too; one only a linked thread recorded takes the data's
-// title and author; a status that was not
+// title and author under the thread's project; each opens in the project
+// that clones its repository; a status that was not
 // measured shows as Jira's word; and a link the app cannot open as a pull
 // request is counted, not listed. It costs one summary and one detail
 // request; GetTicketWork asks Jira nothing.
@@ -105,8 +106,8 @@ func TestSearchTicketWorkListsJirasDevelopmentData(t *testing.T) {
 		return gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: ns, Repo: repo, Number: n}
 	}
 	want := []TicketPullRequest{
-		{Ref: workSearchPR(1), URL: workSearchPRURL(1), Title: "WEB-1 Fix the login", Author: "User 1", State: TicketPROpen, Branch: "fix-login", ProjectID: f.project},
-		{Ref: workSearchPR(20), URL: workSearchPRURL(20), Title: "Release notes", Author: "User 1", State: TicketPRMerged, Branch: "release-notes"},
+		{Ref: workSearchPR(1), URL: workSearchPRURL(1), Title: "WEB-1 Fix the login", Author: "User 1", State: TicketPROpen, Branch: "fix-login", ProjectID: f.project, ReviewProjectID: f.project},
+		{Ref: workSearchPR(20), URL: workSearchPRURL(20), Title: "Release notes", Author: "User 1", State: TicketPRMerged, Branch: "release-notes", ProjectID: f.project, ReviewProjectID: f.project},
 		{Ref: gitlab("example/ops", 4), URL: "https://gitlab.com/example/ops/-/merge_requests/4", Title: "Rework the cache", Author: "User 1", State: TicketPRMerged, Branch: "web-1-cache"},
 		{Ref: gitlab("example/sub/api", 5), URL: "https://gitlab.com/example/sub/api/-/merge_requests/5", Title: "Spike", State: "UNKNOWN"},
 	}

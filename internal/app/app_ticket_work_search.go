@@ -47,37 +47,26 @@ type ticketHeadLookup struct {
 // A found row or branch counts only when it names the key
 // (namesTicketKey), since the forge's search is looser than the key rule.
 // A repository's failure is its one ForgeProblem, beside the rows its
-// search read before it failed; it gets no lookups. A project whose origin
-// names no forge repository is not searched. It fails only when ctx ends
-// before the repositories are known.
-func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) error {
+// search and lookups read before they failed; a failed search gets no
+// lookups. A project whose origin
+// names no forge repository is not searched.
+func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) {
 	var repos []*ticketSearchRepo
 	byKey := map[string]*ticketSearchRepo{}
-	for _, projectID := range read.projects {
-		project, err := a.store.GetProject(projectID)
-		if err != nil {
-			// The branches' read failed the same way: it is in Problems.
+	for _, origin := range read.origins {
+		if origin.Error != "" {
+			read.work.ForgeProblems = append(read.work.ForgeProblems, TicketForgeProblem{ProjectID: origin.ProjectID, Error: origin.Error, ErrorKind: forgeFailureForge})
 			continue
 		}
-		row, ok, err := a.forgeProject(ctx, project)
-		switch {
-		case err != nil:
-			return err
-		case !ok:
-			continue
-		case row.Error != "":
-			read.work.ForgeProblems = append(read.work.ForgeProblems, TicketForgeProblem{ProjectID: projectID, Error: row.Error, ErrorKind: forgeFailureForge})
-			continue
-		}
-		key := row.Repo.Identity()
+		key := origin.Repo.Identity()
 		repo := byKey[key]
 		if repo == nil {
-			repo = &ticketSearchRepo{repo: row.Repo, paths: map[string]string{}}
+			repo = &ticketSearchRepo{repo: origin.Repo, paths: map[string]string{}}
 			byKey[key] = repo
 			repos = append(repos, repo)
 		}
-		repo.projects = append(repo.projects, projectID)
-		repo.paths[projectID] = project.Path
+		repo.projects = append(repo.projects, origin.ProjectID)
+		repo.paths[origin.ProjectID] = origin.Path
 	}
 
 	ticketKey := read.work.Key
@@ -118,14 +107,17 @@ func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) error
 		l.found, l.err = a.gitCore().ListPRsByHead(ctx, l.repo.paths[l.projectID], l.branch)
 	})
 	for _, l := range lookups {
-		if l.err != nil {
-			if l.repo.err == nil {
-				l.repo.err = l.err
-			}
-			continue
-		}
 		for _, found := range l.found {
-			read.addFound(found, l.projectID)
+			if read.addFound(found, l.projectID) {
+				head := ticketHead{l.projectID, l.branch}
+				if read.heads == nil {
+					read.heads = map[ticketHead][]string{}
+				}
+				read.heads[head] = append(read.heads[head], found.Ref.Identity())
+			}
+		}
+		if l.err != nil && l.repo.err == nil {
+			l.repo.err = l.err
 		}
 	}
 
@@ -140,16 +132,16 @@ func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) error
 			Reserve: fail.reserve, ResumeAt: fail.resumeAt,
 		})
 	}
-	return nil
 }
 
 // addFound lists a pull request the forge found for the key, of
-// projectID, once. The forge's row is the newest read of it: it replaces a
-// row listed already, which keeps only what the forge's row lacks, the
-// stored list's CI and the project it was listed under.
-func (r *ticketWorkRead) addFound(found gitops.PRFound, projectID string) {
+// projectID, once, and reports whether it names the key. The forge's row
+// is the newest read of it: it replaces a row listed already, which keeps
+// only what the forge's row lacks, the stored list's CI and the project it
+// was listed under.
+func (r *ticketWorkRead) addFound(found gitops.PRFound, projectID string) bool {
 	if !namesTicketKey(found.Title, found.HeadRefName, r.work.Key) {
-		return
+		return false
 	}
 	row := TicketPullRequest{
 		Ref: found.Ref, URL: found.URL, Title: found.Title, Author: cmp.Or(found.Author.Name, found.Author.Login),
@@ -159,7 +151,7 @@ func (r *ticketWorkRead) addFound(found gitops.PRFound, projectID string) {
 	at := slices.IndexFunc(r.work.PullRequests, func(p TicketPullRequest) bool { return p.Ref.Identity() == id })
 	if at < 0 {
 		r.work.PullRequests = append(r.work.PullRequests, row)
-		return
+		return true
 	}
 	delete(r.recorded, id)
 	listed := r.work.PullRequests[at]
@@ -168,6 +160,7 @@ func (r *ticketWorkRead) addFound(found gitops.PRFound, projectID string) {
 		row.ProjectID = listed.ProjectID
 	}
 	r.work.PullRequests[at] = row
+	return true
 }
 
 // ticketPRState is a found pull request's state as Work names it.

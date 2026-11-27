@@ -351,6 +351,8 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		addAbandonedBlocksNotificationMeta(meta, raw)
 	case trackerWriteNotificationKind:
 		addTrackerWriteNotificationMeta(meta, raw)
+	case timeDraftNotificationKind:
+		addTimeDraftNotificationMeta(meta, raw)
 	}
 
 	encoded, err := json.Marshal(meta)
@@ -406,6 +408,37 @@ func addTrackerWriteNotificationMeta(meta map[string]any, raw json.RawMessage) {
 	if row.Created {
 		meta["created"] = true
 	}
+}
+
+// timeDraftNotificationKind is the row of a time_draft call that changed
+// the user's time draft, which the app writes once per call: the call
+// that names its entries, their connection and days. The entries are
+// read live by the call (app ThreadTimeEntries); the row is never
+// rewritten.
+const timeDraftNotificationKind = "time_draft"
+
+// maxTimeDraftDays bounds a time draft row's days, persisted from the
+// app's input: a draft covers at most 31 days.
+const maxTimeDraftDays = 31
+
+func addTimeDraftNotificationMeta(meta map[string]any, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var row struct {
+		Call       string   `json:"call"`
+		Connection string   `json:"connection"`
+		Days       []string `json:"days"`
+	}
+	if json.Unmarshal(raw, &row) != nil {
+		return
+	}
+	cut := func(s string) string { return truncateRunes(strings.TrimSpace(s), maxTrackerWriteRunes) }
+	days := make([]string, 0, min(len(row.Days), maxTimeDraftDays))
+	for _, d := range row.Days[:min(len(row.Days), maxTimeDraftDays)] {
+		days = append(days, cut(d))
+	}
+	meta["call"], meta["connection"], meta["days"] = cut(row.Call), cut(row.Connection), days
 }
 
 // backgroundWakeNotificationKind is the row for a Monitor event that

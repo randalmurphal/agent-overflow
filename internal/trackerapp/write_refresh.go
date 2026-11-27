@@ -346,7 +346,7 @@ func (r *run) refreshWorklogs(f *refreshed, p refreshPlan) error {
 			for i, d := range span {
 				res[i] = tracker.WorklogsOf(author, d)
 			}
-			if err := r.worklogs(author, span[0], span[len(span)-1]); err != nil {
+			if _, err := r.worklogs(author, span[0], span[len(span)-1]); err != nil {
 				if stop := r.failedRead(f, err, res...); stop != nil {
 					return stop
 				}

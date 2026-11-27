@@ -134,28 +134,35 @@ func (t *jiraTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]trac
 	return out, nil
 }
 
-// AddWorklog logs time for the credential's own user, starting at
-// addHour of the day in the user's zone.
-func (t *jiraTime) AddWorklog(ctx context.Context, in tracker.WorklogInput) tracker.Result {
-	if err := in.Check(); err != nil {
-		return tracker.Invalid(tracker.StepWorklog, err, in.Issue)
-	}
-	if err := checkIssue(in.Issue); err != nil {
-		return tracker.Invalid(tracker.StepWorklog, err, in.Issue)
+// AddWorklogs logs each of ins for the credential's own user, starting
+// at addHour of its day in the user's zone: one read of who the user is
+// for the batch, then one request per worklog, in order.
+func (t *jiraTime) AddWorklogs(ctx context.Context, ins []tracker.WorklogInput) tracker.Result {
+	if err := tracker.CheckWorklogInputs(ins); err != nil {
+		return tracker.InvalidWorklogs(ins, err)
 	}
 	me, err := t.jira.Me(ctx)
 	if err != nil {
-		return worklogResult(in.Issue, "", beforeSend(fmt.Errorf("jiraprovider: who logs the time: %w", err)))
+		return worklogResults(ins, "", beforeSend(fmt.Errorf("jiraprovider: who logs the time: %w", err)))
 	}
+	author := tracker.UserID(me.AccountID)
 	loc, err := zone(me)
 	if err != nil {
-		return worklogResult(in.Issue, tracker.UserID(me.AccountID), beforeSend(err), in.Day)
+		return worklogResults(ins, author, beforeSend(err))
 	}
-	_, err = t.jira.AddWorklog(ctx, jira.WorklogInput{
-		Issue: string(in.Issue), Started: time.Date(in.Day.Year(), in.Day.Month(), in.Day.Day(), addHour, 0, 0, 0, loc),
-		TimeSpent: in.Spent, Markdown: in.Description, Estimate: jira.AdjustAuto(),
-	})
-	return worklogResult(in.Issue, tracker.UserID(me.AccountID), outcome(err), in.Day)
+	out := tracker.Result{Parts: make([]tracker.Part, len(ins))}
+	for i, in := range ins {
+		if err := checkIssue(in.Issue); err != nil {
+			out.Parts[i] = worklogPart(in, author, tracker.Refused(refusal(err)), "")
+			continue
+		}
+		w, err := t.jira.AddWorklog(ctx, jira.WorklogInput{
+			Issue: string(in.Issue), Started: time.Date(in.Day.Year(), in.Day.Month(), in.Day.Day(), addHour, 0, 0, 0, loc),
+			TimeSpent: in.Spent, Markdown: in.Description, Estimate: jira.AdjustAuto(),
+		})
+		out.Parts[i] = worklogPart(in, author, outcome(err), tracker.WorklogID(w.ID))
+	}
+	return out
 }
 
 // EditWorklog changes a Jira worklog that still holds what From says,
@@ -286,7 +293,7 @@ func nativeWorklog(w jira.Worklog, issue string, loc *time.Location) (tracker.Wo
 	}
 	out := tracker.Worklog{
 		ID: tracker.WorklogID(w.ID), Issue: tracker.IssueID(issue), Day: day,
-		Spent: w.TimeSpent, Description: adf.ToMarkdown(w.Comment), Updated: w.Updated,
+		Spent: w.TimeSpent, Description: adf.ToMarkdown(w.Comment), Created: w.Created, Updated: w.Updated,
 	}
 	if w.Author != nil {
 		out.Author = tracker.UserID(w.Author.AccountID)

@@ -175,6 +175,9 @@ func TestHistoryAndWorklogRoundTrip(t *testing.T) {
 		t.Fatal("a change of an unknown kind read")
 	}
 	w := filled[tracker.Worklog]()
+	// The mirror keeps no creation time: only a post's check reads it, from
+	// the tracker (sendTimeEntries).
+	w.Created = time.Time{}
 	same(t, "worklog", must[tracker.Worklog](t)(worklogOf(mirrorWorklog(w))), w)
 	if _, err := worklogOf(store.MirrorWorklog{ID: "1", Day: "not a day"}); err == nil {
 		t.Fatal("a worklog with no day read")
