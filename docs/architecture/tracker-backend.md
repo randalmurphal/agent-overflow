@@ -450,7 +450,8 @@ no step runs at root creation, restore or start.
   no tracker request: one query of the board's last 5 closed sprints and
   their members per board. Planning poker off is the ticket screen's
   rule: it asks no poker support and shows no poker for a ticket of the
-  project, so the votes are not followed.
+  project, so the votes are not followed, and it asks nothing until the
+  project's setup is read.
 - **Status groups apply to a board read** as a bound argument
   (`store.MirrorRegroup`), resolved from the board handle's project and
   its connection's site, so two projects that list one board each read it
