@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -55,6 +56,23 @@ func historyOrder(r *Repo) []*Pull {
 	return pulls
 }
 
+// githubHistoryPull is a pull's own fields as PullHistory selects them.
+func (e *Engine) githubHistoryPull(r *Repo, p *Pull) map[string]any {
+	var mergedAt, closedAt any
+	if p.State == "merged" {
+		mergedAt = p.MergedAt
+	}
+	if defaultString(p.State, "open") != "open" {
+		closedAt = p.ClosedAt
+	}
+	return map[string]any{
+		"number": p.Number, "url": githubPullURL(r, p), "title": p.Title, "state": strings.ToUpper(defaultString(p.State, "open")),
+		"isDraft": p.Draft, "headRefName": p.HeadRef, "headRepository": e.githubHeadRepository(r, p),
+		"createdAt": p.CreatedAt, "updatedAt": p.UpdatedAt, "mergedAt": mergedAt, "closedAt": closedAt,
+		"author": githubHistoryActor(p.Author, p.AuthorName),
+	}
+}
+
 // ghPullHistory answers a page of 50 of the repository's pulls, most
 // recently updated first, each with its first 50 reviews and
 // conversation comments, beside the repository's node id and parent.
@@ -71,21 +89,10 @@ func ghPullHistory(e *Engine, c *call, v graphQLVars) response {
 	}
 	nodes := []map[string]any{}
 	for _, p := range historyOrder(r) {
-		var mergedAt, closedAt any
-		if p.State == "merged" {
-			mergedAt = p.MergedAt
-		}
-		if defaultString(p.State, "open") != "open" {
-			closedAt = p.ClosedAt
-		}
-		nodes = append(nodes, map[string]any{
-			"number": p.Number, "url": githubPullURL(r, p), "title": p.Title, "state": strings.ToUpper(defaultString(p.State, "open")),
-			"isDraft": p.Draft, "headRefName": p.HeadRef, "headRepository": e.githubHeadRepository(r, p),
-			"createdAt": p.CreatedAt, "updatedAt": p.UpdatedAt, "mergedAt": mergedAt, "closedAt": closedAt,
-			"author":   githubHistoryActor(p.Author, p.AuthorName),
-			"reviews":  graphQLConnection(githubHistoryReviews(p), 0, 50),
-			"comments": graphQLConnection(githubHistoryComments(p), 0, 50),
-		})
+		node := e.githubHistoryPull(r, p)
+		node["reviews"] = graphQLConnection(githubHistoryReviews(p), 0, 50)
+		node["comments"] = graphQLConnection(githubHistoryComments(p), 0, 50)
+		nodes = append(nodes, node)
 	}
 	repository := e.githubRepoParent(r)
 	repository["pullRequests"] = graphQLConnection(nodes, offset, 50)
@@ -93,7 +100,8 @@ func ghPullHistory(e *Engine, c *call, v graphQLVars) response {
 }
 
 // ghPullHistoryMore answers a pull's reviews and conversation comments
-// from their cursors, 100 a page, each while its want variable is set.
+// from their cursors, 100 a page, each while its want variable is set,
+// and its own fields while wantPull is.
 func ghPullHistoryMore(e *Engine, c *call, v graphQLVars) response {
 	owner, err1 := v.str("owner")
 	name, err2 := v.str("name")
@@ -102,14 +110,18 @@ func ghPullHistoryMore(e *Engine, c *call, v graphQLVars) response {
 	wantComments, err5 := v.boolean("wantComments")
 	reviewsAfter, err6 := v.cursor("reviewsAfter")
 	commentsAfter, err7 := v.cursor("commentsAfter")
-	if err := firstErr(err1, err2, err3, err4, err5, err6, err7); err != nil {
+	wantPull, err8 := v.boolean("wantPull")
+	if err := firstErr(err1, err2, err3, err4, err5, err6, err7, err8); err != nil {
 		return unhandled("PullHistoryMore: %v", err)
 	}
-	_, p, fail, ok := e.ghGraphQLPull(c, owner+"/"+name, number, nil)
+	r, p, fail, ok := e.ghGraphQLPull(c, owner+"/"+name, number, nil)
 	if !ok {
 		return fail
 	}
 	pull := map[string]any{}
+	if wantPull {
+		pull = e.githubHistoryPull(r, p)
+	}
 	if wantReviews {
 		pull["reviews"] = graphQLConnection(githubHistoryReviews(p), reviewsAfter, 100)
 	}
@@ -117,6 +129,80 @@ func ghPullHistoryMore(e *Engine, c *call, v graphQLVars) response {
 		pull["comments"] = graphQLConnection(githubHistoryComments(p), commentsAfter, 100)
 	}
 	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": pull}})
+}
+
+// ghReviewComments answers the repository's review comments, every
+// thread comment of every pull, by update time oldest first (the only
+// order implemented: sort=updated, direction=asc), those updated at or
+// after since, 100 a page by number. A comment's update time is its edit
+// time, else its creation; its user is a Bot when it has no display
+// name, as the fixture's GitHub authors read.
+func ghReviewComments(e *Engine, c *call, m []string) response {
+	query, perPage, page, err := glabPage(m[2], "sort", "direction", "since")
+	if err != nil {
+		return unhandled("%v", err)
+	}
+	if query.Get("sort") != "updated" || query.Get("direction") != "asc" {
+		return unhandled("review comments sort=%q direction=%q are not implemented", query.Get("sort"), query.Get("direction"))
+	}
+	if query.Get("per_page") == "" {
+		perPage = 30
+	}
+	var since int64
+	if raw := query.Get("since"); raw != "" {
+		at, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return unhandled("since %q is not an ISO 8601 time", raw)
+		}
+		since = at.UnixNano()
+	}
+	r := e.repoOn("github", c.http.host, m[1])
+	if r == nil {
+		return ghHTTPNotFound()
+	}
+	type comment struct {
+		id      int64
+		updated int64
+		body    map[string]any
+	}
+	var comments []comment
+	for i := range r.Pulls {
+		p := &r.Pulls[i]
+		for _, thread := range p.Threads {
+			for _, cm := range thread.Comments {
+				updated := cmp.Or(cm.EditedAt, cm.CreatedAt)
+				at := rfc3339(updated)
+				if at < since {
+					continue
+				}
+				kind := "User"
+				if cm.AuthorName == "" {
+					kind = "Bot"
+				}
+				comments = append(comments, comment{id: cm.ID, updated: at, body: map[string]any{
+					"id": cm.ID, "user": map[string]any{"login": cm.Author, "type": kind}, "created_at": cm.CreatedAt, "updated_at": updated,
+					"pull_request_url": fmt.Sprintf("https://api.%s/repos/%s/pulls/%d", r.Host, r.Project, p.Number)}})
+			}
+		}
+	}
+	slices.SortStableFunc(comments, func(a, b comment) int {
+		if c := cmp.Compare(a.updated, b.updated); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.id, b.id)
+	})
+	items := make([]map[string]any, 0, len(comments))
+	for _, cm := range comments {
+		items = append(items, cm.body)
+	}
+	selected, next := paginate(items, perPage, page)
+	resp := jsonResponse(selected)
+	if next != "" {
+		query.Set("per_page", strconv.Itoa(perPage))
+		query.Set("page", next)
+		resp.header.Set("Link", "<"+fmt.Sprintf("%s/github/rest/repos/%s/pulls/comments?%s", c.http.base, r.Project, query.Encode())+`>; rel="next"`)
+	}
+	return resp
 }
 
 // glabProjectEvents answers a project's approved or commented events,
@@ -200,12 +286,8 @@ func glabProjectEvents(e *Engine, c *call, m []string) response {
 			}
 		}
 	}
-	slices.SortStableFunc(events, func(a, b event) int {
-		if c := a.at.Compare(b.at); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.id, b.id)
-	})
+	// GitLab sorts a project's events by id, not by creation time.
+	slices.SortStableFunc(events, func(a, b event) int { return cmp.Compare(a.id, b.id) })
 	if sortOrder != "asc" {
 		slices.Reverse(events)
 	}

@@ -187,16 +187,61 @@ type ticketWorkRead struct {
 	projects []string
 	origins  []ForgeProject
 	branches []TicketBranch
-	// recorded are the pull requests, by identity, that only a linked
-	// thread's record lists.
-	recorded map[string]bool
-	// heads are the pull requests whose head is a branch of a project's
-	// checkout, by the project and the branch: those a forge lookup by
-	// the branch's name found in the checkout (searchTicketForge), and
-	// the stored history's whose head repository is the project's origin
-	// (addTicketHistory). They prove that a fork's branch is the head of
-	// a pull request of its parent.
+	// observed is when each listed pull request's row was observed (wall
+	// Unix ms), by identity (observe).
+	observed map[string]int64
+	// prHeads are the head repositories of the listed pull requests whose
+	// head is known (the stored history's), by identity, and ownHeads the
+	// head identity of each project's origin, by project, in the same
+	// forge terms (git.PRHistory.OwnHead).
+	prHeads  map[string]string
+	ownHeads map[string]string
+	// heads are the pull requests a forge lookup by a branch's name found
+	// in a project's checkout (searchTicketForge), by the project and the
+	// branch. They prove that a fork's branch is the head of a pull
+	// request of its parent when the head is not known.
 	heads map[ticketHead][]string
+}
+
+// observe is the one rule for combining two records of a pull request:
+// row, observed at at (wall Unix ms), and the one listed. A merge is never
+// undone, since a merged pull request cannot reopen; otherwise the later
+// observation wins. The winner keeps what only the other has: the stored
+// list's CI, a title and author a linked thread's record lacks, and the
+// project the row was first listed under.
+func (r *ticketWorkRead) observe(row TicketPullRequest, at int64) {
+	if r.observed == nil {
+		r.observed = map[string]int64{}
+	}
+	id := row.Ref.Identity()
+	i := slices.IndexFunc(r.work.PullRequests, func(p TicketPullRequest) bool { return p.Ref.Identity() == id })
+	if i < 0 {
+		r.work.PullRequests = append(r.work.PullRequests, row)
+		r.observed[id] = at
+		return
+	}
+	listed := r.work.PullRequests[i]
+	newer := at >= r.observed[id]
+	if (listed.State == TicketPRMerged) != (row.State == TicketPRMerged) {
+		newer = row.State == TicketPRMerged
+	}
+	winner, other := listed, row
+	if newer {
+		winner, other = row, listed
+		r.observed[id] = at
+	}
+	winner.Title, winner.Author, winner.CI = cmp.Or(winner.Title, other.Title), cmp.Or(winner.Author, other.Author), cmp.Or(winner.CI, other.CI)
+	winner.Branch = cmp.Or(winner.Branch, other.Branch)
+	winner.ProjectID = cmp.Or(listed.ProjectID, row.ProjectID)
+	r.work.PullRequests[i] = winner
+}
+
+// ownHead records projectID's origin's head identity.
+func (r *ticketWorkRead) ownHead(projectID, head string) {
+	if r.ownHeads == nil {
+		r.ownHeads = map[string]string{}
+	}
+	r.ownHeads[projectID] = head
 }
 
 // ticketHead is a branch of a project's checkout that a head lookup ran
@@ -241,19 +286,18 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 	if err != nil {
 		return ticketWorkRead{}, err
 	}
-	read.work.PullRequests = open
+	for _, pr := range open {
+		read.observe(pr.TicketPullRequest, pr.readAt)
+	}
 	for _, pr := range recorded {
 		row, ok := recordedTicketPullRequest(pr)
-		if ok && !slices.ContainsFunc(read.work.PullRequests, func(p TicketPullRequest) bool { return p.Ref.Identity() == row.Ref.Identity() }) {
-			if at := slices.IndexFunc(linked, func(t store.Thread) bool { return t.ID == pr.ThreadID }); at >= 0 {
-				row.ProjectID = linked[at].ProjectID
-			}
-			read.work.PullRequests = append(read.work.PullRequests, row)
-			if read.recorded == nil {
-				read.recorded = map[string]bool{}
-			}
-			read.recorded[row.Ref.Identity()] = true
+		if !ok {
+			continue
 		}
+		if at := slices.IndexFunc(linked, func(t store.Thread) bool { return t.ID == pr.ThreadID }); at >= 0 {
+			row.ProjectID = linked[at].ProjectID
+		}
+		read.observe(row, max(pr.SeenOpenAt, pr.MergedAt, pr.HandledAt))
 	}
 
 	choices, err := svc.BoardChoices()
@@ -323,12 +367,13 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 // answerTicketWork is the Work answer: the pull requests listed, each
 // with the project that can show it (reviewProjects), and the branches
 // that are no listed pull request's head. A branch of project P is a pull
-// request's head when their names match and the pull request is of P's
-// origin's repository, or a lookup by the branch's name in P's checkout
-// found it, as it finds a fork's in the parent. The project a row was
-// listed under takes no part: it is where the list was read, not where
-// the head is. So before the search answers, a fork's branch stands
-// beside the parent's pull request it heads.
+// request's head when their names match and the pull request's head
+// repository is P's origin: compared by forge, host and head identity
+// when both are known (the stored history's), and otherwise inferred,
+// from the pull request being of P's origin's repository or a lookup by
+// the branch's name in P's checkout finding it, as it finds a fork's in
+// the parent. The project a row was listed under takes no part: it is
+// where the list was read, not where the head is.
 func (a *App) answerTicketWork(ctx context.Context, read *ticketWorkRead) (TicketWork, error) {
 	if err := a.reviewProjects(ctx, read); err != nil {
 		return TicketWork{}, err
@@ -339,13 +384,26 @@ func (a *App) answerTicketWork(ctx context.Context, read *ticketWorkRead) (Ticke
 			origins[o.ProjectID] = o.Repo.Identity()
 		}
 	}
+	hosts := make(map[string]gitops.RepoReference, len(read.origins))
+	for _, o := range read.origins {
+		if o.Error == "" {
+			hosts[o.ProjectID] = o.Repo
+		}
+	}
 	work := read.work
 	work.Branches = []TicketBranch{}
 	for _, b := range read.branches {
 		found := read.heads[ticketHead{b.ProjectID, b.Name}]
 		heads := slices.ContainsFunc(work.PullRequests, func(pr TicketPullRequest) bool {
-			return pr.Branch == b.Name && (origins[b.ProjectID] != "" && pr.Ref.Repository().Identity() == origins[b.ProjectID] ||
-				slices.Contains(found, pr.Ref.Identity()))
+			if pr.Branch != b.Name {
+				return false
+			}
+			head, own := read.prHeads[pr.Ref.Identity()], read.ownHeads[b.ProjectID]
+			if head != "" && own != "" {
+				origin := hosts[b.ProjectID]
+				return pr.Ref.Forge == origin.Forge && pr.Ref.Host == origin.Host && head == own
+			}
+			return origins[b.ProjectID] != "" && pr.Ref.Repository().Identity() == origins[b.ProjectID] || slices.Contains(found, pr.Ref.Identity())
 		})
 		if !heads {
 			work.Branches = append(work.Branches, b)
@@ -458,11 +516,18 @@ type storedPRList struct {
 	} `json:"rows"`
 }
 
+// storedTicketPullRequest is a row of a stored Pull requests list, with
+// the time its read landed (Unix ms).
+type storedTicketPullRequest struct {
+	TicketPullRequest
+	readAt int64
+}
+
 // storedTicketPullRequests lists the stored open pull requests whose title
 // or head branch names key. A repository's read is decoded only when its
 // bytes hold the key in any case, so a ticket's open costs one scan of the
 // stored lists and a decode of the repositories that name it.
-func (a *App) storedTicketPullRequests(key string) ([]TicketPullRequest, error) {
+func (a *App) storedTicketPullRequests(key string) ([]storedTicketPullRequest, error) {
 	records, err := a.store.ListPRListProjects()
 	if err != nil {
 		return nil, fmt.Errorf("read the stored pull requests: %w", err)
@@ -472,7 +537,7 @@ func (a *App) storedTicketPullRequests(key string) ([]TicketPullRequest, error) 
 		keys = append(keys, repoKey)
 	}
 	slices.Sort(keys)
-	var out []TicketPullRequest
+	var out []storedTicketPullRequest
 	for _, repoKey := range keys {
 		blob := records[repoKey].ProjectJSON
 		if !containsASCIIFold(blob, key) {
@@ -490,10 +555,10 @@ func (a *App) storedTicketPullRequests(key string) ([]TicketPullRequest, error) 
 			if row.Draft {
 				state = TicketPRDraft
 			}
-			out = append(out, TicketPullRequest{
+			out = append(out, storedTicketPullRequest{TicketPullRequest: TicketPullRequest{
 				Ref: row.Ref, URL: row.URL, Title: row.Title, Author: cmp.Or(row.Author.Name, row.Author.Login), State: state,
 				CI: row.CI, Branch: row.HeadRefName, ProjectID: list.ProjectID,
-			})
+			}, readAt: records[repoKey].ReadAt})
 		}
 	}
 	return out, nil

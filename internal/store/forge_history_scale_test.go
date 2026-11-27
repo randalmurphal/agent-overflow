@@ -13,7 +13,7 @@ import (
 // AO_TRACKER_SCALE names, the forge history's writer on one source:
 // storing them a read of 500 at a time (GitHub's 10 pages of 50), each
 // with 2 keys, 2 approvals and 2 comments; a steady read of one pull
-// request beside them all; a key's read; and the prune of them all once
+// request beside them all; Work's read of a key; and the prune of them all once
 // the window has passed them. Skipped without AO_TRACKER_SCALE.
 func TestForgeHistoryAtScale(t *testing.T) {
 	env := os.Getenv("AO_TRACKER_SCALE")
@@ -30,6 +30,7 @@ func TestForgeHistoryAtScale(t *testing.T) {
 			if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
 				t.Fatal(err)
 			}
+			id := sourceID(t, s, testOrigin)
 			const window = int64(1_000_000)
 			pr := func(i int64, updated int64) ForgeHistoryPR {
 				p := testPR(i, fmt.Sprintf("WEB-%d Change %d", i, i), fmt.Sprintf("web-%d", i+1), updated, fmt.Sprintf("WEB-%d", i), fmt.Sprintf("WEB-%d", i+1))
@@ -42,7 +43,7 @@ func TestForgeHistoryAtScale(t *testing.T) {
 			var slowest time.Duration
 			start := time.Now()
 			for from := int64(1); from <= int64(n); from += 500 {
-				read := ForgeHistoryRead{Source: testOrigin, ReadAt: 9_000_000, WindowStart: window, Walk: []byte(`{}`)}
+				read := ForgeHistoryRead{SourceID: id, Source: testOrigin, ReadAt: 9_000_000, WindowStart: window, Walk: []byte(`{}`)}
 				for i := from; i < from+500 && i <= int64(n); i++ {
 					read.PRs = append(read.PRs, pr(i, window+i*10))
 				}
@@ -60,9 +61,9 @@ func TestForgeHistoryAtScale(t *testing.T) {
 			t.Logf("%d pull requests: a steady read of one in %v", n, time.Since(start).Round(time.Microsecond))
 
 			start = time.Now()
-			rows, err := s.ForgeHistoryByKey(fmt.Sprintf("WEB-%d", n/3))
-			if err != nil || len(rows) != 2 {
-				t.Fatalf("by key = %d rows, %v", len(rows), err)
+			work, err := s.ForgeHistoryForWork(fmt.Sprintf("WEB-%d", n/3), []string{testOrigin.RepoKey})
+			if err != nil || len(work.Rows) != 2 {
+				t.Fatalf("by key = %d rows, %v", len(work.Rows), err)
 			}
 			t.Logf("%d pull requests: a key's read in %v", n, time.Since(start).Round(time.Microsecond))
 

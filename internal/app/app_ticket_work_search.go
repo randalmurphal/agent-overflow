@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"slices"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 )
@@ -135,12 +136,16 @@ func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead, origi
 	}
 }
 
-// addFound lists a pull request the forge found for the key, of
-// projectID, once, and reports whether it names the key. The forge's row
-// is the newest read of it: it replaces a row listed already, which keeps
-// only what the forge's row lacks, the stored list's CI and the project it
-// was listed under.
+// addFound lists a pull request the forge's search found for the key, of
+// projectID, observed now, and reports whether it names the key.
 func (r *ticketWorkRead) addFound(found gitops.PRFound, projectID string) bool {
+	return r.observeFound(found, projectID, time.Now().UnixMilli(), "")
+}
+
+// observeFound lists found, observed at at (wall Unix ms), with its head
+// repository when it is known, under projectID (observe), when it names
+// the key, and reports whether it does.
+func (r *ticketWorkRead) observeFound(found gitops.PRFound, projectID string, at int64, headRepo string) bool {
 	if !namesTicketKey(found.Title, found.HeadRefName, r.work.Key) {
 		return false
 	}
@@ -148,19 +153,13 @@ func (r *ticketWorkRead) addFound(found gitops.PRFound, projectID string) bool {
 		Ref: found.Ref, URL: found.URL, Title: found.Title, Author: cmp.Or(found.Author.Name, found.Author.Login),
 		State: ticketPRState(found.State, found.Draft), Branch: found.HeadRefName, ProjectID: projectID,
 	}
-	id := row.Ref.Identity()
-	at := slices.IndexFunc(r.work.PullRequests, func(p TicketPullRequest) bool { return p.Ref.Identity() == id })
-	if at < 0 {
-		r.work.PullRequests = append(r.work.PullRequests, row)
-		return true
+	r.observe(row, at)
+	if headRepo != "" {
+		if r.prHeads == nil {
+			r.prHeads = map[string]string{}
+		}
+		r.prHeads[row.Ref.Identity()] = headRepo
 	}
-	delete(r.recorded, id)
-	listed := r.work.PullRequests[at]
-	row.CI = listed.CI
-	if listed.ProjectID != "" {
-		row.ProjectID = listed.ProjectID
-	}
-	r.work.PullRequests[at] = row
 	return true
 }
 

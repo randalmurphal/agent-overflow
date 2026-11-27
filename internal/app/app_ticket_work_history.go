@@ -12,73 +12,72 @@ import (
 )
 
 // A ticket's Work from the stored forge pull request history
-// (app_forge_history.go): the pull requests that name its key, and for
-// each of Work's origins whether that history answers for the ticket or
-// the forge is searched by the key (SearchTicketWork).
+// (app_forge_history.go): the pull requests that name its key in the
+// repositories Work's projects clone, and in their parents with those
+// repositories as their head (store.ForgeHistoryForWork), and for each of
+// Work's origins whether that history answers for the ticket or the forge
+// is searched by the key (SearchTicketWork).
 
-// ticketHistorySources are the stored sources an origin's answer reads:
-// its own, and its parent's when it is a fork, which is the parent's
-// origin source when a project clones the parent too.
-func ticketHistorySources(origin ForgeProject, stored []store.ForgeHistorySource) (own store.ForgeHistorySource, parent *store.ForgeHistorySource, ok bool) {
-	find := func(repoKey, keepHead string) (store.ForgeHistorySource, bool) {
-		at := slices.IndexFunc(stored, func(s store.ForgeHistorySource) bool { return s.RepoKey == repoKey && s.KeepHead == keepHead })
-		if at < 0 {
-			return store.ForgeHistorySource{}, false
+// ticketHistory is what the stored history holds for a ticket's Work.
+type ticketHistory struct {
+	store.ForgeHistoryWork
+	byKey map[string]store.ForgeHistorySource
+}
+
+// readTicketHistory reads the stored history of read's ticket for its
+// origins.
+func (a *App) readTicketHistory(read *ticketWorkRead) (ticketHistory, error) {
+	var keys []string
+	for _, origin := range read.origins {
+		if origin.Error == "" && !slices.Contains(keys, origin.Repo.Identity()) {
+			keys = append(keys, origin.Repo.Identity())
 		}
-		return stored[at], true
 	}
-	own, ok = find(origin.Repo.Identity(), "")
+	work, err := a.store.ForgeHistoryForWork(read.work.Key, keys)
+	if err != nil {
+		return ticketHistory{}, err
+	}
+	h := ticketHistory{ForgeHistoryWork: work, byKey: map[string]store.ForgeHistorySource{}}
+	for _, s := range work.Sources {
+		h.byKey[s.RepoKey] = s
+	}
+	return h, nil
+}
+
+// sources are the stored sources an origin's answer reads: its own, and
+// its parent's once its own read found it a fork. needed is false when one
+// of those is not stored yet.
+func (h ticketHistory) sources(origin ForgeProject) (have []store.ForgeHistorySource, needed bool) {
+	own, ok := h.byKey[origin.Repo.Identity()]
 	if !ok {
-		return own, nil, false
+		return nil, false
 	}
-	ref, fork := forgeHistoryParent(own)
-	if !fork {
-		return own, nil, true
+	have = append(have, own)
+	if own.Parent.RepoKey == "" {
+		return have, true
 	}
-	if p, found := find(ref.RepoKey, ""); found {
-		return own, &p, true
+	parent, ok := h.byKey[own.Parent.RepoKey]
+	if !ok {
+		return have, false
 	}
-	p, found := find(ref.RepoKey, ref.KeepHead)
-	if !found {
-		return own, nil, false
-	}
-	return own, &p, true
+	return append(have, parent), true
 }
 
 // catchUpTicketHistory reads again each stored source of Work's origins
-// (ticketHistorySources) whose last read is forgeHistoryCatchUp old, at
-// most prListReadConcurrency at once, within ctx and its priority. A
-// source's forge failure is recorded on it (readForgeHistorySource); the
-// error returned is the store's. A read ctx ended stores nothing and is
-// no error: the stored history answers.
+// and their parents whose last read is forgeHistoryCatchUp old, one read
+// each, at most prListReadConcurrency at once, within ctx and its
+// priority; a read of the source already running is joined. A source's
+// forge failure is recorded on it (readForgeHistorySource); the error
+// returned is the store's. A read ctx ended stores nothing and is no
+// error: the stored history answers.
 func (a *App) catchUpTicketHistory(ctx context.Context, read *ticketWorkRead) error {
-	stored, err := a.store.ListForgeHistorySources()
+	h, err := a.readTicketHistory(read)
 	if err != nil {
 		return err
 	}
-	var refs []store.ForgeHistoryRef
-	add := func(s store.ForgeHistorySource) {
-		if !slices.ContainsFunc(refs, func(r store.ForgeHistoryRef) bool {
-			return forgeHistoryLockKey(r) == forgeHistoryLockKey(s.ForgeHistoryRef)
-		}) {
-			refs = append(refs, s.ForgeHistoryRef)
-		}
-	}
-	for _, origin := range read.origins {
-		if origin.Error != "" {
-			continue
-		}
-		own, parent, _ := ticketHistorySources(origin, stored)
-		if own.ID != 0 {
-			add(own)
-		}
-		if parent != nil {
-			add(*parent)
-		}
-	}
-	errs := make([]error, len(refs))
-	runBounded(len(refs), prListReadConcurrency, func(i int) {
-		errs[i] = a.readForgeHistorySource(ctx, refs[i], forgeHistoryCatchUp)
+	errs := make([]error, len(h.Sources))
+	runBounded(len(h.Sources), prListReadConcurrency, func(i int) {
+		errs[i] = a.readForgeHistorySource(ctx, h.Sources[i].ID, forgeHistoryStale)
 	})
 	if ctx.Err() != nil {
 		return nil
@@ -86,13 +85,15 @@ func (a *App) catchUpTicketHistory(ctx context.Context, read *ticketWorkRead) er
 	return errors.Join(errs...)
 }
 
-// addTicketHistory adds to read the stored history's pull requests that
-// name the key, each under the first of Work's projects whose origin is
-// its repository, or for a fork's parent the fork's, and folds each one's
-// head into the branch of that name of every project whose origin is its
-// head repository. It answers the origins whose history cannot answer
-// for the ticket, for the forge's search, with the origins git could not
-// read, whose search says so:
+// addTicketHistory lists in read the stored history's pull requests of
+// the ticket (store.ForgeHistoryForWork), each under the first of Work's
+// projects whose origin is its repository, or whose origin heads it in a
+// parent, at the time the forge was last asked for it
+// (ticketWorkRead.observe), with its head repository, and records each
+// origin's own head (answerTicketWork folds a branch by them). It answers
+// the origins whose history cannot answer for the ticket, for the
+// forge's search, with the origins git could not read, whose search says
+// so:
 //
 //   - an origin with no stored source, or a fork whose parent has none
 //     yet;
@@ -101,93 +102,80 @@ func (a *App) catchUpTicketHistory(ctx context.Context, read *ticketWorkRead) er
 //     back to the ticket's creation, or the ticket is older than the
 //     window.
 //
-// An origin whose source, or whose parent's, failed its last read is not
-// searched: its stored rows stand beside its failure, one ForgeProblem
-// per source.
+// An origin one of whose stored sources failed its last read is not
+// searched, whatever else is missing: its stored rows stand beside its
+// failure, one ForgeProblem per source.
 func (a *App) addTicketHistory(read *ticketWorkRead) ([]ForgeProject, error) {
-	stored, err := a.store.ListForgeHistorySources()
+	h, err := a.readTicketHistory(read)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := a.store.ForgeHistoryByKey(read.work.Key)
-	if err != nil {
-		return nil, err
-	}
-	// heads are the origins' head identities, by project.
-	heads := map[string]string{}
 	var search []ForgeProject
-	failed := map[int64]bool{}
+	reported := map[int64]bool{}
 	windowStart := forgeHistoryWindowStart(a.forgeHistoryNow()).UnixMilli()
+	// ownSource and parentSource are the project a source's rows are
+	// listed under: by source id for an origin's, and by the parent's id
+	// and the head for a parent's.
+	ownSource := map[int64]string{}
+	parentSource := map[string]string{}
 	for _, origin := range read.origins {
 		if origin.Error != "" {
 			search = append(search, origin)
 			continue
 		}
-		own, parent, ok := ticketHistorySources(origin, stored)
-		if own.OwnHead != "" {
-			heads[origin.ProjectID] = own.OwnHead
-		}
-		if !ok {
-			search = append(search, origin)
-			continue
-		}
-		sources := []store.ForgeHistorySource{own}
-		if parent != nil {
-			sources = append(sources, *parent)
-		}
-		answered, anyFailed := true, false
-		for _, s := range sources {
-			if s.Failure != "" {
-				anyFailed = true
-				if !failed[s.ID] {
-					failed[s.ID] = true
-					problem, err := ticketHistoryProblem(origin.ProjectID, s)
-					if err != nil {
-						return nil, err
-					}
-					read.work.ForgeProblems = append(read.work.ForgeProblems, problem)
+		have, needed := h.sources(origin)
+		if len(have) > 0 {
+			own := have[0]
+			if own.OwnHead != "" {
+				read.ownHead(origin.ProjectID, own.OwnHead)
+			}
+			if _, ok := ownSource[own.ID]; !ok {
+				ownSource[own.ID] = origin.ProjectID
+			}
+			if len(have) > 1 && own.OwnHead != "" {
+				key := fmt.Sprintf("%d\x00%s", have[1].ID, own.OwnHead)
+				if _, ok := parentSource[key]; !ok {
+					parentSource[key] = origin.ProjectID
 				}
 			}
-			answered = answered && s.Covers(read.created, windowStart)
 		}
-		if !answered && !anyFailed {
+		failed, covered := false, needed
+		for _, s := range have {
+			covered = covered && s.Covers(read.created, windowStart)
+			if s.Failure == "" {
+				continue
+			}
+			failed = true
+			if !reported[s.ID] {
+				reported[s.ID] = true
+				problem, err := ticketHistoryProblem(origin.ProjectID, s)
+				if err != nil {
+					return nil, err
+				}
+				read.work.ForgeProblems = append(read.work.ForgeProblems, problem)
+			}
+		}
+		if !failed && !covered {
 			search = append(search, origin)
 		}
 	}
-	for _, row := range rows {
-		ref := gitops.PRReference{Forge: row.Source.Forge, Host: row.Source.Host, Namespace: row.Source.Namespace, Repo: row.Source.Repo, Number: int(row.Number)}
-		projectID := ""
-		for _, origin := range read.origins {
-			if origin.Error != "" {
-				continue
-			}
-			if row.Source.KeepHead == "" && origin.Repo.Identity() == row.Source.RepoKey ||
-				row.Source.KeepHead != "" && heads[origin.ProjectID] == row.Source.KeepHead {
-				projectID = origin.ProjectID
-				break
-			}
+	byID := map[int64]store.ForgeHistorySource{}
+	for _, s := range h.Sources {
+		byID[s.ID] = s
+	}
+	for _, row := range h.Rows {
+		src := byID[row.SourceID]
+		projectID, ok := ownSource[row.SourceID]
+		if !ok {
+			projectID = parentSource[fmt.Sprintf("%d\x00%s", row.SourceID, row.HeadRepo)]
 		}
+		ref := gitops.PRReference{Forge: src.Forge, Host: src.Host, Namespace: src.Namespace, Repo: src.Repo, Number: int(row.Number)}
 		state := row.State
 		if state == TicketPRDraft {
 			state = TicketPROpen
 		}
-		found := gitops.PRFound{Ref: ref, URL: row.URL, Title: row.Title, State: state, Draft: row.State == TicketPRDraft,
-			Author: gitops.PRListAuthor{Login: row.Author, Name: row.AuthorName}, HeadRefName: row.HeadRef}
-		if !read.addFound(found, projectID) || row.HeadRepo == "" {
-			continue
-		}
-		for _, b := range read.branches {
-			if b.Name != row.HeadRef || heads[b.ProjectID] != row.HeadRepo {
-				continue
-			}
-			head := ticketHead{b.ProjectID, b.Name}
-			if read.heads == nil {
-				read.heads = map[ticketHead][]string{}
-			}
-			if !slices.Contains(read.heads[head], ref.Identity()) {
-				read.heads[head] = append(read.heads[head], ref.Identity())
-			}
-		}
+		read.observeFound(gitops.PRFound{Ref: ref, URL: row.URL, Title: row.Title, State: state, Draft: row.State == TicketPRDraft,
+			Author: gitops.PRListAuthor{Login: row.Author, Name: row.AuthorName}, HeadRefName: row.HeadRef}, projectID, row.SeenAt, row.HeadRepo)
 	}
 	return search, nil
 }

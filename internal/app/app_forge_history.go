@@ -1,7 +1,6 @@
 package app
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,16 +17,18 @@ import (
 
 // The forge pull request history a ticket's Work lists
 // (docs/architecture/tracker-backend.md#forge-pull-request-history): the
-// app keeps one source per repository a project of an enabled tracker
-// connection clones, and one per fork's parent for the pull requests
-// whose head is the fork, and reads each one in the linked loop's rounds
-// (trackerapp Deps.ReadForgeHistory) every forgeHistoryEvery, at most
-// forgeHistoryConcurrency at once, and in SearchTicketWork when its last
-// read is older than forgeHistoryCatchUp.
+// app keeps one source per forge repository a project of an enabled
+// tracker connection clones, and one per parent of such a repository that
+// is a fork, and reads each one in the linked loop's rounds
+// (trackerapp Deps.ReadForgeHistory): every forgeHistoryEvery, or at the
+// next round while its walk has work left, at most forgeHistoryConcurrency
+// at once, and in SearchTicketWork when its last read is older than
+// forgeHistoryCatchUp. One read is at most gitops.PRHistoryRequests
+// requests.
 
 const (
-	// forgeHistoryEvery is how long a source rests between the loop's
-	// reads of it.
+	// forgeHistoryEvery is how long a source whose walk has no work left
+	// rests between the loop's reads of it.
 	forgeHistoryEvery = 15 * time.Minute
 	// forgeHistoryCatchUp is how old a source's last read is before
 	// SearchTicketWork reads it again.
@@ -44,10 +45,11 @@ type forgeHistoryState struct {
 	// writes after one that read them after it.
 	setMu sync.Mutex
 	mu    sync.Mutex
-	// reading holds a lock per source, by forgeHistoryLockKey, held
-	// across a read and its write so two reads of one source never run
-	// at once. It keeps one entry per source this process has read.
-	reading map[string]*sync.Mutex
+	// reading holds a one-slot lock per source id, held across a read and
+	// its write so two reads of one source never run at once, and taken
+	// within the caller's context. It keeps one entry per source this
+	// process has read.
+	reading map[int64]chan struct{}
 	// now replaces the wall clock in tests.
 	now func() time.Time
 }
@@ -63,8 +65,7 @@ func (a *App) forgeHistoryNow() time.Time {
 // the tracker mirror's (trackerapp.HistoryWindow).
 func forgeHistoryWindowStart(now time.Time) time.Time { return now.Add(-trackerapp.HistoryWindow) }
 
-// forgeHistoryRef is the source of origin repo, whose every pull request
-// is kept.
+// forgeHistoryRef is the source of repo.
 func forgeHistoryRef(repo gitops.RepoReference) store.ForgeHistoryRef {
 	return store.ForgeHistoryRef{RepoKey: repo.Identity(), Forge: repo.Forge, Host: repo.Host, Namespace: repo.Namespace, Repo: repo.Repo}
 }
@@ -74,37 +75,44 @@ func forgeHistoryRepo(ref store.ForgeHistoryRef) gitops.RepoReference {
 	return gitops.RepoReference{Forge: ref.Forge, Host: ref.Host, Namespace: ref.Namespace, Repo: ref.Repo}
 }
 
-// forgeHistoryParent is the source that reads the parent of fork, a
-// stored origin source, for the pull requests whose head is fork; false
-// when the forge names no parent of it, or no read of it has landed.
-func forgeHistoryParent(fork store.ForgeHistorySource) (store.ForgeHistoryRef, bool) {
-	if fork.KeepHead != "" || fork.OwnHead == "" || fork.ParentRepo == "" {
-		return store.ForgeHistoryRef{}, false
-	}
-	parent := gitops.RepoReference{Forge: fork.Forge, Host: fork.Host, Namespace: fork.ParentNamespace, Repo: fork.ParentRepo}
-	ref := forgeHistoryRef(parent)
-	ref.KeepHead = fork.OwnHead
-	return ref, true
+// forgeHistoryDue is the round's rule for reading a source: never read,
+// its walk has work left, or its last read is forgeHistoryEvery old.
+func forgeHistoryDue(src store.ForgeHistorySource, now time.Time) bool {
+	return src.ReadAt == 0 || src.Owed || now.Sub(time.UnixMilli(src.ReadAt)) >= forgeHistoryEvery
 }
 
-func forgeHistoryLockKey(ref store.ForgeHistoryRef) string {
-	return ref.RepoKey + "\x00" + ref.KeepHead
+// forgeHistoryStale is SearchTicketWork's rule for reading a source: never
+// read, or its last read is forgeHistoryCatchUp old.
+func forgeHistoryStale(src store.ForgeHistorySource, now time.Time) bool {
+	return src.ReadAt == 0 || now.Sub(time.UnixMilli(src.ReadAt)) >= forgeHistoryCatchUp
+}
+
+// clientConnected reports whether a client is connected: the linked loop
+// and the forge history's rounds do their work only then.
+func (a *App) clientConnected() bool {
+	bus := a.eventBus.Load()
+	return bus != nil && bus.SubscriberCount() > 0
 }
 
 // readForgeHistory is the linked loop's round of the forge history
 // (trackerapp Deps.ReadForgeHistory): it makes the stored sources the
-// wanted ones (syncForgeHistorySources) and reads each one whose last
-// read is forgeHistoryEvery old, at most forgeHistoryConcurrency at once,
-// at background priority. A source's forge failure is recorded on it,
-// where Work shows it; the error returned is the rest, joined.
+// wanted ones (syncForgeHistorySources) and reads each one due
+// (forgeHistoryDue) once, at most forgeHistoryConcurrency at once, at
+// background priority, each read starting only while a client is
+// connected. A source's forge failure is recorded on it, where Work shows
+// it; the error returned is the rest, joined.
 func (a *App) readForgeHistory(ctx context.Context) error {
 	sources, unread, err := a.syncForgeHistorySources(ctx)
 	if err != nil {
 		return err
 	}
+	now := a.forgeHistoryNow()
+	sources = slices.DeleteFunc(sources, func(s store.ForgeHistorySource) bool { return !forgeHistoryDue(s, now) })
 	errs := make([]error, len(sources))
 	runBounded(len(sources), forgeHistoryConcurrency, func(i int) {
-		errs[i] = a.readForgeHistorySource(ctx, sources[i].ForgeHistoryRef, forgeHistoryEvery)
+		if a.clientConnected() {
+			errs[i] = a.readForgeHistorySource(ctx, sources[i].ID, forgeHistoryDue)
+		}
 	})
 	if ctx.Err() != nil {
 		return nil
@@ -115,11 +123,12 @@ func (a *App) readForgeHistory(ctx context.Context) error {
 // syncForgeHistorySources makes the stored sources the wanted ones and
 // answers them: the origin of every project, not archived, that lists a
 // board of an enabled Jira or Linear connection, and the parent of each
-// such origin that a landed read found to be a fork, unless the parent
-// is itself one of the origins, which keeps every pull request. When git
-// cannot read a project's origin, no stored source is removed, since that
-// origin may be one of them: the wanted ones are added, and unread says
-// which projects' origins git could not read.
+// such origin that a landed read found to be a fork. A source is one
+// repository however many projects want it, as an origin or as a parent,
+// so a change of who wants it removes nothing it holds. When git cannot
+// read a project's origin, no stored source is removed, since that origin
+// may be one of them: the wanted ones are added, and unread says which
+// projects' origins git could not read.
 func (a *App) syncForgeHistorySources(ctx context.Context) (_ []store.ForgeHistorySource, unread, _ error) {
 	a.forgeHistory.setMu.Lock()
 	defer a.forgeHistory.setMu.Unlock()
@@ -138,6 +147,11 @@ func (a *App) syncForgeHistorySources(ctx context.Context) (_ []store.ForgeHisto
 		}
 	}
 	var wanted []store.ForgeHistoryRef
+	want := func(ref store.ForgeHistoryRef) {
+		if !slices.ContainsFunc(wanted, func(r store.ForgeHistoryRef) bool { return r.RepoKey == ref.RepoKey }) {
+			wanted = append(wanted, ref)
+		}
+	}
 	var origins []error
 	for _, id := range projects {
 		project, err := a.store.GetProject(id)
@@ -151,30 +165,23 @@ func (a *App) syncForgeHistorySources(ctx context.Context) (_ []store.ForgeHisto
 		case !ok:
 		case origin.Error != "":
 			origins = append(origins, fmt.Errorf("project %s: %s", project.Name, origin.Error))
-		case !slices.ContainsFunc(wanted, func(r store.ForgeHistoryRef) bool { return r.RepoKey == origin.Repo.Identity() }):
-			wanted = append(wanted, forgeHistoryRef(origin.Repo))
+		default:
+			want(forgeHistoryRef(origin.Repo))
 		}
 	}
 	stored, err := a.store.ListForgeHistorySources()
 	if err != nil {
 		return nil, nil, err
 	}
-	read := len(wanted)
 	for _, s := range stored {
-		parent, ok := forgeHistoryParent(s)
-		if ok && slices.ContainsFunc(wanted[:read], func(r store.ForgeHistoryRef) bool { return r.RepoKey == s.RepoKey }) &&
-			!slices.ContainsFunc(wanted[:read], func(r store.ForgeHistoryRef) bool { return r.RepoKey == parent.RepoKey }) {
-			wanted = append(wanted, parent)
+		if s.Parent.RepoKey != "" && slices.ContainsFunc(wanted, func(r store.ForgeHistoryRef) bool { return r.RepoKey == s.RepoKey }) {
+			want(s.Parent)
 		}
 	}
 	if len(origins) > 0 {
 		unread = fmt.Errorf("the pull request history keeps every repository it reads, since git could not read the origin of: %w", errors.Join(origins...))
 		for _, s := range stored {
-			if !slices.ContainsFunc(wanted, func(r store.ForgeHistoryRef) bool {
-				return forgeHistoryLockKey(r) == forgeHistoryLockKey(s.ForgeHistoryRef)
-			}) {
-				wanted = append(wanted, s.ForgeHistoryRef)
-			}
+			want(s.ForgeHistoryRef)
 		}
 	}
 	changed, err := a.store.SetForgeHistorySources(wanted)
@@ -209,20 +216,25 @@ func (a *App) followForgeHistorySources(ctx context.Context) error {
 	return nil
 }
 
-// forgeHistorySource is the stored source ref; false when it is not
-// stored.
-func (a *App) forgeHistorySource(ref store.ForgeHistoryRef) (store.ForgeHistorySource, bool, error) {
-	all, err := a.store.ListForgeHistorySources()
-	if err != nil {
-		return store.ForgeHistorySource{}, false, err
+// lockForgeHistorySource takes source id's read lock within ctx and
+// answers its release.
+func (a *App) lockForgeHistorySource(ctx context.Context, id int64) (func(), error) {
+	a.forgeHistory.mu.Lock()
+	if a.forgeHistory.reading == nil {
+		a.forgeHistory.reading = map[int64]chan struct{}{}
 	}
-	at := slices.IndexFunc(all, func(s store.ForgeHistorySource) bool {
-		return forgeHistoryLockKey(s.ForgeHistoryRef) == forgeHistoryLockKey(ref)
-	})
-	if at < 0 {
-		return store.ForgeHistorySource{}, false, nil
+	lock := a.forgeHistory.reading[id]
+	if lock == nil {
+		lock = make(chan struct{}, 1)
+		a.forgeHistory.reading[id] = lock
 	}
-	return all[at], true, nil
+	a.forgeHistory.mu.Unlock()
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // forgeHistoryFailureDetail is what a source's FailureDetail holds: the
@@ -234,90 +246,75 @@ type forgeHistoryFailureDetail struct {
 	ResumeAt     string            `json:"resumeAt,omitempty"`
 }
 
-// readForgeHistorySource reads the next part of ref's history and stores
-// it, unless its last read is younger than olderThan, or another read of
-// it is running, after which it reads only if that read left it so old.
-// A read left behind the newest updates (git.PRHistory.Behind) is stored
-// and followed at once by the next, until one is not, so a repository
-// that changes faster than one read holds is never left behind for a
-// round. A read ctx ends stores nothing. A forge failure is recorded on
-// the source with what the read read before it, and logged under its
-// correlation id; the error returned is the store's, or ctx's. A source
-// removed meanwhile is no error.
-func (a *App) readForgeHistorySource(ctx context.Context, ref store.ForgeHistoryRef, olderThan time.Duration) error {
-	a.forgeHistory.mu.Lock()
-	if a.forgeHistory.reading == nil {
-		a.forgeHistory.reading = map[string]*sync.Mutex{}
-	}
-	lock := a.forgeHistory.reading[forgeHistoryLockKey(ref)]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		a.forgeHistory.reading[forgeHistoryLockKey(ref)] = lock
-	}
-	a.forgeHistory.mu.Unlock()
-	lock.Lock()
-	defer lock.Unlock()
-	if err := ctx.Err(); err != nil {
+// readForgeHistorySource reads the next part of source id's history, one
+// read of at most gitops.PRHistoryRequests requests, and stores it, when
+// due says the source is due. It waits for another read of the source
+// within ctx, and then judges due on what that read left, so a caller
+// that wanted a fresh read joins one that just landed. A read ctx ends
+// stores nothing. A forge failure is recorded on the source with what the
+// read read before it, and logged under its correlation id; the error
+// returned is the store's, or ctx's. A source removed meanwhile, or
+// before the write, is no error: the write lands only in the source the
+// read began from.
+func (a *App) readForgeHistorySource(ctx context.Context, id int64, due func(store.ForgeHistorySource, time.Time) bool) error {
+	release, err := a.lockForgeHistorySource(ctx, id)
+	if err != nil {
 		return err
 	}
-	src, ok, err := a.forgeHistorySource(ref)
+	defer release()
+	src, ok, err := a.store.GetForgeHistorySource(id)
 	if err != nil || !ok {
 		return err
 	}
 	now := a.forgeHistoryNow()
-	if src.ReadAt > 0 && now.Sub(time.UnixMilli(src.ReadAt)) < olderThan {
+	if !due(src, now) {
 		return nil
 	}
-	repo := forgeHistoryRepo(ref)
-	walk := src.Walk
-	for {
-		windowStart := forgeHistoryWindowStart(now)
-		h, readErr := a.gitCore().ReadPRHistory(ctx, repo, gitops.PRHistoryInput{Walk: walk, WindowStart: windowStart,
-			Known: func(numbers []int64) (map[int64]bool, error) { return a.store.KnownForgeHistoryPRs(ref, numbers) }})
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		read := forgeHistoryRead(ref, h)
-		read.ReadAt, read.WindowStart = now.UnixMilli(), windowStart.UnixMilli()
-		if readErr != nil {
-			fail := a.newRepoForgeFailure(repo, readErr)
-			log.Printf("forge history: read of %s failed (id: %s): %v", repo.Key(), fail.correlationID, readErr)
-			detail, err := json.Marshal(forgeHistoryFailureDetail{ErrorDetails: fail.detail, Reserve: fail.reserve, ResumeAt: fail.resumeAt})
-			if err != nil {
-				return fmt.Errorf("record the failed read of %s: %w", repo.Key(), err)
-			}
-			read.FailureKind, read.Failure, read.FailureDetail = fail.kind, fail.wire, detail
-		}
-		err = a.store.ApplyForgeHistory(read)
-		switch {
-		case errors.Is(err, store.ErrForgeHistoryGone):
-			return nil
-		case err != nil || readErr != nil || !h.Behind:
-			return err
-		}
-		walk, now = h.Walk, a.forgeHistoryNow()
+	repo := forgeHistoryRepo(src.ForgeHistoryRef)
+	windowStart := forgeHistoryWindowStart(now)
+	h, readErr := a.gitCore().ReadPRHistory(ctx, repo, gitops.PRHistoryInput{Walk: src.Walk, WindowStart: windowStart,
+		Known: func(numbers []int64) (map[int64]bool, error) { return a.store.KnownForgeHistoryPRs(id, numbers) }})
+	if err := ctx.Err(); err != nil {
+		return err
 	}
+	read := forgeHistoryRead(src, h)
+	read.ReadAt, read.WindowStart = now.UnixMilli(), windowStart.UnixMilli()
+	if readErr != nil {
+		fail := a.newRepoForgeFailure(repo, readErr)
+		log.Printf("forge history: read of %s failed (id: %s): %v", repo.Key(), fail.correlationID, readErr)
+		detail, err := json.Marshal(forgeHistoryFailureDetail{ErrorDetails: fail.detail, Reserve: fail.reserve, ResumeAt: fail.resumeAt})
+		if err != nil {
+			return fmt.Errorf("record the failed read of %s: %w", repo.Key(), err)
+		}
+		read.FailureKind, read.Failure, read.FailureDetail = fail.kind, fail.wire, detail
+	}
+	if err := a.store.ApplyForgeHistory(read); err != nil && !errors.Is(err, store.ErrForgeHistoryGone) {
+		return err
+	}
+	return nil
 }
 
-// forgeHistoryRead is h as the store applies it to ref.
-func forgeHistoryRead(ref store.ForgeHistoryRef, h gitops.PRHistory) store.ForgeHistoryRead {
-	read := store.ForgeHistoryRead{Source: ref, OwnHead: h.OwnHead, Walk: h.Walk, Reach: forgeHistoryMilli(h.Reach), Walked: h.Walked, Behind: h.Behind}
+// forgeHistoryRead is h as the store applies it to src.
+func forgeHistoryRead(src store.ForgeHistorySource, h gitops.PRHistory) store.ForgeHistoryRead {
+	read := store.ForgeHistoryRead{SourceID: src.ID, Source: src.ForgeHistoryRef, OwnHead: h.OwnHead, Walk: h.Walk,
+		Reach: forgeHistoryMilli(h.Reach), NoReach: h.NoReach, Owed: h.Owed}
 	if h.Parent != nil {
-		read.ParentNamespace, read.ParentRepo = h.Parent.Namespace, h.Parent.Repo
+		read.Parent = forgeHistoryRef(*h.Parent)
 	}
 	for _, pr := range h.PRs {
-		row := store.ForgeHistoryPR{
+		read.PRs = append(read.PRs, store.ForgeHistoryPR{
 			Number: pr.Number, URL: pr.URL, Title: pr.Title, HeadRef: pr.HeadRef, HeadRepo: pr.HeadRepo, State: pr.State,
 			Author: pr.Author.Login, AuthorName: pr.Author.Name, CreatedAt: forgeHistoryMilli(pr.Created), UpdatedAt: forgeHistoryMilli(pr.Updated),
 			MergedAt: forgeHistoryMilli(pr.Merged), ClosedAt: forgeHistoryMilli(pr.Closed),
 			Keys: trackerapp.TicketKeys(pr.Title + " " + pr.HeadRef), Acts: forgeHistoryActs(pr.Acts), ActsWhole: pr.ActsWhole,
-		}
-		read.PRs = append(read.PRs, row)
+		})
 	}
 	read.Acts = forgeHistoryActs(h.Acts)
 	return read
 }
 
+// forgeHistoryActs are acts as the store keeps them; a person the forge
+// named only by login has no name, and the store keeps one it has.
 func forgeHistoryActs(acts []gitops.PRHistoryAct) []store.ForgeHistoryAct {
 	out := make([]store.ForgeHistoryAct, 0, len(acts))
 	for _, act := range acts {
@@ -325,8 +322,7 @@ func forgeHistoryActs(acts []gitops.PRHistoryAct) []store.ForgeHistoryAct {
 		if act.Approved {
 			kind = store.ForgeActApproved
 		}
-		out = append(out, store.ForgeHistoryAct{Number: act.Number, Kind: kind, Login: act.Person.Login,
-			Name: cmp.Or(act.Person.Name, act.Person.Login), At: forgeHistoryMilli(act.At)})
+		out = append(out, store.ForgeHistoryAct{Number: act.Number, Kind: kind, Login: act.Person.Login, Name: act.Person.Name, At: forgeHistoryMilli(act.At)})
 	}
 	return out
 }

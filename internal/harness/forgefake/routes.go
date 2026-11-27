@@ -64,6 +64,7 @@ var githubAPI = []apiRoute{
 	{name: "gh api artifact zip", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/artifacts/(\d+)/zip$`), flags: []string{"hostname"}, run: ghArtifactZip},
 	{name: "gh api attachment", method: "GET", pattern: regexp.MustCompile(`^https://.+`), run: ghAttachment},
 	{name: "gh api pull reviews", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/reviews$`), flags: []string{"hostname"}, run: ghPullReview},
+	{name: "gh api review comments", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/comments(?:\?(.*))?$`), flags: []string{"hostname"}, run: ghReviewComments},
 	{name: "gh api pull comments", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/comments$`), flags: []string{"hostname"}, run: ghPullComment},
 	{name: "gh api pull comment reply", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/comments/(\d+)/replies$`), flags: []string{"hostname"}, run: ghPullCommentReply},
 	{name: "gh api issue comments", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/issues/(\d+)/comments$`), flags: []string{"hostname"}, run: ghIssueComment},

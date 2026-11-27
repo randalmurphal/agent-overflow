@@ -1,65 +1,66 @@
 package store
 
 // Migration v178 adds the pull request history of the forge repositories
-// the tracker connections' projects clone, which a ticket's Work lists
-// (ApplyForgeHistory, ForgeHistoryByKey):
+// the tracker connections' projects clone and of their forks' parents,
+// which a ticket's Work lists (ApplyForgeHistory, ForgeHistoryForWork):
 //
-//   - forge_history_sources: one row per read of a repository. keep_head
-//     is empty for a project's origin, whose every pull request is kept,
-//     and names the fork for a fork's parent, read for the pull requests
-//     whose head repository is that fork. It holds the reader's walk
-//     (walk, JSON only the reader reads), how far back every update is
-//     read (reach, the forge's Unix ms; 0 is back to the window's start;
-//     NULL until a read lands, and while the last one left a stream
-//     behind its newest updates), whether the first full read is done
-//     (walked), the repository's own head identity in the forge's terms
-//     (own_head), the parent the forge names when it is a fork, the last
-//     read's wall time (read_at) and its failure (failure_kind, the
-//     sentence a person reads as failure, the app's JSON detail of it as
+//   - forge_history_sources: one row per forge repository read. Its id is
+//     never reused (AUTOINCREMENT), so a read that began before its source
+//     was removed cannot land in one made again. It holds the reader's
+//     walk (walk, JSON only the reader reads), how far back every update
+//     is read (reach, the forge's Unix ms; 0 is back to the window's
+//     start; NULL until a read lands, and while a stream read oldest first
+//     has not reached the present), whether the walk has work left that
+//     the next round reads at once (owed), the repository's own head
+//     identity in the forge's terms (own_head), the parent the forge names
+//     when it is a fork (its repository key and path), the last read's
+//     wall time (read_at) and its failure (failure_kind, the sentence a
+//     person reads as failure, the app's JSON detail of it as
 //     failure_detail, failed_at), which a read that lands clears.
 //   - forge_history_prs: one row per pull request updated inside the
-//     window: its number, address, title, source branch and head
-//     repository, state, author and times. A parent's pull request of
-//     another head is kept with its head and times only (kept 0), so a
-//     later event naming it is known and not fetched again; no read
-//     returns it.
+//     window, whatever its head: its number, address, title, source branch
+//     and head repository, state, author and times, and the wall time the
+//     forge was last asked for it (seen_at). A read that finds a pull
+//     request unchanged does not fetch it, so its seen_at stays the time
+//     of the read that last did: Work compares it with other records' own
+//     observation times, and the source's read_at would claim an
+//     observation nobody made.
 //   - forge_history_acts: one row per pull request, kind (1 approved, 2
-//     commented) and login, with the person's name and the earliest time.
-//   - forge_history_keys: the ticket keys each kept pull request names,
-//     by its title and source branch (trackerapp.TicketKeys).
+//     commented) and login, with the person's name (empty when no read
+//     has named them) and the earliest time.
+//   - forge_history_keys: the ticket keys each pull request names, by its
+//     title and source branch (trackerapp.TicketKeys).
 //
 // Acts and keys belong to their pull request and pull requests to their
 // source (ON DELETE CASCADE). Every row is cache content: a lost one costs
 // a forge read.
 const forgeHistoryV178SQL = `
 CREATE TABLE forge_history_sources (
- id INTEGER PRIMARY KEY,
- repo_key TEXT NOT NULL CHECK(repo_key <> ''),
- keep_head TEXT NOT NULL DEFAULT '',
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ repo_key TEXT NOT NULL UNIQUE CHECK(repo_key <> ''),
  forge TEXT NOT NULL CHECK(forge IN ('github', 'gitlab')),
  host TEXT NOT NULL CHECK(host <> ''),
  namespace TEXT NOT NULL CHECK(namespace <> ''),
  repo TEXT NOT NULL CHECK(repo <> ''),
  own_head TEXT NOT NULL DEFAULT '',
+ parent_key TEXT NOT NULL DEFAULT '',
  parent_namespace TEXT NOT NULL DEFAULT '',
  parent_repo TEXT NOT NULL DEFAULT '',
  walk TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(walk)),
  reach INTEGER CHECK(reach >= 0),
- walked INTEGER NOT NULL DEFAULT 0 CHECK(walked IN (0, 1)),
+ owed INTEGER NOT NULL DEFAULT 1 CHECK(owed IN (0, 1)),
  read_at INTEGER NOT NULL DEFAULT 0 CHECK(read_at >= 0),
  failure_kind TEXT NOT NULL DEFAULT '',
  failure TEXT NOT NULL DEFAULT '',
  failure_detail TEXT NOT NULL DEFAULT '' CHECK(failure_detail = '' OR json_valid(failure_detail)),
  failed_at INTEGER NOT NULL DEFAULT 0 CHECK(failed_at >= 0),
  CHECK((failure_kind = '') = (failure = '') AND (failure = '') = (failed_at = 0) AND (failure <> '' OR failure_detail = '')),
- CHECK((parent_namespace = '') = (parent_repo = '')),
- UNIQUE(repo_key, keep_head)
+ CHECK((parent_key = '') = (parent_namespace = '') AND (parent_namespace = '') = (parent_repo = ''))
 );
 CREATE TABLE forge_history_prs (
  source_id INTEGER NOT NULL,
  number INTEGER NOT NULL CHECK(number > 0),
- kept INTEGER NOT NULL CHECK(kept IN (0, 1)),
- url TEXT NOT NULL,
+ url TEXT NOT NULL CHECK(url <> ''),
  title TEXT NOT NULL,
  head_ref TEXT NOT NULL,
  head_repo TEXT NOT NULL,
@@ -70,7 +71,7 @@ CREATE TABLE forge_history_prs (
  updated_at INTEGER NOT NULL CHECK(updated_at > 0),
  merged_at INTEGER NOT NULL CHECK(merged_at >= 0),
  closed_at INTEGER NOT NULL CHECK(closed_at >= 0),
- CHECK(kept = 1 AND url <> '' OR kept = 0 AND url = '' AND title = '' AND author = '' AND author_name = ''),
+ seen_at INTEGER NOT NULL CHECK(seen_at > 0),
  PRIMARY KEY (source_id, number),
  FOREIGN KEY (source_id) REFERENCES forge_history_sources(id) ON DELETE CASCADE
 ) WITHOUT ROWID;

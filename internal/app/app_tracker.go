@@ -136,10 +136,7 @@ func (a *App) initTrackers() error {
 		TimeEntriesChanged: a.emitTimeEntries,
 		Settled:            a.awaitFirstReadsSettled,
 		Cadence:            a.trackerCadence,
-		ClientConnected: func() bool {
-			bus := a.eventBus.Load()
-			return bus != nil && bus.SubscriberCount() > 0
-		},
+		ClientConnected:    a.clientConnected,
 		// The service logs each failure of its linked-issues loop itself.
 		LoopFailed:       func(error) {},
 		LinksChanged:     a.announceThreadLinks,

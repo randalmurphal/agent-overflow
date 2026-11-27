@@ -131,15 +131,6 @@ Other:
   ([staff reply](https://community.developer.atlassian.com/t/rest-graphql-api-for-issue-pull-requests/56965)).
   Reviewer and merge data comes from this app's forge integration, matched
   by ticket key. Remote issue links can be read and written with a token.
-  Measured: the web UI's own endpoints answer a classic token.
-  `GET /rest/dev-status/latest/issue/summary?issueId=` returns counts per
-  instance type, and
-  `.../issue/detail?issueId=&applicationType=<instance type>&dataType=pullrequest`
-  or `branch` returns pull requests (author, reviewers with approval,
-  source and destination branch, status, URL, last update) and branches
-  (last commit, repository). They are undocumented and can change without
-  notice, so the app does not read them: Work and credit read pull
-  requests and their reviews from the forge.
 
 - A forge can be searched for a ticket key. GitLab's merge request list
   takes `search` with `in=title,description`, and `source_branch`

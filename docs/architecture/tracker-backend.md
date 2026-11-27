@@ -2402,7 +2402,7 @@ delete is refused and the links the delete read are the ones it ends.
 ### Forge pull request history
 
 The app keeps the pull requests of the forge repositories the tracker
-connections' projects clone, updated inside `trackerapp.HistoryWindow`
+connections' projects clone, and of their forks' parents, updated inside `trackerapp.HistoryWindow`
 (180 days), with who approved and commented on each, so a ticket's Work
 lists its pull requests without searching the forge
 (`app/app_forge_history.go`, the reads in
@@ -2411,30 +2411,33 @@ lists its pull requests without searching the forge
 
 - **Sources** (`syncForgeHistorySources`): the origin of every project,
   not archived, that lists a board of an enabled Jira or Linear
-  connection, every pull request kept; and the parent of each such origin
-  that a landed read found to be a fork, unless a project clones the
-  parent too, keeping only the pull requests whose head repository is
-  the fork, with their acts. A parent is read by the same reader as any
-  repository. The set is made at each round and at once when a
-  connection is turned on, off or removed, so turning a connection off
-  drops what was kept for it; a board listed or a project archived takes
-  effect at the next round. While git cannot read a listed project's
-  origin, no source is removed, since that origin may be one of them,
-  and the round reports which. A fork's parent is added at the round
-  after the fork's first read lands.
+  connection, and the parent of each such origin that a landed read
+  found to be a fork. A source is one repository however many projects
+  want it, as an origin or as a parent, and it keeps every pull request
+  of it. The set is made at each round and at once when a connection is
+  turned on, off or removed, so turning a connection off drops what was
+  kept for it; a board listed or a project archived takes effect at the
+  next round. While git cannot read a listed project's origin, no source
+  is removed, since that origin may be one of them, and the round
+  reports which. A fork's parent is added at the round after the fork's
+  first read lands.
 - **Reads** (`readForgeHistory`): the linked loop calls
-  `Deps.ReadForgeHistory` after each round it runs, so only while a
-  client is connected. Each source whose last read is 15 minutes old is
-  read, at most 4 at once, at background priority; a read left behind
-  its newest updates is stored and followed at once by the next, until
-  one is not. Two reads of one source never run at once; the second
-  reads only if the first left the source as old as it asks. A read the
-  context ends stores nothing. A forge failure is stored on the source
-  with what the read read before it (`newRepoForgeFailure`'s sentence,
-  kind and detail) and logged under its correlation ID; a landed read
-  clears it. The writer is `store.ApplyForgeHistory`, one transaction a
-  read: a re-read pull request's keys are replaced, and its acts too
-  when the read holds them all.
+  `Deps.ReadForgeHistory` after each round it runs (every 5 minutes),
+  and the round reads each source that is due once, at most 4 at once,
+  at background priority, each read starting only while a client is
+  connected. A source is due when it was never read, when its walk owes
+  more (`owed`), or when its last read is 15 minutes old; one read is at
+  most `gitops.PRHistoryRequests` (30) requests, so a first full read
+  takes a read every round until it owes nothing. Two reads of one
+  source never run at once: the second waits within its own context and
+  then reads only if the first left the source due by its rule. A read
+  the context ends stores nothing. A forge failure is stored on the
+  source with what the read read before it (`newRepoForgeFailure`'s
+  sentence, kind and detail) and logged under its correlation ID; a
+  landed read clears it. The writer is `store.ApplyForgeHistory`, one
+  transaction a read, which lands only in the source the read began
+  from: a re-read pull request's row and keys are replaced, and its acts
+  too when the read holds them all.
 - **Coverage** (`store.ForgeHistorySource.Covers`, the one rule): a
   source answers for a ticket created (the tracker's clock) at or after
   the window's start and at least `ForgeHistoryClockMargin` (5 minutes,
@@ -2442,21 +2445,36 @@ lists its pull requests without searching the forge
   only once the ticket exists, and naming it moves its update time, so
   each of the ticket's was updated after the ticket's creation. Recent
   tickets are covered after the first reads; older ones as the first
-  full read reaches back to them.
-- **Work** lists a source's rows that name the key (`ForgeHistoryByKey`,
-  by `forge_history_keys`), and its branches fold into a pull request
-  whose head repository is the project's origin. `SearchTicketWork`
-  searches by the key only an origin with no source, or whose source,
-  or its parent's, does not cover the ticket; an origin whose source or
-  its parent's failed its last read is not searched, and Work shows that
-  failure (`TicketForgeProblem.History`) beside its stored rows.
+  full read reaches back to them. A GitHub source whose review comments
+  have not been read up to the present has no reach and covers no
+  ticket.
+- **Work** (`app_ticket_work_history.go`) reads the sources of Work's
+  origins and of their parents, and lists the rows that name the key
+  (`ForgeHistoryForWork`): an origin's own, and a parent's whose head
+  repository is that origin. Each pull request is listed as it was seen
+  last (`ticketWorkRead.observe`): a history row at its `seen_at`, a row
+  of the Pull requests page's stored list at that list's read time, a
+  linked thread's record at the last time the app saw it, and a merge is
+  never undone. A branch folds into a pull request of its name whose
+  head is the branch's project's origin: compared by head identity when
+  the history knows both, otherwise inferred as before. `SearchTicketWork`
+  first reads each of those sources again once its last read is a minute
+  old, then searches by the key only an origin with no source, or whose
+  source, or its parent's, does not cover the ticket; an origin whose
+  source or its parent's failed its last read is not searched, and Work
+  shows that failure (`TicketForgeProblem.History`) beside its stored
+  rows. A person seen only through a review comment is named by the same
+  login's review, comment or pull request in a read, or by the name the
+  store holds; until one names them their name is empty, and only their
+  login names them.
 - **Costs**: storing a read of 500 pull requests, each with 2 keys and 4
-  acts, took at most 23 ms into a source of 4,500 and 48 ms into one of
-  45,000; a steady read of one 0.3 ms at both sizes, a key's read 0.2
-  ms, and the prune of every row 61 ms and 888 ms
-  (`TestForgeHistoryAtScale`, `AO_TRACKER_SCALE=4500,45000`). Each
-  statement reaches the stored rows by key from its read's list
-  (`TestForgeHistoryWriterPlans`).
+  acts, took at most 21 ms into a source of 4,500 and 34 ms into one of
+  45,000; a steady read of one 0.5 ms and 0.6 ms, a key's read 0.5 ms and
+  0.3 ms, and the prune of every row 64 ms and 726 ms
+  (`TestForgeHistoryAtScale`, `AO_TRACKER_SCALE=4500,45000`, on a
+  developer's machine). Each statement reaches the stored rows by key
+  from its read's list (`TestForgeHistoryWriterPlans`). The forge
+  requests are in [forge transport](forge-transport.md#pull-request-history).
 
 ## Dashboards
 

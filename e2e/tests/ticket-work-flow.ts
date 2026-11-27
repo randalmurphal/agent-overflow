@@ -29,7 +29,9 @@
 // and GitLab, and on Refresh the forge's change; a failed search says its kind, a rate
 // limit with when to retry and Retry, and a login to fix with none; a
 // row's menu opens it on the forge, in a connected browser in that
-// browser.
+// browser. A paired computer's ticket is searched for by that computer,
+// and lists the history that computer's linked round read with no
+// search.
 
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -442,6 +444,46 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
         await expect.poll(() => pullRows(work), { timeout: 60_000 }).toEqual(['#504 draft', '#501 open', '#502 merged', '#503 closed']);
         expect(await forgeOps(remote, 'PullsByKey')).toHaveLength(1);
         expect(await forgeOps(home, 'PullsByKey')).toEqual([]);
+      } finally {
+        await remote?.close();
+        await home?.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    test('a ticket of a paired computer lists the pull request history that computer read, and nothing searches by the key', async ({ page }) => {
+      test.setTimeout(240_000);
+      const root = await mkdtemp(join(tmpdir(), 'ao-work-history-'));
+      let home: HarnessApp | undefined;
+      let remote: HarnessApp | undefined;
+      try {
+        [home, remote] = await startTogether(launchHarness(), launchHarness({ dataDir: join(root, 'state') }));
+        await pairOwnDevice(home, remote, 'Laptop');
+        await seedFakeJira(remote);
+        const seed = await remote.rpc<SeedResult>('HarnessSeed', {
+          projects: [{ name: 'work-history-remote', repo: { commits: [{ message: 'init', files: { 'README.md': '# Web\n' } }] } }],
+        });
+        const { projectId, path } = seed.projects[0];
+        await connectFakeJira(remote, projectId);
+        // Updated after WEB-1 was made, as a pull request that names it is.
+        const hourAgo = new Date(Date.now() - 3600_000).toISOString();
+        const repo = `ao-e2e/work-history-remote-${Date.now().toString(36)}`;
+        await seedForge(remote, [{ forge: 'github', project: repo, pulls: [
+          { number: 801, title: 'WEB-1 Retry the cursor read', author: 'alice', authorName: 'Alice Ng', headRef: 'retry-cursor', state: 'merged', createdAt: hourAgo },
+        ] }]);
+        harnessGit(remote, path, 'remote', 'add', 'origin', `git://github.com/${repo}.git`);
+        await home.open(page);
+        // The paired computer's linked round reads the history of its
+        // project's repository, the project listing the board.
+        const paired = remote;
+        await expect.poll(async () => (await forgeOps(paired, 'PullHistory')).length, { timeout: 60_000 }).toBeGreaterThan(0);
+        const { work } = await openWork(page, WEB1, false);
+        await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0, { timeout: 60_000 });
+        await expect.poll(() => pullRows(work), { timeout: 60_000 }).toEqual(['#801 merged']);
+        await expect(work.getByTestId('ticket-work-pull').nth(0)).toContainText('Alice Ng');
+        expect(await forgeOps(remote, 'PullsByKey')).toEqual([]);
+        expect(await forgeOps(home, 'PullsByKey')).toEqual([]);
+        expect(await forgeOps(home, 'PullHistory')).toEqual([]);
       } finally {
         await remote?.close();
         await home?.close();

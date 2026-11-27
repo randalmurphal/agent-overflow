@@ -10,20 +10,40 @@ import (
 
 var (
 	testOrigin = ForgeHistoryRef{RepoKey: "github:acme/web", Forge: "github", Host: "github.com", Namespace: "acme", Repo: "web"}
-	testParent = ForgeHistoryRef{RepoKey: "github:up/web", KeepHead: "acme/web", Forge: "github", Host: "github.com", Namespace: "up", Repo: "web"}
+	testParent = ForgeHistoryRef{RepoKey: "github:up/web", Forge: "github", Host: "github.com", Namespace: "up", Repo: "web"}
+	testOther  = ForgeHistoryRef{RepoKey: "github:other/web", Forge: "github", Host: "github.com", Namespace: "other", Repo: "web"}
 )
 
 const testWindow = int64(1_000_000)
 
 func testPR(n int64, title, branch string, updated int64, keys ...string) ForgeHistoryPR {
 	return ForgeHistoryPR{
-		Number: n, URL: "https://github.com/acme/web/pull/" + strings.Repeat("1", int(n%3)+1), Title: title, HeadRef: branch, HeadRepo: "acme/web",
+		Number: n, URL: "https://github.com/acme/web/pull/" + strings.Repeat("1", int(n%3)+1), Title: title, HeadRef: branch, HeadRepo: "R_acme",
 		State: "open", Author: "alice", AuthorName: "Alice Ng", CreatedAt: updated - 10, UpdatedAt: updated, Keys: keys,
 	}
 }
 
+// sourceID is the id of the stored source of ref.
+func sourceID(t *testing.T, s *Store, ref ForgeHistoryRef) int64 {
+	t.Helper()
+	all, err := s.ListForgeHistorySources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range all {
+		if src.RepoKey == ref.RepoKey {
+			return src.ID
+		}
+	}
+	t.Fatalf("%s is not stored", ref.RepoKey)
+	return 0
+}
+
 func applyForge(t *testing.T, s *Store, read ForgeHistoryRead) {
 	t.Helper()
+	if read.SourceID == 0 {
+		read.SourceID = sourceID(t, s, read.Source)
+	}
 	if read.ReadAt == 0 {
 		read.ReadAt = 5_000_000
 	}
@@ -35,10 +55,10 @@ func applyForge(t *testing.T, s *Store, read ForgeHistoryRead) {
 	}
 }
 
-func forgeActs(t *testing.T, s *Store, number int64) []string {
+func forgeActs(t *testing.T, s *Store, ref ForgeHistoryRef, number int64) []string {
 	t.Helper()
-	rows, err := s.db.Query(`SELECT a.kind, a.login, a.at FROM forge_history_acts a
-		JOIN forge_history_sources src ON src.id = a.source_id WHERE src.repo_key = ? AND a.number = ? ORDER BY a.kind, a.login`, testOrigin.RepoKey, number)
+	rows, err := s.db.Query(`SELECT a.kind, a.login, a.name, a.at FROM forge_history_acts a
+		JOIN forge_history_sources src ON src.id = a.source_id WHERE src.repo_key = ? AND a.number = ? ORDER BY a.kind, a.login`, ref.RepoKey, number)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,20 +66,34 @@ func forgeActs(t *testing.T, s *Store, number int64) []string {
 	var out []string
 	for rows.Next() {
 		var kind int
-		var login string
+		var login, name string
 		var at int64
-		if err := rows.Scan(&kind, &login, &at); err != nil {
+		if err := rows.Scan(&kind, &login, &name, &at); err != nil {
 			t.Fatal(err)
 		}
-		out = append(out, strings.Join([]string{[]string{"", "approved", "commented"}[kind], login, strconv.FormatInt(at, 10)}, " "))
+		out = append(out, strings.TrimSpace(strings.Join([]string{[]string{"", "approved", "commented"}[kind], login, strconv.FormatInt(at, 10), name}, " ")))
 	}
 	return out
 }
 
-func numbersOf(rows []ForgeHistoryRow) []int64 {
-	out := make([]int64, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, r.Number)
+// workRows are the numbers ForgeHistoryForWork lists for key and origins.
+func workRows(t *testing.T, s *Store, key string, origins ...ForgeHistoryRef) []string {
+	t.Helper()
+	var keys []string
+	for _, o := range origins {
+		keys = append(keys, o.RepoKey)
+	}
+	work, err := s.ForgeHistoryForWork(key, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[int64]string{}
+	for _, src := range work.Sources {
+		byID[src.ID] = src.RepoKey
+	}
+	var out []string
+	for _, r := range work.Rows {
+		out = append(out, byID[r.SourceID]+"#"+strconv.FormatInt(r.Number, 10))
 	}
 	return out
 }
@@ -76,15 +110,15 @@ func TestForgeHistoryStoresPullRequestsByKeyAndReplacesTheirActsWhole(t *testing
 		{Number: 7, Kind: ForgeActApproved, Login: "bob", Name: "Bob Li", At: 2_000_000},
 		{Number: 7, Kind: ForgeActCommented, Login: "carol", At: 1_900_000},
 	}
-	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, PRs: []ForgeHistoryPR{pr}, Walk: []byte(`{}`), Reach: 0, Walked: true, OwnHead: "acme/web"})
-	rows, err := s.ForgeHistoryByKey("web-1")
+	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, PRs: []ForgeHistoryPR{pr}, Walk: []byte(`{}`), OwnHead: "R_acme", ReadAt: 4_000_000})
+	work, err := s.ForgeHistoryForWork("web-1", []string{testOrigin.RepoKey})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := numbersOf(rows); !slices.Equal(got, []int64{7}) || rows[0].Title != "WEB-1 Retry" || rows[0].Source.RepoKey != testOrigin.RepoKey {
-		t.Fatalf("by key = %+v", rows)
+	if len(work.Rows) != 1 || work.Rows[0].Number != 7 || work.Rows[0].Title != "WEB-1 Retry" || work.Rows[0].SeenAt != 4_000_000 || len(work.Sources) != 1 {
+		t.Fatalf("by key = %+v", work)
 	}
-	if got := forgeActs(t, s, 7); !slices.Equal(got, []string{"approved bob 2000000", "commented carol 1900000"}) {
+	if got := forgeActs(t, s, testOrigin, 7); !slices.Equal(got, []string{"approved bob 2000000 Bob Li", "commented carol 1900000"}) {
 		t.Fatalf("acts = %v", got)
 	}
 
@@ -94,21 +128,21 @@ func TestForgeHistoryStoresPullRequestsByKeyAndReplacesTheirActsWhole(t *testing
 	pr.ActsWhole = true
 	pr.Acts = []ForgeHistoryAct{{Number: 7, Kind: ForgeActCommented, Login: "carol", At: 1_900_000}}
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, PRs: []ForgeHistoryPR{pr}})
-	if got := forgeActs(t, s, 7); !slices.Equal(got, []string{"commented carol 1900000"}) {
+	if got := forgeActs(t, s, testOrigin, 7); !slices.Equal(got, []string{"commented carol 1900000"}) {
 		t.Fatalf("acts after the re-read = %v", got)
 	}
-	for key, want := range map[string][]int64{"WEB-1": {}, "WEB-2": {7}} {
-		rows, err := s.ForgeHistoryByKey(key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := numbersOf(rows); !slices.Equal(got, want) {
+	for key, want := range map[string][]string{"WEB-1": nil, "WEB-2": {"github:acme/web#7"}} {
+		if got := workRows(t, s, key, testOrigin); !slices.Equal(got, want) {
 			t.Fatalf("%s lists %v, want %v", key, got, want)
 		}
 	}
 }
 
-func TestForgeHistoryEventsAddTheEarliestActToStoredPullRequestsOnly(t *testing.T) {
+// An act stream's acts add each person's earliest act to stored pull
+// requests, keep a name a read did not give, and an act whose pull
+// request neither the read nor the store holds fails the write whole:
+// the reader resolves every act's pull request before it moves past it.
+func TestForgeHistoryActsAddTheEarliestAndRefuseOneOfNoPullRequest(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
@@ -116,59 +150,82 @@ func TestForgeHistoryEventsAddTheEarliestActToStoredPullRequestsOnly(t *testing.
 	}
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, PRs: []ForgeHistoryPR{testPR(3, "WEB-1 a", "a", 2_000_000, "WEB-1")}})
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Acts: []ForgeHistoryAct{
-		{Number: 3, Kind: ForgeActApproved, Login: "bob", At: 2_500_000},
+		{Number: 3, Kind: ForgeActApproved, Login: "bob", Name: "Bob Li", At: 2_500_000},
 		{Number: 3, Kind: ForgeActApproved, Login: "bob", At: 2_400_000},
-		{Number: 99, Kind: ForgeActApproved, Login: "bob", At: 2_400_000},
 	}})
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Acts: []ForgeHistoryAct{{Number: 3, Kind: ForgeActApproved, Login: "bob", At: 2_600_000}}})
-	if got := forgeActs(t, s, 3); !slices.Equal(got, []string{"approved bob 2400000"}) {
+	if got := forgeActs(t, s, testOrigin, 3); !slices.Equal(got, []string{"approved bob 2400000 Bob Li"}) {
 		t.Fatalf("acts = %v", got)
 	}
-	if got := forgeActs(t, s, 99); len(got) != 0 {
-		t.Fatalf("an act of a pull request never stored was kept: %v", got)
+	err := s.ApplyForgeHistory(ForgeHistoryRead{SourceID: sourceID(t, s, testOrigin), Source: testOrigin, ReadAt: 6_000_000, WindowStart: testWindow,
+		Walk: []byte(`{"moved":true}`), Acts: []ForgeHistoryAct{{Number: 99, Kind: ForgeActApproved, Login: "bob", At: 2_400_000}}})
+	if err == nil || !strings.Contains(err.Error(), "pull request 99") {
+		t.Fatalf("an act of a pull request never stored = %v", err)
 	}
-	// A list re-read without ActsWhole keeps the events' acts.
+	if all, err := s.ListForgeHistorySources(); err != nil || string(all[0].Walk) != "{}" || all[0].ReadAt != 5_000_000 {
+		t.Fatalf("the refused write moved the source: %+v, %v", all, err)
+	}
+	// A list re-read without ActsWhole keeps the streams' acts.
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, PRs: []ForgeHistoryPR{testPR(3, "WEB-1 a", "a", 2_700_000, "WEB-1")}})
-	if got := forgeActs(t, s, 3); !slices.Equal(got, []string{"approved bob 2400000"}) {
+	if got := forgeActs(t, s, testOrigin, 3); !slices.Equal(got, []string{"approved bob 2400000 Bob Li"}) {
 		t.Fatalf("acts after a list re-read = %v", got)
 	}
 }
 
-func TestForgeHistoryParentKeepsOnlyTheForksPullRequests(t *testing.T) {
+// A parent is stored whole, every head's pull requests with their acts,
+// and Work's read lists of it only those whose head is one of Work's
+// origins, and none of a repository Work's origins do not name.
+func TestForgeHistoryWorkReadsItsOriginsAndTheirHeadsInAParent(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin, testParent}); err != nil {
+	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin, testParent, testOther}); err != nil {
 		t.Fatal(err)
 	}
+	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, OwnHead: "R_acme", Parent: testParent, Walk: []byte(`{}`)})
 	fork := testPR(10, "WEB-1 from the fork", "web-1-fix", 2_000_000, "WEB-1")
 	other := testPR(11, "WEB-1 from elsewhere", "web-1-other", 2_000_000, "WEB-1")
-	other.HeadRepo = "someone/web"
-	applyForge(t, s, ForgeHistoryRead{Source: testParent, PRs: []ForgeHistoryPR{fork, other}, Acts: []ForgeHistoryAct{
+	other.HeadRepo = "R_someone"
+	applyForge(t, s, ForgeHistoryRead{Source: testParent, OwnHead: "R_up", PRs: []ForgeHistoryPR{fork, other}, Acts: []ForgeHistoryAct{
 		{Number: 10, Kind: ForgeActApproved, Login: "bob", At: 2_000_000},
 		{Number: 11, Kind: ForgeActApproved, Login: "bob", At: 2_000_000},
 	}})
-	rows, err := s.ForgeHistoryByKey("WEB-1")
+	applyForge(t, s, ForgeHistoryRead{Source: testOther, OwnHead: "R_other", PRs: []ForgeHistoryPR{testPR(12, "WEB-1 another repository", "x", 2_000_000, "WEB-1")}})
+
+	if got := workRows(t, s, "WEB-1", testOrigin); !slices.Equal(got, []string{"github:up/web#10"}) {
+		t.Fatalf("the fork's Work lists %v; want the parent's pull request whose head is the fork", got)
+	}
+	if got := workRows(t, s, "WEB-1", testParent); !slices.Equal(got, []string{"github:up/web#10", "github:up/web#11"}) {
+		t.Fatalf("the parent's own Work lists %v; want both", got)
+	}
+	if got := workRows(t, s, "WEB-1", testOther); !slices.Equal(got, []string{"github:other/web#12"}) {
+		t.Fatalf("the other repository's Work lists %v", got)
+	}
+	work, err := s.ForgeHistoryForWork("WEB-1", []string{testOrigin.RepoKey})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := numbersOf(rows); !slices.Equal(got, []int64{10}) || rows[0].Source.KeepHead != "acme/web" {
-		t.Fatalf("by key = %+v", rows)
+	var keys []string
+	for _, src := range work.Sources {
+		keys = append(keys, src.RepoKey)
 	}
-	known, err := s.KnownForgeHistoryPRs(testParent, []int64{10, 11, 12})
-	if err != nil {
+	if !slices.Equal(keys, []string{"github:acme/web", "github:up/web"}) || work.Sources[0].Parent != testParent {
+		t.Fatalf("the fork's sources = %+v", work.Sources)
+	}
+	if got := forgeActs(t, s, testParent, 11); !slices.Equal(got, []string{"approved bob 2000000"}) {
+		t.Fatalf("the other head's acts = %v", got)
+	}
+
+	// The parent no longer read as a fork's parent but as an origin of its
+	// own: its id and rows stay.
+	before := sourceID(t, s, testParent)
+	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testParent}); err != nil {
 		t.Fatal(err)
 	}
-	if !known[10] || !known[11] || known[12] {
-		t.Fatalf("known = %v", known)
+	if id := sourceID(t, s, testParent); id != before {
+		t.Fatalf("the parent's source was made again: %d, was %d", id, before)
 	}
-	var kept, title string
-	var acts int
-	if err := s.db.QueryRow(`SELECT p.kept, p.title, (SELECT count(*) FROM forge_history_acts a WHERE a.source_id = p.source_id AND a.number = 11)
-		FROM forge_history_prs p WHERE p.number = 11`).Scan(&kept, &title, &acts); err != nil {
-		t.Fatal(err)
-	}
-	if kept != "0" || title != "" || acts != 0 {
-		t.Fatalf("the parent's other pull request is stored as kept %s title %q with %d acts", kept, title, acts)
+	if got := workRows(t, s, "WEB-1", testParent); len(got) != 2 {
+		t.Fatalf("after the change the parent lists %v", got)
 	}
 }
 
@@ -185,13 +242,10 @@ func TestForgeHistoryPrunesWhatLeftTheWindowAndRemovedSources(t *testing.T) {
 	}, WindowStart: 100_000})
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Acts: []ForgeHistoryAct{{Number: 2, Kind: ForgeActApproved, Login: "bob", At: 1_500_000}}, WindowStart: 100_000})
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, WindowStart: testWindow})
-	rows, err := s.ForgeHistoryByKey("WEB-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := numbersOf(rows); !slices.Equal(got, []int64{2, 3}) {
+	if got := workRows(t, s, "WEB-1", testOrigin); !slices.Equal(got, []string{"github:acme/web#2", "github:acme/web#3"}) {
 		t.Fatalf("after the prune: %v", got)
 	}
+	id := sourceID(t, s, testOrigin)
 	changed, err := s.SetForgeHistorySources(nil)
 	if err != nil || !changed {
 		t.Fatalf("remove = %v, %v", changed, err)
@@ -205,9 +259,35 @@ func TestForgeHistoryPrunesWhatLeftTheWindowAndRemovedSources(t *testing.T) {
 			t.Fatalf("%s keeps %d rows of a removed source", table, n)
 		}
 	}
-	err = s.ApplyForgeHistory(ForgeHistoryRead{Source: testOrigin, ReadAt: 1, WindowStart: 1})
+	err = s.ApplyForgeHistory(ForgeHistoryRead{SourceID: id, Source: testOrigin, ReadAt: 1, WindowStart: 1})
 	if !errors.Is(err, ErrForgeHistoryGone) {
 		t.Fatalf("a read of a removed source = %v", err)
+	}
+}
+
+// A read that began before its source was removed lands in no source
+// made again for the same repository: the new one has a new id, which
+// the write checks, so it is not marked read with the old walk.
+func TestForgeHistoryAReadOfARemovedSourceLandsInNoNewOne(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
+		t.Fatal(err)
+	}
+	old := sourceID(t, s, testOrigin)
+	if _, err := s.SetForgeHistorySources(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
+		t.Fatal(err)
+	}
+	err := s.ApplyForgeHistory(ForgeHistoryRead{SourceID: old, Source: testOrigin, Walk: []byte(`{}`), ReadAt: 2, WindowStart: 1})
+	if !errors.Is(err, ErrForgeHistoryGone) {
+		all, _ := s.ListForgeHistorySources()
+		t.Fatalf("a read begun before the source was removed = %v: %+v", err, all)
+	}
+	if src, ok, err := s.GetForgeHistorySource(sourceID(t, s, testOrigin)); err != nil || !ok || src.HasReach || src.ReadAt != 0 {
+		t.Fatalf("the new source = %+v, %v, %v", src, ok, err)
 	}
 }
 
@@ -219,20 +299,20 @@ func TestForgeHistoryRecordsTheWalkAndTheFailure(t *testing.T) {
 	}
 	source := func() ForgeHistorySource {
 		t.Helper()
-		all, err := s.ListForgeHistorySources()
-		if err != nil || len(all) != 1 {
-			t.Fatalf("sources = %v, %v", all, err)
+		src, ok, err := s.GetForgeHistorySource(sourceID(t, s, testOrigin))
+		if err != nil || !ok {
+			t.Fatalf("source = %v, %v", ok, err)
 		}
-		return all[0]
+		return src
 	}
-	if src := source(); src.HasReach || src.Covers(5_000_000, testWindow) {
-		t.Fatalf("a source never read covers: %+v", src)
+	if src := source(); src.HasReach || src.Covers(5_000_000, testWindow) || !src.Owed {
+		t.Fatalf("a source never read: %+v", src)
 	}
-	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Walk: []byte(`{"at":1}`), Reach: 3_000_000, OwnHead: "acme/web", ParentNamespace: "up", ParentRepo: "web"})
+	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Walk: []byte(`{"at":1}`), Reach: 3_000_000, Owed: true, OwnHead: "R_acme", Parent: testParent})
 	src := source()
 	margin := ForgeHistoryClockMargin.Milliseconds()
 	switch {
-	case !src.HasReach || src.Reach != 3_000_000 || src.Walked || string(src.Walk) != `{"at":1}` || src.OwnHead != "acme/web" || src.ParentRepo != "web":
+	case !src.HasReach || src.Reach != 3_000_000 || !src.Owed || string(src.Walk) != `{"at":1}` || src.OwnHead != "R_acme" || src.Parent != testParent:
 		t.Fatalf("after a first read: %+v", src)
 	case !src.Covers(3_000_000+margin, testWindow) || src.Covers(3_000_000+margin-1, testWindow):
 		t.Fatal("a source covers a ticket by its reach and the margin")
@@ -242,47 +322,70 @@ func TestForgeHistoryRecordsTheWalkAndTheFailure(t *testing.T) {
 		FailureDetail: []byte(`{"reserve":true}`), ReadAt: 6_000_000})
 	src = source()
 	if src.Reach != 3_000_000 || src.Failure != "GitHub rate limit reached" || string(src.FailureDetail) != `{"reserve":true}` ||
-		src.FailedAt != 6_000_000 || src.ReadAt != 6_000_000 {
+		src.FailedAt != 6_000_000 || src.ReadAt != 6_000_000 || !src.Owed {
 		t.Fatalf("after a failure: %+v", src)
 	}
-	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Walk: []byte(`{"at":2}`), Reach: 0, Walked: true, ReadAt: 7_000_000})
+	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Walk: []byte(`{"at":2}`), Reach: 0, ReadAt: 7_000_000})
 	src = source()
 	switch {
-	case src.Failure != "" || src.FailureDetail != nil || src.FailedAt != 0 || !src.Walked || src.Reach != 0:
+	case src.Failure != "" || src.FailureDetail != nil || src.FailedAt != 0 || src.Owed || src.Reach != 0:
 		t.Fatalf("after a full read: %+v", src)
 	case !src.Covers(testWindow, testWindow) || src.Covers(testWindow-1, testWindow):
 		t.Fatal("a full read covers every ticket created inside the window, and none before it")
 	}
-	// A read left behind its newest updates covers nothing until one is
-	// not.
-	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Walk: []byte(`{"at":3}`), Walked: true, Behind: true, ReadAt: 8_000_000})
-	if src = source(); src.HasReach || src.Covers(5_000_000, testWindow) || !src.Walked {
-		t.Fatalf("after a read left behind: %+v", src)
+	// A read whose stream read oldest first has not reached the present
+	// covers nothing until one has.
+	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Walk: []byte(`{"at":3}`), NoReach: true, Owed: true, ReadAt: 8_000_000})
+	if src = source(); src.HasReach || src.Covers(5_000_000, testWindow) {
+		t.Fatalf("after a read that has not reached the present: %+v", src)
 	}
-	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Walk: []byte(`{"at":4}`), Walked: true, ReadAt: 9_000_000})
+	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Walk: []byte(`{"at":4}`), ReadAt: 9_000_000})
 	if src = source(); !src.HasReach || !src.Covers(5_000_000, testWindow) {
-		t.Fatalf("after a read that caught up: %+v", src)
+		t.Fatalf("after a read that reached it: %+v", src)
 	}
 }
 
-// Each statement of the writer, and the reader's question of which pull
-// requests are known, reaches the stored rows by their keys from its
-// list, so a read costs its own rows however many the source holds.
+// Each statement of the writer, Work's read, and the reader's question of
+// which pull requests are known, reaches the stored rows by their keys
+// from its list or the ticket's key, so a read costs its own rows however
+// many the source holds.
 func TestForgeHistoryWriterPlans(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	for name, query := range map[string]string{
-		"pull requests": forgeHistoryPRsSQL, "clear keys": forgeHistoryClearKeysSQL, "keys": forgeHistoryKeysSQL,
-		"clear acts": forgeHistoryClearActsSQL, "acts": forgeHistoryActsSQL, "prune": forgeHistoryPruneSQL, "known": forgeHistoryKnownSQL,
+	for _, c := range []struct {
+		name, query string
+		args        []any
+		// probe is a search a plan must make by a pull request's whole key.
+		probe string
+	}{
+		{"pull requests", forgeHistoryPRsSQL, []any{1, "[]", 1}, ""},
+		{"clear keys", forgeHistoryClearKeysSQL, []any{1, "[]"}, "forge_history_keys"},
+		{"keys", forgeHistoryKeysSQL, []any{1, "[]"}, ""},
+		{"clear acts", forgeHistoryClearActsSQL, []any{1, "[]"}, "forge_history_acts"},
+		{"orphan acts", forgeHistoryOrphanActSQL, []any{1, "[]"}, "p"},
+		{"acts", forgeHistoryActsSQL, []any{1, "[]"}, ""},
+		{"prune", forgeHistoryPruneSQL, []any{1, 1}, ""},
+		{"known", forgeHistoryKnownSQL, []any{1, "[]"}, "p"},
+		{"work sources", forgeHistoryWorkSourcesSQL, []any{"[]"}, ""},
+		{"work rows", forgeHistoryWorkRowsSQL, []any{"WEB-1", "[]"}, "p"},
 	} {
-		plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+query, 1, "[]", "[]")
-		t.Logf("%s:\n%s", name, plan)
-		// A walk of the source's rows: a scan, or a search by the source
-		// alone.
+		plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+c.query, c.args...)
+		t.Logf("%s:\n%s", c.name, plan)
+		found := c.probe == ""
 		for _, line := range strings.Split(plan, "\n") {
-			if line = strings.TrimSpace(line); strings.HasPrefix(line, "SCAN forge_history") || strings.HasSuffix(line, "(source_id=?)") {
-				t.Errorf("%s walks the source's rows: %s", name, line)
+			line = strings.TrimSpace(line)
+			// A walk of a table: a scan of anything but a bound list, or a
+			// search by the source alone.
+			if strings.HasPrefix(line, "SCAN ") && !strings.Contains(line, "VIRTUAL TABLE") && !strings.HasPrefix(line, "SCAN o") ||
+				strings.HasSuffix(line, "(source_id=?)") {
+				t.Errorf("%s walks the source's rows: %s", c.name, line)
 			}
+			if strings.HasPrefix(line, "SEARCH "+c.probe+" ") && strings.Contains(line, "source_id=? AND number=?") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s does not reach %s by a pull request's key", c.name, c.probe)
 		}
 	}
 }

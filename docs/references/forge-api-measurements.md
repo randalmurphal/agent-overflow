@@ -215,9 +215,27 @@ against a live forge.
   (`approved` and `commented` are among the listed actions), by `after`
   and `before`, each a date (`YYYY-MM-DD`), and sort by `sort` (`asc` or
   `desc`). The page names no GitLab version for these parameters, and
-  says events older than 3 years are removed. Each walk reads from a
-  date a day past where it splits, so a date boundary that is exclusive
-  or inclusive drops nothing; an event read twice is skipped by its ID.
+  says events older than 3 years are removed. GitLab's source
+  (`app/finders/events_finder.rb`) orders the events by `id`, not by
+  time, and keeps those created after the end of the `after` day and
+  before the start of the `before` day, in the server's time zone, so
+  each date is exclusive; the reader pads each by 2 days. Its offset
+  pagination (`lib/gitlab/pagination/offset_pagination.rb`) counts at most
+  10,000 rows, past which it names no next page; the reader reads a band
+  of a day whole up to 100 pages and fails past them.
+- A note on a merge request is an event whose target is a `Note`, a
+  `DiffNote` (a comment on the code) or a `DiscussionNote` (a reply);
+  both are kinds of `Note`, and GitLab's event entity
+  (`lib/api/entities/event.rb`) answers an event whose target is a note
+  with its `note` (`noteable_type`, `noteable_iid`, `system`), so the
+  `commented` feed holds all three.
+- GitHub's REST documentation of the review comments of a repository
+  (`GET /repos/{owner}/{repo}/pulls/comments`) sorts by `created` or
+  `updated` with `direction`, keeps the comments updated at or after
+  `since` (an ISO 8601 time), and pages by `page` and `per_page` (at most
+  100). Each comment has `user` (with `type`, `Bot` for an app),
+  `created_at`, `updated_at` and `pull_request_url`. The reader always
+  asks for page 1 with `since` moved on.
 - GitLab's merge requests API documentation: `updated_after` and
   `updated_before` return merge requests updated on or after, and on or
   before, the given time; `order_by=updated_at` with `sort`; a filter by
