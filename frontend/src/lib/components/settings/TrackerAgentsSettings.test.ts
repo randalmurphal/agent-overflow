@@ -41,6 +41,8 @@ describe('<TrackerAgentsSettings>', () => {
     expect(read).toBeDisabled();
     expect(read.title).toBe('Always on');
     expect([checked('Read tickets'), checked('Change tickets'), checked('Ask before changing several at once')]).toEqual(['true', 'true', 'true']);
+    // Change tickets covers logging time, which waits for the person.
+    expect(document.querySelector('[data-rule="change_tickets"]')?.textContent).toContain('and log your time once you approve it.');
 
     await fireEvent.click(screen.getByRole('switch', { name: 'Change tickets' }));
     await waitFor(() => expect(checked('Change tickets')).toBe('false'));

@@ -229,7 +229,7 @@ func TestTrackerWriteTicketChangedWhileWaiting(t *testing.T) {
 				open, _ := trackerWritePrompt(t, f.a, thread.ID)
 				tc.person(t, f, conn, ids[0])
 				held := waitTickets(f)[ids[0]]
-				if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+				if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 					t.Fatal(err)
 				}
 				result := <-done
