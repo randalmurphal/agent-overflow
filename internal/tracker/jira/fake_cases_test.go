@@ -281,7 +281,11 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 		}
 	},
 	"BulkActs": func(t *testing.T, f *fakeEnv) {
-		r := got(f.c.BulkActs(f.ctx, []string{"10101", "99999"}, true)).must(t)
+		r, failed, err := f.c.BulkActs(f.ctx, []string{"10101", "99999"}, true, true)
+		check(t, err)
+		if len(failed) != 0 {
+			t.Fatalf("failed %+v", failed)
+		}
 		if len(r) != 1 || r[0].ID != "10101" || r[0].Updated.IsZero() || !r[0].Comments.Complete || len(r[0].Comments.Acts) != 1 ||
 			r[0].Comments.Acts[0].Author.AccountID != "acc-user2" || !r[0].Worklogs.Complete || len(r[0].Worklogs.Acts) != 1 ||
 			r[0].Worklogs.Acts[0].Spent != time.Hour {

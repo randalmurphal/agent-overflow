@@ -2,7 +2,9 @@ package jira
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -37,8 +39,8 @@ func TestBulkActsReadTheEmbeddedActs(t *testing.T) {
 		fields = req.Fields
 		jiratest.Reply(200, actsAnswer)(w, r, b)
 	})
-	got, err := c.BulkActs(t.Context(), []string{"10001", "10002"}, true)
-	if err != nil {
+	got, failed, err := c.BulkActs(t.Context(), []string{"10001", "10002"}, true, true)
+	if err != nil || len(failed) != 0 {
 		t.Fatal(err)
 	}
 	if strings.Join(fields, ",") != "comment,updated,worklog" {
@@ -56,8 +58,11 @@ func TestBulkActsReadTheEmbeddedActs(t *testing.T) {
 	if !wl.Complete || len(wl.Acts) != 1 || wl.Acts[0].Author.AccountID != "acc-user2" || wl.Acts[0].Spent != time.Hour || !wl.Acts[0].At.Equal(day(4, 9)) {
 		t.Errorf("worklogs %+v", wl)
 	}
-	if _, err := c.BulkActs(t.Context(), []string{"10001"}, false); err != nil || strings.Join(fields, ",") != "comment,updated" {
+	if _, _, err := c.BulkActs(t.Context(), []string{"10001"}, true, false); err != nil || strings.Join(fields, ",") != "comment,updated" {
 		t.Errorf("without worklogs: fields %v, %v", fields, err)
+	}
+	if _, _, err := c.BulkActs(t.Context(), []string{"10001"}, false, true); err != nil || strings.Join(fields, ",") != "updated,worklog" {
+		t.Errorf("without comments: fields %v, %v", fields, err)
 	}
 }
 
@@ -74,7 +79,7 @@ func TestBulkActsRefuseWhatCannotBeCounted(t *testing.T) {
 		f := jiratest.NewServer(t)
 		c := newTestClient(t, f)
 		f.On("POST", "/rest/api/3/issue/bulkfetch", jiratest.Reply(200, answer))
-		if _, err := c.BulkActs(t.Context(), []string{"10001"}, true); !isAnswerErr(err) {
+		if _, _, err := c.BulkActs(t.Context(), []string{"10001"}, true, true); !isAnswerErr(err) {
 			t.Errorf("%s: %v; want a malformed answer", name, err)
 		}
 	}
@@ -109,5 +114,41 @@ func TestActWalksReadEveryPage(t *testing.T) {
 	f.On("GET", "/rest/api/3/issue/10001/comment", jiratest.Reply(200, `{"startAt":0,"comments":[]}`))
 	if _, err := c.CommentActs(t.Context(), "10001"); !isAnswerErr(err) {
 		t.Fatalf("a page with no total: %v", err)
+	}
+}
+
+// A comment or worklog page over the transport's bound is asked again
+// with half as many, and the pages after it keep that size.
+func TestActWalksHalveAPageOverTheBound(t *testing.T) {
+	f := jiratest.NewServer(t)
+	c := newTestClient(t, f)
+	text := strings.Repeat("x", 9*1024)
+	var asked []string
+	page := func(list, item string, total int) func(http.ResponseWriter, *http.Request, []byte) {
+		return func(w http.ResponseWriter, r *http.Request, b []byte) {
+			start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+			size, _ := strconv.Atoi(r.URL.Query().Get("maxResults"))
+			asked = append(asked, r.URL.Query().Get("startAt")+"+"+r.URL.Query().Get("maxResults"))
+			var items []string
+			for i := start; i < min(start+size, total); i++ {
+				items = append(items, fmt.Sprintf(item, i, text))
+			}
+			jiratest.Reply(200, fmt.Sprintf(`{"startAt":%d,"total":%d,%q:[%s]}`, start, total, list, strings.Join(items, ",")))(w, r, b)
+		}
+	}
+	f.On("GET", "/rest/api/3/issue/10001/worklog", page("worklogs",
+		`{"id":"w%d","started":"2026-01-04T09:00:00.000+0000","timeSpentSeconds":60,"comment":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":%q}]}]}}`,
+		maxWorklogPage))
+	wl, err := c.WorklogActs(t.Context(), WorklogQuery{Issue: "10001"})
+	if err != nil || len(wl) != maxWorklogPage || fmt.Sprint(asked) != "[0+1000 0+500 500+500]" {
+		t.Fatalf("%d worklogs, %v, pages asked %v", len(wl), err, asked)
+	}
+	asked = nil
+	f.On("GET", "/rest/api/3/issue/10001/comment", page("comments",
+		`{"id":"c%d","created":"2026-01-02T10:00:00.000+0000","body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":%q}]}]}}`,
+		1000))
+	cm, err := c.CommentActs(t.Context(), "10001")
+	if err != nil || len(cm) != 1000 || fmt.Sprint(asked) != "[0+5000 0+2500 0+1250 0+625 625+625]" {
+		t.Fatalf("%d comments, %v, pages asked %v", len(cm), err, asked)
 	}
 }

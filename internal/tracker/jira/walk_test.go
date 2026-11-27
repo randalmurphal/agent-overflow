@@ -392,7 +392,7 @@ var walkCases = map[string]walkCase{
 			for i := range ids {
 				ids[i] = strconv.Itoa(10001 + i)
 			}
-			res, err := c.BulkActs(ctx, ids, false)
+			res, _, err := c.BulkActs(ctx, ids, true, false)
 			users := map[byte]int{}
 			for _, is := range res {
 				users[is.Comments.Acts[0].ID[0]]++

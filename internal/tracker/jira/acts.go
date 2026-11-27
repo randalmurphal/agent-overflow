@@ -123,10 +123,11 @@ func (c *Client) BulkActs(ctx context.Context, ids []string, comments, worklogs 
 			return nil, nil, err
 		}
 	}
-	fields := []string{"updated"}
+	var fields []string
 	if comments {
 		fields = append(fields, "comment")
 	}
+	fields = append(fields, "updated")
 	if worklogs {
 		fields = append(fields, "worklog")
 	}
