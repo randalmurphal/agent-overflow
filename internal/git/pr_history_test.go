@@ -181,6 +181,7 @@ func TestGitLabHistoryReadsTheListAndTheEvents(t *testing.T) {
 		t.Fatalf("acts = %v", acts)
 	}
 	firstSeen := maps.Clone(f.seen)
+	t.Logf("first full read of 4 merge requests and 3 events: %v", firstSeen)
 
 	pulls[3].Reviews = append(pulls[3].Reviews, forgefake.Review{Author: "user4", AuthorName: "User 4", State: "APPROVED", SubmittedAt: historyAt(0)})
 	if _, err := f.engine.Seed(fixture); err != nil {
@@ -198,6 +199,7 @@ func TestGitLabHistoryReadsTheListAndTheEvents(t *testing.T) {
 	for key, n := range f.seen {
 		steady[key] = n - firstSeen[key]
 	}
+	t.Logf("steady read: %v", steady)
 	if steady["REST merge_requests"] != 1 || steady["REST events"] != 2 {
 		t.Fatalf("steady read requests = %v", steady)
 	}
