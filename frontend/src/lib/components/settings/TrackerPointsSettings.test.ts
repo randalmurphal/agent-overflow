@@ -40,16 +40,22 @@ function setupWith(estimates: Setup['estimates'], credit: Credit = NO_CREDIT): S
   return { revision: 'r0', setup: { status_groups: [], ticket_pins: [], start_work: [], estimates, credit } } as SetupView;
 }
 
-/** The credit a save stores, as the computer stamps it while no sprint
- * has completed: a newest snapshot with no time replaces the one before
- * it and takes its time. */
+/** When the computer stamps a save's newest snapshot, Unix ms. */
+const SAVED_AT = 1_900_000_000_000;
+
+/** The credit a save stores, as the computer stamps it: a newest snapshot
+ * with no time takes effect from the save (the first from the start), and
+ * one with the values of the snapshot before it is dropped. */
 function stamped(credit: Credit | null | undefined): Credit | null | undefined {
   if (!credit) return credit;
   const out = credit.rules.slice();
   const newest = out[out.length - 1];
   if (newest.from == null) {
-    if (out.length === 1) out[0] = { ...newest, from: 0 };
-    else out.splice(out.length - 2, 2, { ...newest, from: out[out.length - 2].from });
+    const before = out[out.length - 2];
+    const same = before && before.review_share === newest.review_share && before.review_need === newest.review_need &&
+      before.hours_per_point === newest.hours_per_point && [...before.review_actions].sort().join() === [...newest.review_actions].sort().join();
+    if (same) out.pop();
+    else out[out.length - 1] = { ...newest, from: out.length === 1 ? 0 : SAVED_AT };
   }
   return { ...credit, rules: out };
 }
@@ -204,7 +210,7 @@ describe('the Credit group', () => {
 
   function answerTypes(): void {
     setBindingMock('TrackerBoardProjects', async () => [{ id: '10000', key: 'WEB', name: 'Web' }]);
-    setBindingMock('TrackerIssueTypes', async () => [{ id: '10001', name: 'Story', level: 0 }, { id: '10004', name: 'Support', level: 0 }]);
+    setBindingMock('TrackerProjectIssueTypes', async () => [{ id: '10001', name: 'Story', level: 0 }, { id: '10004', name: 'Support', level: 0 }]);
   }
 
   it('turns credit on, saying its rules, and off keeping them', async () => {
@@ -224,7 +230,7 @@ describe('the Credit group', () => {
     await waitFor(() => expect(saves).toHaveLength(2));
     await fireEvent.click(on());
     await waitFor(() => expect(saves).toHaveLength(3));
-    expect(saves[2].credit).toEqual({ on: false, rules: [rules({ hours_per_point: 6 })], support: [] });
+    expect(saves[2].credit).toEqual({ on: false, rules: [rules(), rules({ from: SAVED_AT, hours_per_point: 6 })], support: [] });
     await fireEvent.click(on());
     await waitFor(() => expect(line('tracker-credit-support-line')).toBe('1 point for every 6 hours logged on support tickets, which carry no points.'));
   });
@@ -242,7 +248,27 @@ describe('the Credit group', () => {
     await fireEvent.click(screen.getByRole('radio', { name: 'Every sprint' }));
     await change('tracker-credit-hours', 8);
     await waitFor(() => expect(saves).toHaveLength(2));
-    expect(saves[1].credit!.rules).toEqual([rules({ hours_per_point: 8 }), rules({ from: 1_800_000_000_000, review_share: 15, hours_per_point: 8 })]);
+    expect(saves[1].credit!.rules).toEqual([rules({ hours_per_point: 8 }), rules({ from: 1_800_000_000_000, hours_per_point: 8 }),
+      rules({ from: SAVED_AT, review_share: 15, hours_per_point: 8 })]);
+  });
+
+  it('sets an action as chosen in every sprint, whatever each snapshot counted', async () => {
+    answerTypes();
+    // The older rule counts comments only; the newest all three.
+    const older = rules({ review_actions: ['commented'], review_need: 1 });
+    stored = setupWith(undefined, { on: true, rules: [older, rules({ from: 1_800_000_000_000 })], support: [] });
+    render(TrackerPointsSettings);
+    await screen.findByTestId('tracker-credit-review');
+    const action = (id: string) => screen.getAllByTestId('tracker-credit-action').find((b) => b.dataset.action === id)!;
+    await fireEvent.click(screen.getByRole('radio', { name: 'Every sprint' }));
+    await fireEvent.click(action('logged_time'));
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(saves[0].credit!.rules.map((r) => r.review_actions)).toEqual([['commented'], ['commented', 'approved']]);
+    // Turned on again, it is on in both.
+    await waitFor(() => expect(action('logged_time').getAttribute('aria-pressed')).toBe('false'));
+    await fireEvent.click(action('logged_time'));
+    await waitFor(() => expect(saves).toHaveLength(2));
+    expect(saves[1].credit!.rules.map((r) => r.review_actions)).toEqual([['commented', 'logged_time'], ['commented', 'approved', 'logged_time']]);
   });
 
   it('lowers the actions needed with the actions counted, and keeps one', async () => {
@@ -267,6 +293,26 @@ describe('the Credit group', () => {
     await screen.findByTestId('tracker-credit-review');
     expect(line('tracker-credit-review-line')).toContain('10% of each finished ticket, to each reviewer');
     expect(line('tracker-credit-support-line')).toBe('1 ticket for every 4 hours logged on support tickets, which carry no estimate.');
+  });
+
+  it('words its rules in tickets for a board with no estimates, which counts tickets by default', async () => {
+    answerTypes();
+    stored = setupWith(undefined, { on: true, rules: [rules()], support: [] });
+    paces = () => [paceOf({ estimate: 'none', counts: 'none' })];
+    render(TrackerPointsSettings);
+    await screen.findByTestId('tracker-credit-review');
+    expect(line('tracker-credit-review-line')).toContain('10% of each finished ticket, to each reviewer');
+    expect(line('tracker-credit-support-line')).toBe('1 ticket for every 4 hours logged on support tickets, which carry no estimate.');
+  });
+
+  it('says which boards count tickets beside boards that count points', async () => {
+    answerTypes();
+    stored = setupWith(undefined, { on: true, rules: [rules()], support: [] });
+    paces = () => [paceOf(), paceOf({ board: '2', name: 'OPS board', estimate: 'none', counts: 'none' })];
+    render(TrackerPointsSettings);
+    await screen.findByTestId('tracker-credit-review');
+    expect(line('tracker-credit-review-line')).toContain("of a finished ticket's points");
+    expect(line('tracker-credit-support-line')).toBe('1 point for every 4 hours logged on support tickets, which carry no points. On OPS board, which counts tickets, a point is a ticket.');
   });
 
   it('says hours count as they are on a board estimated in time', async () => {
@@ -315,6 +361,45 @@ describe('the Credit group', () => {
     await screen.findByTestId('tracker-credit-share');
     await change('tracker-credit-share', 101);
     expect((await screen.findByTestId('settings-tracker-points-save-note')).textContent).toContain('the share is 0 to 100');
+    await waitFor(() => expect((screen.getByTestId('tracker-credit-share') as HTMLInputElement).value).toBe('10'));
+  });
+
+  it('says a number field takes a whole number, saves nothing, and shows what it stores', async () => {
+    answerTypes();
+    stored = setupWith(undefined, { on: true, rules: [rules()], support: [] });
+    render(TrackerPointsSettings);
+    const hours = (await screen.findByTestId('tracker-credit-hours')) as HTMLInputElement;
+    hours.value = '2.5';
+    await fireEvent.change(hours);
+    expect((await screen.findByTestId('tracker-credit-whole')).textContent).toBe('The hours of support for 1 point takes a whole number.');
+    expect(hours.value).toBe('4');
+    const share = screen.getByTestId('tracker-credit-share') as HTMLInputElement;
+    share.value = '';
+    await fireEvent.change(share);
+    await waitFor(() => expect(screen.getByTestId('tracker-credit-whole').textContent).toBe('The review share takes a whole number.'));
+    expect(share.value).toBe('10');
+    expect(saves).toHaveLength(0);
+    // A whole number saves, and the note goes.
+    await change('tracker-credit-hours', 5);
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(screen.queryByTestId('tracker-credit-whole')).toBeNull();
+  });
+
+  it('lists the types a project has though the account may create none of them, and retries a read that failed', async () => {
+    stored = setupWith(undefined, { on: true, rules: [rules()], support: [] });
+    setBindingMock('TrackerBoardProjects', async () => [{ id: '10000', key: 'WEB', name: 'Web' }]);
+    setBindingMock('TrackerIssueTypes', async () => []);
+    let reads = 0;
+    setBindingMock('TrackerProjectIssueTypes', async () => {
+      if (++reads === 1) throw new Error('the tracker answered 503');
+      return [{ id: '10004', name: 'Support', level: 0 }];
+    });
+    render(TrackerPointsSettings);
+    const failed = await screen.findByTestId('tracker-credit-types-failed');
+    expect(failed.textContent).toContain('The issue types of WEB could not be read: The tracker answered 503.');
+    await fireEvent.click(screen.getByTestId('tracker-credit-types-retry'));
+    expect((await screen.findAllByTestId('tracker-credit-type')).map((b) => b.textContent)).toEqual(['Support']);
+    expect(screen.queryByTestId('tracker-credit-types-failed')).toBeNull();
   });
 
   it('says a credit section a newer version saved, and still changes the estimates', async () => {

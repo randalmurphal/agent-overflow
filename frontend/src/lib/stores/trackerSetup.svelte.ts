@@ -510,16 +510,33 @@ export function withCreditOn(setup: Setup, on: boolean): Setup {
   return { ...setup, credit: { ...setup.credit!, on } };
 }
 
+/** One change to the credit rules, as the person chose it: a value to
+ * set, or whether a review action counts. It holds no step relative to a
+ * snapshot's own value, so every snapshot it is made in ends with the
+ * value chosen. */
+export type CreditChange =
+  | { readonly review_share: number }
+  | { readonly review_need: number }
+  | { readonly hours_per_point: number }
+  | { readonly action: string; readonly on: boolean };
+
+function withCreditChange(r: CreditRules, change: CreditChange): CreditRules {
+  if (!('action' in change)) return { ...r, ...change };
+  const actions = r.review_actions.filter((a) => a !== change.action);
+  if (change.on) actions.push(change.action);
+  // Fewer actions lower the number needed to the actions left.
+  return { ...r, review_actions: actions, review_need: Math.min(r.review_need, actions.length) };
+}
+
 /** `setup` with `change` made to its credit rules: for every sprint, in
  * each snapshot, each keeping when it took effect; else from this sprint,
- * as a new newest snapshot with no time, which the computer stamps
- * (trackerapp's stampCredit: it replaces the newest while no sprint has
- * completed since that one took effect). */
-export function withCreditRules(setup: Setup, change: (rules: CreditRules) => CreditRules, everySprint: boolean): Setup {
+ * as a new newest snapshot with no time, which the computer stamps from
+ * the save (trackerapp's stampCredit). */
+export function withCreditRules(setup: Setup, change: CreditChange, everySprint: boolean): Setup {
   const credit = setup.credit!;
   const rules = everySprint
-    ? credit.rules.map((r) => ({ ...change(r), from: r.from }))
-    : [...credit.rules, { ...change(credit.rules[credit.rules.length - 1]), from: undefined }];
+    ? credit.rules.map((r) => withCreditChange(r, change))
+    : [...credit.rules, { ...withCreditChange(credit.rules[credit.rules.length - 1], change), from: undefined }];
   return { ...setup, credit: { ...credit, rules } };
 }
 

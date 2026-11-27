@@ -9,21 +9,23 @@
   // picked for each Jira site of the project's boards by type, label and
   // board. A rule's change counts from this sprint, kept beside the rule
   // finished sprints were counted with, or for every sprint (`every`, the
-  // page's choice, not saved). Wording follows the unit the project counts
-  // its boards in. The types to pick are the boards' projects' issue
-  // types, read from the tracker as the New ticket form reads them
-  // (stores/trackerTicketWrites.svelte.ts) once credit is on.
+  // page's choice, not saved). Wording follows the unit each read board
+  // is counted in (BoardPace.counts). The types to pick are the boards'
+  // projects' issue types, every type a person who can see the project
+  // reads (stores/trackerTicketWrites.svelte.ts), read once credit is on.
   import type { BoardPace, CreditRules, SiteSupport } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import { tick } from 'svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { isLocalEnter } from '../../utils/localEnter';
   import { settingsComputerName } from '../../stores/settings.svelte';
-  import { countsTickets, creditOn, withCreditOn, withCreditRules, withSupport } from '../../stores/trackerSetup.svelte';
-  import { boardProjects, boardWriteContext, issueTypes, loadBoardProjects, loadIssueTypes } from '../../stores/trackerTicketWrites.svelte';
+  import { countsTickets, creditOn, withCreditOn, withCreditRules, withSupport, type CreditChange } from '../../stores/trackerSetup.svelte';
+  import { boardProjects, boardWriteContext, loadBoardProjects, loadProjectIssueTypes, projectIssueTypes } from '../../stores/trackerTicketWrites.svelte';
+  import { userFacingError } from '../../utils/userFacingError';
   import Segmented from '../primitives/Segmented.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import type { TrackerProjectPage } from './TrackerProjectSettings.svelte';
   import { settingsComputer } from './settingsComputer';
-  import { CHIP_BASE_CLASS, CHIP_RESTING_CLASS, CHIP_SELECTED_CLASS, INPUT_CLASS, NUMBER_CLASS } from './styles';
+  import { CHIP_BASE_CLASS, CHIP_RESTING_CLASS, CHIP_SELECTED_CLASS, GHOST_BUTTON_CLASS, INPUT_CLASS, NUMBER_CLASS } from './styles';
 
   interface Props {
     page: TrackerProjectPage;
@@ -48,34 +50,54 @@
   const on = $derived(creditOn(page.setup));
   const newest = $derived(credit ? credit.rules[credit.rules.length - 1] : null);
   const locked = $derived(page.lockReason !== '');
-  const tickets = $derived(countsTickets(page.setup));
-  // A project counting estimates whose read board is estimated in time
-  // counts that board's support hours as they are.
-  const timeBoards = $derived(!tickets && boards.some((b) => b.read && b.estimate === 'time'));
+  // The unit each board the mirror has read is counted in; before any is
+  // read, the project's own pick.
+  const readBoards = $derived(boards.filter((b) => b.read));
+  const tickets = $derived(readBoards.length > 0 ? readBoards.every((b) => b.counts === 'none') : countsTickets(page.setup));
+  // The boards that count tickets beside others that count points.
+  const ticketBoards = $derived(tickets ? [] : readBoards.filter((b) => b.counts === 'none'));
+  // A board estimated in time counts its support hours as they are.
+  const timeBoards = $derived(readBoards.some((b) => b.counts === 'time'));
 
   let every = $state<'from' | 'every'>('from');
 
-  function rule(change: (r: CreditRules) => CreditRules): void {
-    void page.save((held) => withCreditRules(held, change, every === 'every'));
+  function rule(change: CreditChange): Promise<boolean> {
+    return page.save((held) => withCreditRules(held, change, every === 'every'));
+  }
+
+  function boardNames(list: readonly BoardPace[]): string {
+    const names = list.map((b) => b.name || `Board ${b.board}`);
+    return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
   }
 
   function actionsText(r: CreditRules): string {
     return ACTIONS.filter((a) => r.review_actions.includes(a.id)).map((a) => a.name.toLowerCase()).join(', ');
   }
 
-  /** Turns review action `id` on or off, lowering the number needed to
-   * the actions left. */
+  /** Turns review action `id` on when the newest rule leaves it out, else
+   * off: in every snapshot it is made in, the action ends as chosen. */
   function toggleAction(id: string): void {
-    rule((x) => {
-      const actions = x.review_actions.includes(id) ? x.review_actions.filter((a) => a !== id) : [...x.review_actions, id];
-      return { ...x, review_actions: actions, review_need: Math.min(x.review_need, actions.length) };
-    });
+    void rule({ action: id, on: !newest!.review_actions.includes(id) });
   }
 
-  /** A number input's value, or null when it is not a whole number. */
-  function wholeOf(input: HTMLInputElement): number | null {
+  type NumberField = 'review_share' | 'review_need' | 'hours_per_point';
+  /** The number field whose last value was not a whole number, and what
+   * it says, until the next value of a number field. */
+  let wholeNote = $state<{ field: NumberField; text: string } | null>(null);
+
+  /** Saves a number field's value; the field then shows what is stored,
+   * since neither a value that is not a whole number nor a refused or
+   * failed save moves the value the field is given. */
+  async function setNumber(input: HTMLInputElement, field: NumberField, name: string): Promise<void> {
     const n = input.valueAsNumber;
-    return Number.isInteger(n) ? n : null;
+    if (Number.isInteger(n)) {
+      wholeNote = null;
+      await rule({ [field]: n } as CreditChange);
+      await tick();
+    } else {
+      wholeNote = { field, text: `${name} takes a whole number.` };
+    }
+    if (newest && input.isConnected) input.value = String(newest[field]);
   }
 
   // Each Jira site of the project's boards, with its boards, in the
@@ -112,35 +134,44 @@
     if (!on) return;
     for (const b of boards) {
       for (const p of boardProjects(boardWriteContext({ backend, connection: b.connection, board: b.board }))?.value ?? []) {
-        void loadIssueTypes(backend, b.connection, p.id);
+        void loadProjectIssueTypes(backend, b.connection, p.id);
       }
     }
   });
 
+  /** A read of the types that failed: what it was of, why, and its
+   * retry. */
+  interface TypesFailure {
+    readonly key: string;
+    readonly text: string;
+    readonly retry: () => void;
+  }
+
   /** The types of a site's boards' projects, by ID, in the order read;
-   * and whether every read answered. */
-  function typesOf(site: { boards: BoardPace[] }): { types: { id: string; name: string }[]; reading: boolean; failed: boolean } {
+   * whether a read is out; and each read that failed. */
+  function typesOf(site: { boards: BoardPace[] }): { types: { id: string; name: string }[]; reading: boolean; failed: TypesFailure[] } {
     const types = new Map<string, string>();
     let reading = false;
-    let failed = false;
+    const failed: TypesFailure[] = [];
     for (const b of site.boards) {
-      const projects = boardProjects(boardWriteContext({ backend, connection: b.connection, board: b.board }));
-      if (!projects?.value) {
-        reading ||= !projects || projects.loading;
-        failed ||= !!projects?.error;
-        continue;
+      const context = boardWriteContext({ backend, connection: b.connection, board: b.board });
+      const projects = boardProjects(context);
+      if (!projects?.value) reading ||= !projects || projects.loading;
+      if (projects?.error) {
+        failed.push({ key: `board ${b.connection}/${b.board}`, text: `The projects of ${boardNames([b])} could not be read: ${userFacingError(projects.error)}`,
+          retry: () => void loadBoardProjects(context) });
       }
-      for (const p of projects.value) {
-        const read = issueTypes(backend, b.connection, p.id);
-        if (!read?.value) {
-          reading ||= !read || read.loading;
-          failed ||= !!read?.error;
-          continue;
+      for (const p of projects?.value ?? []) {
+        const read = projectIssueTypes(backend, b.connection, p.id);
+        if (!read?.value) reading ||= !read || read.loading;
+        if (read?.error) {
+          failed.push({ key: `project ${b.connection}/${p.id}`, text: `The issue types of ${p.key || p.name || `project ${p.id}`} could not be read: ${userFacingError(read.error)}`,
+            retry: () => void loadProjectIssueTypes(backend, b.connection, p.id) });
         }
-        for (const t of read.value) if (!types.has(t.id)) types.set(t.id, t.name || `Type ${t.id}`);
+        for (const t of read?.value ?? []) if (!types.has(t.id)) types.set(t.id, t.name || `Type ${t.id}`);
       }
     }
-    return { types: [...types].map(([id, name]) => ({ id, name })), reading, failed };
+    return { types: [...types].map(([id, name]) => ({ id, name })), reading, failed: failed.filter((f, i) => failed.findIndex((g) => g.key === f.key) === i) };
   }
 
   let labelDraft = $state<Record<string, string>>({});
@@ -188,7 +219,7 @@
               step="5"
               value={r.review_share}
               disabled={locked}
-              onchange={(e) => { const n = wholeOf(e.currentTarget); if (n !== null) rule((x) => ({ ...x, review_share: n })); }}
+              onchange={(e) => void setNumber(e.currentTarget, 'review_share', 'The review share')}
               data-testid="tracker-credit-share"
             />
             <span>% to each reviewer who did at least</span>
@@ -201,7 +232,7 @@
               step="1"
               value={r.review_need}
               disabled={locked}
-              onchange={(e) => { const n = wholeOf(e.currentTarget); if (n !== null) rule((x) => ({ ...x, review_need: n })); }}
+              onchange={(e) => void setNumber(e.currentTarget, 'review_need', 'The kinds of review action needed')}
               data-testid="tracker-credit-need"
             />
             <span>of</span>
@@ -220,11 +251,14 @@
               >{a.name}</button>
             {/each}
           </div>
+          {#if wholeNote && wholeNote.field !== 'hours_per_point'}
+            <p class="text-[0.71875rem] text-error" role="alert" data-testid="tracker-credit-whole">{wholeNote.text}</p>
+          {/if}
         </li>
         <li class="flex min-w-0 flex-col gap-1.5" data-testid="tracker-credit-support">
           <span class="text-[0.8125rem] text-fg">Support credit</span>
           <span class="text-[0.71875rem] text-fg-hint" data-testid="tracker-credit-support-line">
-            1 {unit} for every {r.hours_per_point} hours logged on support tickets, which carry no {tickets ? 'estimate' : 'points'}.{#if timeBoards} On a board estimated in time, the hours count as they are.{/if}
+            1 {unit} for every {r.hours_per_point} hours logged on support tickets, which carry no {tickets ? 'estimate' : 'points'}.{#if timeBoards}{' '}On a board estimated in time, the hours count as they are.{/if}{#if ticketBoards.length > 0}{' '}On {boardNames(ticketBoards)}, which {ticketBoards.length === 1 ? 'counts' : 'count'} tickets, a point is a ticket.{/if}
           </span>
           <div class="flex flex-wrap items-center gap-2 text-[0.75rem] text-fg-muted">
             <span>1 {unit} for every</span>
@@ -237,11 +271,14 @@
               step="1"
               value={r.hours_per_point}
               disabled={locked}
-              onchange={(e) => { const n = wholeOf(e.currentTarget); if (n !== null) rule((x) => ({ ...x, hours_per_point: n })); }}
+              onchange={(e) => void setNumber(e.currentTarget, 'hours_per_point', `The hours of support for 1 ${unit}`)}
               data-testid="tracker-credit-hours"
             />
             <span>hours</span>
           </div>
+          {#if wholeNote?.field === 'hours_per_point'}
+            <p class="text-[0.71875rem] text-error" role="alert" data-testid="tracker-credit-whole">{wholeNote.text}</p>
+          {/if}
         </li>
         <li class="flex min-w-0 flex-col gap-1.5" data-testid="tracker-credit-counts-from">
           <div class="flex flex-wrap items-center gap-2">
@@ -284,9 +321,13 @@
                 {/each}
                 {#if read.reading}
                   <span class="text-[0.71875rem] text-fg-hint">Reading the types…</span>
-                {:else if read.failed}
-                  <span class="text-[0.71875rem] text-error" data-testid="tracker-credit-types-failed">The issue types could not all be read.</span>
                 {/if}
+                {#each read.failed as f (f.key)}
+                  <span class="flex flex-wrap items-center gap-1.5 text-[0.71875rem] text-error" data-testid="tracker-credit-types-failed">
+                    {f.text}
+                    <button type="button" class={GHOST_BUTTON_CLASS} onclick={f.retry} data-testid="tracker-credit-types-retry">Try again</button>
+                  </span>
+                {/each}
               </div>
               <div class="flex flex-wrap items-center gap-1.5" data-testid="tracker-credit-labels">
                 <span class="w-14 text-[0.75rem] text-fg-muted">Labels</span>

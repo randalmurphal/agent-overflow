@@ -7339,6 +7339,16 @@ export function TrackerPokerSupport(connectionID: string): $CancellablePromise<t
 }
 
 /**
+ * TrackerProjectIssueTypes lists the issue types a project has, which a
+ * user who can see it reads whatever it may create.
+ */
+export function TrackerProjectIssueTypes(connectionID: string, project: string): $CancellablePromise<trackerapp$0.IssueTypeView[]> {
+    return $Call.ByID(2496760576, connectionID, project).then(($result: any) => {
+        return $$createType297($result);
+    });
+}
+
+/**
  * TrackerProjects lists the tracker projects (Linear teams) the
  * connection's user can see, for choosing a project's boards. It asks
  * the tracker, a page at a time, and the whole walk ends at the method's

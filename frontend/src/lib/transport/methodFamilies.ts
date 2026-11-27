@@ -107,6 +107,7 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   3193179933: 'trackerConnection', // SubscribeTrackerTicket
   118334031: 'trackerConnection', // MintTrackerAttachmentUploadTicket
   2749961211: 'trackerConnection', // TrackerIssueTypes
+  2496760576: 'trackerConnection', // TrackerProjectIssueTypes
   2859662243: 'trackerConnection', // TrackerBoardProjects
   440800234: 'trackerConnection', // TrackerCreateFields
   3632796459: 'trackerConnection', // TrackerMoves

@@ -1201,6 +1201,7 @@ export const MintTrackerAttachmentUploadTicket = dispatch('MintTrackerAttachment
 export const MintTrackerAttachmentDownloadTicket = dispatch('MintTrackerAttachmentDownloadTicket');
 export const TrackerBoardProjects = dispatch('TrackerBoardProjects');
 export const TrackerIssueTypes = dispatch('TrackerIssueTypes');
+export const TrackerProjectIssueTypes = dispatch('TrackerProjectIssueTypes');
 export const TrackerCreateFields = dispatch('TrackerCreateFields');
 export const TrackerMoves = dispatch('TrackerMoves');
 export const TrackerAssignableUsers = dispatch('TrackerAssignableUsers');

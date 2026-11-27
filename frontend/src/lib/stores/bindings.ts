@@ -669,6 +669,9 @@ export {
   TrackerBoardProjects,
   TrackerIssueTypes,
   TrackerCreateFields,
+  // The types a project has, which the Credit group picks support
+  // types from (stores/trackerTicketWrites.svelte.ts).
+  TrackerProjectIssueTypes,
   CreateTrackerSprint,
   EditTrackerSprint,
   StartTrackerSprint,

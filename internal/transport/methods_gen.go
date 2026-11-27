@@ -625,6 +625,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "TrackerMoves", ID: 3632796459, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerMoves
 	{Name: "TrackerPoker", ID: 3990595752, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerPoker
 	{Name: "TrackerPokerSupport", ID: 4253452655, Scope: "tracker:read", Route: "home"},                                                      // main.App.TrackerPokerSupport
+	{Name: "TrackerProjectIssueTypes", ID: 2496760576, Scope: "tracker:read", Route: "home"},                                                 // main.App.TrackerProjectIssueTypes
 	{Name: "TrackerProjects", ID: 2816087609, Scope: "tracker:read", Route: "home"},                                                          // main.App.TrackerProjects
 	{Name: "TrackerSearch", ID: 1584024747, Scope: "tracker:read", Route: "home"},                                                            // main.App.TrackerSearch
 	{Name: "TrackerSectionRows", ID: 4150293291, Scope: "tracker:read", Route: "home"},                                                       // main.App.TrackerSectionRows
