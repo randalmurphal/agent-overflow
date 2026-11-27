@@ -24,13 +24,11 @@ func worklogBoard(read ...string) *fixture {
 	return f
 }
 
-// days is the working days from first to last, as YYYY-MM-DD.
-func workingDaysOf(first, last string) []string {
+// daysOf is the days from first to last, as YYYY-MM-DD.
+func daysOf(first, last string) []string {
 	var out []string
 	for d := mustDay(first); !d.After(mustDay(last)); d = d.AddDate(0, 0, 1) {
-		if wd := d.Weekday(); wd != 0 && wd != 6 {
-			out = append(out, d.Format("2006-01-02"))
-		}
+		out = append(out, d.Format("2006-01-02"))
 	}
 	return out
 }
@@ -62,18 +60,17 @@ func trendOf(w WidgetValue) []string {
 }
 
 // A number, a period and a bar of the viewer's logged time count only
-// where every working day of them was read: today unread, the range's
-// number and its week are not known, one day not read, the week before
-// counts, and the page is told which days to read; once today is read,
-// they count. The range before, none of it read, is not known by its 10
-// working days.
+// where every day of them was read: today unread, the range's number and
+// its week are not known, one day not read, the week before counts, and
+// the page is told which days to read; once today is read, they count.
+// The range before, none of it read, is not known by its 14 days.
 func TestLoggedTimeCountsOnlyWhereItsDaysWereRead(t *testing.T) {
 	t.Parallel()
-	read := append(workingDaysOf("2026-11-16", "2026-11-20"), "2026-11-23", "2026-11-24")
+	read := daysOf("2026-11-16", "2026-11-24")
 	r := Request{Dashboard: "mine", Range: RangeWeeks2, TimeZone: "UTC"}
 	a := mustEvaluate(t, evaluator(), loggedTime(worklogBoard(read...)), r)
 	n := widgetOf(t, a, "n")
-	if num(n.Value) != "not known, 1 days not read" || num(n.Previous) != "not known, 10 days not read" ||
+	if num(n.Value) != "not known, 1 days not read" || num(n.Previous) != "not known, 14 days not read" ||
 		!reflect.DeepEqual(trendOf(n), []string{"3600", "not known, 1 days not read"}) || !reflect.DeepEqual(n.Unread, []string{"2026-11-25"}) {
 		t.Fatalf("number = %s, before %s, trend %v, unread %v", num(n.Value), num(n.Previous), trendOf(n), n.Unread)
 	}
@@ -104,12 +101,32 @@ func TestLoggedTimeCountsOnlyWhereItsDaysWereRead(t *testing.T) {
 	}
 }
 
+// A day of a weekend is read like any other: time logged on Saturday 21
+// November, its weekend not read, leaves that week not known by two days,
+// and the page is told to read them.
+func TestALoggedWeekendDayCountsOnlyOnceRead(t *testing.T) {
+	t.Parallel()
+	weekdays := append(daysOf("2026-11-16", "2026-11-20"), daysOf("2026-11-23", "2026-11-25")...)
+	f := worklogBoard(weekdays...)
+	f.exec(`INSERT INTO worklogs VALUES ('w3', 'T1', '2026-11-21', 600)`)
+	r := Request{Dashboard: "mine", Range: RangeWeeks2, TimeZone: "UTC"}
+	n := widgetOf(t, mustEvaluate(t, evaluator(), loggedTime(f), r), "n")
+	if !reflect.DeepEqual(trendOf(n), []string{"not known, 2 days not read", "1800"}) || !reflect.DeepEqual(n.Unread, []string{"2026-11-21", "2026-11-22"}) {
+		t.Fatalf("trend %v, unread %v", trendOf(n), n.Unread)
+	}
+	f = worklogBoard(daysOf("2026-11-16", "2026-11-25")...)
+	f.exec(`INSERT INTO worklogs VALUES ('w3', 'T1', '2026-11-21', 600)`)
+	if n := widgetOf(t, mustEvaluate(t, evaluator(), loggedTime(f), r), "n"); !reflect.DeepEqual(trendOf(n), []string{"4200", "1800"}) {
+		t.Fatalf("all read: trend %v", trendOf(n))
+	}
+}
+
 // A worklog's day is placed on its date in the request's zone: Monday 23
 // November counts in the week that begins that Monday in Auckland as in
 // Los Angeles, though the two Mondays begin 21 hours apart.
 func TestALoggedDayCountsOnItsDateInTheRequestsZone(t *testing.T) {
 	t.Parallel()
-	read := workingDaysOf("2026-11-02", "2026-11-27")
+	read := daysOf("2026-11-02", "2026-11-27")
 	for _, zone := range []string{"Pacific/Auckland", "America/Los_Angeles"} {
 		a := mustEvaluate(t, evaluator(), loggedTime(worklogBoard(read...)), Request{Dashboard: "mine", Range: RangeWeeks2, TimeZone: zone})
 		var bars []string
@@ -128,7 +145,7 @@ func TestALoggedDayCountsOnItsDateInTheRequestsZone(t *testing.T) {
 // widget's place and refuse its drill.
 func TestLoggedTimeIsTheViewersOwn(t *testing.T) {
 	t.Parallel()
-	read := workingDaysOf("2026-11-02", "2026-11-27")
+	read := daysOf("2026-11-02", "2026-11-27")
 	r := Request{Dashboard: "mine", Range: RangeWeeks2, TimeZone: "UTC"}
 	mine := r
 	mine.Mine = true

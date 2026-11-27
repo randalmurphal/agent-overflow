@@ -10,12 +10,12 @@ import (
 // worklogs of the days the mirror read and says which days those are;
 // a day not read is not zero hours. What must hold:
 //   - A metric that reads worklogs counts only where its days were read:
-//     each of its periods, and its number over the range, with a working
-//     day (Monday to Friday in the request's zone) not read is not known,
-//     saying how many days were not read (Num.UR), and its widget lists
-//     the range's days not read (WidgetValue.Unread) for the page to read
-//     (frontend trackerDashboard). A day is in the period that holds its
-//     dayStart, the instant day_start places a row of it at.
+//     each of its periods, and its number over the range, with a day not
+//     read is not known, saying how many days were not read (Num.UR), and
+//     its widget lists the range's days not read (WidgetValue.Unread) for
+//     the page to read (frontend trackerDashboard). A day is in the period
+//     that holds its dayStart, the instant day_start places a row of it
+//     at. A weekend's day counts like any other.
 //   - Its rows are the viewer's: a row's person is the viewer unless the
 //     metric names one, so Mine keeps them all, and a page narrowed to
 //     another person says only the viewer's time is read rather than 0.
@@ -47,8 +47,9 @@ func (o *opened) worklogNote(p prepared) string {
 	return ""
 }
 
-// unread is the working days whose dayStart is after from and at or
-// before to and now that the copy holds no read of, in order.
+// unread is the days whose dayStart is after from and at or before to
+// and now that the copy holds no read of, in order. A weekend's day is one
+// like any other: time can be logged on it.
 func (ev *evaluation) unread(from, to, now int64) []string {
 	to = min(to, now)
 	var out []string
@@ -59,7 +60,7 @@ func (ev *evaluation) unread(from, to, now int64) []string {
 			return out
 		}
 		day := d.Format(time.DateOnly)
-		if at > from && d.Weekday() != time.Saturday && d.Weekday() != time.Sunday && !ev.readDays[day] {
+		if at > from && !ev.readDays[day] {
 			out = append(out, day)
 		}
 	}
