@@ -381,16 +381,25 @@ func (s *Service) ThreadTimeEntries(thread string) ([]TimeEntryView, error) {
 	return timeEntryViews(es), nil
 }
 
-// openTimeSpan is the most days one OpenTimeEntries read covers.
-const openTimeSpan = 31
+// openTimeDays is the most days one OpenTimeEntries read names.
+const openTimeDays = 31
 
 // OpenTimeEntries are the entries not yet logged (drafted, sent or
 // unknown, questions included) of Jira connection id's verified account
-// whose day is from to to, both YYYY-MM-DD and included, at most
-// openTimeSpan days, by day and ID, as the store holds them, with no
-// tracker call. A connection that is off, has no time tracking or no
-// verified account is refused as a post refuses it (timeAuthor).
-func (s *Service) OpenTimeEntries(id, from, to string) ([]TimeEntryView, error) {
+// on days, each YYYY-MM-DD, at most openTimeDays of them, by day and ID,
+// as the store holds them, with no tracker call: at most
+// store.OpenTimeEntriesShown, one more than a post takes. A connection
+// that is off, has no time tracking or no verified account is refused as
+// a post refuses it (timeAuthor).
+func (s *Service) OpenTimeEntries(id string, days []string) ([]TimeEntryView, error) {
+	if len(days) == 0 || len(days) > openTimeDays {
+		return nil, fmt.Errorf("%w: entries are read for 1 to %d days at a time", ErrInvalidRequest, openTimeDays)
+	}
+	for _, d := range days {
+		if _, err := parseDay(d); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.enterTime(); err != nil {
 		return nil, err
 	}
@@ -399,20 +408,10 @@ func (s *Service) OpenTimeEntries(id, from, to string) ([]TimeEntryView, error) 
 	if err != nil {
 		return nil, err
 	}
-	first, last, err := worklogRange(author, from, to)
-	if err != nil {
-		return nil, err
-	}
-	if daysBetween(first, last) >= openTimeSpan {
-		return nil, fmt.Errorf("%w: entries are read at most %d days at a time", ErrInvalidRequest, openTimeSpan)
-	}
-	es, err := s.store.TimeEntriesOf(id, author, from, to)
+	es, err := s.store.OpenTimeEntries(id, author, days)
 	if err != nil {
 		return nil, fmt.Errorf("trackerapp: %w", err)
 	}
-	es = slices.DeleteFunc(es, func(e store.TimeEntry) bool {
-		return e.State == store.TimeEntryPosted || e.State == store.TimeEntryLeftOut
-	})
 	return timeEntryViews(es), nil
 }
 

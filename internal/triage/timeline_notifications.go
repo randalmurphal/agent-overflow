@@ -445,8 +445,9 @@ func addTimeDraftNotificationMeta(meta map[string]any, raw json.RawMessage) {
 
 // timePostNotificationKind is the row of a time_draft post that ran,
 // which the app writes once per call with the count it ended with: the
-// call, the connections it posted on, its days, and how many of the
-// entries the approval offered were logged. It is never rewritten.
+// call, the connections it posted on, its days, how many of the entries
+// the approval offered were logged, and how many of those may have been.
+// It is never rewritten.
 const timePostNotificationKind = "time_post"
 
 // maxTimePostConnections bounds a time post row's connections, persisted
@@ -463,6 +464,7 @@ func addTimePostNotificationMeta(meta map[string]any, raw json.RawMessage) {
 		Days        []string `json:"days"`
 		Posted      int      `json:"posted"`
 		Of          int      `json:"of"`
+		Uncertain   int      `json:"uncertain"`
 	}
 	if json.Unmarshal(raw, &row) != nil {
 		return
@@ -477,6 +479,9 @@ func addTimePostNotificationMeta(meta map[string]any, raw json.RawMessage) {
 	}
 	meta["call"], meta["connections"], meta["days"] = cut(row.Call), list(row.Connections, maxTimePostConnections), list(row.Days, maxTimeDraftDays)
 	meta["posted"], meta["of"] = max(row.Posted, 0), max(row.Of, 0)
+	if row.Uncertain > 0 {
+		meta["uncertain"] = row.Uncertain
+	}
 }
 
 // backgroundWakeNotificationKind is the row for a Monitor event that

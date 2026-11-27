@@ -101,13 +101,13 @@ type Tracker interface {
 	// DraftTime stores an agent call's draft of that account's time
 	// (trackerapp.Service.DraftTime); it sends nothing.
 	DraftTime(connection string, in trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error)
-	// OpenTimeEntries are that account's entries not yet logged from day
-	// from to day to, with no tracker call
-	// (trackerapp.Service.OpenTimeEntries).
-	OpenTimeEntries(connection, from, to string) ([]trackerapp.TimeEntryView, error)
+	// OpenTimeEntries are that account's entries not yet logged on days,
+	// with no tracker call (trackerapp.Service.OpenTimeEntries).
+	OpenTimeEntries(connection string, days []string) ([]trackerapp.TimeEntryView, error)
 	// PostTime posts the entries in names, as the person's approval of
-	// their day does (trackerapp.Service.PostTimeEntries). Only a post the
-	// person approved calls it.
+	// their day does (trackerapp.Service.PostTimeEntries), and answers each
+	// one's outcome, with an error too when the post failed after it sent.
+	// Only a post the person approved calls it.
 	PostTime(ctx context.Context, connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error)
 	IssueTypes(ctx context.Context, connection, project string) ([]trackerapp.IssueTypeView, error)
 	CreateFields(ctx context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error)

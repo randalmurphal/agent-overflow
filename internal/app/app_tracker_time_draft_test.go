@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/trackertools"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 )
 
 // timeEntriesEvent waits for the next tracker:time_entries_updated event,
@@ -172,7 +174,8 @@ func timePostRows(t *testing.T, a *App, threadID string) []store.Item {
 // write's own prompt, titled with the day and showing each entry; what it
 // sends is exactly what that prompt showed: an entry the person edited,
 // one they removed, and one another thread drafted while the prompt was
-// open are not logged, and the answer says the first two in words. The
+// open are not logged, and the answer names the first two as the prompt
+// showed them, with why. The
 // call's one row counts what the prompt offered. A second post, with
 // nothing changed, logs both entries the prompt shows.
 func TestAnAgentsPostLogsOnlyWhatThePersonSaw(t *testing.T) {
@@ -243,7 +246,8 @@ func TestAnAgentsPostLogsOnlyWhatThePersonSaw(t *testing.T) {
 		t.Fatalf("approve: %v", err)
 	}
 	result := <-done
-	want := fmt.Sprintf(`{"posts":[{"posted":0,"of":2,"sentence":"Posted 0 of 1 entries for %s. WEB-1, 2h, changed since it was read; read the day again. Entry %d was removed since it was read."}]}`, dayLabel, entries[1].ID)
+	want := fmt.Sprintf(`{"logged":[],"not_logged":[{"why":"changed since it was read; read the day again","entries":[{"day":%[1]q,"key":"WEB-1","hours":1}]},`+
+		`{"why":"was removed since it was read","entries":[{"day":%[1]q,"key":"WEB-2","hours":0.5}]}]}`, day)
 	if result[1].(bool) || result[0] != want {
 		t.Fatalf("the post answered %v\nwant %s", result, want)
 	}
@@ -275,7 +279,7 @@ func TestAnAgentsPostLogsOnlyWhatThePersonSaw(t *testing.T) {
 		t.Fatalf("approve: %v", err)
 	}
 	result = <-done
-	if want := fmt.Sprintf(`{"posts":[{"posted":2,"of":2,"sentence":"Posted 2 of 2 entries for %s."}]}`, dayLabel); result[1].(bool) || result[0] != want {
+	if want := fmt.Sprintf(`{"logged":[{"day":%[1]q,"key":"WEB-1","hours":2},{"day":%[1]q,"key":"WEB-3","hours":0.75}]}`, day); result[1].(bool) || result[0] != want {
 		t.Fatalf("the second post answered %v\nwant %s", result, want)
 	}
 	if got := posted(); len(got) != 2 {
@@ -331,5 +335,65 @@ func TestAnAnswerFromAScreenThatCannotShowThePostIsRefused(t *testing.T) {
 	}
 	if result := <-done; result[1].(bool) || posted() != 1 {
 		t.Fatalf("the post answered %v with %d worklogs", result, posted())
+	}
+}
+
+// A post may name days more than a month apart: each day's entries are
+// read, and the drafted one is logged. A worklog whose answer is lost is
+// one that may have been logged, in the answer and on the post's row.
+func TestAPostOfDaysFarApartReadsEachDay(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
+	thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
+	day := time.Now().AddDate(0, 0, -2).Format(time.DateOnly)
+	far := time.Now().AddDate(0, 0, -60).Format(time.DateOnly)
+	if text, isError := trackerMCPStreamedCall(t, f.a, endpoint, "time_draft", map[string]any{"entries": []map[string]any{
+		{"day": day, "key": "WEB-1", "hours": 1, "reason": "Built the form"},
+	}}); isError {
+		t.Fatalf("time_draft = %s", text)
+	}
+	done := trackerWriteCall(t, f.a, endpoint, "time_draft", map[string]any{"post": []string{far, day}})
+	waitFor(t, "the post's approval or its answer", func() bool {
+		select {
+		case result := <-done:
+			t.Fatalf("the post of %s and %s answered %v before asking", far, day, result)
+		default:
+		}
+		return slices.ContainsFunc(f.a.triage.PendingInteractiveRequests(thread.ID).Approvals, func(r provider.ApprovalRequest) bool { return r.Kind == triage.ApprovalKindTrackerWrite })
+	})
+	open, _ := trackerWritePrompt(t, f.a, thread.ID)
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf(`{"logged":[{"day":%q,"key":"WEB-1","hours":1}]}`, day); func() bool { result := <-done; return result[1].(bool) || result[0] != want }() {
+		t.Fatalf("the post of %s and %s did not answer %s", far, day, want)
+	}
+
+	if text, isError := trackerMCPStreamedCall(t, f.a, endpoint, "time_draft", map[string]any{"entries": []map[string]any{
+		{"day": far, "key": "WEB-2", "hours": 0.5, "reason": "Reviewed the pull request"},
+	}}); isError {
+		t.Fatalf("time_draft = %s", text)
+	}
+	if err := f.e.AddFault(trackerfake.Fault{Origin: trackerBoardOrigin, Route: "POST rest/api/3/issue/{issue}/worklog", Kind: trackerfake.FaultFailAfterApply, Times: 1}); err != nil {
+		t.Fatal(err)
+	}
+	done = trackerWriteCall(t, f.a, endpoint, "time_draft", map[string]any{"post": []string{far, day}})
+	open, _ = trackerWritePrompt(t, f.a, thread.ID)
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+	if result := <-done; result[1].(bool) || !strings.Contains(result[0].(string), `"why":"may already be logged`) || !strings.Contains(result[0].(string), `"key":"WEB-2","hours":0.5`) {
+		t.Fatalf("the post whose answer was lost answered %v", result)
+	}
+	rows := timePostRows(t, f.a, thread.ID)
+	farLabel, _ := time.Parse(time.DateOnly, far)
+	dayLabel, _ := time.Parse(time.DateOnly, day)
+	if want := "Logged 0 of 1 entries for " + farLabel.Format("Mon Jan 2") + " to " + dayLabel.Format("Mon Jan 2") + "; 1 may have been logged"; len(rows) != 2 || rows[1].Summary != want {
+		t.Fatalf("time post rows %+v; want the second titled %q", rows, want)
+	}
+	var meta struct{ Posted, Of, Uncertain int }
+	if err := json.Unmarshal([]byte(rows[1].Meta), &meta); err != nil || meta.Posted != 0 || meta.Of != 1 || meta.Uncertain != 1 {
+		t.Fatalf("the row's meta %s: %v", rows[1].Meta, err)
 	}
 }

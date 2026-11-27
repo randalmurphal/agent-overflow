@@ -72,8 +72,8 @@ func TestTheTimeToolsAreGivenWithAJiraConnection(t *testing.T) {
 		sizes[tool["name"].(string)] = len(raw)
 	}
 	t.Logf("time_read %d bytes, time_draft %d bytes", sizes["time_read"], sizes["time_draft"])
-	if sizes["time_read"] != 268 || sizes["time_draft"] != 714 {
-		t.Errorf("the time tools are %v bytes; pinned time_read 268, time_draft 714", sizes)
+	if sizes["time_read"] != 268 || sizes["time_draft"] != 687 {
+		t.Errorf("the time tools are %v bytes; pinned time_read 268, time_draft 687", sizes)
 	}
 	_, err := s.Call(t.Context(), testCaller, "time_draft", json.RawMessage(`{}`))
 	refused(t, err, CodeInvalidRequest, `There is no tool named "time_draft". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update.`)

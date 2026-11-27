@@ -72,13 +72,13 @@ type fakeTracker struct {
 	postCtx []error
 }
 
-func (f *fakeTracker) OpenTimeEntries(connection, from, to string) ([]trackerapp.TimeEntryView, error) {
-	f.asked = append(f.asked, "open time "+connection+" "+from+" "+to)
+func (f *fakeTracker) OpenTimeEntries(connection string, days []string) ([]trackerapp.TimeEntryView, error) {
+	f.asked = append(f.asked, "open time "+connection+" "+strings.Join(days, " "))
 	got, ok := f.open[connection]
 	if !ok {
 		return nil, errorsx.Public("tracker_connection_unverified", "this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings", nil)
 	}
-	return got, nil
+	return slices.DeleteFunc(slices.Clone(got), func(e trackerapp.TimeEntryView) bool { return !slices.Contains(days, e.Day) }), nil
 }
 
 func (f *fakeTracker) PostTime(ctx context.Context, connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
@@ -86,9 +86,31 @@ func (f *fakeTracker) PostTime(ctx context.Context, connection string, in tracke
 	f.posts = append(f.posts, connection+" "+string(raw))
 	f.postCtx = append(f.postCtx, ctx.Err())
 	if f.post == nil {
-		return trackerapp.PostTimeView{Posted: len(in.Entries), Of: len(in.Entries), Sentence: fmt.Sprintf("Posted %d of %d entries.", len(in.Entries), len(in.Entries))}, nil
+		return postedAsRead(f.open[connection], in), nil
 	}
 	return f.post(connection, in)
+}
+
+// postedAsRead is a post of in that posts each entry of open it names
+// that a post sends, and gives each other one the reason it is not sent.
+func postedAsRead(open []trackerapp.TimeEntryView, in trackerapp.PostTimeRequest) trackerapp.PostTimeView {
+	var out trackerapp.PostTimeView
+	for _, ref := range in.Entries {
+		o := trackerapp.PostOutcome{ID: ref.ID, State: trackerapp.OutcomePosted}
+		if i := slices.IndexFunc(open, func(e trackerapp.TimeEntryView) bool { return e.ID == ref.ID }); i >= 0 {
+			if why := trackerapp.NotSentWhy(open[i]); why != "" {
+				o.State, o.Why = trackerapp.OutcomeNotPosted, why
+				if open[i].State == "unknown" {
+					o.State = trackerapp.OutcomeUncertain
+				}
+			}
+		}
+		if o.State == trackerapp.OutcomePosted {
+			out.Posted++
+		}
+		out.Outcomes = append(out.Outcomes, o)
+	}
+	return out
 }
 
 func (f *fakeTracker) ReadTime(_ context.Context, connection, from, to string) (trackerapp.WorklogDays, error) {

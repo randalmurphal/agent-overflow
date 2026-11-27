@@ -284,12 +284,12 @@ func (t trackerToolsAdapter) DraftTime(connection string, in trackerapp.TimeDraf
 
 // OpenTimeEntries reads the store, with no tracker call; a refusal is
 // worded as DraftTime's.
-func (t trackerToolsAdapter) OpenTimeEntries(connection, from, to string) ([]trackerapp.TimeEntryView, error) {
+func (t trackerToolsAdapter) OpenTimeEntries(connection string, days []string) ([]trackerapp.TimeEntryView, error) {
 	svc, err := t.a.trackerService()
 	if err != nil {
 		return nil, err
 	}
-	out, err := svc.OpenTimeEntries(connection, from, to)
+	out, err := svc.OpenTimeEntries(connection, days)
 	if errors.Is(err, trackerapp.ErrInvalidRequest) {
 		return out, errorsx.Public(trackertools.CodeInvalidRequest, refusedInput(err), err)
 	}

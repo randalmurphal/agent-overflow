@@ -22,8 +22,9 @@ type PostTimeRequest struct {
 }
 
 // PostTimeView is what a post did: each entry named as it is now, how
-// many it posted of those it could, and the sentence that says it. Stale
-// is the read-back of the posted days that failed, as a write's
+// many it posted of those it could, the sentence that says it, and the
+// outcome of each entry the request named, in its order. Stale is the
+// read-back of the posted days that failed, as a write's
 // (WriteView.Stale): those days do not show the posted time until their
 // next read.
 type PostTimeView struct {
@@ -31,14 +32,39 @@ type PostTimeView struct {
 	Posted   int             `json:"posted"`
 	Of       int             `json:"of"`
 	Sentence string          `json:"sentence"`
+	Outcomes []PostOutcome   `json:"outcomes"`
 	Stale    []StaleView     `json:"stale,omitempty"`
 }
 
+// PostOutcome is what a post did with one entry it was named: posted, the
+// time source applied it; uncertain, the time may be logged (its answer
+// was lost, or an earlier post's was); not_posted, nothing was logged.
+// Why says an entry not posted in the words of the post's sentence.
+type PostOutcome struct {
+	ID    int64  `json:"id"`
+	State string `json:"state"`
+	Why   string `json:"why,omitempty"`
+}
+
+// A PostOutcome's states.
+const (
+	OutcomePosted    = "posted"
+	OutcomeUncertain = "uncertain"
+	OutcomeNotPosted = "not_posted"
+)
+
 // A post's notes, one per entry it did not post, in the sentence.
 type postNote struct {
-	e    store.TimeEntry
-	why  string
-	open bool // a question left open
+	e         store.TimeEntry
+	why       string
+	open      bool // a question left open
+	uncertain bool // the time may be logged
+}
+
+// movedOnNote is the note of entry e, as read now, which the approval
+// does not send (movedOn).
+func movedOnNote(e store.TimeEntry) postNote {
+	return postNote{e: e, why: movedOn(e), uncertain: e.State == store.TimeEntryUnknown}
 }
 
 // mayHaveBeenLogged is what the app says of an unknown entry, whose post
@@ -88,7 +114,10 @@ const clockSlack = 60_000
 //     any request (Service.write).
 //
 // Questions stay open (D8). The answer names every entry as it is after
-// the post and says in words what was not posted.
+// the post, says in words what was not posted, and gives each named
+// entry's outcome. A post that fails once its worklogs were sent answers
+// the outcomes it knows with the error: the time it says is posted is
+// logged.
 func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeRequest) (PostTimeView, error) {
 	switch {
 	case len(in.Entries) == 0 || len(in.Entries) > tracker.MaxWorklogInputs:
@@ -132,11 +161,11 @@ func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeReq
 		entries = append(entries, e)
 		switch {
 		case e.Revision != ref.Revision:
-			notes = append(notes, postNote{e: e, why: movedOn(e)})
+			notes = append(notes, movedOnNote(e))
 		case e.IssueID == "" && e.State == store.TimeEntryDrafted:
 			notes = append(notes, postNote{e: e, open: true})
 		case e.State != store.TimeEntryDrafted:
-			notes = append(notes, postNote{e: e, why: movedOn(e)})
+			notes = append(notes, movedOnNote(e))
 		case e.Author != author:
 			notes = append(notes, postNote{e: e, why: "was drafted for another account and was not posted"})
 		default:
@@ -147,22 +176,26 @@ func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeReq
 	var unread []StaleView
 	if len(send) > 0 {
 		var settled []store.TimeEntry
-		settled, applied, notes, unread, err = s.sendTimeEntries(ctx, id, author, send, !in.Alone, notes)
+		var sent bool
+		settled, applied, notes, unread, sent, err = s.sendTimeEntries(ctx, id, author, send, !in.Alone, notes)
 		// Entries a failed post settled changed all the same.
 		s.timeEntriesChanged(id, author, settled)
 		if err != nil {
-			return PostTimeView{}, err
+			if !sent {
+				return PostTimeView{}, err
+			}
+			return postView(in.Entries, entries, nil, applied, notes, unread), err
 		}
 	}
 	if err := s.enter(); err != nil {
-		return PostTimeView{}, err
+		return postView(in.Entries, entries, nil, applied, notes, unread), err
 	}
 	now, err := s.store.TimeEntriesByID(id, ids)
 	s.leave()
 	if err != nil {
-		return PostTimeView{}, fmt.Errorf("trackerapp: read the entries after the post: %w", err)
+		return postView(in.Entries, entries, nil, applied, notes, unread), fmt.Errorf("trackerapp: read the entries after the post: %w", err)
 	}
-	return postView(entries, now, applied, notes, unread), nil
+	return postView(in.Entries, entries, now, applied, notes, unread), nil
 }
 
 // movedOn says why entry e, as read now, is not one the approval sends:
@@ -173,12 +206,36 @@ func movedOn(e store.TimeEntry) string {
 		return "is logged already"
 	case store.TimeEntryLeftOut:
 		return "was left out"
-	case store.TimeEntryUnknown:
-		return mayHaveBeenLogged
-	case store.TimeEntrySent:
-		return "is being posted from another window"
+	case store.TimeEntryUnknown, store.TimeEntrySent:
+		return notSentWhy(e.State, true)
 	}
 	return "changed since it was read; read the day again"
+}
+
+// questionOpen is what a post says of a question: an entry whose ticket
+// is not picked yet.
+const questionOpen = "its ticket is not picked yet, so it is not posted"
+
+// notSentWhy is why a post does not send an entry not yet logged in
+// state, on a ticket or not (a question), as it reads before the post;
+// "" for one it sends, a drafted entry on a ticket.
+func notSentWhy(state string, ticket bool) string {
+	switch {
+	case state == store.TimeEntryUnknown:
+		return mayHaveBeenLogged
+	case state == store.TimeEntrySent:
+		return "is being posted from another window"
+	case !ticket:
+		return questionOpen
+	}
+	return ""
+}
+
+// NotSentWhy is why a post does not send entry e, an entry not yet
+// logged as OpenTimeEntries reads it, in the words of the post's answer
+// (PostOutcome.Why); "" for one it sends.
+func NotSentWhy(e TimeEntryView) string {
+	return notSentWhy(e.State, e.Key != "")
 }
 
 // checkedDays reads author's worklogs of the days of entries, at most
@@ -211,13 +268,15 @@ func (r *run) checkedDays(author string, entries []store.TimeEntry) ([]tracker.W
 // worklog of its ticket made since it was drafted (loggedSince); it marks
 // the rest sent, sends those it marked, and settles each with its outcome. It
 // returns the entries it settled, which of them the time source applied,
-// notes for those not posted, and the read-back that failed
-// (WriteView.Stale). A day that could not be read sends nothing. A store
+// notes for those not posted, the read-back that failed
+// (WriteView.Stale), and whether any worklog was sent. A day that could
+// not be read sends nothing. A store
 // write that fails after the send fails the post: its entries stay sent
 // while this process runs, and the next is told they may have been
 // logged (recoverEarlier).
-func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends []store.TimeEntry, check bool, notes []postNote) ([]store.TimeEntry, map[int64]bool, []postNote, []StaleView, error) {
+func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends []store.TimeEntry, check bool, notes []postNote) ([]store.TimeEntry, map[int64]bool, []postNote, []StaleView, bool, error) {
 	applied := map[int64]bool{}
+	sent := false
 	var settled []store.TimeEntry
 	var storeErr error
 	notSent := func(err error) tracker.Result {
@@ -294,6 +353,7 @@ func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends 
 		}
 		notes = append(notes, s.notMarked(id, entries, unmarked)...)
 		if len(inputs) > 0 {
+			sent = true
 			res = r.p.Time().AddWorklogs(r.ctx, inputs)
 		}
 		for i, m := range sending {
@@ -310,7 +370,7 @@ func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends 
 				settles = append(settles, store.TimeEntrySettle{ID: m.ID, Revision: m.Revision, State: store.TimeEntryPosted, WorklogID: string(p.Worklog)})
 			case tracker.StateUnknown:
 				settles = append(settles, store.TimeEntrySettle{ID: m.ID, Revision: m.Revision, State: store.TimeEntryUnknown})
-				notes = append(notes, postNote{e: m, why: mayHaveBeenLogged})
+				notes = append(notes, postNote{e: m, why: mayHaveBeenLogged, uncertain: true})
 			case tracker.StateRefused:
 				refusal, _ := o.Refusal()
 				nothing(m, refusal.Message, "was refused: "+refusal.Message)
@@ -330,7 +390,7 @@ func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends 
 	if err == nil {
 		err = storeErr
 	}
-	return settled, applied, notes, view.Stale, err
+	return settled, applied, notes, view.Stale, sent, err
 }
 
 // notMarked notes each entry of entries that ids name, which the mark
@@ -345,24 +405,42 @@ func (s *Service) notMarked(id string, entries []store.TimeEntry, ids []int64) [
 		if !slices.Contains(ids, e.ID) {
 			continue
 		}
-		why := "was removed since it was read"
+		note := postNote{e: e, why: "was removed since it was read"}
 		if err != nil {
-			why = "could not be read again: " + err.Error()
+			note.why = "could not be read again: " + err.Error()
 		} else if i := slices.IndexFunc(now, func(x store.TimeEntry) bool { return x.ID == e.ID }); i >= 0 {
-			why = movedOn(now[i])
+			note = movedOnNote(now[i])
+			note.e = e
 		}
-		notes = append(notes, postNote{e: e, why: why})
+		notes = append(notes, note)
 	}
 	return notes
 }
 
-// postView builds a post's answer: the entries named, as read before the
-// post (read) for its count and days and as they are after it (now) for
-// the entries shown, which of them the time source applied, the notes,
-// and the read-back that failed. Only a worklog day the read-back missed
-// is named as not showing the posted time.
-func postView(read, now []store.TimeEntry, applied map[int64]bool, notes []postNote, stale []StaleView) PostTimeView {
-	out := PostTimeView{Entries: []TimeEntryView{}, Stale: stale}
+// postView builds a post's answer: the entries named (refs), as read
+// before the post (read) for its count and days and as they are after it
+// (now) for the entries shown, which of them the time source applied, the
+// notes, and the read-back that failed. Each named entry's outcome is
+// what was applied or its note says. Only a worklog day the read-back
+// missed is named as not showing the posted time.
+func postView(refs []TimeEntryRefView, read, now []store.TimeEntry, applied map[int64]bool, notes []postNote, stale []StaleView) PostTimeView {
+	out := PostTimeView{Entries: []TimeEntryView{}, Outcomes: make([]PostOutcome, len(refs)), Stale: stale}
+	for i, ref := range refs {
+		o := PostOutcome{ID: ref.ID, State: OutcomeNotPosted}
+		if j := slices.IndexFunc(notes, func(n postNote) bool { return n.e.ID == ref.ID }); applied[ref.ID] {
+			o.State = OutcomePosted
+		} else if j >= 0 {
+			n := notes[j]
+			o.Why = strings.TrimSuffix(n.why, ".")
+			switch {
+			case n.open:
+				o.Why = questionOpen
+			case n.uncertain:
+				o.State = OutcomeUncertain
+			}
+		}
+		out.Outcomes[i] = o
+	}
 	for _, e := range read {
 		if i := slices.IndexFunc(now, func(x store.TimeEntry) bool { return x.ID == e.ID }); i >= 0 {
 			out.Entries = append(out.Entries, timeEntryView(now[i]))
@@ -436,19 +514,14 @@ func entryName(e store.TimeEntry) string {
 }
 
 // EntryLine is entry e as an approval shows it before a post: its day,
-// time and whole reason, and, for one the post will not send, why: one
-// that may already be logged, one being posted, or a question whose
-// ticket is not picked. A post sends exactly the entries it shows with no
-// such reason, at the revisions shown (PostTimeEntries).
+// time and whole reason, and, for one the post will not send, why
+// (NotSentWhy): one that may already be logged, one being posted, or a
+// question whose ticket is not picked. A post sends exactly the entries
+// it shows with no such reason, at the revisions shown (PostTimeEntries).
 func EntryLine(e TimeEntryView) string {
 	line := fmt.Sprintf("%s, %s: %s", dayLabel(e.Day), hoursText(e.Minutes), e.Reason)
-	switch {
-	case e.State == store.TimeEntryUnknown:
-		return line + " (not sent: it may already be logged)"
-	case e.State == store.TimeEntrySent:
-		return line + " (not sent: it is being posted from another window)"
-	case e.Key == "":
-		return line + " (not posted: its ticket is not picked yet)"
+	if why := NotSentWhy(e); why != "" {
+		return line + " (" + why + ")"
 	}
 	return line
 }

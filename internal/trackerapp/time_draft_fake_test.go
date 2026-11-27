@@ -13,6 +13,7 @@ import (
 
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker"
 )
 
 // The time draft against the fake Jira site and its Tempo account: an
@@ -487,6 +488,54 @@ func TestAPartlyFailedPostSaysWhatWasNotPosted(t *testing.T) {
 	})
 }
 
+// A post gives each entry it was named its outcome, in the request's
+// order: posted, not posted with the refusal, uncertain for a lost answer,
+// a question left open, and one removed since it was read. A post whose
+// settle failed after the worklogs were sent answers the outcomes with the
+// error; one that failed before sending answers none.
+func TestAPostAnswersEachEntrysOutcome(t *testing.T) {
+	t.Parallel()
+	bothSources(t, func(t *testing.T, d *draftScenario) {
+		v := d.draft(t, d.on("WEB-1", 1, "Built the form"), d.on("WEB-2", 0.5, "Reviewed the pull request"), d.on("WEB-3", 0.25, "Triaged the backlog"),
+			TimeDraftEntry{Day: d.day, Hours: 0.25, Reason: "Standup"})
+		body := json.RawMessage(`{"errorMessages":["Worklog is closed for this period."],"errors":{}}`)
+		if d.tempo {
+			body = json.RawMessage(`{"errors":[{"message":"Worklog is closed for this period."}]}`)
+		}
+		d.fault(t, trackerfake.Fault{Kind: trackerfake.FaultRefuse, Times: 1, Status: 400, Body: body})
+		d.fault(t, trackerfake.Fault{Kind: trackerfake.FaultFailAfterApply, Times: 1})
+		refs := append(entryRefs(v.Made...), TimeEntryRefView{ID: 999_999, Revision: 1})
+		got, _ := d.post(t, false, refs...)
+		want := []PostOutcome{
+			{ID: v.Made[0].ID, State: OutcomeNotPosted, Why: "was refused: Worklog is closed for this period"},
+			{ID: v.Made[1].ID, State: OutcomeUncertain, Why: strings.TrimSuffix(mayHave, ".")},
+			{ID: v.Made[2].ID, State: OutcomePosted},
+			{ID: v.Made[3].ID, State: OutcomeNotPosted, Why: questionOpen},
+			{ID: 999_999, State: OutcomeNotPosted, Why: "was removed since it was read"},
+		}
+		if !slices.Equal(got.Outcomes, want) {
+			t.Fatalf("the outcomes are\n%+v\nwant\n%+v", got.Outcomes, want)
+		}
+		w := d.draft(t, d.on("WEB-1", 1, "Built the form again"))
+		d.marks.mu.Lock()
+		d.marks.settleErr = errors.New("disk I/O error")
+		d.marks.mu.Unlock()
+		got, err := d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(w.Made...)})
+		if err == nil || !slices.Equal(got.Outcomes, []PostOutcome{{ID: w.Made[0].ID, State: OutcomePosted}}) {
+			t.Fatalf("the post whose settle failed answered %+v, %v; want WEB-1 posted with the error", got.Outcomes, err)
+		}
+		d.restart()
+		x := d.draft(t, d.on("WEB-3", 1, "Triaged again"))
+		if _, _, err := d.st.SetTrackerConnectionEnabled(d.conn.ID, false); err != nil {
+			t.Fatal(err)
+		}
+		got, err = d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(x.Made...)})
+		if err == nil || got.Outcomes != nil {
+			t.Fatalf("the post of a connection turned off answered %+v, %v; want an error and no outcome", got.Outcomes, err)
+		}
+	})
+}
+
 // mayHave is what a post says of an entry whose post may have happened.
 const mayHave = "may already be logged, so it is not sent again; look at the day's logged time, and remove the entry if the time is there, or log the time by hand and then remove the entry."
 
@@ -618,7 +667,7 @@ func TestAnotherAccountsEntriesAreNotChanged(t *testing.T) {
 func TestAPostNamesOnlyWorklogDaysAsNotReadBack(t *testing.T) {
 	t.Parallel()
 	stale := []StaleView{{Resources: []ResourceView{{Kind: "detail", Issue: "10102"}}, Failure: FailureView{Message: "Jira did not answer"}}}
-	got := postView(nil, nil, nil, nil, stale)
+	got := postView(nil, nil, nil, nil, nil, stale)
 	if strings.Contains(got.Sentence, "shows on") {
 		t.Fatalf("a failed detail read answered %q", got.Sentence)
 	}
@@ -888,7 +937,9 @@ func TestAWeeksDraftCostsBoundedRequests(t *testing.T) {
 // The open entries of days are those not yet logged, questions included,
 // of the connection's verified account, by day and ID, with no request:
 // a posted entry, a left-out question and another day's entry are not
-// among them. A range past openTimeSpan is refused.
+// among them. Days far apart are read; more than openTimeDays days, or
+// one that is not a date, is refused. A read holds one more entry than a
+// post takes, so a reader sees that it holds too many.
 func TestOpenTimeEntriesAreTheDaysNotYetLogged(t *testing.T) {
 	t.Parallel()
 	d := newDraftScenario(t, "jira")
@@ -902,7 +953,7 @@ func TestOpenTimeEntriesAreTheDaysNotYetLogged(t *testing.T) {
 	left := v.Made[3]
 	must[TimeEntryView](t)(d.svc.EditTimeEntry(d.conn.ID, entryRefs(left)[0], TimeEntryEdit{LeaveOut: true}))
 	var got []TimeEntryView
-	reqs := d.requestsOf(t, func() { got = must[[]TimeEntryView](t)(d.svc.OpenTimeEntries(d.conn.ID, d.day, d.day)) })
+	reqs := d.requestsOf(t, func() { got = must[[]TimeEntryView](t)(d.svc.OpenTimeEntries(d.conn.ID, []string{d.day})) })
 	var ids []int64
 	for _, e := range got {
 		ids = append(ids, e.ID)
@@ -910,10 +961,19 @@ func TestOpenTimeEntriesAreTheDaysNotYetLogged(t *testing.T) {
 	if !slices.Equal(ids, []int64{v.Made[0].ID, v.Made[2].ID}) || len(reqs) != 0 {
 		t.Fatalf("the open entries of %s are %+v with requests %v; want WEB-1 and the open question", d.day, got, reqs)
 	}
-	if got := must[[]TimeEntryView](t)(d.svc.OpenTimeEntries(d.conn.ID, before, d.day)); len(got) != 3 || got[0].Key != "WEB-3" {
-		t.Fatalf("the open entries of two days are %+v; want WEB-3 first", got)
+	if got := must[[]TimeEntryView](t)(d.svc.OpenTimeEntries(d.conn.ID, []string{before, "2020-01-01", d.day})); len(got) != 3 || got[0].Key != "WEB-3" {
+		t.Fatalf("the open entries of three days are %+v; want WEB-3 first", got)
 	}
-	if _, err := d.svc.OpenTimeEntries(d.conn.ID, "2026-01-01", "2026-02-01"); !errors.Is(err, ErrInvalidRequest) {
-		t.Fatalf("32 days answered %v", err)
+	var month []string
+	for i := range 32 {
+		month = append(month, fmt.Sprintf("2026-01-%02d", i%31+1))
+	}
+	for name, days := range map[string][]string{"32 days": month, "no day": nil, "not a date": {"Tuesday"}} {
+		if _, err := d.svc.OpenTimeEntries(d.conn.ID, days); !errors.Is(err, ErrInvalidRequest) {
+			t.Errorf("%s answered %v", name, err)
+		}
+	}
+	if store.OpenTimeEntriesShown != tracker.MaxWorklogInputs+1 {
+		t.Errorf("an open read holds %d entries; want one more than a post takes (%d)", store.OpenTimeEntriesShown, tracker.MaxWorklogInputs)
 	}
 }
