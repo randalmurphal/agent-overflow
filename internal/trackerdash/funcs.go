@@ -507,18 +507,21 @@ func (a *sinkStep) WindowValue(*sqlite.FunctionContext) (driver.Value, error) {
 
 func (a *sinkStep) Final(*sqlite.FunctionContext) {}
 
-// dayStart is the instant day d (YYYY-MM-DD) is placed at in loc: the
-// first millisecond of that date there. A period holds the instants after
-// its start through its end (period.holds), so a period that begins at
-// midnight holds its first day by this instant and not the day before,
-// and the evaluator finds a period's days by the same instant
-// (evaluation.unread). A worklog's day is the date the person logged it
-// on, in their tracker profile's zone; it is placed on that date in the
-// request's zone, whatever the two zones are.
+// dayStart is the instant day d (YYYY-MM-DD) is placed at in loc
+// (placed). A worklog's day is the date the person logged it on, in their
+// tracker profile's zone; it is placed on that date in the request's
+// zone, whatever the two zones are.
 func dayStart(d string, loc *time.Location) (int64, error) {
 	t, err := time.ParseInLocation(time.DateOnly, d, loc)
 	if err != nil {
 		return 0, fmt.Errorf("day_start takes a day as YYYY-MM-DD: %w", err)
 	}
-	return t.UnixMilli() + 1, nil
+	return placed(t), nil
 }
+
+// placed is the instant a day that begins at midnight is placed at: its
+// first millisecond. A period holds the instants after its start through
+// its end (period.holds), so a period that begins at midnight holds its
+// first day by this instant and not the day before. day_start places a
+// row by it and evaluation.unread finds a period's days by it.
+func placed(midnight time.Time) int64 { return midnight.UnixMilli() + 1 }

@@ -55,7 +55,7 @@ func (ev *evaluation) unread(from, to, now int64) []string {
 	var out []string
 	t := time.UnixMilli(from).In(ev.loc)
 	for d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, ev.loc); ; d = d.AddDate(0, 0, 1) {
-		at := d.UnixMilli() + 1
+		at := placed(d)
 		if at > to {
 			return out
 		}
