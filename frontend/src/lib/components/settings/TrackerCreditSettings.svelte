@@ -15,6 +15,7 @@
   // (stores/trackerTicketWrites.svelte.ts) once credit is on.
   import type { BoardPace, CreditRules, SiteSupport } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { isLocalEnter } from '../../utils/localEnter';
   import { settingsComputerName } from '../../stores/settings.svelte';
   import { countsTickets, creditOn, withCreditOn, withCreditRules, withSupport } from '../../stores/trackerSetup.svelte';
   import { boardProjects, boardWriteContext, issueTypes, loadBoardProjects, loadIssueTypes } from '../../stores/trackerTicketWrites.svelte';
@@ -306,7 +307,7 @@
                   placeholder="Add a label"
                   disabled={locked}
                   bind:value={labelDraft[s.site]}
-                  onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addLabel(s.site); } }}
+                  onkeydown={(e) => { if (isLocalEnter(e)) { e.preventDefault(); addLabel(s.site); } }}
                   data-testid="tracker-credit-label-input"
                 />
               </div>
