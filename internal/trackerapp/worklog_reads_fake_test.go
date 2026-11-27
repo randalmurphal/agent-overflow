@@ -549,7 +549,8 @@ func TestARunStopsWhenTheTimeSourceChangesBetweenReads(t *testing.T) {
 // An evaluation of an older time source changes nothing: after Tempo's
 // read failed, one that copied the board under Jira answers the failure
 // and neither forgets it nor queues a day, so a show under Tempo still
-// reads nothing until a person asks.
+// reads nothing until a person asks; after the connection is turned off
+// and on, one under Jira still reads nothing.
 func TestAnOlderEvaluationChangesNothing(t *testing.T) {
 	t.Parallel()
 	s, today := dashTime(t)
