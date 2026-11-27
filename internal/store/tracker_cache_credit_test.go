@@ -237,3 +237,129 @@ func TestMirrorEvidenceMovesTheTotalsWhenItChanges(t *testing.T) {
 		}
 	}
 }
+
+// A closed sprint counts by the rule snapshot in force at its completion
+// and the active sprint by the newest; a rule that counts approvals says
+// on each review row that they are not read, and they keep no ticket
+// unread. A ticket whose evidence read failed for it alone says why, and
+// one whose card moved since its read says so.
+func TestMirrorCreditReadsTheRulesAndSaysWhyItIsNotRead(t *testing.T) {
+	t.Parallel()
+	s, root := creditFixture(t)
+	rules := creditRules(true)
+	rules = append(rules, MirrorCreditRule{From: 960, ReviewShare: 50, ReviewNeed: 1, Commented: true, HoursPerPoint: 2})
+	replaceActs(t, s, root, 30, []MirrorActsAttempt{{IssueID: "10002", Source: MirrorActComment, Reason: "issue 10002: Jira refused the comments"}})
+	moved := sectionRow("10005", "10005", "10001", 2, "21")
+	moved.Card.UpdatedAt = 1600
+	mustWriteRowPage(t, s, root, webPage("10", moved), nil)
+	rows, _ := creditOf(t, s, root, creditRegroup(t, rules))
+	want := []string{
+		"20 800 10001 finished acc-user1 5.0 1.0 5.0 - - - - - - -",
+		"20 800 10001 review acc-user2 0.0 0.0 5.0 10 2 commented 0 - - approvals are not read yet",
+		"20 800 10001 review acc-user3 0.5 0.1 5.0 10 2 commented, logged time 1 - - approvals are not read yet",
+		"20 - 10002 finished acc-user1 3.0 1.0 3.0 - - - - - - -",
+		"20 - 10002 review - - - 3.0 10 2 - - - - could not be read: Jira refused the comments",
+		"20 - 10003 support acc-user2 0.5 0.5 - - - - - 2.0 4 -",
+		"21 - 10003 support acc-user2 1.0 1.0 - - - - - 2.0 2 -",
+		"21 990 10004 support - - - - - - - - - - who worked on it is not read yet",
+		"21 - 10005 finished acc-user1 2.0 1.0 2.0 - - - - - - -",
+		"21 - 10005 review - - - 2.0 50 1 - - - - it changed since who worked on it was read",
+	}
+	if !reflect.DeepEqual(rows, want) {
+		t.Fatalf("credit\n%s\nwant\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// Support time counts in the sprint whose dates hold its start, the first
+// to end when two do, else in the next sprint to start: sprint 23 (500 to
+// 700) inside sprint 20 (100 to 950) takes the work done in its dates, 20
+// the rest of its own, and 21 the work after 20 ended, before it began.
+func TestMirrorCreditPlacesSupportTimeByTheSprintsDates(t *testing.T) {
+	t.Parallel()
+	s, root := creditFixture(t)
+	st := webStructure()
+	st.Sprints = append(st.Sprints, MirrorSprint{ID: "23", OriginBoardID: "10", Name: "WEB Sprint 4", State: MirrorSprintClosed, StartAt: 500, EndAt: 700,
+		CompletedAt: 700})
+	st.ReadAt = mirrorReadAt(40)
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil {
+		t.Fatal(err)
+	}
+	replaceActs(t, s, root, 50, nil, MirrorIssueActs{IssueID: "10003", Source: MirrorActWorklog, ReadFor: 970, Acts: []MirrorAct{
+		act("w1", "acc-user2", 300, 3600), act("w2", "acc-user2", 600, 7200), act("w3", "acc-user2", 800, 3600), act("w4", "acc-user2", 960, 14400)}})
+	rows, _ := creditOf(t, s, root, creditRegroup(t, creditRules(false)))
+	var support []string
+	for _, r := range rows {
+		if strings.Contains(r, " 10003 support ") {
+			support = append(support, r)
+		}
+	}
+	want := []string{
+		"20 - 10003 support acc-user2 0.5 0.5 - - - - - 2.0 4 -",
+		"21 - 10003 support acc-user2 1.0 1.0 - - - - - 4.0 4 -",
+		"23 - 10003 support acc-user2 0.5 0.5 - - - - - 2.0 4 -",
+	}
+	if !reflect.DeepEqual(support, want) {
+		t.Fatalf("support\n%s\nwant\n%s", strings.Join(support, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// On a board that plans no sprints, credit counts each ticket done now
+// and updated in the window at its finish, by the rule in force then, its
+// reviews whenever they were left, and support time by the worklog, at
+// its start and by the rule in force then. A ticket whose finish is not
+// known is listed at none, by the newest rule; one updated before the
+// window is not counted.
+func TestMirrorCreditOnABoardWithoutSprints(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	st := webStructure()
+	st.Board.ID, st.Board.PlansSprints, st.Sprints = "10", false, nil
+	st.Catalog.Users = append(st.Catalog.Users, MirrorUser{ID: "acc-user2", Name: "User 2", Data: []byte(`{}`)},
+		MirrorUser{ID: "acc-user3", Name: "User 3", Data: []byte(`{}`)})
+	mustReplaceStructure(t, s, root, st, true)
+	row := func(id, status string, estimate float64, updated int64) MirrorRow {
+		r := sectionRow(id, id, status, estimate)
+		r.Card.UpdatedAt = updated
+		return r
+	}
+	first := row("10001", "10001", 5, 900)
+	first.Card.AssigneeID = "acc-user2"
+	mustWriteRowPage(t, s, root, webPage("10", first, row("10002", "10001", 3, 900), row("10003", "1", -1, 970), row("10004", "1", -1, 990),
+		row("10005", "10001", 2, 50)), nil)
+	histories := []MirrorHistory{{IssueID: "10001", Changes: []MirrorChange{
+		{Kind: MirrorChangeStatus, At: 800, From: "1", To: "10001"},
+		{Kind: MirrorChangeAssignee, At: 850, From: "acc-user1", To: "acc-user2"},
+	}}}
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, histories), MirrorCatalog{},
+		mirrorReadOf(root, 10)); err != nil {
+		t.Fatal(err)
+	}
+	replaceActs(t, s, root, 20, nil,
+		MirrorIssueActs{IssueID: "10001", Source: MirrorActComment, ReadFor: 900, Acts: []MirrorAct{act("c1", "acc-user3", 600, 0),
+			act("c2", "acc-user2", 1000, 0)}},
+		MirrorIssueActs{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 900, Acts: []MirrorAct{act("w1", "acc-user3", 700, 3600)}},
+		MirrorIssueActs{IssueID: "10003", Source: MirrorActWorklog, ReadFor: 970, Acts: []MirrorAct{act("w2", "acc-user2", 500, 7200),
+			act("w3", "acc-user2", 960, 7200), act("w4", "acc-user2", 50, 3600)}})
+	rules := []MirrorCreditRule{creditRules(false)[0], {From: 750, ReviewShare: 20, ReviewNeed: 2, Commented: true, LoggedTime: true, HoursPerPoint: 2}}
+	conn := exportConn(t)
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", creditRegroup(t, rules), []string{"credit"}, 100, CardShapeForTest); err != nil || !ok {
+		t.Fatalf("export: %v, %v", ok, err)
+	}
+	rows := exportRows(t, conn, `SELECT concat_ws(' ', coalesce(sprint, '-'), coalesce(at, '-'), ticket, kind, coalesce(person, '-'),
+	    coalesce(round(value, 3), '-'), coalesce(round(share, 3), '-'), coalesce(review_share, '-'), coalesce(did, '-'), coalesce(hours_per_point, '-'),
+	    coalesce(note, '-'))
+	  FROM main.credit ORDER BY ticket, kind, at, person`)
+	want := []string{
+		"- 800 10001 finished acc-user1 5.0 1.0 - - - -",
+		"- 800 10001 review acc-user2 0.0 0.0 20 commented - -",
+		"- 800 10001 review acc-user3 1.0 0.2 20 commented, logged time - -",
+		"- - 10002 finished acc-user1 - - - - - when it finished is not known",
+		"- - 10002 review - - - 20 - - who worked on it is not read yet",
+		"- 500 10003 support acc-user2 0.5 0.5 - - 4 -",
+		"- 960 10003 support acc-user2 1.0 1.0 - - 2 -",
+		"- 990 10004 support - - - - - - who worked on it is not read yet",
+	}
+	if !reflect.DeepEqual(rows, want) {
+		t.Fatalf("credit\n%s\nwant\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
+	}
+}
