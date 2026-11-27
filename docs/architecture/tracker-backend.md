@@ -2832,7 +2832,9 @@ sent again, since no read the app can make proves the first send did not
 land: logging it alone or approving its day names it, sends nothing of
 it, and says that the time may already be logged, to look at the day's
 logged time, and to remove the entry if the time is there or to log the
-time by hand and then remove it; the day's other entries post. The answer is built after the post from the entries
+time by hand and then remove it; the day's other entries post. Every
+view of such an entry carries that sentence (`TimeEntryView.refusal`),
+so a surface shows it before anyone approves. The answer is built after the post from the entries
 as they are then, names every entry, says in one sentence each one not
 posted, with the tracker's refusal, and names the days whose worklogs
 could not be read back after the post, which show the posted time after
