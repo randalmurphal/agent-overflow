@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -402,3 +403,22 @@ func (h trackerToolsHost) Live(threadID, session string) bool {
 }
 
 var _ trackertools.Host = trackerToolsHost{}
+
+// waitText is a wait as a person reads it: whole minutes or whole
+// seconds in words ("15 minutes", "2 seconds"), any other wait (a test's)
+// as Go writes it.
+func waitText(d time.Duration) string {
+	unit := func(n int, one string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return strconv.Itoa(n) + " " + one + "s"
+	}
+	switch {
+	case d >= time.Minute && d%time.Minute == 0:
+		return unit(int(d/time.Minute), "minute")
+	case d%time.Second == 0:
+		return unit(int(d/time.Second), "second")
+	}
+	return d.String()
+}

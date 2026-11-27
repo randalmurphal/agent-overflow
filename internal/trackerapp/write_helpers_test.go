@@ -26,7 +26,6 @@ type writing struct {
 	time     *scriptedTime
 	projects func() ([]tracker.Project, error)
 	search   func(tracker.SearchQuery) (tracker.SearchPage, error)
-	pulls    func(tracker.IssueID) ([]tracker.LinkedPullRequest, error)
 }
 
 func (p *writing) answer(ctx context.Context, name string, in any) tracker.Result {
@@ -110,16 +109,6 @@ func (p *writing) Projects(ctx context.Context) ([]tracker.Project, error) {
 		return nil, errUnscripted
 	}
 	return h()
-}
-
-func (p *writing) PullRequests(ctx context.Context, issue tracker.IssueID) ([]tracker.LinkedPullRequest, error) {
-	p.mu.Lock()
-	h := p.pulls
-	p.mu.Unlock()
-	if !p.called(ctx, "PullRequests", func() bool { return h != nil }) {
-		return nil, errUnscripted
-	}
-	return h(issue)
 }
 
 func (p *writing) Search(ctx context.Context, q tracker.SearchQuery) (tracker.SearchPage, error) {

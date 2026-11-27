@@ -23,7 +23,7 @@ type goFileCheck struct {
 // the whole tree joins this list rather than walking it again.
 func TestEveryGoFile(t *testing.T) {
 	t.Parallel()
-	checks := []goFileCheck{providerQueueCheck(), wirePayloadCheck(), emitSiteCheck(), windowBoundaryCheck()}
+	checks := []goFileCheck{providerQueueCheck(), wirePayloadCheck(), emitSiteCheck(), windowBoundaryCheck(), jiraDevDataCheck()}
 	fset := token.NewFileSet()
 	for _, path := range reporoot.GoFiles(t) {
 		file, err := reporoot.ParseGoFile(t, fset, path, parser.SkipObjectResolution)

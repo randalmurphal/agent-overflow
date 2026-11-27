@@ -5959,11 +5959,8 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
  * the ticket's key, for the pull requests the stored sources do not hold
  * (a merged one, one opened where this computer never read the list):
  * once per repository the Work's projects clone, and once per branch of
- * the ticket (searchTicketForge); and with the pull requests the
- * tracker's development data links to the ticket, read at the same time
- * (addDevelopment). Each repository's failure is its ForgeProblem, the
- * development data's its DevelopmentProblem, and the rest of the answer
- * stands beside them. A client
+ * the ticket (searchTicketForge). Each repository's failure is its
+ * ForgeProblem, and the rest of the answer stands beside them. A client
  * shows GetTicketWork's answer first and this one when it lands, so a slow
  * forge holds no row of the stored sources back. The budget runs from
  * entry: every forge request runs within it, and no project's local read

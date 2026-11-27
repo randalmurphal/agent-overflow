@@ -103,9 +103,6 @@ export interface ExtraJira {
   /** More sprints beside the seed's active Sprint 1 (trackerfake.JiraSprint),
    * each of board 1 unless it names another; times are ISO strings. */
   sprints?: Array<{ id: number; board?: number; name: string; state: 'future' | 'active' | 'closed'; goal?: string; start?: string; end?: string; complete?: string }>;
-  /** The pull requests Jira's development data links to WEB-1
-   * (trackerfake.JiraPullRequest). */
-  devPullRequests?: Array<{ instanceType: string; id: string; name: string; url: string; status: string; author?: string; branch?: string }>;
   /** The add-on, with the votes already cast (trackerfake.JiraPoker). */
   poker?: { rounds?: Array<{ issue: string; revealed?: boolean; votes?: Array<{ id: string; account: string; vote: number; created: string }> }> };
   /** More Jira sites served beside this one, whole (trackerfake.JiraSite):
@@ -176,8 +173,7 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
       ...(extra?.linkTypes ? { linkTypes: extra.linkTypes } : {}),
       sprints: [{ id: 1, board: 1, name: 'Sprint 1', state: 'active', start: day, end: sprintEnd }, ...(extra?.sprints ?? []).map((sp) => ({ board: 1, ...sp }))],
       issues: [
-        { id: '10101', key: 'WEB-1', project: 'WEB', type: '10001', summary: 'First story', sprints: [1], status: '10001', created: day, updated: day,
-          ...(extra?.devPullRequests ? { pullRequests: extra.devPullRequests } : {}) },
+        { id: '10101', key: 'WEB-1', project: 'WEB', type: '10001', summary: 'First story', sprints: [1], status: '10001', created: day, updated: day },
         { id: '10102', key: 'WEB-2', project: 'WEB', type: '10002', summary: 'Second task', sprints: [1], status: '10000', created: day, updated: day },
         { id: '10103', key: 'WEB-3', project: 'WEB', type: '10002', summary: 'Backlog task', status: '10000', created: day, updated: day },
         ...(extra?.issues ?? []).map((issue) => ({ ...issue, created: issue.created ?? day, updated: issue.updated ?? issue.created ?? day })),

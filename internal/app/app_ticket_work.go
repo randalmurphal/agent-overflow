@@ -35,22 +35,12 @@ type TicketWork struct {
 	// SearchFull are the repositories whose search found more pull
 	// requests than its one page holds, so the list may lack some.
 	SearchFull []gitops.RepoReference `json:"searchFull"`
-	// DevelopmentProblem is why the tracker's development data (Jira's,
-	// read by SearchTicketWork) could not be read; empty when it was, or
-	// when the tracker has none.
-	DevelopmentProblem string `json:"developmentProblem,omitempty"`
-	// DevelopmentUnlisted counts the pull requests that data links to the
-	// ticket at an address the app cannot open as a pull request, which
-	// are not listed.
-	DevelopmentUnlisted int `json:"developmentUnlisted,omitempty"`
 }
 
 // TicketPullRequest is a pull request of a ticket's Work. An open one of
 // the stored Pull requests list carries its title, author and CI. One
 // the forge's search found (SearchTicketWork) carries its title, author
-// and state as the forge answered them, and no CI; so does one only the
-// tracker's development data links (addDevelopment), whose state is the
-// tracker's own word when it is not one Work names. One a thread linked to
+// and state as the forge answered them, and no CI. One a thread linked to
 // the ticket was last seen with, that none of those holds, records no
 // title, author or CI.
 type TicketPullRequest struct {
@@ -141,11 +131,8 @@ func (a *App) GetTicketWork(ctx context.Context, connectionID, issueID string) (
 // the ticket's key, for the pull requests the stored sources do not hold
 // (a merged one, one opened where this computer never read the list):
 // once per repository the Work's projects clone, and once per branch of
-// the ticket (searchTicketForge); and with the pull requests the
-// tracker's development data links to the ticket, read at the same time
-// (addDevelopment). Each repository's failure is its ForgeProblem, the
-// development data's its DevelopmentProblem, and the rest of the answer
-// stands beside them. A client
+// the ticket (searchTicketForge). Each repository's failure is its
+// ForgeProblem, and the rest of the answer stands beside them. A client
 // shows GetTicketWork's answer first and this one when it lands, so a slow
 // forge holds no row of the stored sources back. The budget runs from
 // entry: every forge request runs within it, and no project's local read
@@ -164,15 +151,7 @@ func (a *App) SearchTicketWork(ctx context.Context, connectionID, issueID string
 	if err != nil {
 		return TicketWork{}, budgetError(ctx, err)
 	}
-	// The tracker's development data is read beside the forge's search
-	// and merged after it (addDevelopment), before the answer folds
-	// branches and names review projects, which hold for its rows too.
-	devCtx, stopDev := context.WithCancel(ctx)
-	defer stopDev()
-	devRead := make(chan ticketDevelopment, 1)
-	go func() { devRead <- a.readTicketDevelopment(devCtx, connectionID, issueID) }()
 	a.searchTicketForge(ctx, &read)
-	read.addDevelopment(<-devRead)
 	return a.answerTicketWork(ctx, &read)
 }
 
