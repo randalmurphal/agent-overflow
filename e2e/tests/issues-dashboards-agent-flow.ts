@@ -16,7 +16,9 @@
 // cards, and Keep's new-dashboard name takes every key typed beside the
 // dashboards it lists. A count whose unit is estimate draws, and drills,
 // as tickets on a board estimated in points. With neither Claude nor Codex
-// turned on, Ask your agent is disabled and says why. A board on a paired computer takes a
+// turned on, Ask your agent is disabled and says why. A proposal of the
+// person's logged time over This sprint reads the sprint's days from the
+// tracker and then shows their hours. A board on a paired computer takes a
 // widget its agent proposed from this computer's screen, the kept
 // dashboard is still there after that computer restarts, and Ask your
 // agent from this computer's screen opens its thread on that computer.
@@ -32,7 +34,7 @@ import { expect, test, type SeedResult } from './fixtures.js';
 import { pairOwnDevice } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { setScenario, threadRows, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
-import { connectFakeJira, JIRA_SITE, openIssuesPane, press, seedFakeJira, type ExtraJira } from './tracker-helpers.js';
+import { connectFakeJira, JIRA_SITE, logJiraWork, openIssuesPane, press, seedFakeJira, type ExtraJira } from './tracker-helpers.js';
 
 export interface DashboardAgentSurface {
   compact: boolean;
@@ -50,6 +52,12 @@ const OPEN = {
 const BY_GROUP = {
   title: 'By status group', words: ['Tickets by their status group.'], sql: 'SELECT id AS ticket, status_group AS bucket FROM tickets',
   reduce: 'count', unit: 'tickets', bucket: 'text', form: 'bars',
+};
+/** The person's own logged time: the copy holds only the days the page
+ * read from the tracker. */
+const LOGGED = {
+  title: 'Your hours', words: ['Your logged time.'], sql: 'SELECT ticket, seconds AS value, day_start(day) AS at FROM worklogs',
+  reduce: 'sum', unit: 'time', form: 'number',
 };
 const SEVERITY = { ...OPEN, title: 'Critical', sql: "SELECT id AS ticket FROM tickets WHERE severity = 'Critical'" };
 /** WEB-1 is a Story, WEB-2 and WEB-3 are Tasks. */
@@ -155,12 +163,12 @@ function expectWidgetAnswers(answers: Array<{ isError: boolean; text: string }>)
 }
 
 /** A project listing the seed's board, with its path for the scenario. */
-async function boardProject(harness: HarnessApp, name: string, threads: ReadonlyArray<Record<string, unknown>> = [], extra?: ExtraJira): Promise<{ projectId: string; path: string; threadIds: string[] }> {
-  await seedFakeJira(harness, extra);
+async function boardProject(harness: HarnessApp, name: string, threads: ReadonlyArray<Record<string, unknown>> = [], extra?: ExtraJira): Promise<{ projectId: string; path: string; threadIds: string[]; jiraURL: string }> {
+  const jiraURL = await seedFakeJira(harness, extra);
   const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: {}, threads }] });
   const project = seed.projects[0];
   await connectFakeJira(harness, project.projectId);
-  return { projectId: project.projectId, path: project.path, threadIds: project.threadIds };
+  return { projectId: project.projectId, path: project.path, threadIds: project.threadIds, jiraURL };
 }
 
 async function otherBrowser(browser: Browser, harness: HarnessApp, compact: boolean): Promise<{ page: Page; close: () => Promise<void> }> {
@@ -301,6 +309,34 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     await harness.rpc('UpdateSettings', { claudeEnabled: false, codexEnabled: false });
     await expect(screen.getByTestId('dashboard-ask')).toBeDisabled();
     await expect(screen.getByTestId('dashboard-ask')).toHaveAttribute('title', 'Ask your agent needs a provider whose agents get the tracker tools, turned on in Settings and installed on this computer.');
+  });
+
+  test('a proposal of your logged time reads the sprint\'s days from the tracker and then shows your hours', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    const provider: ProviderName = 'claude';
+    const project = await boardProject(harness, name('logged'), [{ title: 'Board questions', provider }]);
+    // Two hours on WEB-2 today, this machine's day, which the page shares.
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    await logJiraWork(project.jiraURL, 'WEB-2', today, 7200);
+    await setScenario(harness, project.path, threadToolsScenario({
+      name: name('logged'),
+      provider,
+      turns: [{ steps: [{ call: { server: SERVER, tool: 'dashboard_widget', args: { widget: LOGGED, show: true } } }], text: 'Your hours.' }],
+    }));
+    await harness.open(page);
+    const screen = await issuesDashboards(page, compact);
+    await press(screen.getByTestId('dashboard-range'), compact);
+    await press(page.getByTestId('dashboard-range-this_sprint'), compact);
+    await harness.send(project.threadIds[0], 'my hours this sprint');
+    const event = await harness.awaitMcpResult({ server: SERVER, tool: 'dashboard_widget', cwd: project.path, timeoutMs: 60_000 });
+    expect(event.report.isError, event.report.result).toBeFalsy();
+    // The sprint began two days ago; none of its days was read until the
+    // page showed the widget, and the page read them.
+    const hours = proposal(screen, 'Your hours');
+    await expect(hours.getByTestId('dashboard-number-value')).toHaveText('2h', { timeout: 30_000 });
+    await expect(hours.getByTestId('dashboard-number-not-read')).toHaveCount(0);
+    await expect(hours.getByTestId('dashboard-widget-unread')).toHaveCount(0);
   });
 
   test('a paired computer\'s board takes the widget its agent proposed, and keeps it through that computer\'s restart', async ({ page }) => {
