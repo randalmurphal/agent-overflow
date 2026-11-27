@@ -139,7 +139,7 @@ func deltaStep(b tracker.BoardID) step {
 //     names of (run.unnamedParents), namesBatches reads a tick (More).
 //   - history is the board tick's history unit, under the same lock.
 //   - evidence reads who worked on the tickets credit counts that are
-//     due (run.evidence), evidenceBatches reads a tick (More).
+//     due (run.evidence), one listing's page a tick (More).
 //
 // The issues nothing keeps any more, which a thread's unlink, delete,
 // retire or transfer leaves, are removed by FinishMirrorCleanup.

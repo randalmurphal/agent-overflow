@@ -21,7 +21,7 @@ import (
 )
 
 // setupPathOf is the setup file of project id.
-func (m *mirrorFixture) setupPathOf(t *testing.T, id string) string {
+func (m *fixture) setupPathOf(t *testing.T, id string) string {
 	t.Helper()
 	p, err := m.st.GetProject(id)
 	if err != nil {
@@ -32,7 +32,7 @@ func (m *mirrorFixture) setupPathOf(t *testing.T, id string) string {
 
 // writeSetupFile puts data in project id's setup file, as a person
 // editing it by hand would.
-func (m *mirrorFixture) writeSetupFile(t *testing.T, id, data string) string {
+func (m *fixture) writeSetupFile(t *testing.T, id, data string) string {
 	t.Helper()
 	path := m.setupPathOf(t, id)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

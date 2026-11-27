@@ -51,14 +51,14 @@ func evidenceFixture(t *testing.T, rows int) (m *mirrorFixture, cs *countingStor
 	return m, cs, func() [][]tracker.EvidenceIssue { return reads }
 }
 
-// countCredit turns credit on for the fixture's project, in the setup's
-// credit section.
-func (m *mirrorFixture) countCredit(t *testing.T, on bool) {
+// countCredit turns credit on or off for the project that lists conn's
+// boards (listBoards), in the setup's credit section.
+func (f *fixture) countCredit(t *testing.T, conn string, on bool) {
 	t.Helper()
-	m.writeSetupFile(t, "boards-"+m.conn.ID, fmt.Sprintf(`{"credit": {"version": 1, "on": %t}}`, on))
-	m.svc.setupMu.Lock()
-	clear(m.svc.setups)
-	m.svc.setupMu.Unlock()
+	f.writeSetupFile(t, "boards-"+conn, fmt.Sprintf(`{"credit": {"version": 1, "on": %t}}`, on))
+	f.svc.setupMu.Lock()
+	clear(f.svc.setups)
+	f.svc.setupMu.Unlock()
 }
 
 func (m *mirrorFixture) evidenceTick(t *testing.T) Outcome {
@@ -75,9 +75,34 @@ func (m *mirrorFixture) evidenceTick(t *testing.T) Outcome {
 func TestEvidenceWithoutCreditReadsNothing(t *testing.T) {
 	m, cs, asked := evidenceFixture(t, 1)
 	m.evidenceTick(t)
-	m.countCredit(t, false)
+	m.countCredit(t, m.conn.ID, false)
 	m.evidenceTick(t)
 	if calls := cs.take(); calls["ListMirrorActsDue"]+calls["ReplaceMirrorActs"] != 0 || len(asked()) != 0 {
+		t.Fatalf("store calls %v, reads %v", calls, asked())
+	}
+}
+
+// A board of another connection with the same ID, listed by a project
+// counting credit, counts nothing on this connection.
+func TestEvidenceCountsOnlyTheConnectionsOwnBoards(t *testing.T) {
+	m, _, asked := evidenceFixture(t, 1)
+	other := m.addLinear()
+	m.listBoards(other.ID, testBoard)
+	m.countCredit(t, other.ID, true)
+	m.evidenceTick(t)
+	if len(asked()) != 0 {
+		t.Fatalf("reads %v", asked())
+	}
+}
+
+// A tracker that reads no evidence is asked nothing, and its listing not
+// made, whether or not credit counts.
+func TestEvidenceOfATrackerWithoutEvidenceReadsNothing(t *testing.T) {
+	m, cs, asked := evidenceFixture(t, 1)
+	m.p.set(func(p *scripted) { p.caps.Evidence = tracker.EvidenceKinds{} })
+	m.countCredit(t, m.conn.ID, true)
+	m.evidenceTick(t)
+	if calls := cs.take(); calls["ListMirrorActsDue"] != 0 || len(asked()) != 0 {
 		t.Fatalf("store calls %v, reads %v", calls, asked())
 	}
 }
@@ -87,7 +112,7 @@ func TestEvidenceWithoutCreditReadsNothing(t *testing.T) {
 // when its card moves.
 func TestEvidenceIsReadOncePerUpdate(t *testing.T) {
 	m, cs, asked := evidenceFixture(t, 2)
-	m.countCredit(t, true)
+	m.countCredit(t, m.conn.ID, true)
 	out := m.evidenceTick(t)
 	if got := units(out); !slices.Equal(got, []Unit{UnitEvidence}) || out.More() || !out.Changes().Catalog {
 		t.Fatalf("outcome %+v", out)
@@ -119,15 +144,16 @@ func TestEvidenceIsReadOncePerUpdate(t *testing.T) {
 	}
 }
 
-// A unit reads at most evidenceBatches batches a tick and reports More
-// while tickets are due.
+// A unit reads one listing's page a tick, 200 tickets in 4 reads, and
+// reports More while tickets are due.
 func TestEvidenceReadsABoundedPageATick(t *testing.T) {
-	m, _, asked := evidenceFixture(t, evidenceBatch*evidenceBatches+1)
-	m.countCredit(t, true)
-	if out := m.evidenceTick(t); !out.More() || len(asked()) != evidenceBatches {
+	const page, reads = 200, 4
+	m, _, asked := evidenceFixture(t, page+1)
+	m.countCredit(t, m.conn.ID, true)
+	if out := m.evidenceTick(t); !out.More() || len(asked()) != reads {
 		t.Fatalf("first tick: more %v, %d reads", out.More(), len(asked()))
 	}
-	if out := m.evidenceTick(t); out.More() || len(asked()) != evidenceBatches+1 || len(asked()[evidenceBatches]) != 1 {
+	if out := m.evidenceTick(t); out.More() || len(asked()) != reads+1 || len(asked()[reads]) != 1 {
 		t.Fatalf("second tick: more %v, %d reads", out.More(), len(asked()))
 	}
 }
@@ -137,7 +163,7 @@ func TestEvidenceReadsABoundedPageATick(t *testing.T) {
 func TestEvidenceWithoutWorklogsStoresComments(t *testing.T) {
 	m, _, asked := evidenceFixture(t, 1)
 	m.p.set(func(p *scripted) { p.caps.Evidence.Worklogs = false })
-	m.countCredit(t, true)
+	m.countCredit(t, m.conn.ID, true)
 	m.evidenceTick(t)
 	m.evidenceTick(t)
 	if len(asked()) != 1 {
@@ -161,7 +187,7 @@ func TestEvidenceWithoutWorklogsStoresComments(t *testing.T) {
 // source.
 func TestEvidenceReadAcrossATimeSourceChangeIsReadAgain(t *testing.T) {
 	m, _, asked := evidenceFixture(t, 1)
-	m.countCredit(t, true)
+	m.countCredit(t, m.conn.ID, true)
 	m.p.set(func(p *scripted) {
 		inner := p.evidence
 		p.evidence = func(q tracker.EvidenceQuery) (tracker.Evidence, error) {

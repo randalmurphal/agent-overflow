@@ -7,9 +7,8 @@ import (
 	"strconv"
 )
 
-// mirrorActsDuePage bounds one ListMirrorActsDue read: what one evidence
-// unit reads (trackerapp's evidenceBatches reads of evidenceBatch
-// issues).
+// mirrorActsDuePage bounds one ListMirrorActsDue read, and so what one
+// evidence unit reads: 4 reads of trackerapp's evidenceBatch issues.
 const mirrorActsDuePage = 4 * mirrorHistoryBatch
 
 // MirrorActsBoard is a board whose tickets credit counts, with the

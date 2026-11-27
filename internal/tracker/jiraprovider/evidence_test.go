@@ -14,8 +14,9 @@ import (
 
 // evidenceScenario is the scenario's site with WEB-1 holding comments of
 // User 2, of an app and of a customer, and 25 worklogs of User 1 an hour
-// apart from start, more than Jira embeds; requests records the routes
-// each request reached.
+// apart from start, more than Jira embeds, and WEB-2 two worklogs of User
+// 1, at start and 11 hours after; requests records the routes each
+// request reached.
 func evidenceScenario(t *testing.T, withTempo bool) (s *scenario, start time.Time, requests func() []string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -38,6 +39,10 @@ func evidenceScenario(t *testing.T, withTempo bool) (s *scenario, start time.Tim
 			is.Worklogs = append(is.Worklogs, trackerfake.JiraWorklog{ID: fmt.Sprint(50001 + i), Author: "acc-user1", Started: start.Add(time.Duration(i) * time.Hour),
 				TimeSpent: 600})
 		}
+		two := &site.Issues[1]
+		for i, at := range []time.Time{start, start.Add(11 * time.Hour)} {
+			two.Worklogs = append(two.Worklogs, trackerfake.JiraWorklog{ID: fmt.Sprint(60001 + i), Author: "acc-user1", Started: at, TimeSpent: 600})
+		}
 	})
 	return s, start, func() []string {
 		mu.Lock()
@@ -47,8 +52,9 @@ func evidenceScenario(t *testing.T, withTempo bool) (s *scenario, start time.Tim
 }
 
 // Evidence reads an issue's comments and its worklogs while Jira's own are
-// the time, the worklogs Jira did not embed through one read of the
-// issue's worklog list from the issue's bound; an app's and a customer's
+// the time, from the issue's bound: the worklogs Jira did not embed
+// through one read of the issue's worklog list from the bound, and an
+// embedded list whole, kept from the bound. An app's and a customer's
 // comments are left out, the authors named, and an issue Jira does not
 // return is left out.
 func TestEvidenceReadsCommentsAndJirasWorklogs(t *testing.T) {
@@ -57,7 +63,7 @@ func TestEvidenceReadsCommentsAndJirasWorklogs(t *testing.T) {
 		t.Fatalf("evidence kinds %+v", caps)
 	}
 	from := start.Add(10 * time.Hour)
-	ev, err := s.p.Evidence(s.ctx, tracker.EvidenceQuery{Issues: []tracker.EvidenceIssue{{Issue: "10101", WorklogsFrom: from}, {Issue: "10102"}, {Issue: "99999"}}})
+	ev, err := s.p.Evidence(s.ctx, tracker.EvidenceQuery{Issues: []tracker.EvidenceIssue{{Issue: "10101", WorklogsFrom: from}, {Issue: "10102", WorklogsFrom: from}, {Issue: "99999"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,8 +77,8 @@ func TestEvidenceReadsCommentsAndJirasWorklogs(t *testing.T) {
 	if len(one.Worklogs) != 15 || one.Worklogs[0].ID != "50011" || !one.Worklogs[0].At.Equal(from) || one.Worklogs[0].Spent != 10*time.Minute {
 		t.Errorf("%d worklogs from the bound, first %+v", len(one.Worklogs), one.Worklogs[0])
 	}
-	if len(ev.Issues[1].Comments)+len(ev.Issues[1].Worklogs) != 0 {
-		t.Errorf("WEB-2 %+v", ev.Issues[1])
+	if two := ev.Issues[1]; len(two.Comments) != 0 || len(two.Worklogs) != 1 || two.Worklogs[0].ID != "60002" {
+		t.Errorf("WEB-2 %+v", two)
 	}
 	var users []string
 	for _, u := range ev.Users {

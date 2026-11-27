@@ -9,21 +9,17 @@ import (
 	"agent-overflow/internal/tracker"
 )
 
-const (
-	// evidenceBatch is the most issues one evidence read names: half of
-	// what Jira's bulk fetch takes with comments (100), so a batch of
-	// issues with long comment threads stays well inside the transport's
-	// bound on an answer (trackerapi's 8 MiB); evidenceBatches is the most
-	// reads one evidence unit makes. One listing (store
-	// ListMirrorActsDue) holds what one unit reads.
-	evidenceBatch   = 50
-	evidenceBatches = 4
-)
+// evidenceBatch is the most issues one evidence read names: half of what
+// Jira's bulk fetch takes with comments (100), so a batch of issues with
+// long comment threads stays well inside the transport's bound on an
+// answer (trackerapi's 8 MiB). A unit reads the one page its listing
+// returns (store ListMirrorActsDue, 200 issues), so at most 4 reads.
+const evidenceBatch = 50
 
 // evidence is the evidence unit (SyncLinked): who commented on and logged
 // time on the tickets credit counts, for the boards of every project of
 // the connection that counts credit (creditBoards), read in batches of
-// evidenceBatch, evidenceBatches a tick (More). Which tickets are due, and
+// evidenceBatch, one listing's page a tick (More). Which tickets are due, and
 // in what order, is the store's rule (store ListMirrorActsDue): a ticket is
 // due until a read for its card's update stored a receipt of each kind the
 // provider reads (tracker.Capabilities.Evidence). A support ticket's
@@ -37,7 +33,7 @@ const (
 // reads under the new source with a provider built for it.
 func (r *run) evidence() (UnitResult, error) {
 	kinds := r.p.Capabilities().Evidence
-	if !kinds.Comments && !kinds.Worklogs {
+	if !kinds.Comments {
 		return UnitResult{}, nil
 	}
 	boards, err := r.s.creditBoards(r.row)
@@ -50,12 +46,7 @@ func (r *run) evidence() (UnitResult, error) {
 		return UnitResult{}, fmt.Errorf("trackerapp: list the tickets whose evidence is due: %w", err)
 	}
 	var log changeLog
-	reads := 0
 	for batch := range slices.Chunk(due, evidenceBatch) {
-		if reads == evidenceBatches {
-			return UnitResult{Changes: log.changes(), More: true}, nil
-		}
-		reads++
 		changed, err := r.evidenceOf(batch, kinds, window.UnixMilli())
 		log.add(Changes{Catalog: changed})
 		switch {
@@ -95,9 +86,7 @@ func (r *run) evidenceOf(due []store.MirrorActsDue, kinds tracker.EvidenceKinds,
 	var acts []store.MirrorIssueActs
 	for _, ie := range ev.Issues {
 		readFor := millis(ie.Updated)
-		if kinds.Comments {
-			acts = append(acts, store.MirrorIssueActs{IssueID: string(ie.Issue), Source: store.MirrorActComment, ReadFor: readFor, Acts: mirrorActs(ie.Comments)})
-		}
+		acts = append(acts, store.MirrorIssueActs{IssueID: string(ie.Issue), Source: store.MirrorActComment, ReadFor: readFor, Acts: mirrorActs(ie.Comments)})
 		if kinds.Worklogs {
 			acts = append(acts, store.MirrorIssueActs{IssueID: string(ie.Issue), Source: store.MirrorActWorklog, ReadFor: readFor, Acts: mirrorActs(ie.Worklogs)})
 		}
