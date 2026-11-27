@@ -51,9 +51,10 @@ type MirrorSprintFinished struct {
 //   - It is part of the section totals (countMirrorSectionsTx), so it is
 //     stale exactly when they are: the board's totals_revision advances on
 //     every change of its inputs, rows, members, sprints and their states,
-//     estimates, statuses and their groups by trigger, and a history write
+//     estimates, statuses and their groups by trigger, a history write
 //     of an issue on the board that is in one of its closed sprints by
-//     advanceMirrorPaceTx.
+//     advanceMirrorPaceTx, and, for its credit, an evidence write that
+//     changes what is read of an issue on the board (replaceMirrorActsTx).
 //
 // mirrorPaceSQL reads those sprints of board ?2 of root ?1, each member's
 // status at its completion and its estimate, and counts and sums those

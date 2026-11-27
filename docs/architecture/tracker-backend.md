@@ -1202,6 +1202,8 @@ and writes share:
   - the members of the boards' active sprints done now, their comments
     and every worklog; then the members of each sprint closed in the
     history window (180 days), newest first, done at its completion,
+    the same; then, of each board that plans no sprints, its tickets
+    done now whose card moved in the window, walked by the update index,
     the same; then each project's support tickets (its support rule)
     whose card moved in the window, walked by the update index, their
     worklogs from the window's start. A ticket two arms or two projects
@@ -1220,6 +1222,10 @@ and writes share:
     or removes.
   - A read never narrows a receipt's coverage: its worklogs are read
     from the earlier of the need and the receipt's start.
+  - A write that changes what is read of a ticket (a new receipt, a
+    changed coverage, an act added, changed or removed) advances the
+    `totals_revision` of each board holding it, once a board per
+    transaction, since the pace counts credit from it.
 
   A unit reads at most 4 batches of 50 a tick and reports More while the
   listing has more. A source that failed for its ticket alone is stored
@@ -2426,7 +2432,7 @@ closes a database of its own.
 
 | Rule or state | Owner |
 |---|---|
-| Which rows a board's export holds, the regrouping, the pace's done-at-completion rule | `store` (`tracker_cache_export.go`; the pace's fragment is shared with `tracker_cache_pace.go`) |
+| Which rows a board's export holds, the regrouping, the pace's done-at-completion rule, credit | `store` (`tracker_cache_export.go`; the pace's fragment is shared with `tracker_cache_pace.go`, and credit's, `tracker_cache_credit.go`, with the Backlog's pace) |
 | The sandbox, the metric contract and its validator, the reductions, ranges, narrowing, drills and the built-in dashboard | `trackerdash` (its package comment is the sandbox's contract) |
 | The board, its status groups and the viewer of an evaluation | `trackerapp` |
 | The dashboards a project keeps (the setup file's `dashboards` section) and the widgets agents proposed | `trackerapp` (`dashboard_setup.go`, `dashboards.go`) |
@@ -2632,11 +2638,30 @@ board's Overview counts three widgets from them:
 Their costs at 2,000 and 20,000 issues are in
 [Tracker API measurements](../references/tracker-api-measurements.md#sprint-history).
 
+### Credit
+
+A project that counts credit passes its rules in the board read's
+regrouping (`MirrorRegroup.WithCredit`), and one SQL fragment counts it
+(`store/tracker_cache_credit.go`, whose comment holds the rules): the
+export's `credit` relation and the store's pace both read it, so they
+count alike. Each row is a finished ticket for the person it was
+assigned to when it finished, a review for each other person who acted
+on it, or support time for its author, with the rule values its note
+needs. A ticket whose evidence is not read for its card has one row not
+counted, with no person, so a person's page lists it too
+(`evaluation.keep`). The built-in dashboard's pace and its finished bars
+then count three series: finished tickets, review credit and support
+credit. While such a row is listed and the linked tick's last evidence
+read failed, the answer says why (`Answer.Evidence`). A project that
+counts no credit binds no rules, its `credit` relation is empty, and
+its pace runs the statement it ran before credit
+(`TestAPaceWithoutCreditRunsTodaysStatement`).
+
 ### Metrics
 
 A metric is one SELECT over the export whose rows are contributions:
-a `ticket` and any of `value`, `bucket`, `series`, `person`, `epic`, `at`,
-`until` and `note` (`trackerdash/metric.go`). Each row is checked as it comes
+a `ticket` and any of `value`, `share`, `bucket`, `series`, `person`,
+`epic`, `at`, `until` and `note` (`trackerdash/metric.go`). Each row is checked as it comes
 in: its ticket is in the copy, its series is one the metric names, its
 value is finite and within ±1e12, and its `at` is an instant before the
 year 2286. The app does the rest: it places rows in the range's periods
@@ -2648,7 +2673,8 @@ NULL is not counted: a number says how many tickets it could not count
 and a number that counted nothing is not known (`V` absent) rather than
 zero. Where the board is counted in tickets (it has no estimates, or its
 project counts tickets), each counted row of a metric in the estimate
-unit is one ticket, whatever its value (`evaluation.run`); the copy
+unit is its `share` of a ticket (1 when absent), whatever its value
+(`evaluation.run`); the copy
 keeps each ticket's own estimate. A row of a range metric with no `at` could have happened from its
 ticket's creation to its last update: it belongs to each range that
 span meets, the range before included, is counted in none and in no
@@ -2923,7 +2949,7 @@ tickets each number could not count, how many rows its query returned
 and the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 6,184 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 7,411 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a

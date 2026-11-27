@@ -259,7 +259,8 @@ func mirrorCreditFinishedSQL(p mirrorCreditParams) string {
 }
 
 // mirrorCreditApprovalsSQL is a review row's note while approvals are not
-// read, for a rule f.rule that counts them: the one place that says so.
+// read, for a review row of rule g.rule that counts them: the one place
+// that says so.
 const mirrorCreditApprovalsSQL = `iif(g.rule ->> 'approved' = 1, 'approvals are not read yet', NULL)`
 
 // MirrorCreditColumns are the columns of a credit row, as

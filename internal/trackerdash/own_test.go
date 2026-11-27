@@ -304,7 +304,8 @@ func TestRulesNameTheFieldsAndTheRelations(t *testing.T) {
 		"ticket (required", "CREATE TABLE main.tickets(", "-- status_group:", "-- type:", "use labels", "no order",
 		"CREATE TABLE main.labels(", "an unnamed one by its ID", "one per bucket for a ticket in several", "A count stops at 1s", "a state's row counts toward them only if it holds now", "time estimates in seconds",
 		"until (makes the row a state", "day (the active sprint's working days", "CREATE TABLE main.status_intervals(", "CREATE TABLE main.sprint_intervals(",
-		"the status then is not known", "180 days ago", "unless done, canceled or left_out"} {
+		"the status then is not known", "180 days ago", "unless done, canceled or left_out",
+		"CREATE TABLE main.credit(", "share (for unit estimate", "shows on every person's page"} {
 		if !strings.Contains(rules, want) {
 			t.Errorf("the rules lack %q", want)
 		}
