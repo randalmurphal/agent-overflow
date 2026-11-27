@@ -2943,7 +2943,12 @@ worklogs and the Jira issues they name
 (`TestAWeeksDraftCostsBoundedRequests`). Each day answers its worklogs (`logged`), the draft's entries not yet logged
 (`drafted`, by `agent` or `you`, in state drafted, sent or unknown) and
 its open questions. A connection whose read failed is named in `unread`
-with its sentence; the call fails only when every connection did.
+with its sentence; the call fails only when every connection did. The
+answer names the tickets the thread's project's Time settings put
+meeting and time-off hours on (`meetings_ticket`, `time_off_ticket`,
+each absent when not set), read from the setup with no request
+(`Host.TimeSettings`); settings this build cannot read fail the call
+with their sentence.
 
 **`time_draft`** takes `entries` to draft or `post` to log the draft of
 days (below), and refuses a call with neither or both. `entries` are each a `day`, `hours` (whole minutes),
@@ -2958,7 +2963,14 @@ them (`store.TimeDayOverError`, checked in the write's transaction); a
 ticket is drafted once a day, and no day is in the future. A read-only thread is
 refused (`Host.WritePolicy`, read at admission and again just before the
 store write, so a thread made read-only during the key lookup drafts
-nothing). The draft replaces the drafted entries that
+nothing). A key of the project's meetings or time-off ticket that no site
+finds is refused naming the setting, so the agent asks and the person
+picks another (`goneSetting`, from the not-found refusal's cause). With
+Never log to an epic on, an entry whose own ticket is an epic (type level
+1 or more) is refused; the type is the lookup's card's or the mirror's,
+which the draft reads anyway, and an entry whose type neither has, such
+as the thread's linked ticket the mirror does not hold, is drafted with
+no request asked for it. An offer of an epic is the person's to pick. The draft replaces the drafted entries that
 the calling thread drafted on each day the call names; another thread's
 entries, the person's, and entries sent, posted or of unknown outcome
 stay, and a new entry for a ticket that has one not yet logged that day
