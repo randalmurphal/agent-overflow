@@ -268,6 +268,8 @@
       onEpic={(e) => store.narrowEpic(e)}
       onTicket={openTicket}
       {tickets}
+      logged={store.logged}
+      computer={computerName}
       {actions}
       limit={tiles?.limits[w.id] ?? null}
       tile={proposed ? undefined : tileOf(w)}

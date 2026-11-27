@@ -6,17 +6,24 @@
 import { formatEstimate } from '../components/issues/boardFormat';
 
 /** A metric's unit, as trackerdash.Unit. */
-export type DashboardUnit = 'tickets' | 'estimate' | 'days';
+export type DashboardUnit = 'tickets' | 'estimate' | 'days' | 'time';
 
 function trim(n: number): string {
   const rounded = Math.round(n * 10) / 10;
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
+/** Whether values of the unit are time in seconds (a time board's
+ * estimates, logged time), which reads as hours or minutes. */
+export function inTime(unit: DashboardUnit, estimates: string): boolean {
+  return unit === 'time' || (unit === 'estimate' && estimates === 'time');
+}
+
 /** A value in its unit, without the unit's word: points and days to one
- * place, time as hours or minutes, tickets whole unless averaged. */
+ * place, time as hours or minutes (inTime), tickets whole unless
+ * averaged. */
 export function formatAmount(v: number, unit: DashboardUnit, estimates: string): string {
-  if (unit === 'estimate' && estimates === 'time') return formatEstimate(v, 'time') ?? '0m';
+  if (inTime(unit, estimates)) return formatEstimate(v, 'time') ?? '0m';
   return trim(v);
 }
 
@@ -26,6 +33,6 @@ export function unitWord(v: number, unit: DashboardUnit, estimates: string): str
   const counting = unit === 'tickets' || (unit === 'estimate' && estimates === 'none');
   if (counting) return v === 1 ? 'ticket' : 'tickets';
   if (unit === 'days') return v === 1 ? 'day' : 'days';
-  if (estimates === 'time') return '';
+  if (unit === 'time' || estimates === 'time') return '';
   return v === 1 ? 'point' : 'points';
 }

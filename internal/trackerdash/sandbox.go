@@ -18,11 +18,13 @@ import (
 
 // Fill fills the empty main database of conn with a board's export
 // (store.ExportMirrorBoard bound to the board) of relations, the ones the
-// count reads: ok is false for a board the mirror does not show. The
-// export's EstimateUnit is the unit the board is counted in, none where
-// its project counts tickets. The fill must leave conn holding its main
-// database alone; the gate checks it.
-type Fill func(ctx context.Context, conn *sql.Conn, relations []string) (export store.MirrorExport, ok bool, err error)
+// count reads, with the viewer's logged time up to day loggedThrough
+// (YYYY-MM-DD, today in the request's time zone; worklogs.go): ok is
+// false for a board the mirror does not show. The export's EstimateUnit
+// is the unit the board is counted in, none where its project counts
+// tickets. The fill must leave conn holding its main database alone; the
+// gate checks it.
+type Fill func(ctx context.Context, conn *sql.Conn, relations []string, loggedThrough string) (export store.MirrorExport, ok bool, err error)
 
 // snapshotDSN is the export's database: private and in memory, a sort or
 // a materialized subquery that outgrows the 4 MiB page cache spilling to
@@ -80,7 +82,7 @@ func init() {
 		count sum total avg group_concat string_agg
 		row_number rank dense_rank percent_rank cume_dist ntile lag lead first_value last_value nth_value
 		ceil ceiling floor trunc ln log log10 log2 exp pow power sqrt mod pi
-		days working_days day`) {
+		days working_days day day_start`) {
 		allowedFunctions[name] = true
 	}
 }

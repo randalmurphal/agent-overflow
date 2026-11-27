@@ -52,6 +52,9 @@ type boardPending struct {
 	// change of a project's dashboards (tellDashboards), each sent at once.
 	pins       *ProjectPins
 	dashboards *ProjectDashboards
+	// logged is the end of a run of reads of the connection's logged time
+	// (tellLogged).
+	logged bool
 	// due reports something to send: a change or a failure that started,
 	// changed or cleared.
 	due bool
@@ -508,7 +511,7 @@ func (s *Service) flushBoardLocked(p *boardPump) {
 	p.pending = boardPending{}
 	s.emitBoard(BoardEvent{
 		Scope: p.scope, Seq: s.nextSeqLocked(), Changed: pending.changed, Removed: pending.removed,
-		Truncated: pending.truncated, ReadAgain: pending.readAgain, Pins: pending.pins, Dashboards: pending.dashboards, Sync: p.toldLocked(),
+		Truncated: pending.truncated, ReadAgain: pending.readAgain, Pins: pending.pins, Dashboards: pending.dashboards, Logged: pending.logged, Sync: p.toldLocked(),
 	})
 }
 

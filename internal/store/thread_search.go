@@ -151,7 +151,7 @@ func threadLastActivityExpr(alias string) string {
 // The mode exclusion is scratch alone, not the sidebar's hidden set: an
 // agent searching for a thread may find a workflow-mode one, which is work
 // it can read and answer about (docs/specs/agent-thread-tools.md,
-// thread_search defaults). hiddenThreadModesClause keeps serving the UI
+// thread_search defaults). hiddenThreadModesSQL keeps serving the UI
 // listings, where hidden means hidden from the person.
 //
 // It does not render the ThreadIDs restriction: the search applies that to

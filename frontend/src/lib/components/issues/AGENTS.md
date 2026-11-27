@@ -204,9 +204,15 @@ board methods, events and the patch read in
   state, one per screen: the board's dashboards and proposals as its
   list gives them, the one answer the screen draws and the one evaluation
   in flight, the range and Team or
-  Mine saved for the next screen, the person or epic narrowed to, and the
-  one drill open. It counts again on the board's changes
-  (`TrackerBoardState.changes`), at most once every 5 s, and every 10
+  Mine saved for the next screen, the person or epic narrowed to, the
+  one drill open, and the person's Refresh and Read again of your
+  logged time (`refreshLogged`, which the board's Refresh calls through
+  the summary row while a tile counts it; the board's computer reads it
+  on its own from its
+  evaluations, `trackerapp/worklog_reads.go`, and the answer says whether
+  it reads and why it failed; `DashboardLoggedLine.svelte` says so on a
+  widget and on the summary row's tile). It counts again on the board's changes
+  (`TrackerBoardState.changes`, which the end of those reads moves too), at most once every 5 s, and every 10
   minutes, and lists again when the project's dashboards of the board
   change (`TrackerBoardState.dashboards`); its rules are at the top of
   the store. The board's summary

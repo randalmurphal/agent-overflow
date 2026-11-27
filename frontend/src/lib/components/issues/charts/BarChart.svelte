@@ -8,7 +8,7 @@
   import { formatNum, numValue, numWords, type Num } from '../../../stores/trackerDashboardModel';
   import type { DashboardUnit } from '../../../utils/dashboardAmount';
   import { isLocalEnter } from '../../../utils/localEnter';
-  import { band, labelEvery, SERIES_COLORS, valueScale } from './chartScale';
+  import { band, labelEvery, SERIES_COLORS, unitScale } from './chartScale';
 
   interface Props {
     title: string;
@@ -28,7 +28,7 @@
   let hovered = $state<{ b: number; s: number } | null>(null);
   const named = $derived(series.length > 1 || series[0] !== '');
   const top = $derived(Math.max(0, ...buckets.flatMap((b) => b.cells.map((c) => numValue(c as Num) ?? 0))));
-  const scale = $derived(valueScale(top));
+  const scale = $derived(unitScale(top, unit, estimates));
 
   const V_HEIGHT = 168;
   const V_LEFT = 36;
@@ -86,10 +86,10 @@
   {/if}
   {#if width > 0 && !horizontal}
     <svg width={width} height={V_HEIGHT} class="block overflow-visible" aria-hidden="false">
-      {#each scale.ticks as t (t)}
-        {@const y = plotH + 8 - (t / scale.max) * plotH}
+      {#each scale.ticks as t (t.value)}
+        {@const y = plotH + 8 - (t.value / scale.max) * plotH}
         <line x1={V_LEFT} x2={width} y1={y} y2={y} class="stroke-border-subtle" stroke-width="1" />
-        <text x={V_LEFT - 6} y={y + 3} text-anchor="end" class="fill-fg-subtle text-[0.625rem]">{t}</text>
+        <text x={V_LEFT - 6} y={y + 3} text-anchor="end" class="fill-fg-subtle text-[0.625rem]" data-testid="dashboard-axis-tick">{t.label}</text>
       {/each}
       <g transform="translate({V_LEFT},0)">
         {#each buckets as b, i (b.key)}

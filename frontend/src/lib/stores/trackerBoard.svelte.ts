@@ -368,7 +368,9 @@ function fold(live: Live, event: TrackerBoardEvent): void {
   if (dashboards || event.read_again) next.dashboards = live.state.dashboards + 1;
   const ids = [...(event.changed ?? []), ...(event.removed ?? [])];
   if (event.read_again || event.truncated) live.readAgain = true;
-  if (ids.length > 0 || event.read_again || event.truncated || dashboards?.counts) next.changes = live.state.changes + 1;
+  // The reads of the connection's logged time ended: what the dashboards
+  // count changed.
+  if (ids.length > 0 || event.read_again || event.truncated || dashboards?.counts || event.logged) next.changes = live.state.changes + 1;
   releaseRetries(live, next);
   for (const id of ids) live.pending.add(id);
   if (live.pending.size > MAX_PATCH_IDS) {

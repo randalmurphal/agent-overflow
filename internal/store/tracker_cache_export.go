@@ -50,7 +50,7 @@ import (
 // MirrorExportTables are the relations the export writes, the only tables
 // of the database it fills.
 var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epics", "sprints", "sprint_tickets", "changes", "sprint_finished", "labels",
-	"status_intervals", "sprint_intervals"}
+	"status_intervals", "sprint_intervals", "threads", "worklogs", "worklog_days"}
 
 // mirrorExportCardColumns are the tickets' columns decoded from the card
 // blob, in the tickets fill's order: each one's name in the export
@@ -96,6 +96,11 @@ const mirrorExportCardArg = 11
 // can ask of the intervals (mirrorExportEarliest), after the card blob's
 // shape.
 var mirrorExportWindowArg = mirrorExportCardArg + len(mirrorExportCardColumns)
+
+// mirrorExportLoggedArg is the parameter of the first day the logged
+// time holds (MirrorLoggedDays.From), after mirrorExportWindowArg, and
+// the one after it its last (MirrorLoggedDays.Through).
+var mirrorExportLoggedArg = mirrorExportWindowArg + 1
 
 // args is the shape as the fills bind it, ?6 to ?10 and then a member
 // path for each column of mirrorExportCardColumns (mirrorExportFills).
@@ -160,6 +165,12 @@ CREATE TABLE main.status_intervals(ticket TEXT NOT NULL, status TEXT NOT NULL, f
 -- sprint_intervals: a ticket in a sprint at one estimate (points), likewise; none for a ticket whose history_behind is 1.
 CREATE TABLE main.sprint_intervals(sprint TEXT NOT NULL, ticket TEXT NOT NULL, points REAL, from_at INTEGER NOT NULL, to_at INTEGER,
   PRIMARY KEY (sprint, ticket, from_at)) WITHOUT ROWID;
+-- threads: the threads on this board's computer linked to a ticket. origin: start_work, ask, manual or agent. last_turn_at: its newest turn's start.
+CREATE TABLE main.threads(id TEXT PRIMARY KEY, ticket TEXT NOT NULL, origin TEXT NOT NULL, linked_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
+  archived INTEGER NOT NULL, last_turn_at INTEGER) WITHOUT ROWID;
+-- worklogs: your own logged time on this board's tickets, by day (YYYY-MM-DD), over the last 182 days up to today. Only the days in worklog_days were read: a number counted from worklogs is not known until every one of those days is, and says how many are not; one that counts a period that began before them is never known.
+CREATE TABLE main.worklogs(id TEXT PRIMARY KEY, ticket TEXT NOT NULL, day TEXT NOT NULL, seconds INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE main.worklog_days(day TEXT PRIMARY KEY) WITHOUT ROWID;
 `
 
 // mirrorExportSchemaName is the attached file's schema name.
@@ -266,10 +277,12 @@ func (f mirrorExportFill) text(relations map[string]bool) string {
 // mirrorExportFills are the fill statements in order: ?1 root, ?2 board,
 // ?3 the regrouping (a JSON object, '{}' for none), ?4 the board's
 // estimate reset, ?5 whether the board has an estimate (0 or 1), from
-// ?6 the card blob's shape (MirrorCardShape.args), and then the history
-// window's start (mirrorExportWindowArg). Each
-// names the snapshot's tables by main and the file's unqualified: the
-// snapshot names none of the file's tables. An export runs those of the
+// ?6 the card blob's shape (MirrorCardShape.args), then the earliest
+// instant a count can ask (mirrorExportWindowArg) and the first and last
+// days of the logged time (mirrorExportLoggedArg). Each
+// names the snapshot's tables by main and the file's unqualified, so a
+// file table the snapshot has a relation of the same name as (threads) is
+// read only through a view of the file's (mirrorExportRelationFills). An export runs those of the
 // relations asked for and the relations they need (mirrorExportRelations).
 var mirrorExportFills = append([]mirrorExportFill{
 	{relation: "board", name: "board", sql: `INSERT INTO main.board(name, plans_sprints, estimates)
@@ -355,7 +368,7 @@ var mirrorExportFills = append([]mirrorExportFill{
 	    UNION SELECT from_value FROM main.changes WHERE kind = 'assignee' AND from_value IS NOT NULL
 	    UNION SELECT to_value FROM main.changes WHERE kind = 'assignee' AND to_value IS NOT NULL) x
 	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
-}, mirrorExportIntervalFills()...)
+}, slices.Concat(mirrorExportIntervalFills(), mirrorExportRelationFills())...)
 
 // mirrorExportAlways are the relations every export fills: what a range
 // is resolved against.
@@ -405,6 +418,19 @@ type MirrorExport struct {
 	// FirstReadDone is whether the board's first read has finished: until
 	// then the export holds the tickets read so far.
 	FirstReadDone bool
+	// Earliest is the earliest instant a count can ask of the history
+	// (mirrorExportEarliest): no interval and no day of logged time before
+	// it is in the export.
+	Earliest int64
+	// LoggedFrom is the first day (YYYY-MM-DD) of the logged time the
+	// export holds, as the export was given it (MirrorLoggedDays.From):
+	// worklogs and worklog_days hold no day before it (trackerdash
+	// worklogs.go).
+	LoggedFrom string
+	// Viewer is the board's connection's verified account, whose logged
+	// time worklogs and worklog_days hold, read in the export's snapshot;
+	// "" before one is verified.
+	Viewer string
 }
 
 // ErrMirrorExportUnsupported is an export from a store with no database
@@ -416,13 +442,14 @@ var ErrMirrorExportUnsupported = errors.New("store: this store has no database f
 // (MirrorExportTables): relations, what their fills need and the ones
 // every export fills (mirrorExportRelations), the others left empty, and
 // the columns of MirrorExportColumns relations names, decoded from card
-// blobs of shape card, and the intervals from window, the start of the
-// mirror's history window in milliseconds (mirrorExportIntervalsFrom). It reads with regroup in one read transaction of this
+// blobs of shape card, the intervals from window, the start of the
+// mirror's history window in milliseconds (mirrorExportIntervalsFrom), and
+// the logged time of the days logged. It reads with regroup in one read transaction of this
 // store's file, attached to conn read-only for the fill and detached
 // before it returns. ok is false, with nothing filled, for a board the
 // mirror does not show. It takes a history read slot, as every read that
 // walks a board does; ctx bounds the wait for it and every statement.
-func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations []string, window int64, card MirrorCardShape) (export MirrorExport, ok bool, err error) {
+func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations []string, window int64, logged MirrorLoggedDays, card MirrorCardShape) (export MirrorExport, ok bool, err error) {
 	if s.path == "" || s.path == ":memory:" || strings.Contains(s.path, "mode=memory") {
 		return MirrorExport{}, false, ErrMirrorExportUnsupported
 	}
@@ -454,13 +481,13 @@ func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID in
 			ok = false
 		}
 	}()
-	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup, set, window, card)
+	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup, set, window, logged, card)
 	return export, ok, err
 }
 
 // exportMirrorBoardTx runs the fill in one transaction on conn, the file
 // attached.
-func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations map[string]bool, window int64, card MirrorCardShape) (MirrorExport, bool, error) {
+func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations map[string]bool, window int64, logged MirrorLoggedDays, card MirrorCardShape) (MirrorExport, bool, error) {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: begin the export of board %s: %w", boardID, err)
@@ -484,8 +511,12 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	if err := tx.QueryRowContext(ctx, mirrorExportEarliestSprintSQL, rootID, boardID).Scan(&earliestSprint); err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: read board %s's earliest sprint to export it: %w", boardID, err)
 	}
-	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone,
-		mirrorExportEarliest(window, earliestSprint), card)
+	export.Earliest = mirrorExportEarliest(window, earliestSprint)
+	export.LoggedFrom = logged.From
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(`+mirrorExportViewerSQL+`, '')`, rootID).Scan(&export.Viewer); err != nil {
+		return MirrorExport{}, false, fmt.Errorf("store: read board %s's viewer to export it: %w", boardID, err)
+	}
+	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, export.Earliest, logged, card)
 	for _, fill := range mirrorExportFills {
 		if !fill.runs(relations) {
 			continue
@@ -503,8 +534,8 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 
 // mirrorExportArgs is what the fills bind (mirrorExportFills).
 // from is the earliest instant a count can ask of the intervals
-// (mirrorExportEarliest).
-func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, from int64, card MirrorCardShape) []any {
+// (mirrorExportEarliest), logged the days of the logged time.
+func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, from int64, logged MirrorLoggedDays, card MirrorCardShape) []any {
 	groups := regroup.statuses
 	if groups == "" {
 		groups = "{}"
@@ -513,7 +544,7 @@ func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, reset
 	if estimated {
 		hasEstimate = 1
 	}
-	return append(append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...), from)
+	return append(append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...), from, logged.From, logged.Through)
 }
 
 // mirrorExportURI is the read-only URI of the database file at path.

@@ -7,7 +7,7 @@
 import { fireEvent, render, within } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import type { RangeView, WidgetValue, WidgetView } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
-import type { DrillState } from '../../stores/trackerDashboard.svelte';
+import type { DrillState, LoggedTimeRead } from '../../stores/trackerDashboard.svelte';
 import DashboardDrill from './DashboardDrill.svelte';
 import DashboardWidget from './DashboardWidget.svelte';
 import type { TicketListSource } from './TicketListActions.svelte';
@@ -23,12 +23,12 @@ function view(over: Record<string, unknown>): WidgetView {
   return { id: 'pace', title: 'Usual pace', form: 'number', width: 4, unit: 'estimate', good: 'up', how: HOW, ...over } as unknown as WidgetView;
 }
 
-function draw(v: WidgetView, value: WidgetValue | undefined, range: RangeView = RANGE) {
+function draw(v: WidgetView, value: WidgetValue | undefined, range: RangeView = RANGE, extra: Record<string, unknown> = {}) {
   const onDrill = vi.fn();
   const onPerson = vi.fn();
   const onEpic = vi.fn();
   const onTicket = vi.fn();
-  const r = render(DashboardWidget, { props: { view: v, value, range, estimates: 'points', onDrill, onPerson, onEpic, onTicket, tickets: TICKETS }, context: SHOWN });
+  const r = render(DashboardWidget, { props: { view: v, value, range, estimates: 'points', onDrill, onPerson, onEpic, onTicket, tickets: TICKETS, ...extra }, context: SHOWN });
   return { ...r, onDrill, onPerson, onEpic, onTicket };
 }
 
@@ -248,4 +248,131 @@ it('compares a state with what held when the range began, not with the range bef
   const { getByTestId } = draw(view({ id: 'stuck', state: true, good: 'down', unit: 'tickets' }), { id: 'stuck', value: { v: 4 }, previous: { v: 2, nc: 1 } } as WidgetValue);
   expect(getByTestId('dashboard-change').textContent?.trim()).toBe('Up 2 tickets from 2, when the range began, 1 not counted then');
   expect(getByTestId('dashboard-change').dataset.tone).toBe('bad');
+});
+
+describe('your logged time', () => {
+  const logged = view({ id: 'logged', title: 'Logged', unit: 'time', how: { ...HOW, reads: ['worklogs'] } });
+  const unread = { id: 'logged', value: { ur: 2 }, unread: ['2026-11-24', '2026-11-25'] } as unknown as WidgetValue;
+  function read(over: Partial<LoggedTimeRead> = {}): LoggedTimeRead {
+    return { reading: false, failure: '', retry: vi.fn(), ...over };
+  }
+
+  it('says it is reading in place of a number that will change', () => {
+    const w = draw(logged, unread, RANGE, { logged: read({ reading: true }) });
+    expect(w.getByTestId('dashboard-widget-reading').textContent).toBe('Reading your logged time…');
+    expect(w.queryByTestId('dashboard-number')).toBeNull();
+    w.unmount();
+    const counted = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue, RANGE, { logged: read({ reading: true }) });
+    expect(counted.queryByTestId('dashboard-widget-reading')).toBeNull();
+    expect(counted.getByTestId('dashboard-number-value').textContent).toBe('1h');
+  });
+
+  it('is not known with the days not read, and after a failed read says why and reads again on the person\'s press', async () => {
+    const r = read({ failure: 'Jira asked to wait' });
+    const w = draw(logged, unread, RANGE, { logged: r });
+    expect(w.getByTestId('dashboard-number-value').textContent).toBe('Not known');
+    expect(w.getByTestId('dashboard-number-not-read').textContent).toBe('2 days not read');
+    expect(w.getByTestId('dashboard-widget-unread').textContent).toContain('Not known: 2 days not read of your logged time. Jira asked to wait');
+    await fireEvent.click(w.getByTestId('dashboard-widget-unread-retry'));
+    expect(r.retry).toHaveBeenCalledTimes(1);
+    w.unmount();
+  });
+
+  it('keeps a known number beside why reading it again failed, with Read again', async () => {
+    const r = read({ failure: 'Jira asked to wait.' });
+    const w = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue, RANGE, { logged: r });
+    expect(w.getByTestId('dashboard-number-value').textContent).toBe('1h');
+    expect(w.getByTestId('dashboard-widget-unread').textContent).toContain('Your logged time was not read again: Jira asked to wait.');
+    await fireEvent.click(w.getByTestId('dashboard-widget-unread-retry'));
+    expect(r.retry).toHaveBeenCalledTimes(1);
+    w.unmount();
+    const fine = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue, RANGE, { logged: read() });
+    expect(fine.queryByTestId('dashboard-widget-unread')).toBeNull();
+    fine.unmount();
+    const other = draw(view({}), { id: 'pace', value: { v: 2 } } as WidgetValue, RANGE, { logged: read({ failure: 'Jira asked to wait.' }) });
+    expect(other.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
+  it('offers Read again for days still not read when no read is out and none failed', async () => {
+    const r = read();
+    const w = draw(logged, unread, RANGE, { logged: r });
+    expect(w.getByTestId('dashboard-widget-unread').textContent).toContain('Not known: 2 days not read of your logged time.');
+    expect(w.getByTestId('dashboard-widget-unread').textContent).not.toContain('undefined');
+    await fireEvent.click(w.getByTestId('dashboard-widget-unread-retry'));
+    expect(r.retry).toHaveBeenCalledTimes(1);
+    w.unmount();
+    const reading = draw(logged, unread, RANGE, { logged: read({ reading: true }) });
+    expect(reading.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
+  it('says a list that counts days older than the logged time kept is not known, with nothing to read again', () => {
+    const list = view({ id: 'logged', title: 'Logged on', form: 'list', unit: 'time', how: { ...HOW, reads: ['worklogs'] } });
+    const old = { id: 'logged', tickets: [{ row: 0, key: 'WEB-1', title: 'One' }], old: true } as unknown as WidgetValue;
+    const w = draw(list, old, RANGE, { logged: read({ failure: 'Jira asked to wait.' }) });
+    expect(w.getByTestId('dashboard-widget-unread').textContent?.trim()).toBe('Not known: it counts days older than the logged time kept.');
+    expect(w.queryByTestId('dashboard-widget-unread-retry')).toBeNull();
+    w.unmount();
+    const whole = draw(list, { ...old, old: undefined } as unknown as WidgetValue, RANGE, { logged: read() });
+    expect(whole.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
+  it('says an empty chart or list of it is not known while its days are not read, and nothing to count once they are', () => {
+    const r = read();
+    const ranked = view({ id: 'logged', title: 'By assignee', form: 'bars', bucket: 'person', unit: 'time', how: { ...HOW, reads: ['worklogs'] } });
+    const list = view({ id: 'logged', title: 'Logged on', form: 'list', unit: 'time', how: { ...HOW, reads: ['worklogs'] } });
+    for (const [v, empty] of [[ranked, 'Nothing to count.'], [list, 'No tickets.']] as const) {
+      const cold = draw(v, { id: 'logged', unread: ['2026-11-24', '2026-11-25'] } as unknown as WidgetValue, RANGE, { logged: r });
+      expect(cold.queryByTestId('dashboard-widget-empty')).toBeNull();
+      expect(cold.getByTestId('dashboard-widget-unread').textContent).toContain('Not known: 2 days not read of your logged time.');
+      cold.unmount();
+      const old = draw(v, { id: 'logged', old: true } as WidgetValue, RANGE, { logged: r });
+      expect(old.queryByTestId('dashboard-widget-empty')).toBeNull();
+      expect(old.getByTestId('dashboard-widget-unread').textContent?.trim()).toBe('Not known: it counts days older than the logged time kept.');
+      old.unmount();
+      const read_ = draw(v, { id: 'logged' } as WidgetValue, RANGE, { logged: r });
+      expect(read_.getByTestId('dashboard-widget-empty').textContent).toBe(empty);
+      expect(read_.queryByTestId('dashboard-widget-unread')).toBeNull();
+      read_.unmount();
+    }
+  });
+
+  it('offers no Read again beside a number older than the logged time kept, which says so in its place', () => {
+    const w = draw(logged, { id: 'logged', value: { old: true }, trend: [{ old: true }, { ur: 1 }], unread: ['2026-11-25'] } as unknown as WidgetValue, RANGE, { logged: read({ failure: 'Jira asked to wait.' }) });
+    expect(w.getByTestId('dashboard-number-value').textContent).toBe('Not known');
+    expect(w.getByTestId('dashboard-number-not-read').textContent).toBe('older than the logged time kept');
+    expect(w.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
+  it('says in How this is counted which days of it the page reads', async () => {
+    const w = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue);
+    await fireEvent.click(w.getByTestId('dashboard-how-toggle'));
+    expect(w.getByTestId('dashboard-how-worklogs').textContent).toBe('It counts your own logged time, and its numbers are known once every day of the last 182 days up to today is read. While a widget of it is counted, its computer reads from the tracker the days not read yet, 31 days a read, and the newest 31 days again at most once every 5 minutes; once it starts, it reads them all even if this page closes. After a read fails it reads nothing more on its own until Read again or Refresh, which read every day again. A day before those 182 is not read, so a number that counts one is not known.');
+    w.unmount();
+    const tickets = draw(view({}), { id: 'pace', value: { v: 2 } } as WidgetValue);
+    await fireEvent.click(tickets.getByTestId('dashboard-how-toggle'));
+    expect(tickets.queryByTestId('dashboard-how-worklogs')).toBeNull();
+  });
+
+  it('says in the drill the days it could not read', () => {
+    const state = {
+      target: { widget: 'logged' },
+      page: 0,
+      loading: false,
+      error: null,
+      answer: { title: 'Logged', value: { v: 3600, ur: 1 }, unit: 'time', estimates: 'points', count: 0, tickets: 0, counted: 0, page: 0, pages: 1, rows: [], at: 0 },
+    } as unknown as DrillState;
+    const d = render(DashboardDrill, { props: { drill: state, onPage: vi.fn(), onTicket: vi.fn(), tickets: TICKETS, onClose: vi.fn() }, context: SHOWN });
+    expect(d.getByTestId('dashboard-drill-value').textContent).toBe('1h');
+    expect(d.getByTestId('dashboard-drill-value-not-read').textContent).toBe('1 day not read');
+  });
+});
+
+it('says in How this is counted that a count of threads is the board\'s computer\'s', async () => {
+  const threads = draw(view({ how: { ...HOW, reads: ['tickets', 'threads'] } }), { id: 'pace', value: { v: 2 } } as WidgetValue, RANGE, { computer: 'build-box' });
+  await fireEvent.click(threads.getByTestId('dashboard-how-toggle'));
+  expect(threads.getByTestId('dashboard-how-threads').textContent).toBe("It counts the threads on build-box linked to these tickets; a ticket's Work lists those of every attached computer.");
+  threads.unmount();
+  const tickets = draw(view({}), { id: 'pace', value: { v: 2 } } as WidgetValue, RANGE, { computer: 'build-box' });
+  await fireEvent.click(tickets.getByTestId('dashboard-how-toggle'));
+  expect(tickets.queryByTestId('dashboard-how-threads')).toBeNull();
 });

@@ -15,13 +15,17 @@
 // once when it shows again or a new subscription answers. With no
 // subscription it reads nothing. Until the first read lands there is no
 // set and the board shows every card; a read that fails keeps the last set
-// and says why.
+// and says why. A set the drill does not know whole (its number not known
+// for days of your logged time not read) is no set: the board shows every
+// card and says why (incomplete). A tile's set is what holds now, which
+// never counts days older than those kept.
 
 import { untrack } from 'svelte';
 import type { Request } from '../../../bindings/agent-overflow/internal/trackerdash/models';
 import { withBackendTarget } from '../transport/backends';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
 import { TrackerDashboardDrill } from './bindings';
+import { notReadWords, type Num } from './trackerDashboardModel';
 import type { TrackerBoardRef } from './trackerBoard.svelte';
 import { DASHBOARD_CHANGE_INTERVAL_MS, recountOnChanges, type DashboardSource } from './trackerDashboard.svelte';
 
@@ -40,6 +44,9 @@ export interface BoardTicketSet {
   readonly ids: ReadonlySet<string> | null;
   /** The last read failed; null after one succeeds. */
   readonly error: unknown;
+  /** Why the last read's tickets are not the whole set, so the board is
+   * not filtered: '' when they are. */
+  readonly incomplete: string;
   /** Filters the board to `tile`'s tickets, or clears the filter. */
   pick(tile: TicketSetTile | null): void;
   destroy(): void;
@@ -57,6 +64,7 @@ export function createBoardTicketSet(opts: {
   let tile = $state.raw<TicketSetTile | null>(null);
   let ids = $state.raw<ReadonlySet<string> | null>(null);
   let error = $state.raw<unknown>(null);
+  let incomplete = $state('');
   // The board the tile was picked on: another board clears it.
   let pickedOn = '';
 
@@ -74,7 +82,9 @@ export function createBoardTicketSet(opts: {
           TrackerDashboardDrill(s.subscription, { ...t.request, widget: t.widget, cell: null, rest: false, page: 0, count: 0, ids: true }),
         );
         if (!token.isCurrent()) return;
-        ids = new Set(a.ids ?? []);
+        const n = a.value as Num | undefined;
+        incomplete = n?.ur ? `${notReadWords(n.ur)} of your logged time` : '';
+        ids = incomplete ? null : new Set(a.ids ?? []);
         error = null;
       } catch (err) {
         if (!token.isCurrent()) return;
@@ -91,6 +101,7 @@ export function createBoardTicketSet(opts: {
     tile = next;
     ids = null;
     error = null;
+    incomplete = '';
     pickedOn = boardOf(opts.board());
     scheduler.reset();
     if (next && opts.shown()) scheduler.request({ immediate: true });
@@ -132,6 +143,7 @@ export function createBoardTicketSet(opts: {
     get tile() { return tile; },
     get ids() { return ids; },
     get error() { return error; },
+    get incomplete() { return incomplete; },
     pick,
     destroy() {
       scheduler.dispose();
