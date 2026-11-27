@@ -270,7 +270,7 @@ func TestOneStatementReadsStringsAndComments(t *testing.T) {
 		"SELECT 'it''s' AS ticket":                  "SELECT 'it''s' AS ticket",
 		"SELECT (SELECT 1) AS ticket /* end */ ;  ": "SELECT (SELECT 1) AS ticket /* end */ ",
 	} {
-		got, err := oneStatement(in)
+		got, _, err := oneStatement(in)
 		if err != nil || got != want {
 			t.Errorf("oneStatement(%q) = %q, %v; want %q", in, got, err, want)
 		}

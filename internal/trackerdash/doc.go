@@ -26,10 +26,14 @@
 //   - The authorizer allows a SELECT, reads of the export's relations in
 //     main, and a list of deterministic functions (allowedFunctions); it
 //     denies everything else, recursion, pragmas, attach and the catalog
-//     included, and records what it denied for the widget's sentence. It
-//     records the relations a statement reads and the columns of them the
-//     copy fills only when asked (store.MirrorExportColumns), which are
-//     what a count asks the copy for.
+//     included, and records what it denied for the widget's sentence.
+//   - What a count asks the copy for is what its statements' text names
+//     (oneStatement's words, readsOf): each relation named, and each
+//     column the copy fills only when asked (store.MirrorExportColumns)
+//     named, or every one for a * or a NATURAL join. The copy has no
+//     views or triggers and its catalog is denied, so a statement reads
+//     nothing it does not name; a name that is an alias or a string asks
+//     for more than it reads, never less.
 //   - A metric's SQL is one statement (oneStatement): it cannot close the
 //     wrapper's parenthesis or add a statement. The wrapper produces the
 //     whole result in SQLite's first step, which a canceled context

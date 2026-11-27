@@ -93,16 +93,6 @@ var exportTables = func() map[string]bool {
 	return m
 }()
 
-// exportColumns is the columns the copy holds only when a count asks for
-// them (store.MirrorExportColumns), by relation.column.
-var exportColumns = func() map[string]bool {
-	m := map[string]bool{}
-	for _, c := range store.MirrorExportColumns {
-		m[c] = true
-	}
-	return m
-}()
-
 // session is one evaluation's connection: opened, filled, gated, run and
 // closed by one goroutine.
 type session struct {
@@ -112,15 +102,12 @@ type session struct {
 	// key names the sink in the sessions registry (sessionSinks).
 	key string
 	// denied is what the authorizer refused last, for the sentence of the
-	// error SQLite reports as "not authorized"; reads is what it allowed
-	// the statement to read, and columns the columns of exportColumns
-	// among them. The authorizer runs while the statement
-	// prepares, on the goroutine that prepares it; mu is for the race
-	// detector's sake and for a reprepare SQLite may run on a step.
-	mu      sync.Mutex
-	denied  string
-	reads   []string
-	columns []string
+	// error SQLite reports as "not authorized". The authorizer runs while
+	// the statement prepares, on the goroutine that prepares it; mu is for
+	// the race detector's sake and for a reprepare SQLite may run on a
+	// step.
+	mu     sync.Mutex
+	denied string
 	// wrapping is whether the wrapper prepares, the one statement that may
 	// call bounded_rows. A metric's own text is prepared first without it,
 	// so a metric that calls bounded_rows never runs.
@@ -247,12 +234,6 @@ func (s *session) authorize(action sqlite.AuthorizerActionCode, arg1, arg2, data
 	// column and no database. The gate leaves main the only database that
 	// can hold an export table's name.
 	if action == sqlite.AuthRead && exportTables[arg1] && (database == "main" || (database == "" && arg2 == "")) {
-		if !slices.Contains(s.reads, arg1) {
-			s.reads = append(s.reads, arg1)
-		}
-		if c := arg1 + "." + arg2; exportColumns[c] && !slices.Contains(s.columns, c) {
-			s.columns = append(s.columns, c)
-		}
 		return sqlite.AuthorizerOK
 	}
 	if action == sqlite.AuthFunction {
@@ -295,13 +276,13 @@ func (s *session) setWrapping(on bool) {
 	s.mu.Unlock()
 }
 
-// take clears and returns what the authorizer recorded.
-func (s *session) take() (denied string, reads, columns []string) {
+// take clears and returns what the authorizer denied last.
+func (s *session) take() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	denied, reads, columns = s.denied, s.reads, s.columns
-	s.denied, s.reads, s.columns = "", nil, nil
-	return denied, reads, columns
+	denied := s.denied
+	s.denied = ""
+	return denied
 }
 
 // prepared is a metric's statement checked against the contract.
@@ -310,8 +291,8 @@ type prepared struct {
 	names []string
 	cols  columns
 	reads []string
-	// columns is the columns of exportColumns it reads, which the copy
-	// fills only for a count that asks for them.
+	// columns is the columns of store.MirrorExportColumns it may read,
+	// which the copy fills only for a count that asks for them.
 	columns []string
 	// series is the metric's declared series (Metric.Series).
 	series []string
@@ -326,7 +307,7 @@ type prepared struct {
 // and its columns against the contract.
 func (s *session) prepare(m Metric) (prepared, error) {
 	start := time.Now()
-	text, err := oneStatement(m.SQL)
+	text, w, err := oneStatement(m.SQL)
 	if err != nil {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + err.Error() + ". A metric is one SELECT; change its query."}
 	}
@@ -343,8 +324,7 @@ func (s *session) prepare(m Metric) (prepared, error) {
 		info, err = ci.ColumnInfo(text)
 		return err
 	})
-	denied, reads, columns := s.take()
-	if err != nil {
+	if denied := s.take(); err != nil {
 		return prepared{}, sqlError(err, denied)
 	}
 	if len(info) == 0 {
@@ -358,9 +338,27 @@ func (s *session) prepare(m Metric) (prepared, error) {
 	if err != nil {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + strings.TrimPrefix(err.Error(), "the query ") + "; change its query."}
 	}
-	slices.Sort(reads)
-	slices.Sort(columns)
+	reads, columns := readsOf(w)
 	return prepared{sql: text, names: names, cols: cols, reads: reads, columns: columns, series: m.Series, took: time.Since(start)}, nil
+}
+
+// readsOf is what a statement of words w may read of the copy: each
+// relation it names, and each column of store.MirrorExportColumns it
+// names, or every one when it has a * or a NATURAL join (words).
+func readsOf(w words) (reads, columns []string) {
+	for _, t := range store.MirrorExportTables {
+		if w.named(t) {
+			reads = append(reads, t)
+		}
+	}
+	slices.Sort(reads)
+	for _, c := range store.MirrorExportColumns {
+		_, column, _ := strings.Cut(c, ".")
+		if w.star || w.named("natural") || w.named(column) {
+			columns = append(columns, c)
+		}
+	}
+	return reads, columns
 }
 
 // fills is what a count that runs p asks the copy for: the relations it
@@ -394,7 +392,7 @@ func (s *session) run(ctx context.Context, p prepared, now, since int64) ([]cont
 	var n int64
 	err := s.conn.QueryRowContext(ctx, b.String(), sql.Named("now", now), sql.Named("since", since)).Scan(&n)
 	s.setWrapping(false)
-	denied, _, _ := s.take()
+	denied := s.take()
 	switch {
 	case s.sink.err != nil:
 		return nil, s.sink.err

@@ -125,11 +125,13 @@ func TestProposalsPastTheDeadlineFailInTheirOwnPlace(t *testing.T) {
 	}
 }
 
-// A count asks the copy for a ticket's type or priority only when a
-// query it runs reads that column, so a count that reads neither decodes
-// neither; How this is counted names the relations read, not the
-// columns.
-func TestACountAsksForTypesAndPrioritiesOnlyWhenItReadsThem(t *testing.T) {
+// A count asks the copy for what its query's text names: a relation by
+// any form of its name, and a ticket's type or priority by its name, a *
+// or a NATURAL join, which read columns the query does not name. Every
+// form SQLite reads a relation or a column through asks for it, so a
+// USING join does not count against an empty copy; a query that names
+// none of them asks for none; How this is counted names relations alone.
+func TestACountAsksForWhatItsQueryNames(t *testing.T) {
 	t.Parallel()
 	board := newFixture(false, "none").status("3", "In progress", "in_progress").
 		ticket(ticket{id: "t1", key: "WEB-1", status: "3", group: "in_progress", created: ago(3)}).board()
@@ -140,14 +142,34 @@ func TestACountAsksForTypesAndPrioritiesOnlyWhenItReadsThem(t *testing.T) {
 		return fill(ctx, conn, relations)
 	}
 	m := Metric{Name: "w_1", Title: "Bugs", Words: []string{"Bugs open now."}, Reduce: ReduceCount, Unit: UnitTickets}
+	both := []string{"tickets.type", "tickets.priority"}
 	for _, c := range []struct {
 		sql       string
 		asks, not []string
 	}{
 		{"SELECT id AS ticket FROM tickets WHERE type = 'Bug'", []string{"tickets.type"}, []string{"tickets.priority", "labels"}},
-		{"SELECT t.id AS ticket FROM tickets t JOIN labels l ON l.ticket = t.id WHERE l.name = 'bug'", []string{"labels"}, []string{"tickets.type", "tickets.priority"}},
-		{"SELECT id AS ticket FROM tickets WHERE type = 'Bug' OR priority = 'High'", []string{"tickets.type", "tickets.priority"}, []string{"labels"}},
-		{"SELECT id AS ticket FROM tickets WHERE open = 1", nil, []string{"tickets.type", "tickets.priority", "labels"}},
+		{"SELECT id AS ticket FROM tickets WHERE TYPE = 'Bug'", []string{"tickets.type"}, nil},
+		{`SELECT id AS ticket FROM tickets WHERE "type" = 'Bug'`, []string{"tickets.type"}, nil},
+		{"SELECT id AS ticket FROM tickets WHERE [priority] = 'High'", []string{"tickets.priority"}, []string{"tickets.type"}},
+		{"SELECT id AS ticket FROM tickets WHERE `priority` = 'High'", []string{"tickets.priority"}, nil},
+		{"SELECT id AS ticket FROM main.tickets WHERE main.tickets.type = 'Bug'", []string{"tickets.type"}, nil},
+		{"WITH w(type) AS (VALUES('Bug')) SELECT t.id AS ticket FROM tickets t JOIN w USING(type)", []string{"tickets.type"}, []string{"tickets.priority"}},
+		{"WITH w(priority) AS (VALUES('High')) SELECT t.id AS ticket FROM tickets t JOIN w USING (priority)", []string{"tickets.priority"}, nil},
+		{"WITH w(type) AS (VALUES('Bug')) SELECT t.id AS ticket FROM tickets t NATURAL JOIN w", both, nil},
+		{"SELECT a.id AS ticket FROM tickets a NATURAL JOIN tickets b", both, nil},
+		{"SELECT id AS ticket FROM (SELECT * FROM tickets)", both, nil},
+		{"SELECT id AS ticket FROM tickets WHERE (type, priority) = ('Bug', 'High')", both, nil},
+		{"SELECT t.id AS ticket FROM tickets t JOIN labels l ON l.ticket = t.id WHERE l.name = 'bug'", []string{"labels"}, both},
+		{"WITH c AS (SELECT id AS ticket FROM tickets) SELECT c.ticket FROM c JOIN labels USING(ticket)", []string{"labels"}, nil},
+		{`SELECT t.id AS ticket FROM tickets t JOIN "labels" l ON l.ticket = t.id`, []string{"labels"}, nil},
+		{"SELECT t.id AS ticket FROM tickets t JOIN [LABELS] l ON l.ticket = t.id", []string{"labels"}, nil},
+		{"SELECT t.id AS ticket FROM tickets t JOIN main.labels l ON l.ticket = t.id", []string{"labels"}, nil},
+		{"WITH a AS (WITH b AS (SELECT ticket FROM labels) SELECT ticket FROM b) SELECT ticket AS ticket FROM a", []string{"labels"}, nil},
+		{"WITH c AS (SELECT id AS ticket FROM tickets) SELECT c.ticket FROM c JOIN sprint_tickets USING(ticket)", []string{"sprint_tickets"}, nil},
+		{"WITH c AS (SELECT id AS ticket FROM tickets) SELECT c.ticket FROM c JOIN changes USING(ticket)", []string{"changes"}, nil},
+		{"WITH c AS (SELECT id AS ticket FROM tickets) SELECT c.ticket FROM c JOIN sprint_finished USING(ticket)", []string{"sprint_finished"}, nil},
+		{"SELECT id AS ticket FROM tickets WHERE open = 1 -- type, labels and * in a comment\n", nil, []string{"tickets.type", "tickets.priority", "labels"}},
+		{"SELECT id AS ticket FROM tickets WHERE status_group = 'in_progress' /* NATURAL */", nil, []string{"tickets.type", "tickets.priority", "labels"}},
 	} {
 		asked = nil
 		m.SQL = c.sql
@@ -277,7 +299,7 @@ func TestRulesNameTheFieldsAndTheRelations(t *testing.T) {
 	rules := Rules()
 	for _, want := range []string{"title;", "words", "sql;", "reduce:", "unit:", "good:", "bucket:", "series:", "form:", "width:",
 		"ticket (required", "CREATE TABLE main.tickets(", "-- status_group:", "-- type:", "use labels", "no order",
-		"CREATE TABLE main.labels(", "A count stops at 1s", "time estimates in seconds"} {
+		"CREATE TABLE main.labels(", "an unnamed one by its ID", "one per bucket for a ticket in several", "A count stops at 1s", "time estimates in seconds"} {
 		if !strings.Contains(rules, want) {
 			t.Errorf("the rules lack %q", want)
 		}

@@ -102,7 +102,7 @@ CREATE TABLE main.tickets(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT
   status TEXT, status_group TEXT, assignee TEXT, parent TEXT, epic TEXT, created_at INTEGER, updated_at INTEGER, resolved_at INTEGER,
   status_since INTEGER, points REAL, history_from INTEGER, started_known INTEGER NOT NULL, started_at INTEGER, done_at INTEGER,
   open INTEGER NOT NULL, counts INTEGER NOT NULL, type TEXT, priority TEXT) WITHOUT ROWID;
--- A ticket's labels by name; a ticket with none has no row.
+-- A ticket's labels by name, an unnamed one by its ID; a ticket with none has no row.
 CREATE TABLE main.labels(ticket TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (ticket, name)) WITHOUT ROWID;
 CREATE TABLE main.epics(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL) WITHOUT ROWID;
 -- state: future, active or closed. position: the board's order.
