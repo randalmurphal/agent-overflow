@@ -564,8 +564,9 @@ func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setu
 
 // setupMoved tells what a change of slug's held setup from before to
 // after moves, either nil when none is held: every board subscription of
-// the project on a site whose status groups changed reads again, and a
-// change of what is stored is told. A side that holds nothing is not
+// the project on a site whose status groups or count of tickets changed
+// reads again, a change of the count has the dashboards read again, and
+// a change of what is stored is told. A side that holds nothing is not
 // known to agree with the other on any site, so every site counts as
 // moved: a board of the project read with groups that may be stale, or
 // failed to read them, reads again.
@@ -583,6 +584,11 @@ func (s *Service) setupMoved(slug string, before, after *heldSetup) {
 		was, now := before.counting(site), after.counting(site)
 		return was.version != now.version || was.tickets != now.tickets
 	})
+	// A board's dashboards are laid out in the unit the project counts it
+	// in (Dashboards): a change of it has them read again.
+	if before == nil || after == nil || before.view.Setup.Estimates.countsTickets() != after.view.Setup.Estimates.countsTickets() {
+		s.dashboardsChanged()
+	}
 	s.setupChanged()
 }
 

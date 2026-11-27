@@ -1402,10 +1402,10 @@ func TestAProjectThatCountsTicketsReadsItsBoardInTickets(t *testing.T) {
 	if v := m.viewOf(t, mine.ID); v.Estimate.Unit != "points" || v.Counts != "points" {
 		t.Fatalf("the board before: estimate %q, counts %q", v.Estimate.Unit, v.Counts)
 	}
-	n := m.boardEventCount()
+	n, dashboards := m.boardEventCount(), m.events.dashboards.Load()
 	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
-	if !m.readAgainSince(n) {
-		t.Fatal("the open board was not read again when its project began counting tickets")
+	if !m.readAgainSince(n) || m.events.dashboards.Load() != dashboards+1 {
+		t.Fatalf("the project began counting tickets: read again %v, dashboards told %d times", m.readAgainSince(n), m.events.dashboards.Load()-dashboards)
 	}
 	if v := m.viewOf(t, mine.ID); v.Estimate.Unit != "points" || v.Counts != "none" {
 		t.Fatalf("the board counting tickets: estimate %q, counts %q", v.Estimate.Unit, v.Counts)
@@ -1413,11 +1413,11 @@ func TestAProjectThatCountsTicketsReadsItsBoardInTickets(t *testing.T) {
 	if v := m.viewOf(t, theirs.ID); v.Counts != "points" {
 		t.Fatalf("the other project's board: counts %q", v.Counts)
 	}
-	n = m.boardEventCount()
+	n, dashboards = m.boardEventCount(), m.events.dashboards.Load()
 	off := false
 	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets", Poker: &off}})
-	if m.readAgainSince(n) {
-		t.Fatal("turning poker off read the board again")
+	if m.readAgainSince(n) || m.events.dashboards.Load() != dashboards {
+		t.Fatal("turning poker off read the board or its dashboards again")
 	}
 	n = m.boardEventCount()
 	if _, err := m.svc.SetProjectSetup(m.project(), must[SetupView](t)(m.svc.ProjectSetup(m.project())).Revision, Setup{}); err != nil {
