@@ -132,8 +132,8 @@ var burndownMetric = Metric{
 	},
 	// Each stretch in an active sprint (sprint_intervals) is remaining
 	// work while its ticket's status is open; while the status is not
-	// known, or the history does not reach back to the sprint's start, it
-	// is not counted.
+	// known, or the history does not reach back to the sprint's start (or
+	// to the ticket's creation, after it), it is not counted.
 	SQL: `WITH ` + statusUnknown + `,
 a AS (SELECT si.ticket, si.points, si.from_at, si.to_at FROM sprint_intervals si JOIN sprints s ON s.id = si.sprint WHERE s.state = 'active')
 SELECT a.ticket AS ticket, ` + weightOf("a.points") + ` AS value, max(a.from_at, o.from_at) AS at,
@@ -146,10 +146,10 @@ SELECT a.ticket, NULL, max(a.from_at, coalesce(u.from_at, 0)), nullif(min(coales
 FROM a JOIN unknown u ON u.ticket = a.ticket
 WHERE coalesce(u.from_at, 0) < coalesce(a.to_at, ` + never + `) AND a.from_at < coalesce(u.to_at, ` + never + `)
 UNION ALL
-SELECT m.ticket, NULL, iif(t.history_from IS NULL, NULL, s.start_at), t.history_from,
+SELECT m.ticket, NULL, iif(t.history_from IS NULL, NULL, max(s.start_at, coalesce(t.created_at, 0))), t.history_from,
   iif(t.history_from IS NULL, 'its history is not read yet', 'its history begins after the sprint started')
 FROM sprint_tickets m JOIN sprints s ON s.id = m.sprint JOIN tickets t ON t.id = m.ticket
-WHERE s.state = 'active' AND (t.history_from IS NULL OR t.history_from > s.start_at)`,
+WHERE s.state = 'active' AND (t.history_from IS NULL OR t.history_from > max(s.start_at, coalesce(t.created_at, 0)))`,
 	Reduce: ReduceSum, Unit: UnitEstimate, Good: GoodDown, Bucket: BucketDay,
 }
 
@@ -166,13 +166,14 @@ var sprintScopeMetric = Metric{
 	Title: "Committed, added, removed and completed",
 	Words: []string{
 		"Each sprint's estimate in it at its start (committed), of the tickets that entered it after (added) or left it before its end (removed), each at that moment, and of those done at its end by the pace's rule (completed).",
-		"A ticket counts once in each. One whose history does not reach back to the sprint's start is listed and not counted in committed and added.",
+		"A ticket counts once in each. One whose history does not reach back to the sprint's start, or to its creation after it, is listed and not counted in committed and added.",
 	},
 	// A sprint's stretches (sprint_intervals) end at its end: its
 	// completion, or now for the active one. A ticket is committed when a
 	// stretch holds at the start, added at its first entry after it when
 	// not committed, and removed at its last exit before the end when no
-	// stretch holds at the end.
+	// stretch holds at the end. A ticket made after the start was not in
+	// the sprint at it, so a history from its creation is enough.
 	SQL: `WITH s AS (SELECT id, start_at, iif(state = 'active', :now, completed_at) AS end_at FROM sprints
     WHERE state IN ('active', 'closed') AND coalesce(iif(state = 'active', :now, completed_at), 0) > :since),
   x AS (SELECT si.sprint, si.ticket, si.points, si.from_at, coalesce(si.to_at, ` + never + `) AS to_at, s.start_at, s.end_at
@@ -184,7 +185,7 @@ SELECT c.ticket AS ticket, ` + weightOf("c.points") + ` AS value, c.sprint AS bu
 UNION ALL
 SELECT e.ticket, ` + weightOf("x.points") + `, e.sprint, '` + seriesAdded + `', NULL
 FROM entered e JOIN x ON x.sprint = e.sprint AND x.ticket = e.ticket AND x.from_at = e.at JOIN tickets t ON t.id = e.ticket
-WHERE t.history_from <= x.start_at AND NOT EXISTS (SELECT 1 FROM committed c WHERE c.sprint = e.sprint AND c.ticket = e.ticket)
+WHERE t.history_from <= max(x.start_at, coalesce(t.created_at, 0)) AND NOT EXISTS (SELECT 1 FROM committed c WHERE c.sprint = e.sprint AND c.ticket = e.ticket)
 UNION ALL
 SELECT l.ticket, ` + weightOf("x.points") + `, l.sprint, '` + seriesRemoved + `', NULL
 FROM exited l JOIN x ON x.sprint = l.sprint AND x.ticket = l.ticket AND x.to_at = l.at
@@ -198,7 +199,7 @@ SELECT f.ticket, NULL, f.sprint, n.series,
        ELSE 'its history begins after the sprint started' END
 FROM sprint_finished f JOIN s ON s.id = f.sprint JOIN tickets t ON t.id = f.ticket
   CROSS JOIN (SELECT '` + seriesCommitted + `' AS series UNION ALL SELECT '` + seriesAdded + `') n
-WHERE s.start_at IS NULL OR t.history_from IS NULL OR t.history_from > s.start_at`,
+WHERE s.start_at IS NULL OR t.history_from IS NULL OR t.history_from > max(s.start_at, coalesce(t.created_at, 0))`,
 	Reduce: ReduceSum, Unit: UnitEstimate, Bucket: BucketSprint, Series: []string{seriesCommitted, seriesAdded, seriesRemoved, seriesCompleted},
 }
 
