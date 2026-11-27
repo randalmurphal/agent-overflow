@@ -136,7 +136,7 @@ func place(m Metric, rows []contribution, spanOf func(ticket string) (from, to i
 			c.counted = false
 			from, to := spanOf(c.ticket)
 			for i, ps := range ranges {
-				if slices.ContainsFunc(ps, func(p period) bool { return from <= p.to && to > p.from }) {
+				if slices.ContainsFunc(ps, func(p period) bool { return p.meets(from, to) }) {
 					unplaced[i] = append(unplaced[i], c)
 				}
 			}

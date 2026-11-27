@@ -1082,9 +1082,10 @@ func (o *opened) count(m Metric, r reads) (counted, error) {
 		return counted{p: pr.p, note: note}, nil
 	}
 	now := o.now.UnixMilli()
-	at := r.instants(now)
+	bySprint := m.Bucket == BucketSprint
+	at := r.instants(now, bySprint)
 	if !pr.p.cols.state() && pr.p.cols.periodBound(m) {
-		at.events, at.takes, at.bySprint = true, r.takes, m.Bucket == BucketSprint
+		at.events, at.takes, at.bySprint, at.spanOf = true, r.takes, bySprint, o.ev.spanOf
 	}
 	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now), at)
 }
@@ -1322,6 +1323,13 @@ func (t taken) sub(rows []contribution) taken {
 	return t
 }
 
+// spanOf is ticket's creation and last update: where a row of it with
+// no instant could have happened (place).
+func (ev *evaluation) spanOf(ticket string) (from, to int64) {
+	t := ev.tickets[ticket]
+	return t.created, t.updated
+}
+
 // inRange is c's rows sorted into the range sp and the one before it, or
 // into the sprint's days for a metric grouped by day; a state's rows are
 // read where they hold.
@@ -1364,7 +1372,7 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 			}
 			buf = buf[:0]
 			for _, r := range c.rows {
-				if r.holdsAt(p.to) && (!bySprint || slices.Contains(p.sprints, r.bucket)) {
+				if p.holdsState(r, bySprint) {
 					r.period = p.label
 					buf = append(buf, r)
 				}
@@ -1373,11 +1381,7 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 		}
 		return g
 	}
-	spanOf := func(ticket string) (int64, int64) {
-		t := ev.tickets[ticket]
-		return t.created, t.updated
-	}
-	placed, unplaced := place(m, c.rows, spanOf, periods, previous)
+	placed, unplaced := place(m, c.rows, ev.spanOf, periods, previous)
 	over := func(ps []period, loose []contribution) taken {
 		if len(ps) == 0 {
 			return taken{none: true}
@@ -1468,8 +1472,10 @@ func widgetReads(w Widget, m Metric, sp span) reads {
 }
 
 // instants is r's instants at now, a period to come left out, and where
-// they are in words.
-func (r reads) instants(now int64) heldAt {
+// they are in words: now and where the range begins in any sprint, a
+// period's end in its own sprints for a metric by sprint (bySprint, its
+// ends), as the widget reads them (ranged).
+func (r reads) instants(now int64, bySprint bool) heldAt {
 	var in heldAt
 	var where []string
 	if r.now {
@@ -1482,10 +1488,15 @@ func (r reads) instants(now int64) heldAt {
 	}
 	ends := 0
 	for _, p := range r.periods {
-		if !p.future {
+		switch {
+		case p.future:
+			continue
+		case bySprint:
+			in.ends = append(in.ends, p)
+		default:
 			in.at = append(in.at, p.to)
-			ends++
 		}
+		ends++
 	}
 	switch {
 	case ends == 1 && len(r.periods) == 1:

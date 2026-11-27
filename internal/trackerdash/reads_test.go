@@ -95,3 +95,46 @@ func TestAnEventByPeriodIsChargedOnlyThePeriodsItsWidgetsTake(t *testing.T) {
 		}
 	}
 }
+
+// A state chart by sprint takes what holds at a sprint's end in that
+// sprint alone: 20,800 memberships of WEB Sprint 1 still open leave This
+// sprint's bar counted, its one ticket in WEB Sprint 7.
+func TestAStateChartBySprintIsChargedOnlyItsSprints(t *testing.T) {
+	t.Parallel()
+	m := Metric{Name: "w_1", Title: "In a sprint", Words: []string{"The tickets in a sprint."},
+		SQL:    `SELECT ticket, sprint AS bucket, from_at AS at, to_at AS until FROM sprint_intervals`,
+		Reduce: ReduceCount, Unit: UnitTickets, Bucket: BucketSprint}
+	f := sprintBoard()
+	f.ticket(ticket{id: "t1", key: "WEB-1", status: "3", group: "in_progress", created: ago(60)}).stretch("s7", "t1", "", ago(1), 0)
+	f.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20800)
+		INSERT INTO sprint_intervals SELECT 's1', 't1', NULL, %d + i, NULL FROM n`, ago(50))
+	b := f.board()
+	b.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine", Widgets: []Widget{{ID: "w_1", Metric: "w_1", Form: FormBars, Width: 6}}}},
+		Metrics: map[string]Metric{"w_1": m}}
+	w := widgetOf(t, mustEvaluate(t, evaluator(), b, Request{Dashboard: "mine", Range: RangeThisSprint, TimeZone: "UTC"}), "w_1")
+	if w.Error != "" || len(w.Buckets) != 1 || num(&w.Buckets[0].Total) != "1" {
+		t.Fatalf("This sprint's bar: %+v (%q); want WEB-1 in WEB Sprint 7", w.Buckets, w.Error)
+	}
+}
+
+// A row with no instant is charged only when its ticket's life meets a
+// period its widgets take, as it is placed: 20,800 of a ticket last
+// changed 300 days ago leave Last 4 weeks counted.
+func TestAnUndatedRowIsChargedOnlyWhereItsTicketLived(t *testing.T) {
+	t.Parallel()
+	m := Metric{Name: "w_1", Title: "Changes", Words: []string{"Changes, WEB-1's of no known time."}, SQL: `SELECT ticket, iif(ticket = 't1', NULL, at) AS at FROM changes`,
+		Reduce: ReduceCount, Unit: UnitTickets, Bucket: BucketPeriod}
+	f := newFixture(false, "points").person("u1", "User 1").status("5", "Done", "done")
+	f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", created: ago(400), updated: ago(300)})
+	f.ticket(ticket{id: "t2", key: "WEB-2", status: "5", group: "done", created: ago(10), updated: ago(2)})
+	f.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20800)
+		INSERT INTO changes SELECT 't1', 'status', i, %d, NULL, '1', '5', NULL, NULL FROM n`, ago(300))
+	f.exec(`INSERT INTO changes VALUES ('t2', 'status', 0, %d, NULL, '1', '5', NULL, NULL)`, ago(2))
+	b := f.board()
+	b.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine", Widgets: []Widget{{ID: "w_1", Metric: "w_1", Form: FormBars, Width: 6}}}},
+		Metrics: map[string]Metric{"w_1": m}}
+	w := widgetOf(t, mustEvaluate(t, evaluator(), b, Request{Dashboard: "mine", Range: RangeWeeks4, TimeZone: "UTC"}), "w_1")
+	if w.Error != "" || w.NotCounted != 0 {
+		t.Fatalf("Last 4 weeks: %q, %d not counted; want counted, none of WEB-1's", w.Error, w.NotCounted)
+	}
+}

@@ -300,40 +300,44 @@ func (s *rowSink) reset(cols columns, series []string, at heldAt) {
 	s.cols, s.series, s.at, s.rows, s.bytes, s.err = cols, series, at, nil, 0, nil
 }
 
-// heldAt is what the sink keeps (rowSink): the instants a state
-// metric's widgets read, sorted, with where they are in words for the
+// heldAt is what the sink keeps (rowSink), by the reduction's own rules:
+// for a state metric, the instants its widgets read in any sprint,
+// sorted (at), and the periods whose end they read in the period's own
+// sprints (ends, period.holdsState), with where they are in words for the
 // row limit's sentence (reads.instants); for an event metric placed in
 // periods (events), the periods they take, by sprint for a metric by
-// sprint (period.places).
+// sprint (period.places), a row with no instant by its ticket's life
+// (spanOf, period.meets), as place puts them.
 type heldAt struct {
 	at       []int64
+	ends     []period
 	where    string
 	events   bool
 	takes    []period
 	bySprint bool
+	spanOf   func(ticket string) (from, to int64)
 }
 
-// taken is whether event row c falls in a period the widgets take, or
-// in none at all (a row of no at, not by sprint).
+// taken is whether event row c falls in a period the widgets take.
 func (in heldAt) taken(c contribution) bool {
 	if !in.bySprint && !c.hasAt {
-		return true
+		from, to := in.spanOf(c.ticket)
+		return slices.ContainsFunc(in.takes, func(p period) bool { return p.meets(from, to) })
 	}
-	for _, p := range in.takes {
-		if p.places(c, in.bySprint) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(in.takes, func(p period) bool { return p.places(c, in.bySprint) })
 }
 
-// holdAny is whether state row c holds at one of the instants (holdsAt).
+// holdAny is whether state row c holds at one of the instants (holdsAt),
+// or in one of the periods whose end is read (holdsState).
 func (in heldAt) holdAny(c contribution) bool {
 	i := 0
 	if c.hasAt {
 		i, _ = slices.BinarySearch(in.at, c.at)
 	}
-	return i < len(in.at) && c.holdsAt(in.at[i])
+	if i < len(in.at) && c.holdsAt(in.at[i]) {
+		return true
+	}
+	return slices.ContainsFunc(in.ends, func(p period) bool { return p.holdsState(c, true) })
 }
 
 // errRows is the row limit's failure: of a state metric, the rows that
@@ -343,7 +347,7 @@ func (in heldAt) errRows(state bool) *MetricError {
 		return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows, its limit. Pick a shorter range.", maxRows), Limit: true}
 	}
 	advice := " Pick a shorter range."
-	if len(in.at) == 1 {
+	if len(in.at)+len(in.ends) == 1 {
 		advice = ""
 	}
 	return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows that hold %s, its limit.%s", maxRows, in.where, advice), Limit: true}
