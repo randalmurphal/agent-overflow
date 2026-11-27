@@ -65,10 +65,15 @@
   const named = $derived(series.length > 1 || (series[0] ?? '') !== '');
   const byPeriod = $derived(view.bucket === 'period' || view.bucket === 'sprint');
   // A widget that counts now has no earlier value to compare with, whatever
-  // its answer holds.
+  // its answer holds. A state's previous value is what held where the range
+  // began, not the range before.
+  const before = $derived(view.state ? { previous: 'when the range began', previous_gap: range?.previous_gap } : range);
   const mark = $derived(
-    view.now || !value ? null : changeMark(value.value as Num | undefined, value.previous as Num | undefined, view.good ?? '', unit, estimates, range),
+    view.now || !value ? null : changeMark(value.value as Num | undefined, value.previous as Num | undefined, view.good ?? '', unit, estimates, before),
   );
+  // How this is counted, with the sprint this answer counted when the
+  // listing could not name it.
+  const how = $derived(value?.range_words ? { ...view.how, range: value.range_words } : view.how);
   const amount = $derived(numWords(value?.value as Num | undefined, unit, estimates));
 
   function pick(bucket: BucketValue, s: string): void {
@@ -117,13 +122,15 @@
   {/if}
 
   {#if showHow}
-    <DashboardHow how={view.how} />
+    <DashboardHow {how} />
   {:else}
     <div class="flex min-w-0 flex-col gap-2 transition-opacity {stale ? 'opacity-60' : ''}" inert={stale} data-testid="dashboard-widget-body" data-stale={stale}>
       {#if !value}
         <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-waiting">{counting ? 'Counting…' : 'Not counted'}</p>
       {:else if value.error}
         <p class="text-[0.75rem] text-error" role="alert" data-testid="dashboard-widget-error">{value.error}</p>
+      {:else if value.note}
+        <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-note">{value.note}</p>
       {:else if view.form === 'number'}
         <button
           type="button"
@@ -163,7 +170,7 @@
           <BarChart title={view.title} buckets={value.buckets ?? []} {series} horizontal={!byPeriod} {unit} {estimates} onPick={pick} onLabel={narrow} />
         {/if}
       {:else if view.form === 'line'}
-        <LineChart title={view.title} buckets={value.buckets ?? []} {series} {unit} {estimates} onPick={pick} />
+        <LineChart title={view.title} buckets={value.buckets ?? []} {series} {unit} {estimates} onPick={pick} pace={view.bucket === 'day'} />
       {:else if view.form === 'table'}
         {#if (value.buckets ?? []).length === 0}
           <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">Nothing to count.</p>

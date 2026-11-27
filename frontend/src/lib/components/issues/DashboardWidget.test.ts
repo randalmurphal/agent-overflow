@@ -194,3 +194,30 @@ it('opens a listed ticket, and the rest and the uncounted in the drill', async (
   await fireEvent.click(getByTestId('dashboard-more'));
   expect(onDrill).toHaveBeenCalledWith({ widget: 'stuck_list' });
 });
+
+describe('a chart of the sprint\'s days', () => {
+  const day = (key: string, label: string, v: object, over: object = {}) => ({ key, label, cells: [v], total: v, ...over });
+  const burn = view({ id: 'burndown', title: 'Burndown', form: 'line', bucket: 'day', unit: 'estimate', good: 'down', width: 6 });
+  const buckets = [
+    day('day:start', 'Start', { v: 12 }),
+    day('day:2026-11-23', 'Nov 23', { v: 10, nc: 1 }),
+    day('day:2026-11-24', 'Nov 24', { v: 7 }, { partial: true }),
+    day('day:2026-11-25', 'Nov 25', {}, { last: true }),
+  ];
+
+  it('names the sprint it counted in How this is counted, and says why it has no days', async () => {
+    const counted = draw(burn, { id: 'burndown', series: [''], buckets, range_words: 'It counts WEB Sprint 9 at its start and at the end of each working day; the range does not change it.' } as unknown as WidgetValue);
+    await fireEvent.click(counted.getByTestId('dashboard-how-toggle'));
+    expect(counted.getByTestId('dashboard-how').textContent).toContain('It counts WEB Sprint 9 at its start');
+    counted.unmount();
+    const none = draw(burn, { id: 'burndown', note: 'No sprint is active on this board.' } as unknown as WidgetValue);
+    expect(none.getByTestId('dashboard-widget-note').textContent).toBe('No sprint is active on this board.');
+    expect(none.queryByTestId('dashboard-line')).toBeNull();
+  });
+});
+
+it('compares a state with what held when the range began, not with the range before', () => {
+  const { getByTestId } = draw(view({ id: 'stuck', state: true, good: 'down', unit: 'tickets' }), { id: 'stuck', value: { v: 4 }, previous: { v: 2, nc: 1 } } as WidgetValue);
+  expect(getByTestId('dashboard-change').textContent?.trim()).toBe('Up 2 tickets from 2, when the range began, 1 not counted then');
+  expect(getByTestId('dashboard-change').dataset.tone).toBe('bad');
+});
