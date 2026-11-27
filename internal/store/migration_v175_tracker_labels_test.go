@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// v176 gives every stored card its labels' names from its data: a card of
+// v175 gives every stored card its labels' names from its data: a card of
 // the version the app writes holds each label by its name, else its ID,
 // in the card's order, and skips one with neither; a card with none, a
 // card of another version and data that is not JSON hold none.
@@ -28,7 +28,7 @@ func TestTrackerLabelsMigration(t *testing.T) {
 	if err := applyMigration(db, m); err != nil {
 		t.Fatalf("apply v%d: %v", m.Version, err)
 	}
-	t.Logf("v176 over 20,000 issues: %v", time.Since(began))
+	t.Logf("v175 over 20,000 issues: %v", time.Since(began))
 	assertRows(t, db, `SELECT group_concat(issue_id || '=' || labels, ' ') FROM (SELECT issue_id, labels FROM tracker_cache_issues
 		WHERE issue_id NOT LIKE 'i%' ORDER BY issue_id)`, `1=["support","l2","Auth"] 2=[] 3=[] 4=[] 5=[]`)
 	assertRows(t, db, `SELECT count(*) FROM tracker_cache_issues WHERE labels = '["frontend","auth"]'`, "19995")

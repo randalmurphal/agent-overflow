@@ -991,8 +991,8 @@ reads a row's type and labels only for a row with no estimate, so its
 cost shows on a board whose rows have none. Measured with
 `TestMirrorAtScale` in `internal/store` at 20,000 issues (15,000 rows on
 board 0 at that step) and five boards of 4,000, the median of five runs,
-with the labels read from the card's data (the build before v176) and
-from the `labels` column v176 adds, on the development machine of [Costs
+with the labels read from the card's data (the build before v175) and
+from the `labels` column v175 adds, on the development machine of [Costs
 at scale](../architecture/tracker-backend.md#costs-at-scale), its load
 average between 15 and 23 for the column's run:
 
@@ -1012,7 +1012,7 @@ average between 15 and 23 for the column's run:
 
 With every row estimated, a rule costs nothing: the section counts took
 31.0 to 33.3 ms on the card's data and 31.0 to 37.0 ms on the column,
-with and without a rule. v176 fills the column of 20,000 stored cards in
+with and without a rule. v175 fills the column of 20,000 stored cards in
 139 ms (`TestTrackerLabelsMigration`).
 
 ## Planning poker add-on
