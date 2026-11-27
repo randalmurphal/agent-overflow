@@ -18,6 +18,7 @@ import (
 	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/entityid"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/trackerapp"
@@ -49,7 +50,7 @@ func newTicketThreadFixture(t *testing.T) *ticketThreadFixture {
 			t.Error(err)
 		}
 	})
-	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site, store: st})
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site, store: st, settings: settings.NewService(t.TempDir())})
 	attachments, err := attachmentstore.NewStore(attachmentstore.Config{RootDir: t.TempDir()}, f.a.store)
 	if err != nil {
 		t.Fatal(err)

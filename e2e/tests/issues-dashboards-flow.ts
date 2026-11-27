@@ -437,13 +437,14 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await closeDrill();
 
     // While This sprint is counted, the grid shows the last 5 sprints'
-    // numbers and takes no click: a click on Sprint E's bar opens nothing.
+    // numbers and they take no click: a click on Sprint E's bar opens
+    // nothing.
     holding = true;
     await press(screen.getByTestId('dashboard-range'), compact);
     await press(page.getByTestId('dashboard-range-this_sprint'), compact);
     await expect.poll(() => held.length).toBe(1);
     await expect(screen.getByTestId('dashboard-counting')).toBeVisible();
-    await expect(screen.getByTestId('dashboard-grid')).toHaveAttribute('inert', '');
+    await expect(widget(screen, 'finished').getByTestId('dashboard-widget-body')).toHaveAttribute('inert', '');
     const bar = (await widget(screen, 'finished').locator(`[data-testid="dashboard-bar"][data-bucket="sprint:${SPRINT_E}"]`).boundingBox())!;
     if (compact) await page.touchscreen.tap(bar.x + bar.width / 2, bar.y + bar.height / 2);
     else await page.mouse.click(bar.x + bar.width / 2, bar.y + bar.height / 2);
@@ -454,7 +455,7 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await expect(screen.getByTestId('dashboard-counting')).toHaveCount(0, { timeout: 15_000 });
     await expect(widget(screen, 'pace').getByTestId('dashboard-number-value')).toHaveText('2');
     await expect(drill).toHaveCount(0);
-    await expect(screen.getByTestId('dashboard-grid')).not.toHaveAttribute('inert', '');
+    await expect(widget(screen, 'finished').getByTestId('dashboard-widget-body')).not.toHaveAttribute('inert', '');
   });
 
   test('An epic no board row holds counts its open work, narrows the page, and names its child on the board, the backlog and the ticket', async ({ harness, page }) => {

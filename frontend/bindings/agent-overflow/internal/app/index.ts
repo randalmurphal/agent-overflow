@@ -226,6 +226,7 @@ export {
     TicketWorkProblem,
     TimelinePageOptions,
     TrackerConnection,
+    TrackerDashboardsView,
     TrackerProblem,
     UnsavedThreadRow,
     UnsavedThreadRowsEvent,

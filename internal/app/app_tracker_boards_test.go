@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harness/trackerfake"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
@@ -220,6 +221,8 @@ type trackerBoardSetup struct {
 	// linear, when set, is a Linear workspace the fake serves beside the
 	// site; addLinear connects it.
 	linear *trackerfake.LinearWorkspace
+	// settings, when set, is the App's settings service.
+	settings *settings.Service
 }
 
 func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoardFixture {
@@ -273,6 +276,9 @@ func newTrackerBoardFixtureOn(t *testing.T, setup trackerBoardSetup) *trackerBoa
 		}})
 		a.trackerCadence = setup.cadence
 		a.trackerBudget = setup.budget
+		if setup.settings != nil {
+			a.settings = setup.settings
+		}
 	})
 	bus := transport.NewEventBus(64)
 	t.Cleanup(bus.Close)

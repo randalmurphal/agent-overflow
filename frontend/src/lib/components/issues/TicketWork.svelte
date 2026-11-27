@@ -4,7 +4,9 @@
   // client's catalog, each with its state and who started it; the pull
   // requests and branches whose title or name holds its key, as its
   // computer reads them and its forge's search finds them, each failed
-  // search in the Pull requests page's words (`stores/ticketWork.svelte.ts`); Ask and Start
+  // search in the Pull requests page's words, and the pull requests Jira's
+  // development data links to it, with its failure, and the count of those
+  // the app cannot open (`stores/ticketWork.svelte.ts`); Ask and Start
   // work, and a Start work run's steps until it ends. Each row opens what
   // it names and has its menu on a right-click or long press: a pull
   // request its review in the ticket's place when the ticket's computer
@@ -51,7 +53,7 @@
   import { ciStatusDotClass, ciStatusText } from '../../utils/ciStatus';
   import { pathBasename } from '../../utils/pathDisplay';
   import { lastKnownThreadStatusPill, resolveThreadStatusPill } from '../../utils/threadStatusPill';
-  import { userFacingError } from '../../utils/userFacingError';
+  import { asSentence, userFacingError } from '../../utils/userFacingError';
   import { pullNumberLabel } from '../pulls/pullRowView';
   import PullsProjectError from '../pulls/PullsProjectError.svelte';
   import { forgeFailureFrom, forgeReadFailureCause, rateLimitRetryMessage } from '../../utils/forgeFailure';
@@ -393,6 +395,14 @@
         />
       </div>
     {/each}
+    {#if work?.developmentUnlisted}
+      <p class="px-1 text-xs text-fg-muted" data-testid="ticket-work-development-unlisted">
+        Jira links {work.developmentUnlisted === 1 ? 'one more pull request' : `${work.developmentUnlisted} more pull requests`} to this ticket at an address Agent Overflow cannot open; the ticket's development panel in Jira lists {work.developmentUnlisted === 1 ? 'it' : 'them'}.
+      </p>
+    {/if}
+    {#if work?.developmentProblem}
+      <p class="px-1 text-xs text-error" role="alert" data-testid="ticket-work-development-problem">{asSentence(work.developmentProblem)}</p>
+    {/if}
     {#if read?.searchError && !read.error}
       <p class="px-1 text-xs text-error" role="alert" data-testid="ticket-work-search-error">Could not search the forge: {userFacingError(read.searchError)}</p>
     {/if}

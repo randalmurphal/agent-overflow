@@ -123,6 +123,9 @@ func TestUnsupportedWrites(t *testing.T) {
 	if !errors.Is(err, tracker.ErrUnsupported) {
 		t.Errorf("download: %v", err)
 	}
+	if prs, err := p.PullRequests(ctx, id); !errors.Is(err, tracker.ErrUnsupported) || prs != nil {
+		t.Errorf("pull requests: %v, %v", prs, err)
+	}
 	// Input checks still come first.
 	expectResult(t, p.CreateSprint(ctx, tracker.SprintInput{}), "-:sprint:refused(invalid)")
 	if err := p.Download(ctx, tracker.DownloadInput{}); !errors.Is(err, tracker.ErrInvalidInput) {

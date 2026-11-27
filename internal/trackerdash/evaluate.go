@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -47,11 +48,13 @@ func refuse(code, sentence string, err error) *Refusal {
 
 // Evaluator evaluates dashboards, at most maxEvaluations at once; a
 // further one waits up to busyWait for a turn and is refused as busy
-// after it. It retains nothing of a board between calls: only the
+// after it. Listing them counts nothing and takes no turn. It retains nothing of a board between calls: only the
 // relations each kind's built-in metrics read, which are fixed.
 type Evaluator struct {
 	slots chan struct{}
 	now   func() time.Time
+	// deadline is how long one evaluation may take, evaluationDeadline.
+	deadline time.Duration
 
 	readsMu sync.Mutex
 	// reads is, by kind, each built-in metric's relations, from its prepare
@@ -61,7 +64,7 @@ type Evaluator struct {
 
 // NewEvaluator is an evaluator reading the time from now.
 func NewEvaluator(now func() time.Time) *Evaluator {
-	return &Evaluator{slots: make(chan struct{}, maxEvaluations), now: now, reads: map[Kind]map[string][]string{}}
+	return &Evaluator{slots: make(chan struct{}, maxEvaluations), now: now, deadline: evaluationDeadline, reads: map[Kind]map[string][]string{}}
 }
 
 func (e *Evaluator) acquire(ctx context.Context) (func(), error) {
@@ -85,12 +88,14 @@ type Kind struct {
 }
 
 // Board is the board an evaluation reads: Fill exports it, Epics is as
-// Kind has it, and Viewer is the connection's verified account, which
-// Mine narrows to ("" before one).
+// Kind has it, Viewer is the connection's verified account, which Mine
+// narrows to ("" before one), and Own is what its project keeps and its
+// agents proposed beside the built-in dashboard.
 type Board struct {
 	Fill   Fill
 	Epics  bool
 	Viewer string
+	Own    Own
 }
 
 // Request is what one evaluation counts: a dashboard, over a range,
@@ -209,11 +214,12 @@ type WidgetValue struct {
 	NotCounted int `json:"not_counted,omitempty"`
 }
 
-// Answer is one evaluation of a dashboard. Reading is whether the board's
-// first read has not finished, so its numbers count the tickets read so
-// far.
+// Answer is one evaluation of a dashboard and of the widgets agents
+// proposed on the board: the values of the dashboard's widgets and then
+// of the proposals, by widget ID, which the screen draws in the layout
+// Listing gives. Reading is whether the board's first read has not
+// finished, so its numbers count the tickets read so far.
 type Answer struct {
-	Dashboard DashboardView `json:"dashboard"`
 	Range     RangeView     `json:"range"`
 	Reading   bool          `json:"reading,omitempty"`
 	Estimates string        `json:"estimates"`
@@ -223,50 +229,92 @@ type Answer struct {
 	Widgets   []WidgetValue `json:"widgets"`
 }
 
-// Dashboards is the dashboards a board of kind k offers, each metric
-// prepared against the export's empty relations for the relations it
-// reads and whether it counts now.
-func (e *Evaluator) Dashboards(ctx context.Context, k Kind) ([]DashboardView, error) {
-	release, err := e.acquire(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	v, _, err := emptyView(ctx, k)
-	if err != nil {
-		return nil, err
-	}
-	return []DashboardView{v}, nil
+// Listing is what a board offers as the screen lays it out: its
+// dashboards, the built-in first and then the project's own, and the
+// widgets agents proposed on it with the thread that proposed each.
+type Listing struct {
+	Dashboards []DashboardView `json:"dashboards"`
+	Proposals  []ProposalView  `json:"proposals"`
 }
 
-// emptyView is the built-in dashboard of kind k with its metrics prepared
-// on a session of the export's empty relations, sealed as a count's is.
-// A built-in metric that does not prepare is this package's defect.
-func emptyView(ctx context.Context, k Kind) (DashboardView, map[string]prepResult, error) {
+// Dashboards is what a board of kind k, whose estimates are estimateUnit
+// (store.MirrorEstimate*), offers: each metric prepared against the
+// export's empty relations for How this is counted and whether it counts
+// now. An own or proposed widget whose metric does not prepare is listed,
+// and its count shows the failure. It counts nothing, so it takes no
+// counting slot and answers while every count is out.
+func (e *Evaluator) Dashboards(ctx context.Context, k Kind, estimateUnit int, own Own) (Listing, error) {
+	estimates := estimatesOf(estimateUnit)
+	l := Listing{Proposals: []ProposalView{}}
+	err := onEmpty(ctx, func(s *session) error {
+		v, err := builtinView(s, k, estimates)
+		if err != nil {
+			return err
+		}
+		l.Dashboards = append(l.Dashboards, v)
+		for _, d := range own.Dashboards {
+			v, _ := s.view(d, own.Metrics, k.PlansSprints, estimates)
+			l.Dashboards = append(l.Dashboards, v)
+		}
+		proposed := make([]Widget, 0, len(own.Proposals))
+		for _, p := range own.Proposals {
+			proposed = append(proposed, p.Widget)
+		}
+		pv, _ := s.view(Dashboard{Widgets: proposed}, own.Metrics, k.PlansSprints, estimates)
+		for i, v := range pv.Widgets {
+			l.Proposals = append(l.Proposals, ProposalView{View: v, Thread: own.Proposals[i].Thread})
+		}
+		return nil
+	})
+	return l, err
+}
+
+// estimatesOf is how the copy holds a board's estimates, as How this is
+// counted and the screen read it: points, time (seconds) or none.
+func estimatesOf(unit int) string {
+	switch unit {
+	case store.MirrorEstimatePoints:
+		return "points"
+	case store.MirrorEstimateTime:
+		return "time"
+	}
+	return "none"
+}
+
+// onEmpty runs f on a session of the export's empty relations, sealed as
+// a count's is, and closes it.
+func onEmpty(ctx context.Context, f func(*session) error) error {
 	s, err := openSession(ctx, time.UTC)
 	if err != nil {
-		return DashboardView{}, nil, err
+		return err
 	}
-	v, preps, err := func() (DashboardView, map[string]prepResult, error) {
+	err = func() error {
 		if _, err := s.conn.ExecContext(ctx, store.MirrorExportSchema); err != nil {
-			return DashboardView{}, nil, fmt.Errorf("create the export's relations: %w", err)
+			return fmt.Errorf("create the export's relations: %w", err)
 		}
 		if err := s.gate(ctx); err != nil {
-			return DashboardView{}, nil, refuse("dashboard_unsealed", "the dashboard was not counted, because its copy of the board could not be sealed", err)
+			return refuse("dashboard_unsealed", "the dashboard was not counted, because its copy of the board could not be sealed", err)
 		}
-		d, metrics := builtin(k)
-		v, preps := s.view(d, metrics, "points")
-		for name, pr := range preps {
-			if pr.err != nil {
-				return DashboardView{}, nil, fmt.Errorf("built-in metric %s: %w", name, pr.err)
-			}
-		}
-		return v, preps, nil
+		return f(s)
 	}()
 	if closeErr := s.close(); closeErr != nil {
-		return DashboardView{}, nil, errors.Join(err, closeErr)
+		return errors.Join(err, closeErr)
 	}
-	return v, preps, err
+	return err
+}
+
+// builtinView is the built-in dashboard of kind k with its metrics
+// prepared on the empty session s. A built-in metric that does not
+// prepare is this package's defect.
+func builtinView(s *session, k Kind, estimates string) (DashboardView, error) {
+	d, metrics := builtin(k)
+	v, preps := s.view(d, metrics, k.PlansSprints, estimates)
+	for name, pr := range preps {
+		if pr.err != nil {
+			return DashboardView{}, fmt.Errorf("built-in metric %s: %w", name, pr.err)
+		}
+	}
+	return v, nil
 }
 
 // metricReads is the relations each built-in metric of kind k reads, by
@@ -280,16 +328,45 @@ func (e *Evaluator) metricReads(ctx context.Context, k Kind) (map[string][]strin
 	if r, ok := e.reads[k]; ok {
 		return r, nil
 	}
-	_, preps, err := emptyView(ctx, k)
+	r := map[string][]string{}
+	err := onEmpty(ctx, func(s *session) error {
+		d, metrics := builtin(k)
+		_, preps := s.view(d, metrics, k.PlansSprints, "points")
+		for name, pr := range preps {
+			if pr.err != nil {
+				return fmt.Errorf("built-in metric %s: %w", name, pr.err)
+			}
+			r[name] = pr.p.reads
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	r := map[string][]string{}
-	for name, pr := range preps {
-		r[name] = pr.p.reads
-	}
 	e.reads[k] = r
 	return r, nil
+}
+
+// ownReads is the relations each of metrics reads, by name, from their
+// prepares on an empty session; a metric that does not prepare reads
+// none, and its widget shows its failure once the count prepares it again.
+func ownReads(ctx context.Context, metrics []Metric) (map[string][]string, error) {
+	r := map[string][]string{}
+	if len(metrics) == 0 {
+		return r, nil
+	}
+	err := onEmpty(ctx, func(s *session) error {
+		for _, m := range metrics {
+			if m.Validate() != nil {
+				continue
+			}
+			if p, err := s.prepare(m); err == nil {
+				r[m.Name] = p.reads
+			}
+		}
+		return nil
+	})
+	return r, err
 }
 
 // boardRelations are the relations every count fills beside its metrics':
@@ -306,8 +383,7 @@ type prepResult struct {
 // widget's How and whether it counts now. A metric that fails either, or
 // a widget that cannot draw its metric, is that metric's widgets'
 // failure.
-func (s *session) view(d Dashboard, metrics map[string]Metric, estimates string) (DashboardView, map[string]prepResult) {
-	plansSprints := d.ID == builtinSprintsID
+func (s *session) view(d Dashboard, metrics map[string]Metric, plansSprints bool, estimates string) (DashboardView, map[string]prepResult) {
 	ranges, def := rangesOf(plansSprints)
 	v := DashboardView{ID: d.ID, Title: d.Title, Ranges: ranges, DefaultRange: def}
 	preps := map[string]prepResult{}
@@ -336,7 +412,7 @@ func (s *session) view(d Dashboard, metrics map[string]Metric, estimates string)
 				preps[m.Name] = pr
 			}
 		}
-		v.Widgets = append(v.Widgets, WidgetView{ID: w.ID, Title: cmpOr(w.Title, m.Title), Form: w.Form, Width: w.Width, Bucket: m.Bucket, Unit: m.Unit, Good: m.Good,
+		v.Widgets = append(v.Widgets, WidgetView{ID: w.ID, Title: cmpOr(w.Title, m.Title), Form: w.Form, Width: w.Width, Bucket: m.Bucket, Unit: m.numbersUnit(), Good: m.Good,
 			Now: pr.err == nil && !pr.p.cols.periodBound(m), Series: m.Series, How: how(m, pr.p, plansSprints, estimates)})
 	}
 	return v, preps
@@ -347,6 +423,19 @@ func cmpOr(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// valueUnit is the unit m's numbers are in as the copy holds them, for a
+// reader without the screen's formatting: tickets, points, seconds (a
+// time board's estimates) or days.
+func valueUnit(m Metric, estimates string) string {
+	switch m.numbersUnit() {
+	case UnitTickets:
+		return "tickets"
+	case UnitDays:
+		return "days"
+	}
+	return map[string]string{"points": "points", "time": "seconds", "none": "tickets"}[estimates]
 }
 
 // how renders How this is counted from m's definition.
@@ -433,10 +522,7 @@ func (ev *evaluation) fill(ctx context.Context, b Board, relations []string) err
 		return refuse("dashboard_unsealed", "the dashboard was not counted, because its copy of the board could not be sealed", err)
 	}
 	ev.export = export
-	ev.estimates = map[int]string{store.MirrorEstimatePoints: "points", store.MirrorEstimateTime: "time"}[export.EstimateUnit]
-	if ev.estimates == "" {
-		ev.estimates = "none"
-	}
+	ev.estimates = estimatesOf(export.EstimateUnit)
 	return tooSlow(ctx, ev.readBoard(ctx))
 }
 
@@ -638,45 +724,66 @@ func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing
 // dashboard of the board's kind with its metrics prepared, the range and
 // the narrowing. end closes it.
 type opened struct {
-	ev      *evaluation
-	ctx     context.Context
-	end     func() error
-	d       Dashboard
-	metrics map[string]Metric
-	view    DashboardView
-	preps   map[string]prepResult
-	sp      span
-	n       narrowing
-	now     time.Time
+	ev  *evaluation
+	ctx context.Context
+	end func() error
+	// d is the dashboard counted, and kind the board's kind its ID names
+	// when it is the built-in, nil for one the project keeps.
+	d    Dashboard
+	kind *Kind
+	// proposals is the widgets agents proposed on the board. Of both,
+	// only the widgets the evaluation counts are here.
+	proposals []Widget
+	metrics   map[string]Metric
+	view      DashboardView
+	preps     map[string]prepResult
+	sp        span
+	n         narrowing
+	now       time.Time
+}
+
+// widgets is the dashboard's widgets and then the proposals.
+func (o *opened) widgets() []Widget {
+	return append(slices.Clone(o.d.Widgets), o.proposals...)
 }
 
 // begin is the common start of an evaluation and a drill: a slot, the
-// deadline, the session filled with what the metrics of the dashboard's
-// widgets that counts keeps read, and the dashboard with its range and
-// narrowing. The request's dashboard names the board's kind: one that
-// names neither built-in is refused before anything is copied.
-func (e *Evaluator) begin(ctx context.Context, b Board, r Request, counts func(Widget) bool) (*opened, error) {
+// deadline, the session filled with what the metrics of the widgets it
+// counts read, and those of the dashboard's widgets and the board's
+// proposals (proposed) that counts keeps, prepared, with their range and
+// narrowing. The request's dashboard is a built-in, whose ID names the
+// board's kind, or one of b.Own's: any other is refused before anything
+// is copied.
+func (e *Evaluator) begin(ctx context.Context, b Board, r Request, counts func(w Widget, proposed bool) bool) (*opened, error) {
 	loc, err := location(r.TimeZone)
 	if err != nil {
 		return nil, err
 	}
-	kind, err := requestKind(r, b)
-	if err != nil {
+	o := &opened{now: e.now()}
+	if o.d, o.metrics, o.kind, err = dashboardOf(r, b); err != nil {
 		return nil, err
 	}
-	d, metrics := builtin(kind)
-	var names []string
-	for _, w := range d.Widgets {
-		if counts(w) {
-			names = append(names, w.Metric)
+	o.d.Widgets = slices.DeleteFunc(slices.Clone(o.d.Widgets), func(w Widget) bool { return !counts(w, false) })
+	for _, p := range b.Own.Proposals {
+		if counts(p.Widget, true) {
+			o.proposals = append(o.proposals, p.Widget)
+		}
+	}
+	var builtins []string
+	var own []Metric
+	for _, w := range o.widgets() {
+		if m, ok := b.Own.Metrics[w.Metric]; ok {
+			own = append(own, m)
+		} else {
+			builtins = append(builtins, w.Metric)
 		}
 	}
 	release, err := e.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, evaluationDeadline)
-	relations, err := e.relationsOf(ctx, kind, metrics, names)
+	ctx, cancel := context.WithTimeout(ctx, e.deadline)
+	relations, err := e.relationsOf(ctx, o.kind, o.metrics, builtins, own)
 	var ev *evaluation
 	if err == nil {
 		ev, err = e.open(ctx, b, loc, relations)
@@ -686,12 +793,12 @@ func (e *Evaluator) begin(ctx context.Context, b Board, r Request, counts func(W
 		release()
 		return nil, err
 	}
-	o := &opened{ev: ev, ctx: ctx, now: e.now(), end: func() error {
+	o.ev, o.ctx, o.end = ev, ctx, func() error {
 		err := ev.close()
 		cancel()
 		release()
 		return err
-	}}
+	}
 	if err := o.resolve(b, r, loc); err != nil {
 		if closeErr := o.end(); closeErr != nil {
 			err = errors.Join(err, closeErr)
@@ -703,8 +810,7 @@ func (e *Evaluator) begin(ctx context.Context, b Board, r Request, counts func(W
 
 func (o *opened) resolve(b Board, r Request, loc *time.Location) error {
 	plansSprints := o.ev.export.PlansSprints
-	o.d, o.metrics = builtin(Kind{PlansSprints: plansSprints, Epics: b.Epics})
-	if r.Dashboard != o.d.ID {
+	if o.kind != nil && o.kind.PlansSprints != plansSprints {
 		return unknownDashboard(r.Dashboard)
 	}
 	rng := r.Range
@@ -721,33 +827,59 @@ func (o *opened) resolve(b Board, r Request, loc *time.Location) error {
 	if o.n, err = o.ev.narrowing(r, b.Viewer); err != nil {
 		return err
 	}
-	o.view, o.preps = o.ev.s.view(o.d, o.metrics, o.ev.estimates)
+	o.view, o.preps = o.ev.s.view(o.d, o.metrics, plansSprints, o.ev.estimates)
+	_, preps := o.ev.s.view(Dashboard{Widgets: o.proposals}, o.metrics, plansSprints, o.ev.estimates)
+	maps.Copy(o.preps, preps)
 	return nil
 }
 
-// requestKind is the kind of board r's dashboard is the built-in of; the
-// board's own kind is checked against it once its copy is read (resolve).
-func requestKind(r Request, b Board) (Kind, error) {
-	if r.Dashboard != builtinSprintsID && r.Dashboard != builtinWeeksID {
-		return Kind{}, unknownDashboard(r.Dashboard)
+// dashboardOf is the dashboard r names on b with every metric its
+// widgets and b's proposals draw, by name: a built-in, with the kind of
+// board its ID names, which the board's own kind is checked against once
+// its copy is read (resolve), or one of b.Own's, with no kind.
+func dashboardOf(r Request, b Board) (Dashboard, map[string]Metric, *Kind, error) {
+	metrics := maps.Clone(b.Own.Metrics)
+	if metrics == nil {
+		metrics = map[string]Metric{}
 	}
-	return Kind{PlansSprints: r.Dashboard == builtinSprintsID, Epics: b.Epics}, nil
+	if r.Dashboard == builtinSprintsID || r.Dashboard == builtinWeeksID {
+		k := Kind{PlansSprints: r.Dashboard == builtinSprintsID, Epics: b.Epics}
+		d, builtins := builtin(k)
+		maps.Copy(metrics, builtins)
+		return d, metrics, &k, nil
+	}
+	for _, d := range b.Own.Dashboards {
+		if d.ID == r.Dashboard {
+			return d, metrics, nil, nil
+		}
+	}
+	return Dashboard{}, nil, nil, unknownDashboard(r.Dashboard)
 }
 
 func unknownDashboard(id string) *Refusal {
 	return refuse("dashboard_unknown", fmt.Sprintf("this board has no dashboard %q; pick one from the list", truncate(id, 64)), nil)
 }
 
-// relationsOf is what a count of the named metrics of kind k fills: the
-// relations their prepares read and boardRelations, in order.
-func (e *Evaluator) relationsOf(ctx context.Context, k Kind, metrics map[string]Metric, names []string) ([]string, error) {
-	reads, err := e.metricReads(ctx, k)
+// relationsOf is what a count fills: boardRelations, the relations the
+// named built-in metrics of kind k read, and those the own metrics read,
+// in order. k is nil when no built-in metric counts.
+func (e *Evaluator) relationsOf(ctx context.Context, k *Kind, metrics map[string]Metric, builtins []string, own []Metric) ([]string, error) {
+	out := slices.Clone(boardRelations)
+	if k != nil && len(builtins) > 0 {
+		reads, err := e.metricReads(ctx, *k)
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range builtins {
+			out = append(out, reads[metrics[n].Name]...)
+		}
+	}
+	reads, err := ownReads(ctx, own)
 	if err != nil {
 		return nil, err
 	}
-	out := slices.Clone(boardRelations)
-	for _, n := range names {
-		out = append(out, reads[metrics[n].Name]...)
+	for _, m := range own {
+		out = append(out, reads[m.Name]...)
 	}
 	slices.Sort(out)
 	return slices.Compact(out), nil
@@ -763,9 +895,29 @@ func (o *opened) count(m Metric) (counted, error) {
 	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now))
 }
 
-// Evaluate counts dashboard r.Dashboard of board b.
-func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (_ Answer, err error) {
-	o, err := e.begin(ctx, b, r, func(Widget) bool { return true })
+// Evaluate counts dashboard r.Dashboard of board b and then the board's
+// proposals, each in an evaluation of its own: its own copy of the board,
+// of what its widgets read, closed before the next opens, and its own
+// deadline. What the proposals read or take never reaches the
+// dashboard's widgets, which count first with their tickets' titles; a
+// proposal its evaluation does not count says why in its own place
+// (proposals) instead of failing the answer.
+func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (Answer, error) {
+	a, err := e.dashboard(ctx, b, r)
+	if err != nil || len(b.Own.Proposals) == 0 {
+		return a, err
+	}
+	proposed, err := e.proposals(ctx, b, r)
+	if err != nil {
+		return Answer{}, err
+	}
+	a.Widgets = append(a.Widgets, proposed...)
+	return a, nil
+}
+
+// dashboard is the evaluation of dashboard r.Dashboard's own widgets.
+func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer, err error) {
+	o, err := e.begin(ctx, b, r, func(_ Widget, proposed bool) bool { return !proposed })
 	if err != nil {
 		return Answer{}, err
 	}
@@ -774,7 +926,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (_ Answer,
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	a := Answer{Dashboard: o.view, Range: rangeView(o.sp), Reading: !o.ev.export.FirstReadDone, Estimates: o.ev.estimates, Person: o.n.person, Epic: o.n.epic, At: o.now.UnixMilli()}
+	a := Answer{Range: rangeView(o.sp), Reading: !o.ev.export.FirstReadDone, Estimates: o.ev.estimates, Person: o.n.person, Epic: o.n.epic, At: o.now.UnixMilli(), Widgets: []WidgetValue{}}
 	runs := map[string]counted{}
 	for _, w := range o.d.Widgets {
 		m := o.metrics[w.Metric]
@@ -787,16 +939,92 @@ func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (_ Answer,
 		}
 		a.Widgets = append(a.Widgets, o.ev.widget(w, m, c, o.sp))
 	}
-	var shown []*TicketRow
-	for i := range a.Widgets {
-		for j := range a.Widgets[i].Tickets {
-			shown = append(shown, &a.Widgets[i].Tickets[j])
-		}
-	}
-	if err := o.ev.titles(o.ctx, shown); err != nil {
+	if err := o.ev.titles(o.ctx, listed(a.Widgets)); err != nil {
 		return Answer{}, err
 	}
 	return a, nil
+}
+
+// proposals is the values of b's proposals over r's range and narrowing,
+// from an evaluation of their own, each proposal's rows let go once its
+// value is drawn. A proposal the deadline stops, or leaves no time for,
+// says so (outOfTime), and a failure of the evaluation itself is each
+// proposal's sentence; only the caller's leaving fails the call.
+func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []WidgetValue, err error) {
+	failed := func(err error) ([]WidgetValue, error) {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		sentence := proposalsFailed(err)
+		out := make([]WidgetValue, 0, len(b.Own.Proposals))
+		for _, p := range b.Own.Proposals {
+			out = append(out, WidgetValue{ID: p.Widget.ID, Error: sentence})
+		}
+		return out, nil
+	}
+	o, err := e.begin(ctx, b, r, func(_ Widget, proposed bool) bool { return proposed })
+	if err != nil {
+		return failed(err)
+	}
+	defer func() {
+		if closeErr := o.end(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	out := make([]WidgetValue, 0, len(o.proposals))
+	for _, w := range o.proposals {
+		m := o.metrics[w.Metric]
+		c := counted{err: outOfTime}
+		if o.ctx.Err() == nil {
+			var runErr error
+			if c, runErr = o.count(m); runErr != nil {
+				if o.ctx.Err() == nil {
+					return failed(runErr)
+				}
+				c = counted{err: outOfTime}
+			}
+		}
+		out = append(out, o.ev.widget(w, m, c, o.sp))
+	}
+	if err := o.ev.titles(o.ctx, listed(out)); err != nil {
+		if o.ctx.Err() == nil {
+			return failed(err)
+		}
+		for i := range out {
+			if len(out[i].Tickets) > 0 {
+				out[i] = WidgetValue{ID: out[i].ID, Error: outOfTime.Sentence}
+			}
+		}
+	}
+	return out, nil
+}
+
+// proposalsFailed is the sentence each proposal shows when their
+// evaluation failed with err.
+func proposalsFailed(err error) string {
+	r, ok := errors.AsType[*Refusal](err)
+	switch {
+	case ok && r.Code == "dashboard_too_slow":
+		return outOfTime.Sentence
+	case ok:
+		return "Not counted: " + r.Sentence + "."
+	}
+	return "Not counted: " + err.Error() + "."
+}
+
+// outOfTime is a proposal's widget the proposals' deadline stopped or
+// left no time for, whichever proposals took the time.
+var outOfTime = &MetricError{Sentence: fmt.Sprintf("Not counted: the proposed widgets' %v to count ran out before this widget was counted. Dismiss the proposals you do not need, or refresh.", evaluationDeadline), Limit: true}
+
+// listed is the rows the lists of ws show, whose titles are read.
+func listed(ws []WidgetValue) []*TicketRow {
+	var out []*TicketRow
+	for i := range ws {
+		for j := range ws[i].Tickets {
+			out = append(out, &ws[i].Tickets[j])
+		}
+	}
+	return out
 }
 
 func rangeView(sp span) RangeView {
@@ -1052,15 +1280,15 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	if r.Page < 0 {
 		return DrillAnswer{}, refuse("dashboard_request_invalid", "a drill's page is 0 or more", nil)
 	}
-	kind, err := requestKind(r.Request, b)
+	d, _, _, err := dashboardOf(r.Request, b)
 	if err != nil {
 		return DrillAnswer{}, err
 	}
-	d, _ := builtin(kind)
-	if !slices.ContainsFunc(d.Widgets, func(w Widget) bool { return w.ID == r.Widget }) {
+	named := func(w Widget) bool { return w.ID == r.Widget }
+	if !slices.ContainsFunc(d.Widgets, named) && !slices.ContainsFunc(b.Own.Proposals, func(p Proposal) bool { return named(p.Widget) }) {
 		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("this dashboard has no widget %q", truncate(r.Widget, 64)), nil)
 	}
-	o, err := e.begin(ctx, b, r.Request, func(w Widget) bool { return w.ID == r.Widget })
+	o, err := e.begin(ctx, b, r.Request, func(w Widget, _ bool) bool { return named(w) })
 	if err != nil {
 		return DrillAnswer{}, err
 	}
@@ -1069,8 +1297,9 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	// begin's dashboard is the one checked above: the request's kind.
-	w := o.d.Widgets[slices.IndexFunc(o.d.Widgets, func(w Widget) bool { return w.ID == r.Widget })]
+	// begin's dashboard and proposals are the ones checked above.
+	ws := o.widgets()
+	w := ws[slices.IndexFunc(ws, named)]
 	m := o.metrics[w.Metric]
 	c, err := o.count(m)
 	if err != nil {
@@ -1080,7 +1309,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		return DrillAnswer{}, refuse("dashboard_metric_failed", c.err.Sentence, nil)
 	}
 	ev, sp := o.ev, o.sp
-	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Reading: !ev.export.FirstReadDone, Unit: m.Unit, Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
+	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Reading: !ev.export.FirstReadDone, Unit: m.numbersUnit(), Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
 	g := ev.inRange(m, c, sp)
 	rows, placed := g.rows, g.placed
 	switch {

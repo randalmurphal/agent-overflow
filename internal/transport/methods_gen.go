@@ -171,6 +171,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DismissPRReview", ID: 1185171749, Scope: "git:operate", Route: "selected"},                                                       // main.App.DismissPRReview
 	{Name: "DismissSessionBanner", ID: 1317713039, Scope: "threads:operate", Route: "thread"},                                                // main.App.DismissSessionBanner
 	{Name: "DismissThreadWorktreeSetup", ID: 41472159, Scope: "terminal:operate", Route: "thread"},                                           // main.App.DismissThreadWorktreeSetup
+	{Name: "DismissTrackerWidget", ID: 350315805, Scope: "tracker:operate", Route: "home"},                                                   // main.App.DismissTrackerWidget
 	{Name: "DismissUnsavedThreadRows", ID: 1456387330, Scope: "threads:operate", Route: "thread"},                                            // main.App.DismissUnsavedThreadRows
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host", Route: "home"},                                                                    // main.App.DownloadUpdate
 	{Name: "EditOpenAIKeyFile", ID: 1579042384, Scope: "host", Route: "selected"},                                                            // main.App.EditOpenAIKeyFile
@@ -311,6 +312,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "InterruptTurn", ID: 850013031, Scope: "threads:operate", Route: "thread", Budget: 90 * time.Second},                              // main.App.InterruptTurn
 	{Name: "IntroduceOwnDevice", ID: 2219602920, Scope: "session", Route: "home", Remote: true},                                              // main.App.IntroduceOwnDevice
 	{Name: "IsWSL", ID: 2789068977, Scope: "threads:read", Route: "home"},                                                                    // main.App.IsWSL
+	{Name: "KeepTrackerWidget", ID: 2951524960, Scope: "tracker:operate", Route: "home"},                                                     // main.App.KeepTrackerWidget
 	{Name: "LinkTrackerIssues", ID: 4036611847, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                            // main.App.LinkTrackerIssues
 	{Name: "ListActivityRunMembers", ID: 1602023272, Scope: "threads:read", Route: "thread", CallerBound: true},                              // main.App.ListActivityRunMembers
 	{Name: "ListAgentComputers", ID: 2526318276, Scope: "terminal:operate", Route: "selected"},                                               // main.App.ListAgentComputers
@@ -465,6 +467,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RemoveProviderAccount", ID: 684418419, Scope: "access:admin", Route: "home"},                                                     // main.App.RemoveProviderAccount
 	{Name: "RemoveTrackerConnection", ID: 21628411, Scope: "tracker:operate", Route: "home"},                                                 // main.App.RemoveTrackerConnection
 	{Name: "RemoveTrackerTimeEntries", ID: 2493130714, Scope: "tracker:operate", Route: "home"},                                              // main.App.RemoveTrackerTimeEntries
+	{Name: "RemoveTrackerWidget", ID: 446977083, Scope: "tracker:operate", Route: "home"},                                                    // main.App.RemoveTrackerWidget
 	{Name: "RenameBackend", ID: 1528076361, Scope: "host", Route: "home"},                                                                    // main.App.RenameBackend
 	{Name: "RenameProject", ID: 3728890856, Scope: "threads:operate", Route: "project"},                                                      // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435, Scope: "threads:operate", Route: "thread"},                                                         // main.App.RenameThread
@@ -566,6 +569,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "StartSSHConnection", ID: 2623175319, Scope: "host", Route: "home", Remote: true},                                                 // main.App.StartSSHConnection
 	{Name: "StartTerminal", ID: 3009548683, Scope: "terminal:operate", Route: "selected"},                                                    // main.App.StartTerminal
 	{Name: "StartTicketThread", ID: 2291054583, Scope: "threads:operate", Route: "project", Budget: 12 * time.Minute},                        // main.App.StartTicketThread
+	{Name: "StartTrackerDashboardThread", ID: 3031630647, Scope: "threads:operate", Route: "home"},                                           // main.App.StartTrackerDashboardThread
 	{Name: "StartTrackerSprint", ID: 1961738625, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                           // main.App.StartTrackerSprint
 	{Name: "StopBackgroundTasks", ID: 2580445357, Scope: "threads:operate", Route: "thread"},                                                 // main.App.StopBackgroundTasks
 	{Name: "StopClaudeTask", ID: 536320598, Scope: "threads:operate", Route: "thread"},                                                       // main.App.StopClaudeTask
