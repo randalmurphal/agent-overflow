@@ -54,6 +54,21 @@ func TestARowNoWidgetTakesIsNotCharged(t *testing.T) {
 	}
 }
 
+// A drill of one bar takes that bar's sprint alone: 20,800 rows of WEB
+// Sprint 5 leave WEB Sprint 6's bar of Last 5 sprints drilled, though
+// the chart, which takes them, is over the limit.
+func TestADrillOfABarIsChargedOnlyItsSprint(t *testing.T) {
+	t.Parallel()
+	b := creditOn(manyReviews(creditBoard("points"), "s5"))
+	if w := widgetOf(t, mustEvaluate(t, evaluator(), b, utcSprints5), "finished"); w.Error == "" {
+		t.Fatal("the chart counted 20,800 rows of WEB Sprint 5; want it over the limit")
+	}
+	d := mustDrill(t, b, DrillRequest{Request: utcSprints5, Widget: "finished", Cell: &DrillCell{Bucket: "sprint:s6"}})
+	if d.Count != 5 {
+		t.Fatalf("WEB Sprint 6's bar holds %d rows; want its 5", d.Count)
+	}
+}
+
 // A week's rows that no widget takes are not charged either: the rows of
 // the four weeks before Last 4 weeks reach no chart of the range.
 func TestAnEventByPeriodIsChargedOnlyThePeriodsItsWidgetsTake(t *testing.T) {
