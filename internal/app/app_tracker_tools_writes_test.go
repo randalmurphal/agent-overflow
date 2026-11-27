@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -208,6 +209,38 @@ func TestTrackerWriteApprovalAnsweredOnAnotherThread(t *testing.T) {
 	}
 	if got := append(fakeComments(t, f, "10101"), fakeComments(t, f, "10102")...); len(got) != 0 {
 		t.Fatalf("a denied call commented %q", got)
+	}
+}
+
+// An answer with no prompt occurrence, as a paired v0.0.19 screen sends
+// after showing a tracker write's tool name and no change, is refused:
+// nothing is written, the prompt stays open, and a screen that shows the
+// change still answers it.
+func TestTrackerWriteAnswerFromAScreenThatCannotShowItIsRefused(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
+	thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
+	done := trackerWriteCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1", "WEB-2"}, "comment": "Checked."})
+	open, _ := trackerWritePrompt(t, f.a, thread.ID)
+	err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Decision: "accept"})
+	if err == nil || errors.Is(err, transport.ErrAlreadyHandled) || !strings.Contains(err.Error(), "cannot show what this change sends") {
+		t.Fatalf("an answer with no occurrence = %v; want a refusal that says the screen cannot show the change", err)
+	}
+	if got := append(fakeComments(t, f, "10101"), fakeComments(t, f, "10102")...); len(got) != 0 {
+		t.Fatalf("an answer from a screen that showed no change commented %q", got)
+	}
+	if !f.a.trackerApprovalOpen(thread.ID, open.RequestID) {
+		t.Fatal("the refused answer closed the approval")
+	}
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+	if result := <-done; result[1].(bool) {
+		t.Fatalf("ticket_update = %v", result)
+	}
+	if got := append(fakeComments(t, f, "10101"), fakeComments(t, f, "10102")...); len(got) != 2 {
+		t.Fatalf("the approval from a screen that shows it commented %q", got)
 	}
 }
 

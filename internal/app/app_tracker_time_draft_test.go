@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -287,5 +288,48 @@ func TestAnAgentsPostLogsOnlyWhatThePersonSaw(t *testing.T) {
 	// The first row is as the first post left it.
 	if rows[0].Summary != "Logged 0 of 2 entries for "+dayLabel {
 		t.Fatalf("the first row became %q", rows[0].Summary)
+	}
+}
+
+// A screen that predates the prompt occurrence, as a paired v0.0.19
+// client is, shows no tracker write's entries (its generic panel has no
+// preview for the kind) and answers with occurrence zero: that answer is
+// refused, nothing is logged, and the prompt stays open for a screen that
+// shows it, whose approval then logs the entry.
+func TestAnAnswerFromAScreenThatCannotShowThePostIsRefused(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
+	thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
+	day := time.Now().AddDate(0, 0, -2).Format(time.DateOnly)
+	if text, isError := trackerMCPStreamedCall(t, f.a, endpoint, "time_draft", map[string]any{"entries": []map[string]any{
+		{"day": day, "key": "WEB-1", "hours": 1, "reason": "Built the form"},
+	}}); isError {
+		t.Fatalf("time_draft = %s", text)
+	}
+	posted := func() int {
+		n := 0
+		for _, r := range f.e.Requests(0).Requests {
+			if r.Route == "POST rest/api/3/issue/{issue}/worklog" {
+				n++
+			}
+		}
+		return n
+	}
+	done := trackerWriteCall(t, f.a, endpoint, "time_draft", map[string]any{"post": []string{day}})
+	open, _ := trackerWritePrompt(t, f.a, thread.ID)
+	err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Decision: "accept"})
+	if err == nil || errors.Is(err, transport.ErrAlreadyHandled) {
+		t.Fatalf("an answer with no occurrence = %v; want a refusal that says the screen cannot show the change", err)
+	}
+	if n := posted(); n != 0 {
+		t.Fatalf("an answer from a screen that showed no entry logged %d worklogs", n)
+	}
+	open, _ = trackerWritePrompt(t, f.a, thread.ID)
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+		t.Fatalf("the approval from a screen that shows it: %v", err)
+	}
+	if result := <-done; result[1].(bool) || posted() != 1 {
+		t.Fatalf("the post answered %v with %d worklogs", result, posted())
 	}
 }

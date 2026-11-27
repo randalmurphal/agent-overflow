@@ -255,6 +255,13 @@ func (a *App) resolveTrackerApproval(threadID, id string, occurrence provider.Pr
 // approval, claim the claim of its open prompt: it settles the waiting
 // call, and no provider is written.
 func (a *App) respondToTrackerWrite(threadID string, claim triage.PromptClaim, response provider.ApprovalResponse) error {
+	// Every build that sends the prompt occurrence draws a tracker write's
+	// changes; one that sends none showed the person no change, so its
+	// answer is refused and the prompt stays open.
+	if response.Occurrence == 0 {
+		a.releasePrompt(claim)
+		return fmt.Errorf("approval %s: this screen runs an older Agent Overflow that cannot show what this change sends; approve or deny it on a screen with the current version, or update this one", response.RequestID)
+	}
 	decision := provider.NormalizeApprovalDecision(response)
 	if decision != "approved" && decision != "declined" {
 		a.releasePrompt(claim)
