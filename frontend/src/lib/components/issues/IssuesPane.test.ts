@@ -3317,6 +3317,30 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     }
   });
 
+  it('asks nothing of planning poker while its project\'s setup could not be read, and follows the setup once it reads', async () => {
+    project('p1', 'alpha', 1);
+    install();
+    installTicket();
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: true }));
+    const setup = (poker?: boolean) => ({ revision: `r${String(poker)}`, setup: { status_groups: [], ticket_pins: [], start_work: [], ...(poker === false ? { estimates: { poker: false } } : {}) } });
+    setBindingMock('ProjectTrackerSetup', async () => { throw new Error('the setup file could not be read'); });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-activity');
+    await tick();
+    expect(within(screen).queryByTestId('ticket-poker-section')).toBeNull();
+    expect(support).not.toHaveBeenCalled();
+    // Read again, the project turned poker off: still nothing is asked.
+    setBindingMock('ProjectTrackerSetup', async () => setup(false));
+    await refreshTrackerSetup('p1');
+    await tick();
+    expect(support).not.toHaveBeenCalled();
+    // On: the site is asked.
+    setBindingMock('ProjectTrackerSetup', async () => setup());
+    await refreshTrackerSetup('p1');
+    await waitFor(() => expect(support).toHaveBeenCalled());
+  });
+
   it('sends one poker follow change at a time, ending on the state the section last asked for, and says nothing of votes before a read', async () => {
     install();
     installTicket();

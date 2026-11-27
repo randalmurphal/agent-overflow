@@ -382,12 +382,10 @@
   // The setup of the ticket's project, held below (the project's pins).
   const setupState = $derived(project ? trackerSetupOf(project) : null);
   // Planning poker is on unless the project turned it off (Settings >
-  // Issues > Points and credit). While the setup is being read nothing is
-  // asked, so a project that turned it off asks nothing; a setup that
-  // cannot be read has the built-in rule.
-  const pokerAllowed = $derived(
-    !project || (setupState !== null && (setupState.view !== null ? pokerOn(setupState.view.setup) : setupState.error !== null)),
-  );
+  // Issues > Points and credit). Until the setup is read, and while it
+  // cannot be, nothing is asked, so a project that turned it off asks
+  // nothing.
+  const pokerAllowed = $derived(!project || (setupState?.view != null && pokerOn(setupState.view.setup)));
 
   // Planning poker, on a Jira site that has it, unless the ticket's
   // project turned it off (`pokerAllowed`): the store's poker support
