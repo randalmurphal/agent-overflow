@@ -15,6 +15,7 @@
 
 import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
 import { formatDurationMs, formatTimeOfDay, formatCalendarDate } from '../../utils/format';
+import { formatAmount, unitWord, type DashboardUnit } from '../../stores/trackerDashboardModel';
 import {
   FACT_MAX,
   INSTRUCTIONS_FACT_MAX,
@@ -1206,7 +1207,7 @@ export function dashboardWidgetResultView(data: string): AoResultView | null {
   if (!reply) return null;
   const value = num(reply, 'value');
   const rows = num(reply, 'rows') ?? 0;
-  view.outcome = join(value !== null ? `${value}` : '', plural(rows, 'row'), str(reply, 'board') ? `on ${str(reply, 'board')}` : '');
+  view.outcome = join(value !== null ? widgetAmount(value, str(reply, 'unit')) : '', plural(rows, 'row'), str(reply, 'board') ? `on ${str(reply, 'board')}` : '');
   view.note = join(str(reply, 'shown'), str(reply, 'partial'));
   fact(view.facts, 'range', str(reply, 'range'));
   fact(view.facts, 'counts', str(reply, 'counts'));
@@ -1215,6 +1216,20 @@ export function dashboardWidgetResultView(data: string): AoResultView | null {
     view.lines.push({ key, title: join(key, str(row, 'title')), detail: join(num(row, 'value') !== null ? `${num(row, 'value')}` : '', str(row, 'period'), row.counted === false ? 'not counted' : ''), text: str(row, 'note'), link: null });
   }
   return view;
+}
+
+/** The dashboard's unit and board estimate for each unit the tool's
+ * answer names its numbers in. */
+const WIDGET_UNITS: Record<string, [DashboardUnit, string]> = {
+  tickets: ['tickets', 'none'], points: ['estimate', 'points'], seconds: ['estimate', 'time'], days: ['days', 'none'],
+};
+
+/** A widget's number as the dashboard draws it: "1.5h", "8 points". */
+function widgetAmount(value: number, unit: string): string {
+  const u = WIDGET_UNITS[unit];
+  if (!u) return `${value}`;
+  const word = unitWord(value, u[0], u[1]);
+  return `${formatAmount(value, u[0], u[1])}${word ? ` ${word}` : ''}`;
 }
 
 /**

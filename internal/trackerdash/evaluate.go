@@ -388,7 +388,7 @@ func (s *session) view(d Dashboard, metrics map[string]Metric, plansSprints bool
 				preps[m.Name] = pr
 			}
 		}
-		v.Widgets = append(v.Widgets, WidgetView{ID: w.ID, Title: cmpOr(w.Title, m.Title), Form: w.Form, Width: w.Width, Bucket: m.Bucket, Unit: m.Unit, Good: m.Good,
+		v.Widgets = append(v.Widgets, WidgetView{ID: w.ID, Title: cmpOr(w.Title, m.Title), Form: w.Form, Width: w.Width, Bucket: m.Bucket, Unit: m.numbersUnit(), Good: m.Good,
 			Now: pr.err == nil && !pr.p.cols.periodBound(m), Series: m.Series, How: how(m, pr.p, plansSprints, estimates)})
 	}
 	return v, preps
@@ -405,10 +405,10 @@ func cmpOr(a, b string) string {
 // reader without the screen's formatting: tickets, points, seconds (a
 // time board's estimates) or days.
 func valueUnit(m Metric, estimates string) string {
-	switch {
-	case m.Reduce == ReduceCount || m.Unit == UnitTickets:
+	switch m.numbersUnit() {
+	case UnitTickets:
 		return "tickets"
-	case m.Unit == UnitDays:
+	case UnitDays:
 		return "days"
 	}
 	return map[string]string{"points": "points", "time": "seconds", "none": "tickets"}[estimates]
@@ -1237,7 +1237,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		return DrillAnswer{}, refuse("dashboard_metric_failed", c.err.Sentence, nil)
 	}
 	ev, sp := o.ev, o.sp
-	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Reading: !ev.export.FirstReadDone, Unit: m.Unit, Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
+	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Reading: !ev.export.FirstReadDone, Unit: m.numbersUnit(), Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
 	g := ev.inRange(m, c, sp)
 	rows, placed := g.rows, g.placed
 	switch {

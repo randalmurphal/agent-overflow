@@ -133,13 +133,24 @@ func TestTrySaysTheUnitOfItsNumbers(t *testing.T) {
 	for _, c := range []struct {
 		m    Metric
 		unit string
-	}{{sum, "seconds"}, {count, "tickets"}} {
+		view Unit
+	}{{sum, "seconds", UnitEstimate}, {count, "tickets", UnitTickets}} {
 		got, err := evaluator().Try(context.Background(), board, Widget{Form: FormNumber, Width: 3}, c.m, "UTC")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Unit != c.unit {
-			t.Errorf("%s: unit %q; want %q", c.m.Title, got.Unit, c.unit)
+		if got.Unit != c.unit || got.View.Unit != c.view {
+			t.Errorf("%s: unit %q, the view's %q; want %q and %q", c.m.Title, got.Unit, got.View.Unit, c.unit, c.view)
+		}
+		// The screen draws a widget and its drill in the unit they publish.
+		b := board
+		b.Own = Own{Proposals: []Proposal{{Widget: Widget{ID: "w_1", Metric: "w_1", Form: FormNumber, Width: 3}}}, Metrics: map[string]Metric{"w_1": c.m}}
+		drill, err := evaluator().Drill(context.Background(), b, DrillRequest{Request: Request{Dashboard: builtinWeeksID, TimeZone: "UTC"}, Widget: "w_1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if drill.Unit != c.view {
+			t.Errorf("%s: the drill's unit %q; want %q", c.m.Title, drill.Unit, c.view)
 		}
 	}
 }

@@ -52,28 +52,32 @@ type widgetSpec struct {
 // its query returned, the first of them, and, when shown, where the
 // person finds it.
 type widgetAnswer struct {
-	Board      string          `json:"board"`
-	Range      string          `json:"range"`
-	Counts     string          `json:"counts"`
-	Unit       string          `json:"unit"`
-	Value      *float64        `json:"value,omitempty"`
-	Previous   *float64        `json:"previous,omitempty"`
-	Series     []string        `json:"series,omitempty"`
-	Buckets    []widgetBucket  `json:"buckets,omitempty"`
-	More       int             `json:"more,omitempty"`
-	NotCounted int             `json:"not_counted,omitempty"`
-	Rows       int             `json:"rows"`
-	First      []widgetRow     `json:"first_rows"`
-	Partial    string          `json:"partial,omitempty"`
-	Shown      string          `json:"shown,omitempty"`
-	List       []widgetListRow `json:"list,omitempty"`
+	Board    string   `json:"board"`
+	Range    string   `json:"range"`
+	Counts   string   `json:"counts"`
+	Unit     string   `json:"unit"`
+	Value    *float64 `json:"value,omitempty"`
+	Previous *float64 `json:"previous,omitempty"`
+	// PreviousNotCounted is the range before's tickets not counted.
+	PreviousNotCounted int             `json:"previous_not_counted,omitempty"`
+	Series             []string        `json:"series,omitempty"`
+	Buckets            []widgetBucket  `json:"buckets,omitempty"`
+	More               int             `json:"more,omitempty"`
+	NotCounted         int             `json:"not_counted,omitempty"`
+	Rows               int             `json:"rows"`
+	First              []widgetRow     `json:"first_rows"`
+	Partial            string          `json:"partial,omitempty"`
+	Shown              string          `json:"shown,omitempty"`
+	List               []widgetListRow `json:"list,omitempty"`
 }
 
 type widgetBucket struct {
-	Label      string     `json:"label"`
-	Cells      []*float64 `json:"cells,omitempty"`
-	Total      *float64   `json:"total"`
-	NotCounted int        `json:"not_counted,omitempty"`
+	Label string     `json:"label"`
+	Cells []*float64 `json:"cells,omitempty"`
+	// CellsNotCounted is each cell's tickets not counted, when one has any.
+	CellsNotCounted []int    `json:"cells_not_counted,omitempty"`
+	Total           *float64 `json:"total"`
+	NotCounted      int      `json:"not_counted,omitempty"`
 }
 
 type widgetRow struct {
@@ -131,11 +135,19 @@ func (s *Server) dashboardWidget(ctx context.Context, caller Caller, raw json.Ra
 	if v := tried.Value.Value; v != nil && v.NC > 0 {
 		out.NotCounted = v.NC
 	}
+	if p := tried.Value.Previous; p != nil {
+		out.PreviousNotCounted = p.NC
+	}
 	for _, b := range tried.Value.Buckets {
 		wb := widgetBucket{Label: b.Label, Total: numOf(&b.Total), NotCounted: b.Total.NC}
 		if len(b.Cells) > 1 {
+			nc := make([]int, len(b.Cells))
 			for i := range b.Cells {
 				wb.Cells = append(wb.Cells, numOf(&b.Cells[i]))
+				nc[i] = b.Cells[i].NC
+			}
+			if slices.ContainsFunc(nc, func(n int) bool { return n > 0 }) {
+				wb.CellsNotCounted = nc
 			}
 		}
 		out.Buckets = append(out.Buckets, wb)

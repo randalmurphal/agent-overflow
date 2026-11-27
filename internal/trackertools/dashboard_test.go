@@ -231,21 +231,26 @@ func TestDashboardWidgetRefusesABoardNamedTwice(t *testing.T) {
 
 // The unit of a widget's numbers and the tickets each could not count
 // reach the agent: a time board's estimates in seconds, a number's
-// tickets not counted, a bucket's.
+// tickets not counted and its previous one's, a bucket's and its cells'.
 func TestDashboardWidgetSaysItsUnitAndTicketsNotCounted(t *testing.T) {
 	t.Parallel()
 	five, three := 7200.0, 3600.0
 	f := &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
 		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{
-			Value:   &trackerdash.Num{V: &five, NC: 2},
-			Buckets: []trackerdash.BucketValue{{Label: "User 1", Total: trackerdash.Num{V: &three, NC: 1}}},
+			Value:    &trackerdash.Num{V: &five, NC: 2},
+			Previous: &trackerdash.Num{V: &three, NC: 4},
+			Buckets: []trackerdash.BucketValue{
+				{Label: "User 1", Total: trackerdash.Num{V: &three, NC: 1}},
+				{Label: "User 2", Cells: []trackerdash.Num{{V: &three}, {V: &three, NC: 3}}, Total: trackerdash.Num{V: &five, NC: 3}},
+			},
 		}}, nil
 	}}
 	answer, err := widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": openWidget})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"unit":"seconds"`, `"value":7200`, `"not_counted":2`, `{"label":"User 1","total":3600,"not_counted":1}`} {
+	for _, want := range []string{`"unit":"seconds"`, `"value":7200`, `"not_counted":2`, `"previous_not_counted":4`, `{"label":"User 1","total":3600,"not_counted":1}`,
+		`{"label":"User 2","cells":[3600,3600],"cells_not_counted":[0,3],"total":7200,"not_counted":3}`} {
 		if !strings.Contains(answer, want) {
 			t.Errorf("answer %s lacks %s", answer, want)
 		}

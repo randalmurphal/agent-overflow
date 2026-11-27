@@ -544,6 +544,14 @@ describe('tracker tool write results', () => {
     });
   });
 
+  it('says a widget\'s number in its unit, as the dashboard draws it', () => {
+    const card = (unit: string, value: number) => aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({ board: 'Web Team', unit, value, rows: 2, first_rows: [] }), {}, names);
+    expect(card('seconds', 5400)).toMatchObject({ outcome: '1.5h · 2 rows · on Web Team' });
+    expect(card('points', 8)).toMatchObject({ outcome: '8 points · 2 rows · on Web Team' });
+    expect(card('tickets', 1)).toMatchObject({ outcome: '1 ticket · 2 rows · on Web Team' });
+    expect(card('days', 2.5)).toMatchObject({ outcome: '2.5 days · 2 rows · on Web Team' });
+  });
+
   it('reads a create as its key, and a create that stopped part way as incomplete with its sentence', () => {
     expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_create', json({ key: 'WEB-42' }), {}, names)).toMatchObject({ outcome: 'created WEB-42', note: '' });
     expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_create', json({

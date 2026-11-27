@@ -86,6 +86,16 @@ const (
 	UnitDays     Unit = "days"
 )
 
+// numbersUnit is the unit m's numbers are in, the one every reader of
+// them (the widget, its drill, the tool's answer) draws them in: a
+// count's are tickets, whatever its unit.
+func (m Metric) numbersUnit() Unit {
+	if m.Reduce == ReduceCount {
+		return UnitTickets
+	}
+	return m.Unit
+}
+
 // Good is the direction of a change that is good news.
 type Good string
 
