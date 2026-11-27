@@ -995,26 +995,37 @@ board 0 at that step) and five boards of 4,000, the median of five runs,
 with the labels read from the card's data (the build before v176) and
 from the `labels` column v176 adds, on the development machine of [Costs
 at scale](../architecture/tracker-backend.md#costs-at-scale), its load
-average between 15 and 23 for the column's run:
+average between 15 and 23 for the column's run. The last column is the
+build that also gives the sprint totals only the support rows in a
+sprint, reads no labels in a card read, and has the trigger that
+advances a board's `totals_revision` on an issue's `type_id` or `labels`
+(`trg_tracker_cache_totals_support`), with the issue-update index of
+v175, one run at a load average between 8 and 22:
 
-| No row estimated | Card's data | `labels` column |
-|---|---|---|
-| Section counts, no rule | 32.2 ms | 31.2 ms |
-| Section counts, 2 labels no card has | 77.7 ms | 45.7 ms |
-| Section counts, a label every card has | 97.7 ms | 51.0 ms |
-| Section counts, a type no card has | 33.9 ms | 43.0 ms |
-| Section counts, the board | 39.6 ms | 40.1 ms |
-| Board view of 3 sections, no rule | 34.6 ms | 35.6 ms |
-| Board view of 3 sections, 2 labels no card has | 92.0 ms | 49.4 ms |
-| Board view of 3 sections, a label every card has | 98.3 ms | 56.4 ms |
-| Five boards, section counts, no rule | 8.7 ms | 5.8 ms |
-| Five boards, section counts, 2 labels no card has | 25.1 ms | 8.9 ms |
-| Five boards, section counts, a label every card has | 19.8 ms | 16.2 ms |
+| No row estimated | Card's data | `labels` column | With the trigger |
+|---|---|---|---|
+| Section counts, no rule | 32.2 ms | 31.2 ms | 37.0 ms |
+| Section counts, 2 labels no card has | 77.7 ms | 45.7 ms | 44.8 ms |
+| Section counts, a label every card has | 97.7 ms | 51.0 ms | 60.2 ms |
+| Section counts, a type no card has | 33.9 ms | 43.0 ms | 54.0 ms |
+| Section counts, the board | 39.6 ms | 40.1 ms | 55.9 ms |
+| Board view of 3 sections, no rule | 34.6 ms | 35.6 ms | 39.5 ms |
+| Board view of 3 sections, 2 labels no card has | 92.0 ms | 49.4 ms | 48.9 ms |
+| Board view of 3 sections, a label every card has | 98.3 ms | 56.4 ms | 69.2 ms |
+| Five boards, section counts, no rule | 8.7 ms | 5.8 ms | 6.6 ms |
+| Five boards, section counts, 2 labels no card has | 25.1 ms | 8.9 ms | 8.3 ms |
+| Five boards, section counts, a label every card has | 19.8 ms | 16.2 ms | 11.8 ms |
 
 With every row estimated, a rule costs nothing: the section counts took
 31.0 to 33.3 ms on the card's data and 31.0 to 37.0 ms on the column,
-with and without a rule. v176 fills the column of 20,000 stored cards in
-139 ms (`TestTrackerLabelsMigration`).
+with and without a rule, and 32.3 to 34.8 ms with the trigger. v176
+fills the column of 20,000 stored cards in 139 ms
+(`TestTrackerLabelsMigration`).
+
+The trigger is a test of two columns on each card a write updates. A
+delta tick of 100 changed cards at 20,000 issues took 14.4 ms (11.1 to
+19.1 ms over five runs) with it and 10.6 ms (9.2 to 11.8 ms over four)
+without it, the runs interleaved, at a load average between 8 and 22.
 
 ### Sprint history
 
