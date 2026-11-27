@@ -662,6 +662,12 @@ sidebar and the thread header, on desktop and on a phone.
   other ticket found by key or title, or left out.
 - Time is logged by hand from a cell, a day or a ticket.
 - An entry on a support ticket shows what its hours are worth in points.
+- An agent's draft puts meeting hours on the project's meetings ticket and
+  time off on its time-off ticket ([Setup](#setup)) without a question.
+  When one of them is not set, or is gone or cannot be read, the agent
+  asks instead. With Never log to an epic on, a draft entry on an epic is
+  refused, and the agent puts the hours on a ticket under the epic or
+  asks. Time logged by hand is not held to it.
 
 ### Setup
 
@@ -688,8 +694,8 @@ sidebar and the thread header, on desktop and on a phone.
   is unknown says so in the computer's words and reads the setup again.
   A setup that cannot be read is said with its file and Try again; one a
   newer version saved is said, with no change offered.
-- Fields, Starting work and Agents are per project and behave as Status
-  groups does: each change saves at once, and a save that lost, a save
+- Fields, Starting work, Time and Agents are per project and behave as
+  Status groups does: each change saves at once, and a save that lost, a save
   whose outcome is unknown, a setup that cannot be read and a section a
   newer version saved are said the same way.
 - Fields lists, per Jira site of the project's boards and per site its
@@ -700,8 +706,11 @@ sidebar and the thread header, on desktop and on a phone.
   one name show their IDs. A site's fields are its whole field catalog,
   several hundred on a real site. Each site's fields are read on their
   own: a site whose fields cannot be read says why beside its pins, with
-  Try again, and its pins show by ID and can be taken off, while the
-  other sites show as usual. A project with only Linear boards says it
+  Try again, while the other sites show as usual. A site read before keeps
+  the fields it last read, to pin and to find; one never read shows its
+  pins by ID, which can be taken off. A long text field named as a
+  built-in section (Description) shows its ID beside the name, as two
+  fields of one name do. A project with only Linear boards says it
   has nothing to pin: a Linear ticket's fields are fixed, and its
   sections are pinned on the ticket.
 - Starting work lists each tracker project of the project's boards, and
@@ -709,8 +718,8 @@ sidebar and the thread header, on desktop and on a phone.
   ticket (off, or on to a status the project's boards offer it, the
   first one counted in progress when turned on: a Linear team's own
   boards' statuses, and for a Jira tracker project every status the
-  project's boards on its site show, since a Jira board can list several
-  tracker projects' tickets; a tracker project offered no status says
+  project's boards on its site show, its own boards' first, since a Jira
+  board can list several tracker projects' tickets; a tracker project offered no status says
   so, and one whose boards this computer has not read names them),
   assign it to the person, name the branch after the ticket, and the
   project the thread runs in. With naming off, the Start work form
@@ -727,11 +736,20 @@ sidebar and the thread header, on desktop and on a phone.
   the project chooses. A setup that cannot be read, or an agents section a
   newer version saved, refuses every ticket change of the project's
   threads until it is fixed.
+- Time names the ticket meetings go on, "Meetings that are not about one
+  ticket", and the ticket time off goes on, each found by key or title on
+  the connections of the project's Jira boards, shown with its title and
+  cleared with Clear, and Never log to an epic, on unless turned off. A
+  ticket set that is gone, or that the connection cannot see, is said
+  beside it, as is one whose site no connection that is on reaches. A
+  project with only Linear boards says it has no time settings, and one
+  with no boards says to add one. The draft's sources are not offered
+  here until the calendar and call-duration readers are designed.
 - The rest is per project: which boards the picker lists and which opens
   first; which group each status belongs to, including left out of counts;
   pinned fields and pinned sections; Start work defaults; the
   estimate field, poker and credit rules; the meetings and time-off
-  tickets, draft approval and draft sources; and what agents may do.
+  tickets and whether a draft may log to an epic; and what agents may do.
   What cards and Backlog rows show is chosen with Display, per board, on
   each device.
 - A Linear project has no fields, credit or time settings.

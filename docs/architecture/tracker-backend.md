@@ -364,10 +364,14 @@ no step runs at root creation, restore or start.
   `{title}`, whether the branch is named after the ticket
   (`name_branch`, false for an empty branch box, stored only when
   false), and the repository, an app project of this computer; each field
-  optional, and an entry that sets nothing dropped) and `agents`
+  optional, and an entry that sets nothing dropped), `agents`
   (`change_tickets` and `ask_several`, each true when absent and stored
   only when false, and the section dropped when it turns neither off;
-  [Writes by agents](#writes-by-agents)). The writer (`validateSetup`)
+  [Writes by agents](#writes-by-agents)) and `time` (`meetings` and
+  `time_off`, each a Jira ticket by site and key, `WEB-1`, never an issue
+  ID, so a client saves what a finder answers with no read; and
+  `never_epics`, true when absent and stored only when false; the
+  section dropped when it sets nothing). The writer (`validateSetup`)
   owns these defaults: a client sends the value it shows. A section this build does not know, or one
   at a newer version, is kept byte for byte by a replace and named in the
   read's `newer`; a replace that sets it is refused.
@@ -448,8 +452,9 @@ no step runs at root creation, restore or start.
   would add to them. A Linear team offers its own boards' statuses (two
   teams share a site); a Jira status is the site's and a Jira board can
   show several projects' tickets, so a Jira project offers every status
-  the project's boards on its site show, and Start work checks the
-  ticket's own moves. A board
+  the project's boards on its site show, those of its own boards (the
+  boards whose tracker project it is) first, so the first in progress is
+  of its own workflow, and Start work checks the ticket's own moves. A board
   is one statement of its column statuses (`GetMirrorBoardStatuses`, at
   most 200 rows), not its structure: no sprints or board data. Names
   come from the root's catalog, looked up 500 at a time. With 20 boards of
@@ -478,6 +483,16 @@ no step runs at root creation, restore or start.
   typed, at most 20 of its matches, ranked on the name. A client reads a
   site only while the page shows it: on the page's show, on reconnect, on
   Try again and when the connections that reach the site change.
+- **The tickets the Time page shows** are checked with `TrackerLookup`,
+  no method of their own: each ticket set through one connection that is
+  on and reaches its site (a connection of the project's boards first),
+  every ticket of a connection in one lookup, so a page with both tickets
+  set on one site is one request, and a key no issue answers to is one
+  more (the lookup reads it alone to tell an old key from a gone one). The
+  lookup gives the title, and its `unmatched` is a ticket that is gone or
+  that the connection cannot see, which Jira does not tell apart. A
+  client checks only while the page shows the tickets: on the page's
+  show, on reconnect, on Try again and when a ticket changes.
 
 ## Tables
 
