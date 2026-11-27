@@ -251,6 +251,20 @@ function watchRows(host: HTMLElement): { changes: () => string[]; stop: () => vo
 }
 
 describe('a ticket made at a sprint\'s foot', () => {
+  it('says a section\'s numbers in tickets for a project that counts tickets, each row keeping its points', async () => {
+    const view = backlogBoard();
+    const small = { ...view, counts: 'none', backlog: { rows: 2, estimate: 4 }, sections: [view.sections[0], { section: { kind: 'backlog' }, rows: MANY.slice(0, 2), next: null }] } as unknown as BoardView;
+    const { host } = await mountBacklog('jira', small);
+    const numbers = () => host.querySelector<HTMLElement>('[data-testid="issues-backlog-section"][data-list="backlog"] [data-testid="issues-backlog-numbers"]')?.textContent?.replace(/\s+/g, ' ').trim();
+    await waitFor(() => numbers() !== undefined, 'the backlog\'s numbers');
+    expect(numbers()).toBe('2 tickets');
+    expect(host.querySelector('[data-testid="issues-backlog-row"] [data-testid="issues-card-estimate"]')?.textContent).toBe('2');
+    // Complete sprint counts what is done in tickets too.
+    host.querySelector<HTMLElement>('[data-testid="issues-backlog-section"][data-list="sprint:8"] [data-testid="issues-backlog-sprint-complete"]')!.click();
+    await waitFor(() => document.querySelector('[data-testid="sprint-complete-summary"]') !== null, 'the Complete sprint form');
+    expect(document.querySelector('[data-testid="sprint-complete-summary"]')!.textContent?.replace(/\s+/g, ' ').trim()).toMatch(/^0 of 3 tickets done\./);
+  });
+
   it('is offered its move into the sprint until the board shows it there, and the row\'s menu placing it ends the offer', async () => {
     const made = { order: 'k00003', estimate: 0, card: { id: '9001', key: 'WEB-9001', title: 'Made here', status: { id: 's1', name: 's1', group: 'todo' }, created: 0, updated: 0 } } as RowView;
     const view = backlogBoard();

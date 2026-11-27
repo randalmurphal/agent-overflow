@@ -217,6 +217,14 @@ describe('the Issues pane', () => {
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('sub-1-1'));
   });
 
+  it('counts the columns in tickets for a project that counts tickets, each card keeping its points', async () => {
+    install({ view: kanban({ rows: [{ ...row('1', 'a', 's1'), estimate: 3 }] }, { rows: [row('2', 'b', 's2')] }, { counts: 'none' }) });
+    const view = mount();
+    await waitFor(() => expect(view.getAllByTestId('issues-card')).toHaveLength(2));
+    expect(columns(view).map((c) => c.count)).toEqual(['1', '1']);
+    expect(within(view.getAllByTestId('issues-card')[0]).getByTestId('issues-card-estimate')).toHaveTextContent('3');
+  });
+
   it('opens the board picked last before the boards are listed, and lets it go when its computer refuses it', async () => {
     const mocks = install();
     writeFromAnotherWindow(BOARD_KEY, boardRef('2'));
