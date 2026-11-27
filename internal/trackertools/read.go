@@ -32,8 +32,10 @@ const maxKeyRunes = 128
 // writes it, with no site.
 type ticket struct {
 	connection, site, issue, key string
-	// title is the ticket's title when the lookup that found it gave one.
+	// title and kind are the ticket's title and type when the lookup that
+	// found it gave them.
 	title string
+	kind  *trackerapp.IssueTypeView
 	// linked is the thread's own ticket.
 	linked bool
 }

@@ -269,6 +269,9 @@ type TimeTicket struct {
 	Key     string `json:"key"`
 }
 
+// SiteName is the ticket's site as a TicketSource names it.
+func (t TimeTicket) SiteName() string { return siteName(t.Site) }
+
 // SetupView is a project's tracker setup as it is stored: the revision a
 // replace names (empty while there is no file), the setup itself, which a
 // replace gives back as it is or changed, and the names of the sections a
@@ -379,17 +382,35 @@ func (s *Service) ProjectSetup(projectID string) (SetupView, error) {
 // this build cannot tell what it allows, so its caller refuses rather
 // than apply the built-in rules.
 func (s *Service) ProjectAgentRules(projectID string) (AgentRules, error) {
-	view, err := s.ProjectSetup(projectID)
-	if err != nil {
+	setup, err := s.projectSection(projectID, sectionAgents)
+	if err != nil || setup.Agents == nil {
 		return AgentRules{}, err
 	}
-	if slices.Contains(view.Newer, sectionAgents) {
-		return AgentRules{}, fmt.Errorf("%w: section %s", ErrSetupNewer, sectionAgents)
+	return *setup.Agents, nil
+}
+
+// ProjectTimeSettings is where projectID's setup puts its time, as
+// ProjectAgentRules reads what it allows: a time section a newer version
+// saved fails with ErrSetupNewer.
+func (s *Service) ProjectTimeSettings(projectID string) (TimeSettings, error) {
+	setup, err := s.projectSection(projectID, sectionTime)
+	if err != nil || setup.Time == nil {
+		return TimeSettings{}, err
 	}
-	if view.Setup.Agents == nil {
-		return AgentRules{}, nil
+	return *setup.Time, nil
+}
+
+// projectSection is projectID's setup for a reader of section, which
+// fails with ErrSetupNewer when a newer version saved that section.
+func (s *Service) projectSection(projectID, section string) (Setup, error) {
+	view, err := s.ProjectSetup(projectID)
+	if err != nil {
+		return Setup{}, err
 	}
-	return *view.Setup.Agents, nil
+	if slices.Contains(view.Newer, section) {
+		return Setup{}, fmt.Errorf("%w: section %s", ErrSetupNewer, section)
+	}
+	return view.Setup, nil
 }
 
 // SetProjectSetup replaces projectID's tracker setup with setup, built
