@@ -9,6 +9,7 @@
 // project counts; picks which tickets are support; and says a credit
 // section a newer version saved.
 
+import { tick } from 'svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import type { BoardPace, Credit, CreditRules, Setup, SetupView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -445,6 +446,8 @@ describe('the Credit group', () => {
     hours.value = '7';
     refuse();
     expect((await screen.findByTestId('settings-tracker-points-save-note')).textContent).toContain('The setup changed.');
+    // The field's own settling runs after the page's.
+    for (let i = 0; i < 3; i++) await tick();
     expect(hours.value).toBe('7');
   });
 
