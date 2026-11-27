@@ -95,16 +95,6 @@ func TestProjectSupportNamesTheSupportTicketsOfABoard(t *testing.T) {
 	t.Parallel()
 	asked := []string{"10001", "10002", "10003", "10004", "99999"}
 	m := newMirrorFixture(t)
-	// A sprint completed before the first save: a change of the hours
-	// after it is a second snapshot, and the line follows the newest.
-	completed := time.UnixMilli(1_799_500_000_000).UTC()
-	m.p.set(func(p *scripted) {
-		p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
-			st := webStructure(b)
-			st.Sprints = append(st.Sprints, tracker.Sprint{ID: "0", Board: b, Name: "Sprint 0", State: tracker.SprintClosed, End: completed, Completed: completed})
-			return st, nil
-		}
-	})
 	m.tracks(supportRows())
 	m.subscribeShown(t, m.project())
 	none := SupportView{Issues: []string{}}
@@ -128,7 +118,7 @@ func TestProjectSupportNamesTheSupportTicketsOfABoard(t *testing.T) {
 	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project())).Setup
 	stored.Credit.Rules = append(stored.Credit.Rules, CreditRules{ReviewShare: 10, ReviewNeed: 2, ReviewActions: stored.Credit.Rules[0].ReviewActions, HoursPerPoint: 8})
 	if rules := m.saveSetup(t, m.project(), stored).Stored.Setup.Credit.Rules; len(rules) != 2 {
-		t.Fatalf("the change after a sprint completed kept %d snapshots", len(rules))
+		t.Fatalf("a change of the hours kept %d snapshots", len(rules))
 	}
 	if got := support(); got.HoursPerPoint != 8 {
 		t.Fatalf("after a second snapshot the line takes %d hours a point, want 8", got.HoursPerPoint)

@@ -468,12 +468,13 @@ no step runs at root creation, restore or start.
   none: the view carries no credit, and the project counts none.
   `heldSetup.credit` is the one answer to whether a project counts
   credit. A client sends a changed newest snapshot without `from`, and
-  the writer stamps it (`stampCredit`): the first gets 0; a later one
-  replaces the one before it, taking its time, while no closed sprint of
-  the project's Jira boards in the mirror completed after that time, and
-  otherwise takes effect from the save. So the rules grow by at most one
-  snapshot a sprint. A change for every sprint rewrites one value in
-  every snapshot and keeps each `from`.
+  the writer stamps it (`stampCredit`): the first gets 0, a later one
+  takes effect from the save, and one with the values of the snapshot
+  before it is dropped. No snapshot is replaced or removed, so the rules
+  grow by one a save that changes them. A change for every sprint sets
+  one value, the one chosen, in every snapshot and keeps each `from`.
+  A closed sprint counts with the newest snapshot whose `from` is at or
+  before the sprint's completion.
 - **A support ticket** is a row the project's support entry for the
   board's site names by type, label or board while the row has no
   estimate (an estimate reset counts as none); on a board with no

@@ -308,6 +308,11 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		if held, err = s.ListMirrorCards(root, tickets); err != nil || len(held) != len(tickets) {
 			t.Fatalf("%d cards of %d tickets: %v", len(held), len(tickets), err)
 		}
+		// A card read leaves the labels out (MirrorCard.Labels); the
+		// tracker gives them to every card it writes.
+		for i := range held {
+			held[i].Labels = slices.Clone(benchLabels)
+		}
 	}
 	ticketsOf := func(cards []MirrorCard, rev int) []MirrorTicket {
 		out := make([]MirrorTicket, len(cards))

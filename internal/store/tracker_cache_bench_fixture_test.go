@@ -77,13 +77,16 @@ func benchBoardID(board int) string { return strconv.Itoa(10 + board) }
 var CardShapeForTest = MirrorCardShape{Version: 2, VersionMember: "v", Type: "type_name", Priority: "priority_name",
 	Labels: "labels", LabelID: "id", LabelName: "name"}
 
+// benchLabels are the labels of every benchCard.
+var benchLabels = []string{"frontend", "auth"}
+
 // benchCard is a card whose data blob is of the shape trackerapp writes
 // (CardShapeForTest): its type, priority, two labels and its web address.
 func benchCard(id string, updated int64, board, i int) MirrorCard {
 	return MirrorCard{IssueID: id, Key: "WEB-" + id, ProjectID: "100", TypeID: "10001", TypeLevel: 0,
 		StatusID: strconv.Itoa(1 + i%5), AssigneeID: fmt.Sprint("acc-user", i%20), PriorityID: "3", ParentID: "",
 		CreatedAt: 1_700_000_000_000, UpdatedAt: updated, Sprints: []string{fmt.Sprint(board*benchBoardSprints + i%benchBoardSprints)},
-		Labels: []string{"frontend", "auth"},
+		Labels: slices.Clone(benchLabels),
 		Data: []byte(`{"v":2,"type_name":"Story","priority_name":"Medium","labels":[{"id":"frontend","name":"frontend"},{"id":"auth","name":"auth"}],` +
 			`"url":"https://example.atlassian.net/browse/WEB-` + id + `"}`)}
 }

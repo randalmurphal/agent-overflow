@@ -3,15 +3,16 @@ package trackerapp
 import (
 	"encoding/json"
 	"errors"
+	"math/rand/v2"
 	"os"
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/tracker"
 )
 
 // creditRules is one snapshot of credit rules from from (nil: from the
@@ -172,56 +173,43 @@ func TestANewerCreditSectionIsKeptAndCountsNone(t *testing.T) {
 }
 
 // A rule change from now on is stamped by the writer: a section's first
-// snapshot takes effect at the start; a later one replaces the newest
-// while no sprint of the project's boards completed after it took
-// effect, taking its time, and otherwise takes effect from the save. A
-// change for every sprint rewrites the snapshots and adds none.
+// snapshot takes effect at the start and a later one from the save, and
+// one with the newest's values adds nothing. No save replaces or removes
+// a snapshot, so a sprint that completed while a save ran, or while the
+// app was off, keeps the rule it completed under. A change for every
+// sprint rewrites the snapshots and adds none.
 func TestCreditRuleChangesStampTheirTime(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
+	var clock atomic.Int64
+	clock.Store(m.now().UnixMilli())
+	m.svc.now = func() time.Time { return time.UnixMilli(clock.Load()) }
 	all := []string{"commented", "approved", "logged_time"}
 	save := func(rules ...CreditRules) []CreditRules {
 		t.Helper()
+		clock.Add(1000)
 		return m.saveSetup(t, m.project(), Setup{Credit: &Credit{On: true, Rules: rules}}).Stored.Setup.Credit.Rules
-	}
-	shares := func(rules []CreditRules) string {
-		var out []string
-		for _, r := range rules {
-			out = append(out, time.UnixMilli(*r.From).UTC().Format(time.RFC3339)+"="+string(rune('0'+r.ReviewShare/5)))
-		}
-		return strings.Join(out, " ")
 	}
 	got := save(creditRules(nil, 10, 2, all, 4))
 	if len(got) != 1 || *got[0].From != 0 {
 		t.Fatalf("a first snapshot from the save: %+v", got)
 	}
-	// No sprint has completed: the change replaces the snapshot.
+	// The rule a sprint was counted with stays beside each later one,
+	// whether the store has read the sprint's close or not.
 	got = save(append(got, creditRules(nil, 20, 2, all, 4))...)
-	if len(got) != 1 || *got[0].From != 0 || got[0].ReviewShare != 20 {
-		t.Fatalf("a change with no sprint completed: %s", shares(got))
+	if len(got) != 2 || *got[0].From != 0 || got[0].ReviewShare != 10 || *got[1].From != clock.Load() || got[1].ReviewShare != 20 {
+		t.Fatalf("a change: %+v", got)
 	}
-	// A sprint completes after it: the next change takes effect from the
-	// save.
-	completed := time.UnixMilli(1_799_500_000_000).UTC()
-	m.p.set(func(p *scripted) {
-		p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
-			st := webStructure(b)
-			st.Sprints = append(st.Sprints, tracker.Sprint{ID: "0", Board: b, Name: "Sprint 0", State: tracker.SprintClosed,
-				Start: completed.Add(-14 * 24 * time.Hour), End: completed, Completed: completed})
-			return st, nil
-		}
-	})
-	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
-	m.subscribeShown(t, m.project())
 	got = save(append(got, creditRules(nil, 25, 2, all, 4))...)
-	if len(got) != 2 || *got[0].From != 0 || got[0].ReviewShare != 20 || *got[1].From != millis(m.now()) || got[1].ReviewShare != 25 {
-		t.Fatalf("a change after a sprint completed: %s", shares(got))
+	if len(got) != 3 || got[1].ReviewShare != 20 || *got[2].From != clock.Load() || got[2].ReviewShare != 25 {
+		t.Fatalf("a second change: %+v", got)
 	}
-	from := *got[1].From
-	// No sprint completed after that: the next change replaces it.
-	got = save(append(got, creditRules(nil, 30, 2, all, 4))...)
-	if len(got) != 2 || *got[1].From != from || got[1].ReviewShare != 30 || got[0].ReviewShare != 20 {
-		t.Fatalf("a second change in the same sprint: %s", shares(got))
+	// The newest's values again, its actions in another order: nothing
+	// added.
+	kept := slices.Clone(got)
+	got = save(append(got, creditRules(nil, 25, 2, []string{"logged_time", "commented", "approved"}, 4))...)
+	if !reflect.DeepEqual(got, kept) {
+		t.Fatalf("a save that changes no rule: %+v, want %+v", got, kept)
 	}
 	// Every sprint: one value rewritten in each snapshot, none added.
 	every := slices.Clone(got)
@@ -229,7 +217,75 @@ func TestCreditRuleChangesStampTheirTime(t *testing.T) {
 		every[i].HoursPerPoint = 6
 	}
 	got = save(every...)
-	if len(got) != 2 || got[0].HoursPerPoint != 6 || got[1].HoursPerPoint != 6 || *got[1].From != from {
+	if len(got) != 3 || got[0].HoursPerPoint != 6 || got[2].HoursPerPoint != 6 || *got[2].From != *kept[2].From {
 		t.Fatalf("a change for every sprint: %+v", got)
+	}
+}
+
+// Over generated saves, in the shapes the Credit group sends (a changed
+// newest snapshot without its time, or a value set in every snapshot), no
+// save changes or removes a snapshot it was not asked to: a change from
+// this sprint keeps every stored snapshot as it was and adds one from the
+// save unless its values are the newest's; a change for every sprint
+// keeps every snapshot's time and sets the value in each.
+func TestCreditSnapshotsKeepEveryRuleOverGeneratedSaves(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	var clock atomic.Int64
+	clock.Store(m.now().UnixMilli())
+	m.svc.now = func() time.Time { return time.UnixMilli(clock.Load()) }
+	r := rand.New(rand.NewPCG(1, 2))
+	values := func(x CreditRules) CreditRules {
+		switch r.IntN(4) {
+		case 0:
+			x.ReviewShare = r.IntN(3) * 5
+		case 1:
+			x.HoursPerPoint = 1 + r.IntN(3)
+		case 2:
+			x.ReviewActions = slices.DeleteFunc(slices.Clone(creditActions), func(string) bool { return r.IntN(3) == 0 })
+			if len(x.ReviewActions) == 0 {
+				x.ReviewActions = []string{"approved"}
+			}
+		}
+		x.ReviewNeed = min(x.ReviewNeed, len(x.ReviewActions))
+		return x
+	}
+	stored := m.saveSetup(t, m.project(), Setup{Credit: &Credit{On: true, Rules: []CreditRules{creditRules(nil, 10, 1, creditActions, 4)}}}).Stored.Setup.Credit.Rules
+	for step := range 120 {
+		clock.Add(1 + r.Int64N(5000))
+		before := stored
+		if r.IntN(4) == 0 {
+			hours := 1 + r.IntN(16)
+			every := slices.Clone(before)
+			for i := range every {
+				every[i].HoursPerPoint = hours
+			}
+			stored = m.saveSetup(t, m.project(), Setup{Credit: &Credit{On: true, Rules: every}}).Stored.Setup.Credit.Rules
+			for i := range stored {
+				want := before[i]
+				want.HoursPerPoint = hours
+				if len(stored) != len(before) || !reflect.DeepEqual(stored[i], want) {
+					t.Fatalf("step %d, every sprint at %d hours: %+v, want %+v with the hours", step, hours, stored, before)
+				}
+			}
+			continue
+		}
+		next := values(before[len(before)-1])
+		next.From = nil
+		stored = m.saveSetup(t, m.project(), Setup{Credit: &Credit{On: true, Rules: append(slices.Clone(before), next)}}).Stored.Setup.Credit.Rules
+		if !reflect.DeepEqual(stored[:len(before)], before) {
+			t.Fatalf("step %d: the stored snapshots moved: %+v, were %+v", step, stored, before)
+		}
+		switch added := stored[len(before):]; {
+		case sameCreditValues(next, before[len(before)-1]):
+			if len(added) != 0 {
+				t.Fatalf("step %d: a save with the newest's values added %+v", step, added)
+			}
+		case len(added) != 1 || *added[0].From != clock.Load() || !sameCreditValues(added[0], next):
+			t.Fatalf("step %d: a change added %+v, want %+v from %d", step, added, next, clock.Load())
+		}
+	}
+	if len(stored) < 10 {
+		t.Fatalf("the generated saves left %d snapshots; the generator changes too little", len(stored))
 	}
 }

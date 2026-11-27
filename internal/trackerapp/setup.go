@@ -561,10 +561,7 @@ func (s *Service) SetProjectSetup(projectID, revision string, setup Setup) (Setu
 	if err != nil {
 		return SetupSave{}, err
 	}
-	if setup, err = s.stampCredit(projectID, setup); err != nil {
-		return SetupSave{}, err
-	}
-	setup, err = validateSetup(setup)
+	setup, err = validateSetup(s.stampCredit(setup))
 	if err != nil {
 		return SetupSave{}, err
 	}
@@ -578,82 +575,44 @@ func (s *Service) SetProjectSetup(projectID, revision string, setup Setup) (Setu
 
 // stampCredit is setup with its credit section's newest snapshot given
 // the time it takes effect when the replace leaves it out (CreditRules):
-// the start for a section's first snapshot. A later one replaces the
-// snapshot before it, and takes its time, while no sprint of the
-// project's Jira boards the mirror holds completed after that one took
-// effect, so no closed sprint was counted by it; otherwise it takes
-// effect from this save. So the list grows by at most one snapshot a
-// sprint, and a project whose boards close no sprint keeps one. Any other
+// the start for a section's first snapshot, else this save. A newest
+// snapshot whose values are the ones before it is dropped, so a save that
+// changes no rule adds none. Every snapshot stays: a sprint counts with the
+// snapshot in effect when it completed, whenever that is known. Any other
 // snapshot without its time is left for checkCredit to refuse.
-func (s *Service) stampCredit(projectID string, setup Setup) (Setup, error) {
+func (s *Service) stampCredit(setup Setup) Setup {
 	c := setup.Credit
 	if c == nil || len(c.Rules) == 0 || c.Rules[len(c.Rules)-1].From != nil {
-		return setup, nil
+		return setup
 	}
 	credit := *c
 	credit.Rules = slices.Clone(c.Rules)
 	setup.Credit = &credit
 	newest := len(credit.Rules) - 1
-	if newest == 0 {
+	switch {
+	case newest == 0:
 		credit.Rules[0].From = new(int64(0))
-		return setup, nil
+	case sameCreditValues(credit.Rules[newest-1], credit.Rules[newest]):
+		credit.Rules = credit.Rules[:newest]
+	default:
+		credit.Rules[newest].From = new(s.now().UnixMilli())
 	}
-	before := credit.Rules[newest-1].From
-	if before == nil {
-		return setup, nil
-	}
-	completed, err := s.lastSprintCompleted(projectID)
-	if err != nil {
-		return Setup{}, err
-	}
-	if now := s.now().UnixMilli(); completed > *before && now > *before {
-		credit.Rules[newest].From = &now
-		return setup, nil
-	}
-	credit.Rules[newest].From = before
-	credit.Rules = slices.Delete(credit.Rules, newest-1, newest)
-	return setup, nil
+	return setup
 }
 
-// lastSprintCompleted is when the last sprint of projectID's Jira boards
-// that the mirror holds completed (Unix milliseconds), 0 when none did.
-// The caller is inside the service (enter).
-func (s *Service) lastSprintCompleted(projectID string) (int64, error) {
-	choices, err := s.boardChoices(projectID)
-	if err != nil {
-		return 0, err
+// sameCreditValues reports whether a and b count the same, whatever their
+// times and the order of their actions.
+func sameCreditValues(a, b CreditRules) bool {
+	if a.ReviewShare != b.ReviewShare || a.ReviewNeed != b.ReviewNeed || a.HoursPerPoint != b.HoursPerPoint ||
+		len(a.ReviewActions) != len(b.ReviewActions) {
+		return false
 	}
-	var last int64
-	roots := map[string]int64{}
-	for _, choice := range choices {
-		if choice.ConnectionKind != store.TrackerKindJira {
-			continue
-		}
-		// A root is never 0, which stands for a connection with none.
-		root, seen := roots[choice.Connection]
-		if !seen {
-			if root, _, err = s.store.GetMirrorRoot(choice.Connection); err != nil {
-				return 0, fmt.Errorf("trackerapp: the mirror of connection %s: %w", choice.Connection, err)
-			}
-			roots[choice.Connection] = root
-		}
-		if root == 0 {
-			continue
-		}
-		st, ok, err := s.store.GetMirrorBoard(root, choice.Board)
-		if err != nil {
-			return 0, fmt.Errorf("trackerapp: read board %s of connection %s: %w", choice.Board, choice.Connection, err)
-		}
-		if !ok {
-			continue
-		}
-		for _, sp := range st.Sprints {
-			if sp.State == store.MirrorSprintClosed {
-				last = max(last, sp.CompletedAt)
-			}
+	for _, action := range a.ReviewActions {
+		if !slices.Contains(b.ReviewActions, action) {
+			return false
 		}
 	}
-	return last, nil
+	return true
 }
 
 // replaceSetup does SetProjectSetup's work under setupMu, comparing the
