@@ -187,7 +187,7 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 		return trackerdash.Board{}, fmt.Errorf("trackerapp: read connection %s: %w", scope.Connection, err)
 	}
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-		export, ok, err := s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, relations, cardShape)
+		export, ok, err := s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, relations, s.window().UnixMilli(), cardShape)
 		export.EstimateUnit = int(groups.unit(tracker.EstimateUnit(export.EstimateUnit)))
 		return export, ok, err
 	}

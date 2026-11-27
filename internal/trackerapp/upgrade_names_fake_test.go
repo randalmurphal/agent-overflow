@@ -75,11 +75,13 @@ func (f *fixture) reopen(t *testing.T, between func()) {
 
 // upgradedFrom171 makes the store's file the v171 database its mirror
 // would have been, v172's table, column and record and the later
-// migrations' tables and records taken out, and opens it again, so v172
-// runs on it as it runs on an upgrade.
+// migrations' tables, index and records taken out, and opens it again, so
+// v172 runs on it as it runs on an upgrade.
 func (s *fakeScenario) upgradedFrom171(t *testing.T) {
 	t.Helper()
 	s.reopen(t, func() {
+		s.sqlOnStore(t, `DROP INDEX idx_tracker_cache_issues_updated`)
+		s.sqlOnStore(t, `DELETE FROM migration_versions WHERE version = 175`)
 		s.sqlOnStore(t, `DROP TABLE activity_spans`)
 		s.sqlOnStore(t, `DROP TABLE thread_days`)
 		s.sqlOnStore(t, `DELETE FROM migration_versions WHERE version = 174`)

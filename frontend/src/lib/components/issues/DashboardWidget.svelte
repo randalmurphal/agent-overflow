@@ -104,12 +104,20 @@
   const unit = $derived(view.unit as DashboardUnit);
   const series = $derived(value?.series ?? view.series ?? ['']);
   const named = $derived(series.length > 1 || (series[0] ?? '') !== '');
+  // A table of named series adds them up, unless its metric's series
+  // overlap (a ticket counting in several), as the sprint table's do.
+  const total = $derived(named && !view.overlap);
   const byPeriod = $derived(view.bucket === 'period' || view.bucket === 'sprint');
   // A widget that counts now has no earlier value to compare with, whatever
-  // its answer holds.
+  // its answer holds. A state's previous value is what held where the range
+  // began, not the range before.
+  const before = $derived(view.state ? { previous: 'when the range began', previous_gap: range?.previous_gap } : range);
   const mark = $derived(
-    view.now || !value ? null : changeMark(value.value as Num | undefined, value.previous as Num | undefined, view.good ?? '', unit, estimates, range),
+    view.now || !value ? null : changeMark(value.value as Num | undefined, value.previous as Num | undefined, view.good ?? '', unit, estimates, before),
   );
+  // How this is counted, with the sprint this answer counted when the
+  // listing could not name it.
+  const how = $derived(value?.range_words ? { ...view.how, range: value.range_words } : view.how);
   const amount = $derived(numWords(value?.value as Num | undefined, unit, estimates));
   const side = $derived(limitSide(view.good ?? ''));
   const over = $derived(view.form === 'number' && !value?.error && overLimit(value?.value as Num | undefined, limit, view.good ?? ''));
@@ -208,13 +216,15 @@
   {/if}
 
   {#if showHow}
-    <DashboardHow how={view.how} />
+    <DashboardHow {how} />
   {:else}
     <div class="flex min-w-0 flex-col gap-2 transition-opacity {stale ? 'opacity-60' : ''}" inert={stale} data-testid="dashboard-widget-body" data-stale={stale}>
       {#if !value}
         <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-waiting">{counting ? 'Counting…' : 'Not counted'}</p>
       {:else if value.error}
         <p class="text-[0.75rem] text-error" role="alert" data-testid="dashboard-widget-error">{value.error}</p>
+      {:else if value.note}
+        <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-note">{value.note}</p>
       {:else if view.form === 'number'}
         <button
           type="button"
@@ -260,7 +270,7 @@
           <BarChart title={view.title} buckets={value.buckets ?? []} {series} horizontal={!byPeriod} {unit} {estimates} onPick={pick} onLabel={narrow} />
         {/if}
       {:else if view.form === 'line'}
-        <LineChart title={view.title} buckets={value.buckets ?? []} {series} {unit} {estimates} onPick={pick} />
+        <LineChart title={view.title} buckets={value.buckets ?? []} {series} {unit} {estimates} onPick={pick} pace={view.pace ?? false} />
       {:else if view.form === 'table'}
         {#if (value.buckets ?? []).length === 0}
           <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">Nothing to count.</p>
@@ -273,7 +283,7 @@
                   {#each series as name (name)}
                     <th class="px-1 py-1 text-right font-normal">{named ? name : 'Count'}</th>
                   {/each}
-                  {#if named}<th class="py-1 pl-1 text-right font-normal">Total</th>{/if}
+                  {#if total}<th class="py-1 pl-1 text-right font-normal">Total</th>{/if}
                 </tr>
               </thead>
               <tbody>
@@ -291,7 +301,7 @@
                         <button type="button" class="rounded px-1 tabular-nums text-fg hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="{cellLabel(b, s)}. Show its tickets" title={cellLabel(b, s)} data-testid="dashboard-cell" onclick={() => pick(b, named ? name : '')}>{numValue(b.cells[s] as Num) === null ? '–' : formatAmount(numValue(b.cells[s] as Num)!, unit, estimates)}</button>
                       </td>
                     {/each}
-                    {#if named}
+                    {#if total}
                       <td class="py-0.5 pl-1 text-right">
                         <button type="button" class="rounded px-1 tabular-nums text-fg-muted hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" aria-label="{b.label}, total: {formatNum(b.total as Num, unit, estimates)}. Show its tickets" data-testid="dashboard-cell-total" onclick={() => pick(b, '')}>{numValue(b.total as Num) === null ? '–' : formatAmount(numValue(b.total as Num)!, unit, estimates)}</button>
                       </td>

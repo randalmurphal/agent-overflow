@@ -153,7 +153,8 @@ func TestAFirstReadNotFinishedIsSaid(t *testing.T) {
 
 // A widget whose metric counts now has no previous value and no trend,
 // so the screen can draw no change mark for it; its view says it counts
-// now. A metric of the range has both.
+// now. A metric of the range has both, and a state's (Stuck) compares
+// what holds now with what held where the range begins.
 func TestNowMetricHasNoChangeMark(t *testing.T) {
 	t.Parallel()
 	e := evaluator()
@@ -166,15 +167,15 @@ func TestNowMetricHasNoChangeMark(t *testing.T) {
 	for _, v := range list.Dashboards[0].Widgets {
 		views[v.ID] = v
 	}
-	stuck := widgetOf(t, a, "stuck")
-	if !views["stuck"].Now || stuck.Previous != nil || stuck.Trend != nil {
-		t.Fatalf("stuck: now %v, previous %s, trend %v; want a now widget with neither", views["stuck"].Now, num(stuck.Previous), stuck.Trend)
+	if !views["carrying"].Now || views["carrying"].State || !strings.Contains(views["carrying"].How.Range, "true now") {
+		t.Fatalf("carrying: now %v, state %v, How %q; want a now widget", views["carrying"].Now, views["carrying"].State, views["carrying"].How.Range)
 	}
-	if !strings.Contains(views["stuck"].How.Range, "true now") {
-		t.Fatalf("stuck's How says %q of the range", views["stuck"].How.Range)
+	stuck := widgetOf(t, a, "stuck")
+	if views["stuck"].Now || !views["stuck"].State || stuck.Previous == nil || len(stuck.Trend) != 3 || !strings.Contains(views["stuck"].How.Range, "where the range begins") {
+		t.Fatalf("stuck: now %v, state %v, previous %s, trend %v, How %q; want a state with both", views["stuck"].Now, views["stuck"].State, num(stuck.Previous), stuck.Trend, views["stuck"].How.Range)
 	}
 	pace := widgetOf(t, a, "pace")
-	if views["pace"].Now || pace.Previous == nil || len(pace.Trend) != 3 {
+	if views["pace"].Now || views["pace"].State || pace.Previous == nil || len(pace.Trend) != 3 {
 		t.Fatalf("pace: now %v, previous %s, trend %v; want both", views["pace"].Now, num(pace.Previous), pace.Trend)
 	}
 }
@@ -516,8 +517,8 @@ func TestAnUnknownFinishBelongsToTheRangesItsTicketSpans(t *testing.T) {
 func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 	t.Parallel()
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25000)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, points, done_at, started_known, open, counts)
-		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, 1, %d, 0, 0, 1 FROM n`, ago(400), ago(390), ago(390))
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, points, done_at, history_behind, started_known, open, counts)
+		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, 1, %d, 0, 0, 0, 1 FROM n`, ago(400), ago(390), ago(390))
 	a := mustEvaluate(t, evaluator(), f.board(), utcSprints3)
 	for _, id := range []string{"created_finished", "start_to_done"} {
 		if w := widgetOf(t, a, id); w.Error != "" {
@@ -525,8 +526,8 @@ func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 		}
 	}
 	w := mustEvaluate(t, evaluator(), newFixture(false, "none").status("5", "Done", "done").exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25000)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, done_at, started_known, open, counts)
-		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, %d, 0, 0, 1 FROM n`, ago(400), ago(390), ago(390)).board(),
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, done_at, history_behind, started_known, open, counts)
+		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, %d, 0, 0, 0, 1 FROM n`, ago(400), ago(390), ago(390)).board(),
 		Request{Dashboard: builtinWeeksID, Range: RangeWeeks12, TimeZone: "UTC"})
 	for _, id := range []string{"pace", "created_finished", "start_to_done"} {
 		if v := widgetOf(t, w, id); v.Error != "" {
@@ -542,8 +543,8 @@ func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 // parallel with the package's others.
 func TestATableMakesTheCellsItShows(t *testing.T) {
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 19900)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, created_at, updated_at, status_since, points, started_known, open, counts)
-		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1, 0, 1, 1 FROM n`, ago(5)).
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, created_at, updated_at, status_since, points, history_behind, started_known, open, counts)
+		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1, 0, 0, 1, 1 FROM n`, ago(5)).
 		exec(`INSERT INTO sprint_tickets SELECT 's7', id FROM tickets WHERE id LIKE 'p%%'`)
 	e := evaluator()
 	o, err := e.begin(context.Background(), f.board(), utcSprints3, func(Widget, bool) bool { return true })
@@ -556,7 +557,7 @@ func TestATableMakesTheCellsItShows(t *testing.T) {
 		}
 	}()
 	m := o.metrics["carrying"]
-	c, err := o.count(m)
+	c, err := o.count(m, reads{now: true})
 	if err != nil || c.err != nil {
 		t.Fatalf("carrying: %v %v", err, c.err)
 	}

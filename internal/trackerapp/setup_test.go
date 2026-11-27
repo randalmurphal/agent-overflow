@@ -240,6 +240,11 @@ func TestAnUnreadableSetupRefusesItsProjectOnly(t *testing.T) {
 			`{"id": "d_1", "title": "Mine", "widgets": [{"id": "w_1", "form": "list", "width": 6, "metric": {}}]},` +
 			`{"id": "d_2", "title": "Yours", "widgets": [{"id": "w_1", "form": "list", "width": 6, "metric": {}}]}]}]}}`,
 		"a dashboard of no title": `{"dashboards": {"version": 1, "boards": [{"tracker": "jira", "site": "x", "board": "1", "dashboards": [{"id": "d_1", "title": " ", "widgets": []}]}]}}`,
+		// A built-in's pace and overlap are no part of a metric's JSON.
+		"a metric that draws a pace": `{"dashboards": {"version": 1, "boards": [{"tracker": "jira", "site": "x", "board": "1", "dashboards": [` +
+			`{"id": "d_1", "title": "Mine", "widgets": [{"id": "w_1", "form": "line", "width": 6, "metric": {"title": "Left", "pace": true}}]}]}]}}`,
+		"a metric whose series overlap": `{"dashboards": {"version": 1, "boards": [{"tracker": "jira", "site": "x", "board": "1", "dashboards": [` +
+			`{"id": "d_1", "title": "Mine", "widgets": [{"id": "w_1", "form": "table", "width": 6, "metric": {"title": "Scope", "overlap": true}}]}]}]}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

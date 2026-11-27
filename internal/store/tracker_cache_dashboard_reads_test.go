@@ -62,6 +62,14 @@ func TestADashboardCountCopiesWhatItsQueryReads(t *testing.T) {
 		{"sprint_finished USING", viaTickets + `JOIN sprint_finished USING(ticket)`, "", []string{"sprint_finished", "tickets"}, nil, 2},
 		{"sprint_finished NATURAL", viaTickets + `NATURAL JOIN sprint_finished`, "", []string{"sprint_finished", "tickets"}, nil, 2},
 		{"sprint_finished ON", `SELECT t.id AS ticket FROM tickets t JOIN sprint_finished f ON f.ticket = t.id`, "", []string{"sprint_finished", "tickets"}, nil, 2},
+		{"status_intervals USING", viaTickets + `JOIN status_intervals USING(ticket)`, "", []string{"status_intervals", "tickets"}, nil, 2},
+		{"status_intervals NATURAL", viaTickets + `NATURAL JOIN status_intervals`, "", []string{"status_intervals", "tickets"}, nil, 2},
+		{"status_intervals ON", `SELECT t.id AS ticket FROM tickets t JOIN status_intervals si ON si.ticket = t.id`, "", []string{"status_intervals", "tickets"}, nil, 2},
+		{"status_intervals by status name", `SELECT si.ticket FROM status_intervals si JOIN statuses s ON s.id = si.status WHERE s.name <> ''`, "", []string{"status_intervals", "statuses", "tickets"}, nil, 2},
+		{"sprint_intervals USING", viaTickets + `JOIN sprint_intervals USING(ticket)`, "", []string{"sprint_intervals", "tickets"}, nil, 1},
+		{"sprint_intervals NATURAL", viaTickets + `NATURAL JOIN sprint_intervals`, "", []string{"sprint_intervals", "tickets"}, nil, 1},
+		{"sprint_intervals ON", `SELECT t.id AS ticket FROM tickets t JOIN sprint_intervals si ON si.ticket = t.id`, "", []string{"sprint_intervals", "tickets"}, nil, 1},
+		{"a CTE named status_intervals", `WITH status_intervals AS (SELECT id AS ticket FROM tickets) SELECT ticket FROM status_intervals`, "", []string{"tickets"}, nil, 3},
 		{"a CTE named changes", `WITH changes AS (SELECT id AS ticket FROM tickets) SELECT ticket FROM changes`, "", []string{"tickets"}, nil, 3},
 		{"a CTE named labels", `WITH labels AS (SELECT id AS ticket FROM tickets) SELECT ticket FROM labels`, "", []string{"tickets"}, nil, 3},
 		{"a label filter naming changes", `SELECT ticket FROM labels WHERE name IN ('frontend', 'changes')`, "", []string{"labels", "tickets"}, nil, 1},
@@ -91,7 +99,7 @@ func TestADashboardCountCopiesWhatItsQueryReads(t *testing.T) {
 		var asked []string
 		b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
 			asked = relations
-			return s.ExportMirrorBoard(ctx, conn, root, "10", store.MirrorRegroup{}, fill(relations), store.CardShapeForTest)
+			return s.ExportMirrorBoard(ctx, conn, root, "10", store.MirrorRegroup{}, fill(relations), 0, store.CardShapeForTest)
 		}}
 		tried, err := e.Try(context.Background(), b, trackerdash.Widget{Form: trackerdash.FormNumber, Width: 3}, m, "UTC")
 		if err != nil {

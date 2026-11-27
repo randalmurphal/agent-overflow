@@ -98,6 +98,13 @@ export enum Bucket {
     BucketPerson = "person",
     BucketEpic = "epic",
     BucketText = "text",
+
+    /**
+     * BucketDay groups rows by the working days of the board's active
+     * sprints, whatever the range: their start, then each working day's
+     * end (sprintDays).
+     */
+    BucketDay = "day",
 };
 
 /**
@@ -107,6 +114,12 @@ export class BucketValue {
     "key": string;
     "label": string;
     "partial"?: boolean;
+
+    /**
+     * Last is the sprint's last working day of a day chart, where its even
+     * pace reaches zero.
+     */
+    "last"?: boolean;
     "cells": Num[];
     "total": Num;
 
@@ -132,10 +145,10 @@ export class BucketValue {
      * Creates a new BucketValue instance from a string or object.
      */
     static createFrom($$source: any = {}): BucketValue {
-        const $$createField3_0 = $$createType5;
+        const $$createField4_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("cells" in $$parsedSource) {
-            $$parsedSource["cells"] = $$createField3_0($$parsedSource["cells"]);
+            $$parsedSource["cells"] = $$createField4_0($$parsedSource["cells"]);
         }
         return new BucketValue($$parsedSource as Partial<BucketValue>);
     }
@@ -745,6 +758,19 @@ export enum Unit {
 export class WidgetValue {
     "id": string;
     "error"?: string;
+
+    /**
+     * Note says why a widget of the sprint's days has nothing to draw: no
+     * sprint is active, or its dates are not known.
+     */
+    "note"?: string;
+
+    /**
+     * RangeWords is How this is counted's range sentence as this answer
+     * counted it, when it names what the listing could not: the active
+     * sprints a widget of the sprint's days counts.
+     */
+    "range_words"?: string;
     "value"?: Num | null;
     "previous"?: Num | null;
     "trend"?: Num[];
@@ -778,22 +804,22 @@ export class WidgetValue {
      * Creates a new WidgetValue instance from a string or object.
      */
     static createFrom($$source: any = {}): WidgetValue {
-        const $$createField4_0 = $$createType5;
-        const $$createField5_0 = $$createType12;
-        const $$createField6_0 = $$createType18;
-        const $$createField7_0 = $$createType11;
+        const $$createField6_0 = $$createType5;
+        const $$createField7_0 = $$createType12;
+        const $$createField8_0 = $$createType18;
+        const $$createField9_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("trend" in $$parsedSource) {
-            $$parsedSource["trend"] = $$createField4_0($$parsedSource["trend"]);
+            $$parsedSource["trend"] = $$createField6_0($$parsedSource["trend"]);
         }
         if ("series" in $$parsedSource) {
-            $$parsedSource["series"] = $$createField5_0($$parsedSource["series"]);
+            $$parsedSource["series"] = $$createField7_0($$parsedSource["series"]);
         }
         if ("buckets" in $$parsedSource) {
-            $$parsedSource["buckets"] = $$createField6_0($$parsedSource["buckets"]);
+            $$parsedSource["buckets"] = $$createField8_0($$parsedSource["buckets"]);
         }
         if ("tickets" in $$parsedSource) {
-            $$parsedSource["tickets"] = $$createField7_0($$parsedSource["tickets"]);
+            $$parsedSource["tickets"] = $$createField9_0($$parsedSource["tickets"]);
         }
         return new WidgetValue($$parsedSource as Partial<WidgetValue>);
     }
@@ -811,7 +837,19 @@ export class WidgetView {
     "unit": Unit;
     "good"?: Good;
     "now"?: boolean;
+
+    /**
+     * State is a number of a state (Metric's until): its value is what
+     * holds now and its previous value what held where the range begins.
+     */
+    "state"?: boolean;
     "series"?: string[];
+
+    /**
+     * Pace and Overlap are the metric's (Metric.Pace, Metric.Overlap).
+     */
+    "pace"?: boolean;
+    "overlap"?: boolean;
     "how": How;
 
     /** Creates a new WidgetView instance. */
@@ -842,14 +880,14 @@ export class WidgetView {
      * Creates a new WidgetView instance from a string or object.
      */
     static createFrom($$source: any = {}): WidgetView {
-        const $$createField8_0 = $$createType12;
-        const $$createField9_0 = $$createType19;
+        const $$createField9_0 = $$createType12;
+        const $$createField12_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("series" in $$parsedSource) {
-            $$parsedSource["series"] = $$createField8_0($$parsedSource["series"]);
+            $$parsedSource["series"] = $$createField9_0($$parsedSource["series"]);
         }
         if ("how" in $$parsedSource) {
-            $$parsedSource["how"] = $$createField9_0($$parsedSource["how"]);
+            $$parsedSource["how"] = $$createField12_0($$parsedSource["how"]);
         }
         return new WidgetView($$parsedSource as Partial<WidgetView>);
     }

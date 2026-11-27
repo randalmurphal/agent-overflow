@@ -22,8 +22,13 @@ func PaceForTest(t *testing.T, s *Store, root int64, board string, regroup Mirro
 // benchParented), its root and its board, to the
 // external test that measures a dashboard over it
 // (tracker_cache_dashboard_scale_test.go).
-func ScaleMirrorForTest(tb testing.TB, issues int) (*Store, int64, string) {
-	s, root, _ := openSizedMirror(tb, benchMirrorSize{boards: 1, issues: issues, parents: true})
+//
+// With recent above zero it is the fixture with real times instead
+// (benchRecentBoard), that percentage of its issues changed inside the
+// window that starts at BenchWindowForTest, the others long before it; a
+// count over it runs at BenchNowForTest.
+func ScaleMirrorForTest(tb testing.TB, issues, recent int) (*Store, int64, string) {
+	s, root, _ := openSizedMirror(tb, benchMirrorSize{boards: 1, issues: issues, parents: true, recent: recent})
 	return s, root, benchBoardID(0)
 }
 
@@ -116,4 +121,30 @@ func DashboardHistoryFixtureForTest(t *testing.T, created, day int64) (*Store, i
 		t.Fatal(err)
 	}
 	return s, root
+}
+
+// IntervalsFixtureForTest is intervalsFixture, with the history window's
+// start its exports bind.
+func IntervalsFixtureForTest(t *testing.T) (*Store, int64, int64) {
+	s, root := intervalsFixture(t)
+	return s, root, intervalsWindow
+}
+
+// DashboardOpenFixtureForTest is DashboardStatusFixtureForTest with board
+// 10's active sprint 21 running from created for two weeks and each of its
+// tickets' histories read, final and of no change, so its status and its
+// sprint are known from its creation.
+func DashboardOpenFixtureForTest(t *testing.T, created int64) (*Store, int64, MirrorRegroup) {
+	t.Helper()
+	s, root, regroup := DashboardStatusFixtureForTest(t, created)
+	mustExec(t, s.db, `UPDATE tracker_cache_sprints SET start_at = ?, end_at = ? WHERE root_id = ? AND sprint_id = '21'`,
+		created, created+14*24*time.Hour.Milliseconds(), root)
+	var hs []MirrorHistory
+	for i := 1; i <= 6; i++ {
+		hs = append(hs, MirrorHistory{IssueID: strconv.Itoa(i)})
+	}
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, hs), MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
+		t.Fatal(err)
+	}
+	return s, root, regroup
 }
