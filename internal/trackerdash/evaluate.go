@@ -1123,17 +1123,20 @@ type ranged struct {
 	// where they hold at its end; before is the rows that held where the
 	// range begins, which its number compares with; compared is false when
 	// there is nothing to compare (the sprint's days).
-	state    bool
-	all      []contribution
-	before   []contribution
-	compared bool
+	// bySprint is a state's grouped by sprint: a period holds only the rows
+	// of its sprints.
+	state, bySprint bool
+	all             []contribution
+	before          []contribution
+	compared        bool
 	// buf holds the rows of the state period of last asked for.
 	buf []contribution
 }
 
 // of is period p's rows: none for a period still to come, which has not
-// happened; a state's rows that hold at its end, an event's that fall in
-// it. A state's are valid until the next call.
+// happened; a state's rows that hold at its end (holdsAt), of its sprints
+// for one grouped by sprint; an event's that fall in it. A state's are
+// valid until the next call.
 func (g *ranged) of(p period) []contribution {
 	switch {
 	case p.future:
@@ -1143,7 +1146,7 @@ func (g *ranged) of(p period) []contribution {
 	}
 	g.buf = g.buf[:0]
 	for _, c := range g.all {
-		if c.holdsAt(p.to) {
+		if c.holdsAt(p.to) && (!g.bySprint || slices.Contains(p.sprints, c.bucket)) {
 			c.period = p.label
 			g.buf = append(g.buf, c)
 		}
@@ -1163,7 +1166,7 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 		previous = nil
 	}
 	if c.p.cols.state() {
-		g := &ranged{periods: periods, rows: holding(c.rows, sp.now), all: c.rows, state: true}
+		g := &ranged{periods: periods, rows: holding(c.rows, sp.now), all: c.rows, state: true, bySprint: m.Bucket == BucketSprint}
 		if m.Bucket != BucketDay && len(periods) > 0 {
 			g.before, g.compared = holding(c.rows, periods[0].from), true
 		}

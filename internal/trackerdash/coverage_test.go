@@ -258,3 +258,30 @@ func TestASaturdayIsNoSprintDay(t *testing.T) {
 		t.Fatalf("days on a Saturday = %q, %q; want %q", strings.Join(got, " "), note, want)
 	}
 }
+
+// A state grouped by sprint counts in a sprint's column only the rows of
+// that sprint that hold at its end: U, in WEB Sprint 2 from before WEB
+// Sprint 1 ended, counts in Sprint 2 alone, and Sprint 1's tickets still
+// in it at Sprint 2's end count in Sprint 1 alone, in the widget and in
+// its drill.
+func TestAStateBySprintCountsInItsOwnSprintsOnly(t *testing.T) {
+	t.Parallel()
+	m := Metric{Name: "w_1", Title: "In each sprint at its end", Words: []string{"The tickets in each sprint at its end."},
+		SQL:    `SELECT ticket, sprint AS bucket, from_at AS at, to_at AS until FROM sprint_intervals`,
+		Reduce: ReduceCount, Unit: UnitTickets, Bucket: BucketSprint}
+	b := scopeBoard().board()
+	b.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine", Widgets: []Widget{{ID: "w_1", Metric: "w_1", Form: FormTable, Width: 6}}}},
+		Metrics: map[string]Metric{"w_1": m}}
+	r := Request{Dashboard: "mine", Range: RangeSprints3, TimeZone: "UTC"}
+	var got []string
+	for _, c := range widgetOf(t, mustEvaluate(t, evaluator(), b, r), "w_1").Buckets {
+		got = append(got, c.Label+" "+num(&c.Cells[0]))
+	}
+	if want := []string{"WEB Sprint 1 5", "WEB Sprint 2 1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the sprints = %v; want %v", got, want)
+	}
+	d := mustDrill(t, b, DrillRequest{Request: r, Widget: "w_1", Cell: &DrillCell{Bucket: "sprint:c2"}})
+	if want := []string{"WEB-U counted"}; !reflect.DeepEqual(drillRows(d), want) {
+		t.Fatalf("WEB Sprint 2's drill = %v; want %v", drillRows(d), want)
+	}
+}
