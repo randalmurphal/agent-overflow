@@ -134,6 +134,17 @@ this is its shape.
   `errors.Join` of each failed read. A Jira site whose summary says it
   keeps no such data fails wrapping `tracker.ErrNoDevelopmentData`;
   Linear fails as unsupported before any request.
+- Evidence: who commented on and logged time on up to 100 issues
+  (`Evidence`, for credit): each act's ID, author, time and, for a
+  worklog, time spent, with the issue's update time the read was for.
+  `Capabilities.Evidence` names the kinds a provider reads. Jira reads
+  the comments and update times in one bulk fetch, and its own worklogs
+  only while they are the connection's time: while Tempo is the time, it
+  reads no worklog. An issue holding
+  more comments or worklogs than the bulk fetch embeds is read again
+  whole through its comment or worklog list, its worklogs from the
+  issue's `WorklogsFrom`. An app's, a customer's and an authorless act
+  are left out. Linear fails as unsupported.
 - Finding: issues by key, and a page of cards matching text.
 - Writes: create, edit fields, move to a status (with the fields the move
   takes), set an estimate on a board, rank between neighbors, move to a
@@ -586,6 +597,7 @@ classification:
 | `tracker_cache_issue_bodies` | The ticket bodies of the open tickets' issues and the most recently opened, 200 a mirror: what a ticket shows besides its card, one JSON document each. |
 | `tracker_cache_worklogs` | Logged time by issue, author and day. A Tempo connection has no mirror of its own; its worklogs are in its Jira connection's. |
 | `tracker_cache_worklog_days` | The latest read of an author's day, an unchanged or empty day included; a replace from an earlier read leaves the day. |
+| `tracker_cache_issue_acts`, `_issue_act_reads` | Who commented on and logged time on an issue, for credit, and the card update each kind was last read for. |
 | `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. The linked-issues scope has no cursor: it reads its cards by ID. |
 | `tracker_cache_open_tickets` | One row per open ticket's pump, named by the process's session and the pump's number: the issue it keeps in the mirror while the ticket is open. |
 | `tracker_cache_issue_missing` | The latest read of a linked issue that did not return it, while no card the mirror holds is from a later read ([Thread links](#thread-links)). |
@@ -939,6 +951,7 @@ and writes share:
 | Detail | one issue, or a connection's open tickets together | the detail document |
 | Structure | one board | columns, statuses, estimate, sprints, users |
 | Worklogs | an author's span of days, from the time tracker | that author's worklogs of those days, replaced whole |
+| Evidence | up to 50 issues' comments and worklogs | each issue's comment and worklog authors, replaced per issue and kind |
 
 - **Delta.** Each tick reads pages of a board's changed rows from its
   cursor. One transaction stores a page's rows and the cursor that page
@@ -1107,6 +1120,24 @@ and writes share:
   staged in transactions of at most 500 and made the issue's history in
   one more, so a reader sees the old history until the switch, never part
   of either.
+- **Evidence** is read for credit: who commented on and logged time on
+  the tickets of the boards a project counting credit lists, each
+  connection's in its linked tick, after the history unit. With no such
+  project, or a provider that reads no evidence, the unit lists and reads
+  nothing. A ticket is due until a read for its card's update stored a
+  receipt of each kind the provider reads (`ListMirrorActsDue`): the
+  members of the boards' active sprints done now, then the members of
+  each sprint closed in the history window (180 days), newest first,
+  done at its completion, then the board's support tickets, whose
+  worklogs are read from the window's start. The listing walks each sprint by its key and sorts nothing, so
+  an idle unit costs one read per sprint member, not per issue. A unit
+  reads at most 4 batches of 50 a tick and reports More while tickets
+  are due. A ticket the tracker does not return stores nothing and stays
+  due. Each read is stored with the update it was for, replaced per
+  ticket and kind (`ReplaceMirrorActs`), its authors in the first
+  transaction; a read that began no later than the stored one is
+  superseded. A read whose worklogs a time source change refuses stores
+  nothing and reports More, so the next tick reads under the new source.
 - **Linked issues.** The cards unit reads the linked issues no polled
   board has a row of (`ListMirrorOffBoardLinkedIssues`): a board whose
   pump is not over, not paused while hidden and tells no failure. It takes
@@ -1114,7 +1145,7 @@ and writes share:
   stops, pauses or starts failing is read by the round it happens in, from
   the next page on, or the next round, `Cadence.Linked` later. A linked
   tick runs the cards unit, then the names unit of an upgraded mirror
-  (above), then the history unit; the names unit makes at most 10 reads a
+  (above), then the history unit, then the evidence unit; the names unit makes at most 10 reads a
   tick, so the linked issues' cards and history keep their tick, and the
   loop ticks again until the worklist ends.
 - **A tick's record.** A tick's successes and the failure that followed

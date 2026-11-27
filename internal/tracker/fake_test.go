@@ -50,9 +50,9 @@ func (fakeProvider) History(context.Context, HistoryQuery) (History, error) { re
 func (fakeProvider) Evidence(context.Context, EvidenceQuery) (Evidence, error) {
 	return Evidence{}, nil
 }
-func (fakeProvider) Detail(context.Context, IssueID) (Detail, error)        { return Detail{}, nil }
-func (fakeProvider) Details(context.Context, []IssueID) (Details, error)    { return Details{}, nil }
-func (fakeProvider) Moves(context.Context, IssueID) ([]Move, error)         { return nil, nil }
+func (fakeProvider) Detail(context.Context, IssueID) (Detail, error)     { return Detail{}, nil }
+func (fakeProvider) Details(context.Context, []IssueID) (Details, error) { return Details{}, nil }
+func (fakeProvider) Moves(context.Context, IssueID) ([]Move, error)      { return nil, nil }
 func (fakeProvider) Comments(context.Context, IssueID, PageToken) (CommentPage, error) {
 	return CommentPage{}, nil
 }

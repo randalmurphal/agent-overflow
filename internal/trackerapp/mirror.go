@@ -83,6 +83,9 @@ type MirrorStore interface {
 	ListMirrorIssueBoards(rootID int64, issueIDs, parentIDs []string) ([]store.MirrorIssueBoard, error)
 	ReadMirrorRefreshTargets(rootID int64, cardIDs, detailIDs, boardIDs []string) (store.MirrorRefreshTargets, error)
 
+	ListMirrorActsDue(rootID int64, boards []store.MirrorActsBoard, worklogs bool, from int64) ([]store.MirrorActsDue, bool, error)
+	ReplaceMirrorActs(rootID, sourceGen int64, read store.MirrorRead, issues []store.MirrorIssueActs, catalog store.MirrorCatalog) ([]store.MirrorActsResult, store.MirrorCatalogWrite, error)
+
 	ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
 	ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay string) (store.MirrorWorklogDays, error)
 
@@ -147,6 +150,9 @@ const (
 	// UnitNames reads the cards of the parents an upgraded mirror owes the
 	// names of.
 	UnitNames Unit = "names"
+	// UnitEvidence reads who commented on and logged time on the tickets
+	// credit counts that are due.
+	UnitEvidence Unit = "evidence"
 )
 
 // BoardDue names the units a board's tick runs. They run in the order of
@@ -161,9 +167,10 @@ type BoardDue struct {
 // LinkedDue names the units a connection's linked-issues tick runs, in
 // the order of the fields.
 type LinkedDue struct {
-	Cards   bool `json:"cards,omitempty"`
-	Names   bool `json:"names,omitempty"`
-	History bool `json:"history,omitempty"`
+	Cards    bool `json:"cards,omitempty"`
+	Names    bool `json:"names,omitempty"`
+	History  bool `json:"history,omitempty"`
+	Evidence bool `json:"evidence,omitempty"`
 }
 
 // UnitResult is what one unit of a tick stored. A unit that fails part

@@ -75,11 +75,23 @@ func (f *fixture) reopen(t *testing.T, between func()) {
 
 // upgradedFrom171 makes the store's file the v171 database its mirror
 // would have been, v172's table, column and record and the later
-// migrations' tables and records taken out, and opens it again, so v172
+// migrations' tables, triggers and records taken out, and opens it again, so v172
 // runs on it as it runs on an upgrade.
 func (s *fakeScenario) upgradedFrom171(t *testing.T) {
 	t.Helper()
 	s.reopen(t, func() {
+		// v177 rewrote the three Tempo triggers to delete from its tables;
+		// stand-ins of the same names keep the drops below valid, and v177
+		// replaces them on the reopen.
+		for _, trigger := range []string{"tracker_tempo_added_drops_worklogs AFTER INSERT", "tracker_tempo_enabled_drops_worklogs AFTER UPDATE OF enabled",
+			"tracker_tempo_deleted_drops_worklogs AFTER DELETE"} {
+			name, _, _ := strings.Cut(trigger, " ")
+			s.sqlOnStore(t, `DROP TRIGGER `+name)
+			s.sqlOnStore(t, `CREATE TRIGGER `+trigger+` ON tracker_connections BEGIN SELECT 1; END`)
+		}
+		s.sqlOnStore(t, `DROP TABLE tracker_cache_issue_acts`)
+		s.sqlOnStore(t, `DROP TABLE tracker_cache_issue_act_reads`)
+		s.sqlOnStore(t, `DELETE FROM migration_versions WHERE version = 177`)
 		s.sqlOnStore(t, `DROP TABLE activity_spans`)
 		s.sqlOnStore(t, `DROP TABLE thread_days`)
 		s.sqlOnStore(t, `DELETE FROM migration_versions WHERE version = 174`)
