@@ -417,6 +417,60 @@ func (s *Store) LastMirrorPlanRow(rootID int64, boardID, sprintID string) (issue
 	return row.IssueID, row.OrderKey, row.IssueID != "", err
 }
 
+// mirrorSupportOfSQL reads the issues of the JSON list ?3 whose rows on
+// board ?2 of root ?1 the support rule ?5 names, ?4 being the board's
+// estimate reset, each row probed by key.
+var mirrorSupportOfSQL = `SELECT b.issue_id FROM json_each(?3) l
+	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = l.value AND b.board_id = ?2
+	  JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
+	 WHERE ` + mirrorSupportSQL("?5", "?2", mirrorRowEstimate("?4"))
+
+// MirrorSupportOf is which of some issues are support tickets on a board
+// the mirror shows, and the board's estimate unit.
+type MirrorSupportOf struct {
+	Unit    int
+	Support []string
+}
+
+// ListMirrorSupport reads which of issueIDs (at most mirrorMaxLookup) are
+// support tickets on a board the mirror shows by regroup's support rule
+// (mirrorSupportSQL), in no order, with the board's estimate unit, in one
+// snapshot. An issue the board has no row of is not one. ok is false for a
+// board the mirror does not show.
+func (s *Store) ListMirrorSupport(rootID int64, boardID string, regroup MirrorRegroup, issueIDs []string) (MirrorSupportOf, bool, error) {
+	if len(issueIDs) > mirrorMaxLookup {
+		return MirrorSupportOf{}, false, fmt.Errorf("%w: %d issues, over %d", ErrInvalidTrackerCache, len(issueIDs), mirrorMaxLookup)
+	}
+	list, err := encodeMirrorIDs(issueIDs)
+	if err != nil {
+		return MirrorSupportOf{}, false, err
+	}
+	label := fmt.Sprintf("read the support tickets of tracker mirror %d board %s", rootID, boardID)
+	var ok bool
+	out, err := mirrorReadSnapshot(s, label, func(tx sqlQueryer) (MirrorSupportOf, error) {
+		board, shown, err := readMirrorShownBoardTx(tx, rootID, boardID)
+		if err != nil || !shown {
+			return MirrorSupportOf{}, err
+		}
+		ok = true
+		out := MirrorSupportOf{Unit: board.unit}
+		if regroup.support == "" {
+			return out, nil
+		}
+		err = scanMirrorRows(tx, mirrorSupportOfSQL, []any{rootID, boardID, list, board.estimateResetAt, regroup.support}, func(r rowScanner) error {
+			var id string
+			err := r.Scan(&id)
+			out.Support = append(out.Support, id)
+			return err
+		})
+		return out, err
+	})
+	if err != nil {
+		return MirrorSupportOf{}, false, err
+	}
+	return out, ok, nil
+}
+
 // MirrorSectionTotal is how many rows a section holds, the sum of the
 // board's estimates of them and how many of them have none and are not
 // support tickets (mirrorSupportSQL); a row with no estimate, or one read

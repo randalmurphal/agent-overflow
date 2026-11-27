@@ -420,6 +420,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ProjectTrackerSetup", ID: 3259060803, Scope: "tracker:read", Route: "project"},                                                   // main.App.ProjectTrackerSetup
 	{Name: "ProjectTrackerSiteFields", ID: 1545287804, Scope: "tracker:read", Route: "project"},                                              // main.App.ProjectTrackerSiteFields
 	{Name: "ProjectTrackerStatuses", ID: 315742236, Scope: "tracker:read", Route: "project"},                                                 // main.App.ProjectTrackerStatuses
+	{Name: "ProjectTrackerSupport", ID: 2932635909, Scope: "tracker:read", Route: "project"},                                                 // main.App.ProjectTrackerSupport
 	{Name: "PromoteScratchThread", ID: 4079123887, Scope: "threads:operate", Route: "thread"},                                                // main.App.PromoteScratchThread
 	{Name: "ProviderTerminalAttach", ID: 1393518281, Scope: "terminal:operate", Route: "thread", CallerBound: true},                          // main.App.ProviderTerminalAttach
 	{Name: "ProviderTerminalDetach", ID: 2584141779, Scope: "terminal:operate", Route: "thread"},                                             // main.App.ProviderTerminalDetach

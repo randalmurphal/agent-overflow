@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"cmp"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
@@ -111,8 +112,14 @@ func jsonMember[T any](field string) string {
 // store reads them back.
 func mirrorCard(c tracker.Card) (store.MirrorCard, error) {
 	blob := cardBlob{V: cardBlobVersion, TypeName: c.Type.Name, Priority: c.Priority.Name, URL: c.URL}
+	var labels []string
 	for _, l := range c.Labels {
 		blob.Labels = append(blob.Labels, choiceBlob(l))
+		// A label is named by its name, else its ID, as the export names
+		// it (store MirrorExportSchema's labels).
+		if name := cmp.Or(l.Name, l.ID); name != "" {
+			labels = append(labels, name)
+		}
 	}
 	data, err := encodeBlob("card", blob)
 	if err != nil {
@@ -126,7 +133,7 @@ func mirrorCard(c tracker.Card) (store.MirrorCard, error) {
 		StatusID: string(c.Status), AssigneeID: string(c.Assignee),
 		PriorityID: c.Priority.ID, ParentID: string(c.Parent),
 		CreatedAt: millis(c.Created), UpdatedAt: millis(c.Updated), ResolvedAt: millis(c.Resolved),
-		Sprints: sprints, Data: data, ParentName: mirrorParentName(c),
+		Sprints: sprints, Data: data, Labels: labels, ParentName: mirrorParentName(c),
 	}, nil
 }
 

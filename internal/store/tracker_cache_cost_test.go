@@ -234,6 +234,13 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 			_, _, err := s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, theseSections([]MirrorSection{{Kind: MirrorSectionBacklog}}))
 			return err
 		},
+		func() error {
+			support, err := MirrorRegroup{}.WithSupport(MirrorSupportRule{Types: []string{"10004"}, Labels: []string{"support"}})
+			if err == nil {
+				_, _, err = s.ListMirrorSupport(root, "10", support, []string{"10001", "10002"})
+			}
+			return err
+		},
 	}
 	for _, section := range []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"}, {Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}} {
 		reads = append(reads, func() error {

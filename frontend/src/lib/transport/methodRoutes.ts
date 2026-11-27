@@ -368,6 +368,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3259060803: 'project', // ProjectTrackerSetup
 	1545287804: 'project', // ProjectTrackerSiteFields
 	315742236: 'project', // ProjectTrackerStatuses
+	2932635909: 'project', // ProjectTrackerSupport
 	4079123887: 'thread', // PromoteScratchThread
 	1393518281: 'thread', // ProviderTerminalAttach
 	2584141779: 'thread', // ProviderTerminalDetach

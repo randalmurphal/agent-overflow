@@ -96,6 +96,25 @@ func TestMirrorSupportRows(t *testing.T) {
 			t.Errorf("%s: support rows %q, want %q", tc.name, got, tc.want)
 		}
 	}
+	for _, tc := range []struct {
+		name, board string
+		regroup     MirrorRegroup
+		unit        int
+		want        string
+	}{
+		{"no rule", "10", MirrorRegroup{}, MirrorEstimatePoints, ""},
+		{"the rule", "10", rule, MirrorEstimatePoints, "10001,10003"},
+		{"a board with no estimate", "11", rule, MirrorEstimateNone, "10001,10002,10003"},
+	} {
+		of, ok, err := s.ListMirrorSupport(root, tc.board, tc.regroup, []string{"10001", "10002", "10003", "10004", "99999"})
+		slices.Sort(of.Support)
+		if got := strings.Join(of.Support, ","); err != nil || !ok || got != tc.want || of.Unit != tc.unit {
+			t.Errorf("%s: support of the issues %q in unit %d, %v, %v; want %q in %d", tc.name, got, of.Unit, ok, err, tc.want, tc.unit)
+		}
+	}
+	if _, ok, err := s.ListMirrorSupport(root, "13", rule, []string{"10001"}); ok || err != nil {
+		t.Errorf("a board the mirror does not show: %v, %v; want none", ok, err)
+	}
 	patch, ok, err := s.ReadMirrorBoardPatch(root, "10", rule, []MirrorSection{column}, []string{"10001", "10002", "10003"}, MirrorTotalsAt{})
 	if err != nil || !ok || supportIDs(patch.Sections[0]) != "10001,10003" {
 		t.Errorf("patch support rows %q, %v, %v; want 10001,10003", supportIDs(patch.Sections[0]), ok, err)
