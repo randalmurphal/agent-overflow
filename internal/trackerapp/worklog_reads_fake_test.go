@@ -424,6 +424,56 @@ func TestTheReadsOfLoggedTimeTakeOneTurn(t *testing.T) {
 	}
 }
 
+// A failure goes with the time source: once Tempo becomes the
+// connection's, the next show reads every day of the window on its own,
+// the ones whose read from Jira failed included.
+func TestAnotherTimeSourceStartsTheReadsOver(t *testing.T) {
+	t.Parallel()
+	s, today := dashTime(t)
+	n := len(s.window(t, today))
+	s.refuseOnce(t)
+	s.shown(t, today)
+	s.told(t, 1)
+	s.addTempoOn(t)
+	if st := s.shown(t, today); !st.Reading || st.Failure != "" {
+		t.Fatalf("a show under Tempo answered %+v; want the reads started over", st)
+	}
+	s.told(t, 2)
+	if spans := s.spansSince(0); len(spans) != (n+worklogSpan-1)/worklogSpan || spans[0] != newestSpan(today) {
+		t.Fatalf("under Tempo the show read %v; want the whole window, newest first", spans)
+	}
+}
+
+// A run reads nothing more once the time source changes under it, though
+// no evaluation came to start the reads over: the read in flight ends, and
+// the next span is not read for the old source.
+func TestARunStopsWhenTheTimeSourceChanges(t *testing.T) {
+	t.Parallel()
+	s, today := dashTime(t)
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	let := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	s.gate.mu.Lock()
+	s.gate.gate = func() {
+		close(arrived)
+		<-release
+	}
+	s.gate.mu.Unlock()
+	s.shown(t, today)
+	select {
+	case <-arrived:
+	case <-time.After(gateWait):
+		t.Fatal("the first read never reached its store")
+	}
+	s.addTempoOn(t)
+	let()
+	s.told(t, 1)
+	if got := s.spanCount(); got != 1 {
+		t.Fatalf("the run read %v after the time source changed; want the read in flight alone", s.spansSince(0))
+	}
+}
+
 // Turning a connection off stops its run and forgets its reads but the
 // turn: a failure is forgotten, and once it is on again a show reads the
 // window again on its own.
