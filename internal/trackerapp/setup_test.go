@@ -1298,6 +1298,42 @@ func TestTimeSettingsAreSavedWithTheirDefaults(t *testing.T) {
 	}
 }
 
+// Time settings are a Jira project's: with the last Jira board taken off
+// for a Linear one, the project has the built-in settings and its file
+// keeps the tickets; with a Jira board listed again, they apply again.
+func TestTimeSettingsApplyOnlyWhileAJiraBoardIsListed(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	want := TimeSettings{Meetings: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-1"}}
+	m.saveSetup(t, m.project(), Setup{Time: &want})
+	linear := m.addLinear()
+	relist := func(boards ...store.ProjectTrackerBoard) {
+		t.Helper()
+		current, err := m.st.ListProjectTrackerBoards(m.project())
+		if err != nil {
+			t.Fatal(err)
+		}
+		held := make([]store.HeldTrackerBoard, len(current))
+		for i, b := range current {
+			held[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+		}
+		if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), held, boards); err != nil {
+			t.Fatal(err)
+		}
+	}
+	relist(store.ProjectTrackerBoard{ConnectionID: linear.ID, BoardID: "team-1"})
+	if got, err := m.svc.ProjectTimeSettings(m.project()); err != nil || !reflect.DeepEqual(got, TimeSettings{}) || !got.RefusesEpics() {
+		t.Fatalf("the time settings of a Linear-only project = %+v, %v; want the built-in ones", got, err)
+	}
+	if data, _ := os.ReadFile(m.setupPathOf(t, m.project())); !strings.Contains(string(data), `"OPS-1"`) {
+		t.Fatalf("the file lost the tickets:\n%s", data)
+	}
+	relist(store.ProjectTrackerBoard{ConnectionID: linear.ID, BoardID: "team-1"}, store.ProjectTrackerBoard{ConnectionID: m.conn.ID, BoardID: string(testBoard)})
+	if got, err := m.svc.ProjectTimeSettings(m.project()); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("the time settings with a Jira board listed again = %+v, %v", got, err)
+	}
+}
+
 // A time section a newer version saved is kept from a save of the other
 // sections, and a change to it is refused.
 func TestTimeSettingsANewerVersionSavedAreKept(t *testing.T) {

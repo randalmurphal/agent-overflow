@@ -391,8 +391,18 @@ func (s *Service) ProjectAgentRules(projectID string) (AgentRules, error) {
 
 // ProjectTimeSettings is where projectID's setup puts its time, as
 // ProjectAgentRules reads what it allows: a time section a newer version
-// saved fails with ErrSetupNewer.
+// saved fails with ErrSetupNewer. Time settings are a Jira project's: a
+// project that lists no board of a Jira connection has the built-in ones,
+// and the setup keeps what it holds for when one is listed again, as the
+// Time page shows them (TrackerTimeTickets.svelte).
 func (s *Service) ProjectTimeSettings(projectID string) (TimeSettings, error) {
+	boards, err := s.ProjectBoards(projectID)
+	if err != nil {
+		return TimeSettings{}, err
+	}
+	if !slices.ContainsFunc(boards, func(b BoardChoice) bool { return b.ConnectionKind == store.TrackerKindJira }) {
+		return TimeSettings{}, nil
+	}
 	setup, err := s.projectSection(projectID, sectionTime)
 	if err != nil || setup.Time == nil {
 		return TimeSettings{}, err
