@@ -25,6 +25,25 @@ func readWorklogs(s *Store, connectionID, from, to string) ([]MirrorWorklog, boo
 	return got.Logs, got.More, err
 }
 
+// The read days alone are the days of the range a read replaced for that
+// author, sorted; a connection with no mirror has none.
+func TestReadMirrorWorklogReadDays(t *testing.T) {
+	t.Parallel()
+	s, c, root := newMirror(t)
+	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-06", 10, nil, MirrorWorklogChanges{})
+	mustReplaceWorklogs(t, s, root, "2026-01-09", "2026-01-09", 10, nil, MirrorWorklogChanges{})
+	if _, err := s.ReplaceMirrorWorklogs(root, 0, "acc-user2", "2026-01-07", "2026-01-07", mirrorReadAt(10), nil); err != nil {
+		t.Fatal(err)
+	}
+	days, err := s.ReadMirrorWorklogReadDays(c.ID, "acc-user1", "2026-01-06", "2026-01-31")
+	if err != nil || !reflect.DeepEqual(days, []string{"2026-01-06", "2026-01-09"}) {
+		t.Fatalf("read days = %v, %v", days, err)
+	}
+	if days, err := s.ReadMirrorWorklogReadDays("no-such-connection", "acc-user1", "2026-01-01", "2026-01-31"); err != nil || days != nil {
+		t.Fatalf("no mirror = %v, %v", days, err)
+	}
+}
+
 // A replace owns one author's days: it upserts what it lists, removes the
 // rest of those days, and leaves other days and authors.
 func TestReplaceMirrorWorklogs(t *testing.T) {
