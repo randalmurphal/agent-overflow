@@ -355,6 +355,13 @@ function countedOf(held: HeldBoard, rows: readonly RowView[]): number {
   return n;
 }
 
+/** Whether `row` counts as a ticket without an estimate: it has none and
+ * is no support ticket, which has none and is not counted as without one,
+ * as the server's totals count it. Every client total counts by this. */
+function withoutEstimate(row: RowView): boolean {
+  return (row.estimate === undefined || row.estimate === null) && !row.support;
+}
+
 function sumOf(held: HeldBoard, rows: readonly RowView[]): SectionTotal {
   let n = 0;
   let estimate = 0;
@@ -362,8 +369,8 @@ function sumOf(held: HeldBoard, rows: readonly RowView[]): SectionTotal {
   for (const r of rows) {
     if (!counts(held, r)) continue;
     n += 1;
-    if (r.estimate === undefined || r.estimate === null) unestimated += 1;
-    else estimate += r.estimate;
+    estimate += r.estimate ?? 0;
+    if (withoutEstimate(r)) unestimated += 1;
   }
   return { rows: n, estimate, unestimated };
 }
@@ -604,10 +611,9 @@ export function columnWith(
 /** A total with `row` added (1) or taken out (-1): the one rule for what a
  * header counts while a ticket is carried over it or waits in it. */
 export function withRow(total: SectionTotal, row: RowView, sign: 1 | -1): SectionTotal {
-  const none = row.estimate === undefined || row.estimate === null;
   return {
     rows: total.rows + sign,
-    estimate: total.estimate + (none ? 0 : sign * row.estimate!),
-    unestimated: (total.unestimated ?? 0) + (none ? sign : 0),
+    estimate: total.estimate + sign * (row.estimate ?? 0),
+    unestimated: (total.unestimated ?? 0) + (withoutEstimate(row) ? sign : 0),
   };
 }

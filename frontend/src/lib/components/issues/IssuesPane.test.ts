@@ -29,7 +29,7 @@ import { registerIssuesCommands } from '../../stores/issuesCommands';
 import { clearCommandRegistry, runCommand, type CommandContext } from '../../stores/commandRegistry.svelte';
 import { hiddenCardFields, requestTicketOpen, requestTimeOpen, setTicketPlacement, takePaneOpenRequest } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
-import { refreshTrackerSetup } from '../../stores/trackerSetup.svelte';
+import { refreshTrackerSetup, SUPPORT_CHANGE_INTERVAL_MS } from '../../stores/trackerSetup.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { detachBackend } from '../../transport/backends';
@@ -3745,6 +3745,39 @@ describe('the Time screen in the pane', () => {
     const again = mount();
     expect(await again.findByTestId('time-screen')).toBeInTheDocument();
     again.unmount();
+  });
+
+  it("reads the support tickets again for a change of what the board's dashboards count, at most once every interval, and not for a limit", async () => {
+    install();
+    setBindingMock('TrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [worklog] }));
+    const support = setBindingMock('ProjectTrackerSupport', async () => ({ issues: [], hours_per_point: 4, counts: 'points' }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await switchTo(view, 'Time');
+    await waitFor(() => expect(support).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    try {
+      let seq = 100;
+      const tell = (counts: boolean) => applyTrackerBoardEvent({ scope: { connection: 'c1', board: '1' }, seq: ++seq, dashboards: { project: 'p1', counts } }, HOME_BACKEND);
+      // A limit counts nothing: no read.
+      tell(false);
+      await vi.advanceTimersByTimeAsync(SUPPORT_CHANGE_INTERVAL_MS * 2);
+      expect(support).toHaveBeenCalledTimes(1);
+      // An agent's three proposals at once: one read.
+      for (let i = 0; i < 3; i++) tell(true);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(support).toHaveBeenCalledTimes(2);
+      // Another soon after waits out the interval from that read.
+      tell(true);
+      await vi.advanceTimersByTimeAsync(SUPPORT_CHANGE_INTERVAL_MS / 2);
+      expect(support).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(SUPPORT_CHANGE_INTERVAL_MS);
+      expect(support).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+    view.unmount();
   });
 
   it("switches to the Board on the ticket's board for a ticket asked for from outside the pane, and opens on Time next", async () => {

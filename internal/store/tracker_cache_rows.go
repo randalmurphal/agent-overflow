@@ -12,6 +12,9 @@ type MirrorRow struct {
 	Card     MirrorCard
 	OrderKey string
 	Estimate *float64
+	// Support is whether a read's support rule names the row a support
+	// ticket (mirrorSupportSQL); a write ignores it.
+	Support bool
 }
 
 // MirrorRowPage is one read of a board's rows: the rows, the issues asked

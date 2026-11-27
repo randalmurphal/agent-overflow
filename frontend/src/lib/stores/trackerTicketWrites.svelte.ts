@@ -124,6 +124,7 @@ import {
   TrackerChoices,
   TrackerCreateFields,
   TrackerIssueTypes,
+  TrackerProjectIssueTypes,
   TrackerLinkTypes,
   TrackerMoves,
   TrackerBoardProjects,
@@ -942,6 +943,17 @@ export function issueTypes(backend: BackendKey, connection: string, project: str
 
 export function loadIssueTypes(backend: BackendKey, connection: string, project: string): Promise<void> {
   return loadHeldRead(backend, connection, readKey(backend, 'types', connection, project), () => TrackerIssueTypes(connection, project));
+}
+
+/** The types `project` has, which a person who can see it reads whatever
+ * they may create (the Credit group's support types); null before
+ * `loadProjectIssueTypes`. */
+export function projectIssueTypes(backend: BackendKey, connection: string, project: string): HeldRead<IssueTypeView[]> | null {
+  return heldRead(readKey(backend, 'project types', connection, project));
+}
+
+export function loadProjectIssueTypes(backend: BackendKey, connection: string, project: string): Promise<void> {
+  return loadHeldRead(backend, connection, readKey(backend, 'project types', connection, project), () => TrackerProjectIssueTypes(connection, project));
 }
 
 /** The fields a ticket of `type` made in `project` takes besides its

@@ -27,6 +27,7 @@ func TestTrackerSetupMethodsCarryTheirScopeAndRoute(t *testing.T) {
 		"ProjectTrackerStatuses":   transport.ScopeTrackerRead,
 		"ProjectTrackerPace":       transport.ScopeTrackerRead,
 		"ProjectTrackerSiteFields": transport.ScopeTrackerRead,
+		"ProjectTrackerSupport":    transport.ScopeTrackerRead,
 		"SetProjectTrackerSetup":   transport.ScopeTrackerOperate,
 	} {
 		i := slices.IndexFunc(transport.GeneratedMethods, func(m transport.MethodMeta) bool { return m.Name == name })

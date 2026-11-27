@@ -175,6 +175,23 @@ func (p *Provider) IssueTypes(ctx context.Context, project tracker.ProjectID) ([
 	return out, nil
 }
 
+// ProjectIssueTypes are the issue types of project, read with the
+// project (browse permission), not the create screen.
+func (p *Provider) ProjectIssueTypes(ctx context.Context, project tracker.ProjectID) ([]tracker.IssueType, error) {
+	if err := checkProject(project); err != nil {
+		return nil, err
+	}
+	pr, err := p.jira.Project(ctx, string(project))
+	if err != nil {
+		return nil, fmt.Errorf("jiraprovider: issue types of project %s: %w", project, err)
+	}
+	out := make([]tracker.IssueType, len(pr.IssueTypes))
+	for i, t := range pr.IssueTypes {
+		out[i] = issueTypeOf(t)
+	}
+	return out, nil
+}
+
 // Boards are the boards whose filter names project. A board's Project is
 // the project Jira locates it in, empty for a board in a user's location.
 func (p *Provider) Boards(ctx context.Context, project tracker.ProjectID) ([]tracker.Board, error) {

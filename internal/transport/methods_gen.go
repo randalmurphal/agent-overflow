@@ -421,6 +421,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ProjectTrackerSetup", ID: 3259060803, Scope: "tracker:read", Route: "project"},                                                   // main.App.ProjectTrackerSetup
 	{Name: "ProjectTrackerSiteFields", ID: 1545287804, Scope: "tracker:read", Route: "project"},                                              // main.App.ProjectTrackerSiteFields
 	{Name: "ProjectTrackerStatuses", ID: 315742236, Scope: "tracker:read", Route: "project"},                                                 // main.App.ProjectTrackerStatuses
+	{Name: "ProjectTrackerSupport", ID: 2932635909, Scope: "tracker:read", Route: "project"},                                                 // main.App.ProjectTrackerSupport
 	{Name: "PromoteScratchThread", ID: 4079123887, Scope: "threads:operate", Route: "thread"},                                                // main.App.PromoteScratchThread
 	{Name: "ProviderTerminalAttach", ID: 1393518281, Scope: "terminal:operate", Route: "thread", CallerBound: true},                          // main.App.ProviderTerminalAttach
 	{Name: "ProviderTerminalDetach", ID: 2584141779, Scope: "terminal:operate", Route: "thread"},                                             // main.App.ProviderTerminalDetach
@@ -626,6 +627,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "TrackerMoves", ID: 3632796459, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerMoves
 	{Name: "TrackerPoker", ID: 3990595752, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerPoker
 	{Name: "TrackerPokerSupport", ID: 4253452655, Scope: "tracker:read", Route: "home"},                                                      // main.App.TrackerPokerSupport
+	{Name: "TrackerProjectIssueTypes", ID: 2496760576, Scope: "tracker:read", Route: "home"},                                                 // main.App.TrackerProjectIssueTypes
 	{Name: "TrackerProjects", ID: 2816087609, Scope: "tracker:read", Route: "home"},                                                          // main.App.TrackerProjects
 	{Name: "TrackerSearch", ID: 1584024747, Scope: "tracker:read", Route: "home"},                                                            // main.App.TrackerSearch
 	{Name: "TrackerSectionRows", ID: 4150293291, Scope: "tracker:read", Route: "home"},                                                       // main.App.TrackerSectionRows

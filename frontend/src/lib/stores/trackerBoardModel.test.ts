@@ -412,4 +412,14 @@ describe('the Backlog screen\'s sections', () => {
     // A total from a computer that does not count them starts from none.
     expect(withRow({ rows: 1, estimate: 2 }, none, 1)).toEqual({ rows: 2, estimate: 2, unestimated: 1 });
   });
+
+  it('counts a support ticket as no estimate but not as without one, carried in or out', () => {
+    const support = { ...row('1', 'a', 's1'), estimate: null, support: true };
+    const none = { ...row('3', 'c', 's1'), estimate: null };
+    const held = planBoard({ '8': [support, none, row('2', 'b', 's2')] }, false);
+    expect(screenColumns(held).map((c) => c.total)).toEqual([{ rows: 2, estimate: 0, unestimated: 1 }, { rows: 1, estimate: 2, unestimated: 0 }]);
+    const total = { rows: 4, estimate: 6, unestimated: 1 };
+    expect(withRow(total, support, 1)).toEqual({ rows: 5, estimate: 6, unestimated: 1 });
+    expect(withRow(total, support, -1)).toEqual({ rows: 3, estimate: 6, unestimated: 1 });
+  });
 });

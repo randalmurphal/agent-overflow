@@ -413,8 +413,7 @@ another read. A ticket opens beside the list, and in its own
 pane with Ctrl or Cmd or the menu; the row's menu has Ask and Start
 work…. Not built: the pace counted with credit (it counts the tickets
 whose status counted as done when their sprint was completed, by their
-estimates now); support tickets are counted among those without an
-estimate; a Linear team's cycles are started and completed in Linear,
+estimates now); a Linear team's cycles are started and completed in Linear,
 which the screen says; a completion the tracker refuses part of says the
 first refusal, not how many tickets moved.
 
@@ -769,6 +768,11 @@ counted.
 
 ### Credit
 
+Status: built: the rules in Settings, support tickets left out of the
+Backlog's count of tickets without an estimate, and a support ticket's
+points on the Time screen. Not built: credit counted on a dashboard or
+in the pace, and the evidence it reads.
+
 - A support ticket carries no points. It counts as its logged hours divided
   by the project's hours-per-point value, and shows hours where points
   would show. A project names which tickets are support by type, label or
@@ -788,7 +792,7 @@ Status: built: the person's own logged time on the connection of the
 board the pane shows, a week at a time, By day and By ticket, logged,
 changed and deleted by hand from a cell, a day or an entry; and an
 agent's draft (`time_draft`), shown and approved as the bullets below
-say. Not built: points on a support ticket's entry.
+say.
 
 The week's draft shows dashed under each day's logged time in By day,
 with each day's approval, and in its tickets' cells in By ticket, where
@@ -823,7 +827,11 @@ the worklog's description once posted.
 - A question is answered with one click: one of the offered tickets, any
   other ticket found by key or title, or left out.
 - Time is logged by hand from a cell, a day or a ticket.
-- An entry on a support ticket shows what its hours are worth in points.
+- An entry on a support ticket shows what its hours are worth in points,
+  by the project's newest hours-per-point value, as does the ticket's
+  total in By ticket; in tickets for a project that counts tickets. A
+  board estimated in time shows none, its hours being the estimate, nor
+  does a ticket this computer's copy of the board does not hold.
 - An agent's draft puts meeting hours on the project's meetings ticket and
   time off on its time-off ticket ([Setup](#setup)) without a question.
   When one of them is not set, the agent asks instead. One that is gone
@@ -953,8 +961,28 @@ the worklog's description once posted.
   votes shown before until the ticket's computer answers with the round
   it holds. A project with only Linear boards says it has no points
   settings, and one with no boards says to add one; what it chose is
-  kept for when it lists a Jira board. Not built: the Credit group
-  (review credit, support credit and which tickets are support).
+  kept for when it lists a Jira board.
+- Points and credit has the Credit group for a project with a Jira
+  board. Count credit is off until turned on; off keeps the rules and
+  the picks below, which show again when it is turned on. Review credit
+  is a share of a finished ticket's points (0 to 100%, 10% at first) for
+  each reviewer who did at least a number (2 at first) of the actions
+  picked (commented, approved, logged time; at least one). Support
+  credit is 1 point for every 1 to 16 hours (4 at first) logged on a
+  support ticket. A change counts from this sprint on, and finished
+  sprints keep the rule they were counted with, or for every sprint, as
+  the person picks beside the rules, the pick read when the change is
+  made: a save that changes the rules keeps every rule saved before it,
+  and a finished sprint counts with the rules in effect when it
+  completed. Which tickets are support is picked for each Jira site of the
+  project's boards: issue types (those of the boards' projects, read
+  from the tracker), labels (typed) and the project's boards. A ticket is
+  a support ticket while the pick names it and it has no estimate; on a
+  board with no estimates, every ticket the pick names is. In a project
+  that counts tickets the rules say tickets in place of points, and a
+  project with a board estimated in time is told that board's hours count
+  as they are. A credit section a newer version saved is said in place
+  of the group's rules and kept.
 - Time names the ticket meetings go on, "Meetings that are not about one
   ticket", and the ticket time off goes on, each found by key or title on
   the connections of the project's Jira boards, shown with its title and

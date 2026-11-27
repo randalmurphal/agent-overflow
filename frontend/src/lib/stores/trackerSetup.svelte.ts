@@ -42,14 +42,19 @@
 // site's Try again. A tracker read, which no change of the setup moves;
 // the page holds a site again when the connections that reach it change.
 //
+// The Time screen's support tickets of a board (`ProjectTrackerSupport`)
+// are held by the project, the board and the week's issues, read on hold,
+// on the event and on reconnect: which tickets are support and the hours
+// a point are the setup's, read from the board's copy on its computer.
+//
 // The Time page's check of its tickets (`TrackerLookup`) is held by the
 // connection asked and the keys, one read for every ticket of a
 // connection, read on hold, on reconnect and on Try again: the page's
 // computer's tracker read, which a new ticket makes a new read of.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { AgentRules, BoardPace, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace, TimeTicket } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { ProjectTrackerPace, ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, SetProjectTrackerSetup, TrackerLookup } from './bindings';
+import type { AgentRules, BoardPace, CreditRules, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace, SupportView, TimeTicket } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { ProjectTrackerPace, ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, ProjectTrackerSupport, SetProjectTrackerSetup, TrackerLookup } from './bindings';
 import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend } from '../transport/entityIndex';
@@ -190,6 +195,16 @@ class HeldSiteFields extends HeldRead<PinField[]> {
   }
 }
 
+class HeldSupport extends HeldRead<SupportView> {
+  constructor(project: string, readonly connection: string, readonly board: string, readonly issues: readonly string[]) {
+    super(project);
+  }
+
+  protected call(): Promise<SupportView> {
+    return ProjectTrackerSupport(this.project, this.connection, this.board, [...this.issues]);
+  }
+}
+
 class HeldTicketCheck extends HeldRead<LookupView> {
   constructor(project: string, readonly on: BackendKey, readonly connection: string, readonly keys: readonly string[]) {
     super(project);
@@ -209,6 +224,7 @@ const statuses = new SvelteMap<string, HeldStatuses>();
 const paces = new SvelteMap<string, HeldPace>();
 const fields = new SvelteMap<string, HeldSiteFields>();
 const checks = new SvelteMap<string, HeldTicketCheck>();
+const supports = new SvelteMap<string, HeldSupport>();
 
 function acquire<E extends HeldRead<unknown>>(map: SvelteMap<string, E>, key: string, make: () => E): () => void {
   let entry = map.get(key);
@@ -462,6 +478,116 @@ export function withPoker(setup: Setup, on: boolean): Setup {
   return { ...setup, estimates: { ...setup.estimates, poker: on } };
 }
 
+/** The support read of `issues` on `project`'s `board` of `connection`. */
+function supportKey(project: string, connection: string, board: string, issues: readonly string[]): string {
+  return [project, connection, board, ...issues].join('\u0000');
+}
+
+/** Holds which of `issues` are support tickets of `project` on `board`
+ * of `connection` while the caller shows them, reading them now; the
+ * returned function releases the hold. Other issues are a new read. */
+export function acquireTrackerSupport(project: string, connection: string, board: string, issues: readonly string[]): () => void {
+  return acquire(supports, supportKey(project, connection, board, issues), () => new HeldSupport(project, connection, board, issues));
+}
+
+/** Which of a week's issues are support tickets as a surface shows it. */
+export interface TrackerSupportState {
+  /** The support tickets, the hours a point and the unit; null before a
+   * read answers or while the last read failed, when the screen shows no
+   * line. */
+  readonly support: SupportView | null;
+  /** The last read's failure; null when it answered. */
+  readonly error: unknown;
+}
+
+const NO_SUPPORT: TrackerSupportState = { support: null, error: null };
+
+/** Which of `issues` are support tickets as held. Reactive. */
+export function trackerSupportOf(project: string, connection: string, board: string, issues: readonly string[]): TrackerSupportState {
+  const entry = supports.get(supportKey(project, connection, board, issues));
+  if (!entry) return NO_SUPPORT;
+  return { support: entry.error == null ? entry.value : null, error: entry.error };
+}
+
+/** Reads which of `issues` are support tickets again if a surface holds
+ * them: the surface's Refresh, its retry, and a change of the board's
+ * mirror, which can make a ticket support or not (an estimate, a label, a
+ * type, the board's rows). */
+export function refreshTrackerSupport(project: string, connection: string, board: string, issues: readonly string[]): Promise<void> {
+  return supports.get(supportKey(project, connection, board, issues))?.read() ?? Promise.resolve();
+}
+
+/** The least time between two reads of a week's support tickets that the
+ * board's changes ask for, as a dashboard's counts. */
+export const SUPPORT_CHANGE_INTERVAL_MS = 5_000;
+
+/** Whether the project counts credit: its credit section is on. A
+ * project with no section reads as off (trackerapp's heldSetup.credit). */
+export function creditOn(setup: Setup | null | undefined): boolean {
+  return setup?.credit?.on === true;
+}
+
+/** `setup` counting credit or not. Off keeps the rules, the snapshots
+ * and the support picks, so on again loses nothing. */
+export function withCreditOn(setup: Setup, on: boolean): Setup {
+  return { ...setup, credit: { ...setup.credit!, on } };
+}
+
+/** One change to the credit rules, as the person chose it: a value to
+ * set, or whether a review action counts. It holds no step relative to a
+ * snapshot's own value, so every snapshot it is made in ends with the
+ * value chosen. */
+export type CreditChange =
+  | { readonly review_share: number }
+  | { readonly review_need: number }
+  | { readonly hours_per_point: number }
+  | { readonly action: string; readonly on: boolean };
+
+function withCreditChange(r: CreditRules, change: CreditChange): CreditRules {
+  if (!('action' in change)) return { ...r, ...change };
+  const actions = r.review_actions.filter((a) => a !== change.action);
+  if (change.on) actions.push(change.action);
+  // Fewer actions lower the number needed to the actions left.
+  return { ...r, review_actions: actions, review_need: Math.min(r.review_need, actions.length) };
+}
+
+/** `setup` with `change` made to its credit rules: for every sprint, in
+ * each snapshot, each keeping when it took effect; else from this sprint,
+ * as a new newest snapshot with no time, which the computer stamps from
+ * the save (trackerapp's stampCredit). */
+export function withCreditRules(setup: Setup, change: CreditChange, everySprint: boolean): Setup {
+  const credit = setup.credit!;
+  const rules = everySprint
+    ? credit.rules.map((r) => withCreditChange(r, change))
+    : [...credit.rules, { ...withCreditChange(credit.rules[credit.rules.length - 1], change), from: undefined }];
+  return { ...setup, credit: { ...credit, rules } };
+}
+
+/** One change to which tickets of a site are support, as the person
+ * chose it: whether a type, a label or a board is picked. Like a
+ * CreditChange it holds no flip, so the setup it is made in ends with the
+ * pick chosen, whatever that setup picked. */
+export interface SupportChange {
+  readonly list: 'types' | 'labels' | 'boards';
+  readonly id: string;
+  readonly on: boolean;
+}
+
+/** `setup` with `change` made to which tickets of `tracker`'s site `site`
+ * are support. The computer drops an entry that names none. */
+export function withSupport(setup: Setup, tracker: string, site: string, change: SupportChange): Setup {
+  const credit = setup.credit!;
+  const i = credit.support.findIndex((s) => s.tracker === tracker && s.site === site);
+  const support = [...credit.support];
+  const entry = i >= 0 ? support[i] : { tracker, site, types: [], labels: [], boards: [] };
+  const list = entry[change.list].filter((id) => id !== change.id);
+  if (change.on) list.push(change.id);
+  const next = { ...entry, [change.list]: list };
+  if (i >= 0) support[i] = next;
+  else support.push(next);
+  return { ...setup, credit: { ...credit, support } };
+}
+
 /** A check of the tickets `keys` through `connection` on computer
  * `backend` for `project`'s Time page. */
 function ticketCheckKey(project: string, backend: BackendKey, connection: string, keys: readonly string[]): string {
@@ -506,7 +632,7 @@ function readAgainOn(backend: BackendKey): void {
     if (entry.saving) entry.readOwed = true;
     else void entry.read();
   }
-  for (const entry of [...statuses.values(), ...paces.values()]) {
+  for (const entry of [...statuses.values(), ...paces.values(), ...supports.values()]) {
     const owner = entry.backend();
     if (owner === undefined || owner === backend) void entry.read();
   }
@@ -529,4 +655,5 @@ export function resetTrackerSetupForTest(): void {
   paces.clear();
   fields.clear();
   checks.clear();
+  supports.clear();
 }

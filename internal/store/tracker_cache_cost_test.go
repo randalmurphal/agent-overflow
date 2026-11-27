@@ -234,6 +234,13 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 			_, _, err := s.ReadMirrorBoardView(root, "10", MirrorRegroup{}, theseSections([]MirrorSection{{Kind: MirrorSectionBacklog}}))
 			return err
 		},
+		func() error {
+			support, err := MirrorRegroup{}.WithSupport(MirrorSupportRule{Types: []string{"10004"}, Labels: []string{"support"}})
+			if err == nil {
+				_, _, err = s.ListMirrorSupport(root, "10", support, []string{"10001", "10002"})
+			}
+			return err
+		},
 	}
 	for _, section := range []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"}, {Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}} {
 		reads = append(reads, func() error {
@@ -351,9 +358,9 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"the partial index holds only the issues whose history staging was cut short, the work itself"},
 	{"WHERE i.history_dirty = 1", "SCAN i USING INDEX idx_tracker_cache_issues_history_dirty",
 		"the partial index holds only the issues whose history staging was cut short, the work itself"},
-	{"EXISTS (SELECT 1 FROM tracker_cache_issues hd WHERE hd.root_id = CAST(?1 AS INTEGER)", "SEARCH hd USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
+	{"EXISTS (SELECT 1 FROM tracker_cache_issues hd INDEXED BY idx_tracker_cache_issues_history_due WHERE hd.root_id = CAST(?1 AS INTEGER)", "SEARCH hd USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
 		"every entry of the partial index is due a history read, and the probe stops at the first one kept"},
-	{"FROM tracker_cache_issues i\n\t\t  WHERE i.root_id = CAST(?1 AS INTEGER) AND (i.history_for < i.updated_at", "SEARCH i USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
+	{"FROM tracker_cache_issues i INDEXED BY idx_tracker_cache_issues_history_due\n\t\t  WHERE i.root_id = CAST(?1 AS INTEGER) AND (i.history_for < i.updated_at", "SEARCH i USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
 		"every entry of the partial index is due a history read, and the listing stops at a page"},
 	{"WITH h AS MATERIALIZED (SELECT value FROM json_each(?2))", "SCAN h",
 		"a write's bound list (the ticket move's, the history times'), read once; it drives the issue lookups by primary key"},
@@ -471,7 +478,7 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		"backlog rows by ID": {mirrorPatchSQL[MirrorSectionBacklog],
 			"SEARCH m USING PRIMARY KEY (root_id=? AND issue_id=?)\nSEARCH sp USING PRIMARY KEY (root_id=? AND board_id=? AND sprint_id=?)"},
 		"sprint rows by ID": {mirrorPatchSQL[MirrorSectionSprint], "SEARCH m EXISTS USING PRIMARY KEY (root_id=? AND issue_id=? AND sprint_id=?)"},
-		"row count": {mirrorCountRowsSQL, "SEARCH i USING COVERING INDEX idx_tracker_cache_issues_status (root_id=? AND issue_id=?)\n" +
+		"row count": {mirrorCountRowsSQL, "SEARCH i USING INDEX idx_tracker_cache_issues_status (root_id=? AND issue_id=?)\n" +
 			"LIST SUBQUERY 1\nSEARCH sp USING PRIMARY KEY (root_id=? AND board_id=?)\n" +
 			"SEARCH m USING COVERING INDEX idx_tracker_cache_issue_sprints_sprint (root_id=? AND sprint_id=?)"},
 		"sprint totals": {mirrorCountSprintsSQL, "SEARCH sp USING PRIMARY KEY (root_id=? AND board_id=?)\n" +
@@ -490,14 +497,15 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 	// that count as done, from the root's catalog and the bound groups,
 	// read once (an uncorrelated list), never once a row; the left-out
 	// rows a sprint total skips are one bound list too.
-	doneOnce := "LIST SUBQUERY 5\nCOMPOUND QUERY\nLEFT-MOST SUBQUERY\nSEARCH st USING PRIMARY KEY (root_id=?)\nLIST SUBQUERY 3\nSCAN o VIRTUAL TABLE INDEX 1:"
+	doneOnce := "LIST SUBQUERY 9\nCOMPOUND QUERY\nLEFT-MOST SUBQUERY\nSEARCH st USING PRIMARY KEY (root_id=?)\nLIST SUBQUERY 7\nSCAN o VIRTUAL TABLE INDEX 1:"
 	for name, read := range map[string]struct{ query, plan string }{
 		"backlog section":    {mirrorRegroupedBacklogSectionSQL, doneOnce},
 		"backlog rows by ID": {mirrorRegroupedBacklogPatchSQL, doneOnce},
 		"row count":          {mirrorRegroupedCountRowsSQL, "LIST SUBQUERY 4\nCOMPOUND QUERY\nLEFT-MOST SUBQUERY\nSEARCH st USING PRIMARY KEY (root_id=?)\nLIST SUBQUERY 2\nSCAN o VIRTUAL TABLE INDEX 1:"},
 		"sprint totals, rows left out": {mirrorCountSprintsLeftOutSQL, "SEARCH sp USING PRIMARY KEY (root_id=? AND board_id=?)\n" +
 			"SEARCH m USING COVERING INDEX idx_tracker_cache_issue_sprints_sprint (root_id=? AND sprint_id=?)\n" +
-			"SEARCH b USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)\nLIST SUBQUERY 1\nSCAN json_each VIRTUAL TABLE INDEX 1:"},
+			"SEARCH b USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)\nLIST SUBQUERY 2\nSCAN json_each VIRTUAL TABLE INDEX 1:\n" +
+			"CREATE BLOOM FILTER\nLIST SUBQUERY 1\nSCAN json_each VIRTUAL TABLE INDEX 1:"},
 	} {
 		plan := explainMirror(t, s, read.query)
 		if !strings.Contains(plan, read.plan) || strings.Contains(plan, "CORRELATED LIST SUBQUERY") || strings.Contains(plan, "TEMP B-TREE") {

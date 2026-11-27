@@ -9,8 +9,9 @@
   // against, read from this computer's copy of each Jira board. One read
   // (ProjectTrackerPace) lists the project's boards, which say whether
   // the page applies, with each Jira board's pace; Planning poker is on until turned off, and off
-  // the project's tickets offer none. Credit is not built, so the page
-  // has no Credit group.
+  // the project's tickets offer none. The Credit group
+  // (TrackerCreditSettings) is the setup's credit section, whose own
+  // newer version it says in place of its rows.
   import { tick } from 'svelte';
   import type { BoardPace } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
@@ -28,6 +29,7 @@
   import { userFacingError } from '../../utils/userFacingError';
   import { formatPace } from '../issues/boardFormat';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
+  import TrackerCreditSettings from './TrackerCreditSettings.svelte';
   import TrackerProjectSettings, { jiraOnly, type TrackerProjectPage } from './TrackerProjectSettings.svelte';
   import { SELECT_CLASS } from './styles';
 
@@ -135,5 +137,6 @@
         />
       </li>
     </ul>
+    <TrackerCreditSettings {page} {boards} />
   {/snippet}
 </TrackerProjectSettings>
