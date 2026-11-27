@@ -62,6 +62,16 @@ func mirrorHistoryDue(i, now string) []mirrorHistoryDueArm {
 	}
 }
 
+// mirrorHistoryCovers holds for an issue i whose stored history covers its
+// card: read for its update time and its boards, and final for them. It is
+// due by none of the arms of mirrorHistoryDue: the version arm's terms
+// fail and it waits for nothing. A history that does not cover the card
+// says nothing of the card's values over the stretch since its latest
+// change, which may be newer than the history.
+func mirrorHistoryCovers(i string) string {
+	return i + `.history_for > 0 AND NOT ` + mirrorHistoryDue(i, "0")[2].where + ` AND ` + i + `.history_wait = 0`
+}
+
 // mirrorHistoryDueSQL lists the kept issues of root ?1 due at ?2: first
 // those of the JSON list ?3 due by any arm, each found by key; then each arm of the rule a walk of its index of at most a
 // page and one, passing the listed issues, the version arm passing too
