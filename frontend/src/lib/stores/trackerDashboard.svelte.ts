@@ -182,7 +182,9 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   let listGen = $state(0);
   let dashboardPick = $state<string>('');
   const busy = new SvelteSet<string>();
-  let rangePick = $state<string>('');
+  // The range picked on each dashboard, by its ID: the saved picks, and
+  // each one made since.
+  let ranges = $state.raw<Record<string, string>>(savedRanges());
   let mine = $state(readFrontendValue(MINE_KEY) === true);
   let person = $state.raw<Name | null>(null);
   let epic = $state.raw<Name | null>(null);
@@ -208,7 +210,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   const range = $derived.by(() => {
     const d = dashboard;
     if (!d) return '';
-    const pick = rangePick || savedRanges()[d.id];
+    const pick = ranges[d.id];
     return d.ranges.some((r) => r.id === pick) ? pick : d.default_range;
   });
 
@@ -330,7 +332,6 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   function pick(id: string): void {
     const s = opts.source();
     dashboardPick = id;
-    rangePick = '';
     if (s) writeFrontendValue(PICK_KEY, { ...savedPicks(), [boardKey(s.board)]: id });
     closeDrill();
   }
@@ -399,7 +400,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     setRange(next) {
       const d = dashboard;
       if (!d) return;
-      rangePick = next;
+      ranges = { ...ranges, [d.id]: next };
       writeFrontendValue(RANGE_KEY, { ...savedRanges(), [d.id]: next });
       closeDrill();
     },

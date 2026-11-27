@@ -433,6 +433,26 @@ describe('the board\'s own dashboards', () => {
     expect(s.ownShown).toBe(false);
   });
 
+  it('shows the built-in on its own range once the dashboard shown is gone', async () => {
+    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const evaluate = held<Answer>('EvaluateTrackerDashboard');
+    const s = open();
+    list.answer([VIEW, MINE_VIEW]);
+    await flush();
+    s.setRange('this_sprint');
+    s.pick('d_1');
+    s.setRange('sprints_5');
+    flushSync();
+    trackerDashboardsUpdated('peer-1');
+    await flush();
+    list.answer([VIEW]);
+    await flush();
+    expect(s.dashboard?.id).toBe('overview_sprints');
+    expect(s.range).toBe('this_sprint');
+    const last = evaluate.calls[evaluate.calls.length - 1][1] as { dashboard: string; range: string };
+    expect(last).toMatchObject({ dashboard: 'overview_sprints', range: 'this_sprint' });
+  });
+
   it('starts each dashboard picked on its own range, not the one picked on the last', async () => {
     const list = held<DashboardView[] | null>('TrackerDashboards');
     held<Answer>('EvaluateTrackerDashboard');
