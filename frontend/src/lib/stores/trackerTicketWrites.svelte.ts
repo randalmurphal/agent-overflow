@@ -1,6 +1,7 @@
-// Every write the ticket screen, a Board card and a Backlog row make, a
-// board's own writes (its sprints, and the tickets made on it from the
-// Backlog), and the reads their pickers and forms make
+// Every write the ticket screen, a Board card, a Backlog row and a
+// dashboard's ticket list make, a board's own writes (its sprints, and the
+// tickets made on it from the Backlog), and the reads their pickers and
+// forms make
 // (docs/architecture/tracker-backend.md, "Writes"). A card and a row write
 // under the same ticket key as the ticket screen, so one write shows one
 // state on all of them. A board's writes are held under the board's key
@@ -39,8 +40,8 @@
 // - a control draws its target's outcome while it is mounted
 //   (`drawTicketWrite`: each `TicketWriteNote`, and the attachments row of
 //   the file being sent), and draws it for the person only while its
-//   surface is shown: the Board while it is on screen and no ticket
-//   covers it, a ticket while its pane is on screen
+//   surface is shown: the Board and a dashboard while on screen and no
+//   ticket covers them, a ticket while its pane is on screen
 //   (`components/issues/ticketWriteSurface.ts`);
 // - a write that settles while a mounted control of its target is on a
 //   shown surface keeps a refused, unknown or noted outcome there, on
@@ -176,9 +177,8 @@ export interface TicketWrite {
 
 // Each ticket's writes by target, one box per ticket, so a write wakes the
 // readers of its own ticket only (a Board card reads one box for every
-// target it draws). A box is made by the ticket's first write and dropped
-// once it holds none, so a session of writes to many tickets (a list's
-// selection moved) keeps nothing of a ticket whose writes settled.
+// target it draws). A box is made by the ticket's first write and kept,
+// empty once its writes settle, while the page lives.
 const NO_WRITES: ReadonlyMap<string, TicketWrite> = new Map();
 const writes = createKeyedSignalRegistry<ReadonlyMap<string, TicketWrite>>(NO_WRITES);
 
@@ -188,14 +188,7 @@ function putWrite(ticket: string, target: string, write: TicketWrite | null): vo
   const next = new Map(held);
   if (write) next.set(target, write);
   else next.delete(target);
-  if (next.size === 0) writes.drop(ticket);
-  else writes.set(ticket, next);
-}
-
-/** How many tickets hold a write or a kept outcome now; for tests of what
- * the store retains. */
-export function ticketWriteBoxCountForTest(): number {
-  return [...writes.keys()].length;
+  writes.set(ticket, next.size === 0 ? NO_WRITES : next);
 }
 
 function heldWrite(ticket: string, target: string): TicketWrite | undefined {
@@ -540,14 +533,16 @@ function toastUnshown(change: string, what: string, outcome: WriteOutcome): void
 }
 
 /** Sets fields of the ticket (EditTrackerIssue), `target` being the
- * control's. */
-export function editTicketFields(t: TicketWriteContext, target: string, fields: FieldEditInput[]): Promise<WriteOutcome | null> {
-  return write(t, target, (acceptLoss) => EditTrackerIssue(t.ref.connection, { issue: t.ref.issue, fields, accept_loss: acceptLoss }), false);
+ * control's; pending from the call, sent once `after` settles (a list's
+ * batch waiting for its turn). */
+export function editTicketFields(t: TicketWriteContext, target: string, fields: FieldEditInput[], after?: Promise<void>): Promise<WriteOutcome | null> {
+  return write(t, target, (acceptLoss) => EditTrackerIssue(t.ref.connection, { issue: t.ref.issue, fields, accept_loss: acceptLoss }), false, { after });
 }
 
-/** Moves the ticket by one of its moves (MoveTrackerIssue). */
-export function moveTicket(t: TicketWriteContext, move: string, fields?: FieldEditInput[]): Promise<WriteOutcome | null> {
-  return write(t, 'status', (acceptLoss) => MoveTrackerIssue(t.ref.connection, { issue: t.ref.issue, move, fields, accept_loss: acceptLoss }), false);
+/** Moves the ticket by one of its moves (MoveTrackerIssue); sent once
+ * `after` settles, as editTicketFields. */
+export function moveTicket(t: TicketWriteContext, move: string, fields?: FieldEditInput[], after?: Promise<void>): Promise<WriteOutcome | null> {
+  return write(t, 'status', (acceptLoss) => MoveTrackerIssue(t.ref.connection, { issue: t.ref.issue, move, fields, accept_loss: acceptLoss }), false, { after });
 }
 
 /** Sets or clears the ticket's estimate on a board (SetTrackerEstimate). */

@@ -79,7 +79,7 @@ const DONE: [string, string] = ['10002', 'Done'];
 // (User 1, 5 points, to do, under the epic WEB-30 "Checkout", which the
 // scrum board does not list): This sprint's pace is 2 points, down 103
 // from Sprint E's 105.
-const SPRINT_E = 15;
+export const SPRINT_E = 15;
 const DASHBOARDS: ExtraJira = {
   projects: [],
   boards: [],
@@ -146,7 +146,7 @@ const KANBAN: ExtraJira = {
   ],
 };
 
-function widget(screen: Locator, id: string): Locator {
+export function widget(screen: Locator, id: string): Locator {
   return screen.locator(`[data-testid="dashboard-widget"][data-widget="${id}"]`);
 }
 
@@ -177,7 +177,7 @@ async function spans(screen: Locator): Promise<Record<string, number>> {
   ])));
 }
 
-async function openBoardDashboards(harness: HarnessApp, page: Page, name: string, compact: boolean): Promise<{ board: ConnectedBoard; pane: Locator; screen: Locator }> {
+export async function openBoardDashboards(harness: HarnessApp, page: Page, name: string, compact: boolean): Promise<{ board: ConnectedBoard; pane: Locator; screen: Locator }> {
   const board = await connectFakeJiraBoard(harness, name, DASHBOARDS);
   await harness.open(page);
   const pane = await openIssuesPane(page, compact);

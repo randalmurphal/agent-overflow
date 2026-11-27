@@ -7,7 +7,8 @@ import { describe, expect, it } from 'vitest';
 import type { MoveView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { assignablePeople, BULK_AT_ONCE, commonMoves, eachBounded, type ListTicket } from './ticketListActions';
+import { ticketWrite } from '../../stores/trackerTicketWrites.svelte';
+import { assignablePeople, BULK_AT_ONCE, commonMoves, eachBounded, moveTickets, type ListTicket } from './ticketListActions';
 
 function ticket(key: string, issue: string, status: string): ListTicket {
   return { ctx: { key: `k-${issue}`, ref: { backend: HOME_BACKEND, connection: 'c1', issue }, label: key }, status };
@@ -68,7 +69,7 @@ describe('eachBounded', () => {
     };
     const first = eachBounded([1, 2, 3, 4, 5, 6], step);
     const second = eachBounded([7, 8], step);
-    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
     expect(started).toEqual([1, 2, 3, 4]);
     finish.get(2)!(false);
     await new Promise((r) => setTimeout(r, 0));
@@ -83,6 +84,24 @@ describe('eachBounded', () => {
     expect(most).toBe(BULK_AT_ONCE);
     expect(started).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(results.map((r) => r.status)).toEqual(['fulfilled', 'rejected', 'fulfilled', 'fulfilled', 'fulfilled', 'fulfilled']);
+  });
+});
+
+describe('moveTickets', () => {
+  it(`shows every ticket's write as pending from the press and sends ${BULK_AT_ONCE} at a time`, async () => {
+    const sent: Array<() => void> = [];
+    setBindingMock('MoveTrackerIssue', () => new Promise((resolve) => { sent.push(() => resolve({ parts: [{ step: 'move', state: 'applied' }] })); }));
+    const tickets = Array.from({ length: 6 }, (_, i) => ticket(`WEB-${i + 1}`, String(i + 1), 'To Do'));
+    const status = { id: 's3', name: 'Done', off: '', moves: new Map(tickets.map((t) => [t.ctx.key, '31'])) };
+    const done = moveTickets(tickets, status);
+    for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+    expect(tickets.map((t) => ticketWrite(t.ctx.key, 'status')?.pending)).toEqual([true, true, true, true, true, true]);
+    expect(sent).toHaveLength(BULK_AT_ONCE);
+    while (sent.length > 0) {
+      sent.shift()!();
+      for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(await done).toEqual({ made: 6, sent: 6 });
   });
 });
 

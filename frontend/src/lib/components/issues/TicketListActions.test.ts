@@ -4,7 +4,7 @@
 // tracker refused (in a toast while the list is not shown), and sums the
 // batch up for a few seconds; Assign assigns each; Start a thread makes
 // one thread on the tickets with the text; and each action says why it is
-// off. The write store keeps nothing of a ticket once its write settled.
+// off.
 
 import { fireEvent, render, within } from '@testing-library/svelte';
 import { createRawSnippet, tick } from 'svelte';
@@ -15,7 +15,6 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { TOAST_MS } from '../../pageTiming';
 import { getAllPanes } from '../../stores/panes.svelte';
 import { getToasts } from '../../stores/toast.svelte';
-import { ticketWriteBoxCountForTest } from '../../stores/trackerTicketWrites.svelte';
 import type { Thread } from '../../types/models';
 import TicketListActions, { type TicketListSource } from './TicketListActions.svelte';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
@@ -133,7 +132,7 @@ describe('Move to', () => {
     expect(view.queryByTestId('ticket-list-note')).toBeNull();
   });
 
-  it('says in a toast what the tracker refused while the list is not shown, and keeps nothing of the tickets after', async () => {
+  it('says in a toast what the tracker refused while the list is not shown', async () => {
     setBindingMock('TrackerMoves', async (_c: string, issue: string) => [toDone(`n${issue}`)]);
     setBindingMock('MoveTrackerIssue', async (_c: string, input: { issue: string }) => (input.issue === '10102' ? refused('WEB-2 needs a reviewer first') : applied()));
     const view = draw([rowOf(1), rowOf(2)], {}, false);
@@ -145,7 +144,6 @@ describe('Move to', () => {
     await flush();
     expect(view.queryAllByTestId('ticket-write-outcome')).toHaveLength(0);
     expect(getToasts().map((t) => t.message)).toEqual(['The tracker refused the change to WEB-2: WEB-2 needs a reviewer first']);
-    expect(ticketWriteBoxCountForTest()).toBe(0);
   });
 
   it('offers a status a move reaches only with fields, off and naming the ticket', async () => {

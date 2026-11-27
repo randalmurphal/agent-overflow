@@ -32,17 +32,19 @@ export interface ListTicket {
 let out = 0;
 const waiting: (() => void)[] = [];
 
-async function inSlot<R>(step: () => Promise<R>): Promise<R> {
-  if (out < BULK_AT_ONCE) out++;
-  else await new Promise<void>((resolve) => waiting.push(resolve));
-  try {
-    return await step();
-  } finally {
-    // The slot passes to the next waiting call, or is freed.
+/** Takes one of the batches' BULK_AT_ONCE slots: answers its release
+ * once taken, which passes it to the next waiting call or frees it. */
+function takeSlot(): Promise<() => void> {
+  const release = () => {
     const next = waiting.shift();
     if (next) next();
     else out--;
+  };
+  if (out < BULK_AT_ONCE) {
+    out++;
+    return Promise.resolve(release);
   }
+  return new Promise((resolve) => waiting.push(() => resolve(release)));
 }
 
 /** Runs `step` on each item, with every batch's calls together at most
@@ -50,7 +52,14 @@ async function inSlot<R>(step: () => Promise<R>): Promise<R> {
  * order. A step that throws is its result's rejection; the others still
  * run. */
 export function eachBounded<T, R>(items: readonly T[], step: (item: T) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
-  return Promise.allSettled(items.map((item) => inSlot(() => step(item))));
+  return Promise.allSettled(items.map(async (item) => {
+    const release = await takeSlot();
+    try {
+      return await step(item);
+    } finally {
+      release();
+    }
+  }));
 }
 
 export function resetTicketListActionsForTest(): void {
@@ -136,10 +145,22 @@ export interface BatchOutcome {
   readonly sent: number;
 }
 
-async function sendEach(tickets: readonly TicketWriteContext[], send: (t: TicketWriteContext) => Promise<WriteOutcome | null>): Promise<BatchOutcome> {
+// Each write is the store's from the press, so its row says "Saving…"
+// while it waits for a slot, and is sent once it has one.
+async function sendEach(
+  tickets: readonly TicketWriteContext[],
+  send: (t: TicketWriteContext, after: Promise<void>) => Promise<WriteOutcome | null>,
+): Promise<BatchOutcome> {
   // The write store keeps each failure as its outcome (under the row or in
   // a toast) and never throws one; a throw here is a defect, and is said.
-  const results = await eachBounded(tickets, send);
+  const results = await Promise.allSettled(tickets.map(async (t) => {
+    const slot = takeSlot();
+    try {
+      return await send(t, slot.then(() => undefined));
+    } finally {
+      (await slot)();
+    }
+  }));
   for (const r of results) if (r.status === 'rejected') throw r.reason;
   const made = results.filter((r) => r.status === 'fulfilled' && r.value?.kind === 'applied').length;
   return { made, sent: tickets.length };
@@ -148,13 +169,13 @@ async function sendEach(tickets: readonly TicketWriteContext[], send: (t: Ticket
 /** Moves each ticket of `status.moves` that is not there yet by its move. */
 export function moveTickets(tickets: readonly ListTicket[], status: ListStatus): Promise<BatchOutcome> {
   const moving = tickets.filter((t) => status.moves.get(t.ctx.key));
-  return sendEach(moving.map((t) => t.ctx), (t) => moveTicket(t, status.moves.get(t.key)!));
+  return sendEach(moving.map((t) => t.ctx), (t, after) => moveTicket(t, status.moves.get(t.key)!, undefined, after));
 }
 
 /** Assigns each ticket to `person`, or unassigns it for null. */
 export function assignTickets(tickets: readonly ListTicket[], person: PickItem | null): Promise<BatchOutcome> {
   const edit = pickedEdit('assignee', 'user', person ? [person] : []);
-  return sendEach(tickets.map((t) => t.ctx), (t) => editTicketFields(t, fieldTarget('assignee'), [edit]));
+  return sendEach(tickets.map((t) => t.ctx), (t, after) => editTicketFields(t, fieldTarget('assignee'), [edit], after));
 }
 
 /** The people whose name starts with `text` who may be assigned every
