@@ -64,7 +64,9 @@ var (
 // than maxEventIssues (Truncated), and the client reads the board view
 // again. Pins are one project's pins that changed, which its subscribers
 // hold with no read, and Dashboards a change of one project's dashboards
-// of the board, on which they list them again. Sync is the board's sync state; Failure in it is sent
+// of the board, on which they list them again. Logged says the reads of
+// the connection's logged time ended (worklog_reads.go), on which its
+// dashboards count again. Sync is the board's sync state; Failure in it is sent
 // once when it starts or changes and once when it clears. Ended is the
 // last event:
 // the subscription ended (the connection was turned off or removed, or the
@@ -78,6 +80,7 @@ type BoardEvent struct {
 	ReadAgain  bool               `json:"read_again,omitempty"`
 	Pins       *ProjectPins       `json:"pins,omitempty"`
 	Dashboards *ProjectDashboards `json:"dashboards,omitempty"`
+	Logged     bool               `json:"logged,omitempty"`
 	Sync       SyncView           `json:"sync"`
 	Ended      bool               `json:"ended,omitempty"`
 }

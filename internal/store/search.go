@@ -331,15 +331,13 @@ func threadFindChanged(q sqlQueryer, threadID, filter string, filterArgs []any, 
 // filter (assistantHiddenSQL): a thread under an assistant is no hit while
 // assistants are off.
 func searchTitleHits(q sqlQueryer, pattern, paused string, limit int) ([]ThreadMessageHit, error) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
-	args := append([]any{pattern}, hiddenArgs...)
 	rows, err := q.Query(`
 		SELECT id, title, provider, ownership_epoch
 		FROM owned_threads
-		WHERE fork_preparing = 0 AND LOWER(title) LIKE `+boundText+` ESCAPE '\' AND `+hiddenClause+` AND `+paused+`
+		WHERE fork_preparing = 0 AND LOWER(title) LIKE `+boundText+` ESCAPE '\' AND `+hiddenThreadModesSQL("mode")+` AND `+paused+`
 		ORDER BY updated_at DESC
 		`+limitSuffix(limit),
-		args...,
+		pattern,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: search thread titles: %w", err)
@@ -387,17 +385,15 @@ func mergeTitleFirst(titleHits, itemHits []ThreadMessageHit, limit int) []Thread
 // searchTitleHits and are merged in by SearchThreadMessages. paused is as
 // searchTitleHits takes it.
 func searchGlobalItemHits(q sqlQueryer, pattern, paused string, limit int) ([]ThreadMessageHit, error) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
-	args := append([]any{pattern}, hiddenArgs...)
 	rows, err := q.Query(`
 		SELECT t.id, t.title, t.provider, t.ownership_epoch,
 			i.id, i.turn_index, i.item_index, i.kind, i.role, i.summary
 		FROM timeline_items i
 		JOIN owned_threads t ON t.id = i.thread_id
-		WHERE t.fork_preparing = 0 AND LOWER(i.summary) LIKE `+boundText+` ESCAPE '\' AND `+hiddenClause+` AND `+paused+`
+		WHERE t.fork_preparing = 0 AND LOWER(i.summary) LIKE `+boundText+` ESCAPE '\' AND `+hiddenThreadModesSQL("t.mode")+` AND `+paused+`
 		ORDER BY i.created_at DESC
 		`+limitSuffix(limit),
-		args...,
+		pattern,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: search item summaries: %w", err)

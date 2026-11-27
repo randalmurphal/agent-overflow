@@ -10,7 +10,7 @@
   import { formatNum, numValue, numWords, type Num } from '../../../stores/trackerDashboardModel';
   import { formatAmount, unitWord, type DashboardUnit } from '../../../utils/dashboardAmount';
   import { isLocalEnter } from '../../../utils/localEnter';
-  import { labelEvery, SERIES_COLORS, valueScale } from './chartScale';
+  import { labelEvery, SERIES_COLORS, unitScale } from './chartScale';
 
   interface Props {
     title: string;
@@ -33,7 +33,7 @@
   const TOP = 10;
   const named = $derived(series.length > 1 || series[0] !== '');
   const top = $derived(Math.max(0, ...buckets.flatMap((b) => b.cells.map((c) => numValue(c as Num) ?? 0))));
-  const scale = $derived(valueScale(top));
+  const scale = $derived(unitScale(top, unit, estimates));
   const plotW = $derived(Math.max(0, width - LEFT - 12));
   const plotH = HEIGHT - BOTTOM - TOP;
   const every = $derived(labelEvery(buckets.length, plotW));
@@ -114,9 +114,9 @@
   {/if}
   {#if width > 0}
     <svg width={width} height={HEIGHT} class="block overflow-visible">
-      {#each scale.ticks as t (t)}
-        <line x1={LEFT} x2={width} y1={y(t)} y2={y(t)} class="stroke-border-subtle" stroke-width="1" />
-        <text x={LEFT - 6} y={y(t) + 3} text-anchor="end" class="fill-fg-subtle text-[0.625rem]">{t}</text>
+      {#each scale.ticks as t (t.value)}
+        <line x1={LEFT} x2={width} y1={y(t.value)} y2={y(t.value)} class="stroke-border-subtle" stroke-width="1" />
+        <text x={LEFT - 6} y={y(t.value) + 3} text-anchor="end" class="fill-fg-subtle text-[0.625rem]" data-testid="dashboard-axis-tick">{t.label}</text>
       {/each}
       {#if paceLine}
         <line x1={x(0)} y1={y(paceLine.start)} x2={x(paceLine.last)} y2={y(0)} class="stroke-fg-muted" stroke-width="1.5" stroke-dasharray="4 4" data-testid="dashboard-pace" />

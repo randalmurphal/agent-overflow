@@ -302,3 +302,79 @@ func TestDashboardWidgetSaysItsUnitAndTicketsNotCounted(t *testing.T) {
 		}
 	}
 }
+
+// A widget of the person's logged time tells the agent the days not read
+// on each number, and which count days older than the logged time kept;
+// a widget that counts nothing on this page says why.
+func TestDashboardWidgetSaysTheDaysNotReadAndItsNote(t *testing.T) {
+	t.Parallel()
+	hour := 3600.0
+	f := &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
+		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{
+			Value:    &trackerdash.Num{UR: 3},
+			Previous: &trackerdash.Num{UR: 5},
+			Buckets:  []trackerdash.BucketValue{{Label: "Nov 16", Total: trackerdash.Num{V: &hour}}, {Label: "Nov 23", Total: trackerdash.Num{UR: 2}}},
+		}}, nil
+	}}
+	answer, err := widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": openWidget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"unit":"seconds","not_read":3`, `"previous_not_read":5`, `{"label":"Nov 16","total":3600}`, `{"label":"Nov 23","total":null,"not_read":2}`} {
+		if !strings.Contains(answer, want) {
+			t.Errorf("answer %s lacks %s", answer, want)
+		}
+	}
+	f = &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
+		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{
+			Value:    &trackerdash.Num{Old: true},
+			Previous: &trackerdash.Num{Old: true},
+			Buckets:  []trackerdash.BucketValue{{Label: "Sprint 1", Total: trackerdash.Num{Old: true}}},
+		}}, nil
+	}}
+	answer, err = widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": openWidget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"unit":"seconds","old":true,"previous_old":true`, `{"label":"Sprint 1","total":null,"old":true}`} {
+		if !strings.Contains(answer, want) {
+			t.Errorf("answer %s lacks %s", answer, want)
+		}
+	}
+	// A list says it on the widget.
+	f = &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
+		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{Old: true, Tickets: []trackerdash.TicketRow{{Key: "WEB-1"}}}}, nil
+	}}
+	answer, err = widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": openWidget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"unit":"seconds","old":true`; !strings.Contains(answer, want) {
+		t.Errorf("a list's answer %s lacks %s", answer, want)
+	}
+	f = &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
+		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{Note: "Only your own logged time is read."}}, nil
+	}}
+	answer, err = widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": openWidget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(answer, `"note":"Only your own logged time is read."`) {
+		t.Errorf("answer %s lacks the note", answer)
+	}
+	// A ranked chart with no rows yet, its days not read, says how many.
+	f = &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
+		days := make([]string, 24)
+		for i := range days {
+			days[i] = fmt.Sprintf("2026-11-%02d", i+1)
+		}
+		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{Unread: days}}, nil
+	}}
+	answer, err = widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": openWidget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(answer, `"not_read":24`) || !strings.Contains(answer, `"rows":0`) {
+		t.Errorf("answer %s lacks the 24 days not read of a chart with no rows", answer)
+	}
+}

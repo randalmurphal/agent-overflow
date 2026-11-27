@@ -2450,7 +2450,9 @@ closes a database of its own.
 | The dashboards a project keeps (the setup file's `dashboards` section) and the widgets agents proposed | `trackerapp` (`dashboard_setup.go`, `dashboards.go`) |
 | A board's summary row and its number widgets' limits (the setup file's `board_tiles` section) | `trackerapp` (`board_tiles.go`) |
 | Bound methods, scopes and the older-computer surface | `app` (`app_tracker_dashboards.go`) |
-| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine and the drill; the summary row's answer (`row`) | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine and the drill; the summary row's answer (`row`); the person's Refresh and Read again of your logged time | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+| When your logged time is read and which days: from evaluations, one turn per connection, the newest days again, a failure held for the person | `trackerapp/worklog_reads.go` |
+| Where logged time counts and where it is not known, what an evaluation needs of it, and the sentences of a widget that cannot count it | `trackerdash/worklogs.go` |
 | The tickets a summary row tile filters the board to | `frontend/src/lib/stores/boardTicketSet.svelte.ts` |
 
 ### Own dashboards and proposals
@@ -2594,8 +2596,9 @@ whether it is open and whether it counts, by the project's status
 groups), the statuses its columns, tickets and copied changes name,
 people (the assignees, and the people the changes name when those are
 copied), epics, sprints and their members, the tickets' changes, what
-each sprint finished, the tickets' labels, and two relations rebuilt from
-the stored history ([Sprint history](#sprint-history)). A ticket's type and
+each sprint finished, the tickets' labels, two relations rebuilt from
+the stored history ([Sprint history](#sprint-history)), and three of
+this computer's own ([Thread links and logged time](#thread-links-and-logged-time)). A ticket's type and
 priority names (`MirrorExportColumns`) and its labels come from its card
 blob, whose shape trackerapp passes (`MirrorCardShape`, from the json
 tags of `cardBlob`); the tickets fill decodes a name only when a count
@@ -2767,6 +2770,100 @@ its pace runs the statement it ran before credit
 20,000 issues are in
 [Tracker API measurements](../references/tracker-api-measurements.md#credit).
 
+### Thread links and logged time
+
+The rules are the comments at the top of
+`store/tracker_cache_export_relations.go`, `trackerdash/worklogs.go` and
+`trackerapp/worklog_reads.go`.
+
+- `threads(id, ticket, origin, linked_at, created_at, archived,
+  last_turn_at)` is the threads of the board's computer linked to one of
+  the board's tickets on the board's site, as that computer's Ticket
+  screen lists them (no hidden mode, none being deleted), with no title.
+  A ticket's Work lists the linked threads of every attached computer, so
+  it can show more than a dashboard counts; How this is counted says
+  which threads it counts.
+- `worklogs(id, ticket, day, seconds)` is the logged time on the board's
+  tickets of one person, the connection's verified account (the viewer,
+  `MirrorExport.Viewer`, read in the export's own snapshot), and
+  `worklog_days(day)` the days of that person's the mirror read, whatever
+  was logged on them. Both hold the days from `MirrorLoggedDays.From`
+  through `.Through` and no other: trackerapp's `loggedFrom` gives the
+  first, the day before the history window's first in UTC, and the
+  evaluation gives the last, today in the request's time zone, through
+  `Board.Fill`. The export says the first (`MirrorExport.LoggedFrom`). A
+  count that reads
+  `worklogs` also copies `worklog_days`. A metric of it counts in the unit
+  `time`, seconds that the screen shows as hours.
+- `day_start(day)` is the instant a row of a day is placed at: the first
+  millisecond after that date's first instant in the request's time zone,
+  whatever zone the person logged it in, so a period that begins at
+  midnight holds its first day and not the day before. A date whose
+  midnight a zone change skips begins where the change lands
+  (`trackerdash.placed`, the one conversion the days not read use too).
+- A row of logged time is the viewer's: its person is the viewer unless
+  the metric returns `person`, so Mine keeps it all. A page narrowed to
+  another person says "Only your own logged time is read." in the
+  widget's place, a Linear board that it has no time tracking, and a
+  connection whose account is not verified to check the connection; the
+  drill refuses with the same sentence.
+- A day with no read is not zero hours, and a row of logged time can
+  count in a period other than its day's (a sprint's tickets, a state that
+  holds from its day on). A widget needs the window by what it is,
+  decided before any row is looked at (`ranged.needsWindow`): its metric
+  reads logged time, the page can count it, and its range has something
+  to count for it (a chart of periods, or an event metric's number, list
+  or ranked chart, has nothing over a range with no period). Such a
+  widget lists the window's days not read (`WidgetValue.Unread`) and
+  counts toward the reads, with rows or none. `ranged` hands out rows
+  only with what they reach (`taken.cover`), and one function,
+  `evaluation.num`, turns a reduction and its reach into every number: a
+  widget's, a period's, a bar's or a cell's, a total, the range before, a
+  drill's, and a Try's. Older than kept is one comparison
+  (`evaluation.reach`): a reduction whose interval can hold an instant
+  before the first instant of `LoggedFrom` in the request's zone (a state
+  at such an instant, rows placed in a period whose start is earlier than
+  that instant's millisecond before) is never known (`Num.Old`; a list's
+  or a ranked chart's `WidgetValue.Old`). Any other is not known while a
+  day of the window up to now is not read (`Num.UR`, the count of those
+  days). A period still to come, or a range with no period, takes no row
+  and is not marked. A weekend's day is a day like any other.
+- The evaluator makes no tracker request: an evaluation (or an agent's
+  Try) in which a widget needed the window calls `Board.Worklogs` once
+  with the days it found not read and today, and puts the answer, whether
+  the reads run and why the last failed, on `Answer.Logged`.
+- The reads have one owner on the board's computer
+  (`trackerapp/worklog_reads.go`). Per connection, one turn for the life
+  of the process, which `RefreshWorklogs` (the Time screen, the agents'
+  time tools) takes too; and the state of its verified account's reads
+  under its time source, replaced without the turn when either changes.
+  The state is keyed by a generation that only moves forward: an
+  evaluation that carries an older one than the connection's changes
+  nothing. An evaluation queues the days it found not read, except the
+  days a run has handed out and not yet stored, and the newest 31 days
+  once `worklogRereadEvery` (5 minutes) has passed since they were last
+  queued, handed out or not. One run reads what is queued, newest first,
+  31 days a read, back to back. It hands a span out and checks the run's
+  own account and time source on the connection's row before it reads,
+  and stops when either moved. It tells the connection's boards when it
+  ends (`BoardEvent.Logged`), on which the page counts again. Every span
+  handed out ends stored, recorded as failed, or forgotten with the
+  state: a screen that closes does not stop a run; turning the connection
+  off, `Stop`, and a change of account or source do, and clear what was
+  queued and handed out. After a read failed nothing is queued on its own
+  until the person's Refresh or Read again
+  (`ReadTrackerWorklogDays(connection, timeZone)`), which queues every day
+  to today in that zone and returns. The board's Refresh makes that call
+  only while a tile of the board's summary row counts logged time. A
+  first show of nothing read is one run of 6 reads; a show with
+  everything read is 1 read once 5 minutes have passed, else none; a
+  dashboard shown for an hour reads the newest days 6 times while the
+  board is idle (its 10-minute recount) and at most 12 while it is busy,
+  per connection.
+
+Their costs at 2,000 and 20,000 issues are in
+[Tracker API measurements](../references/tracker-api-measurements.md#thread-links-and-logged-time).
+
 ### Metrics
 
 A metric is one SELECT over the export whose rows are contributions:
@@ -2861,8 +2958,8 @@ statement.
   run at once on a computer; a third waits up to 2 s and is refused as
   busy. A count with proposals takes at most 12 s (two waits and two
   evaluations) against its method's 45 s.
-- The app's functions (`days`, `working_days`, `day` and the wrapper's
-  `bounded_rows`) are registered once per time zone a count names, on a
+- The app's functions (`days`, `working_days`, `day`, `day_start` and
+  the wrapper's `bounded_rows`) are registered once per time zone a count names, on a
   driver of that zone the process keeps (`trackerdash/funcs.go`): one
   per zone name the computer's time zone database loads, as the request
   spells it, and at most 32 per process; a count that names a 33rd is
@@ -3058,12 +3155,14 @@ guide says so once.
 one; a name or ID that more than one board answers to is refused naming
 each by its site/ID) as the board's dashboards count it, over the
 board's default range, and answers its numbers in their unit (`unit`:
-tickets, points, seconds for a time board's estimates, or days), the
-tickets each number could not count, how many rows its query returned
-and the first 5.
+tickets, points, seconds for logged time or a time board's estimates,
+or days), the tickets each number could not count, the days of logged
+time each could not read (`not_read`), why the widget counts nothing on
+the page when it does not (`note`), how many rows its query returned and
+the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 7,710 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 8,718 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a

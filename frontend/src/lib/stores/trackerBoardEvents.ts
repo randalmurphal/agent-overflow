@@ -25,6 +25,9 @@ export interface TrackerBoardEvent {
    * (trackerapp.ProjectDashboards), and with `counts` what they count:
    * only that project's subscriptions take it. */
   dashboards?: { project: string; counts: boolean } | null;
+  /** The reads of the connection's logged time ended, so what its
+   * dashboards count changed (trackerapp worklog_reads.go). */
+  logged?: boolean;
   sync?: SyncView;
   ended?: boolean;
 }

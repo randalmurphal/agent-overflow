@@ -181,7 +181,7 @@ func (s *fakeScenario) exportEpics(t *testing.T, scope Scope) map[string]string 
 			t.Error(err)
 		}
 	}()
-	if _, ok, err := b.Fill(t.Context(), conn, []string{"tickets", "epics"}); err != nil || !ok {
+	if _, ok, err := b.Fill(t.Context(), conn, []string{"tickets", "epics"}, time.Now().UTC().Format(time.DateOnly)); err != nil || !ok {
 		t.Fatalf("export: %v, %v", ok, err)
 	}
 	rows, err := conn.QueryContext(t.Context(), `SELECT t.id, e.key || ' ' || e.title FROM tickets t JOIN epics e ON e.id = t.epic`)

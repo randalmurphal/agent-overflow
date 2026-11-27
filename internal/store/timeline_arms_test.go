@@ -1031,16 +1031,16 @@ func TestTimelineItemsViewJoinPushesDown(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 
-	withItems, withItemsArgs := listThreadsWithItemsQuery()
-	projectCounts, projectCountsArgs := listProjectsWithThreadCountsQuery()
+	withItems := listThreadsWithItemsQuery()
+	projectCounts := listProjectsWithThreadCountsQuery()
 	cases := []struct {
 		name  string
 		query string
 		args  []any
 	}{
 		{name: "ListThreads", query: listThreadsQuery},
-		{name: "ListThreadsWithItems", query: withItems, args: withItemsArgs},
-		{name: "ListProjectsWithThreadCounts", query: projectCounts, args: projectCountsArgs},
+		{name: "ListThreadsWithItems", query: withItems},
+		{name: "ListProjectsWithThreadCounts", query: projectCounts},
 	}
 	for _, tc := range cases {
 		plan := explainPlan(t, s, tc.query, tc.args...)

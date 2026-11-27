@@ -139,9 +139,9 @@ func TestACountAsksForWhatItsQueryReads(t *testing.T) {
 		ticket(ticket{id: "t1", key: "WEB-1", status: "3", group: "in_progress", created: ago(3)}).board()
 	var asked [][]string
 	fill := board.Fill
-	board.Fill = func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+	board.Fill = func(ctx context.Context, conn *sql.Conn, relations []string, through string) (store.MirrorExport, bool, error) {
 		asked = append(asked, relations)
-		return fill(ctx, conn, relations)
+		return fill(ctx, conn, relations, through)
 	}
 	m := Metric{Name: "w_1", Title: "Bugs", Words: []string{"Bugs open now."}, Reduce: ReduceCount, Unit: UnitTickets}
 	both := []string{"tickets.type", "tickets.priority"}
@@ -219,13 +219,13 @@ func TestAProposalsCopyPastTheDeadlineLeavesTheDashboardWhole(t *testing.T) {
 	b.Own.Metrics["w_2"] = history
 	fill := b.Fill
 	held := -1
-	b.Fill = func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+	b.Fill = func(ctx context.Context, conn *sql.Conn, relations []string, through string) (store.MirrorExport, bool, error) {
 		if slices.Contains(relations, "changes") {
 			held = len(e.slots)
 			<-ctx.Done()
 			return store.MirrorExport{}, false, ctx.Err()
 		}
-		return fill(ctx, conn, relations)
+		return fill(ctx, conn, relations, through)
 	}
 	a := mustEvaluate(t, e, b, Request{Dashboard: "d_1", TimeZone: "UTC"})
 	if len(a.Widgets) != 2 || a.Widgets[0].Error != "" || len(a.Widgets[0].Buckets) != 2 {

@@ -1213,6 +1213,27 @@ totals when a card passes its evidence receipt
 The trigger costs 93 steps a card whose receipt it passes and 16 a card
 with none; the times differ by less than their spread.
 
+### Thread links and logged time
+
+The fills of `threads`, `worklogs` and `worklog_days`
+(`TestMirrorExportFillsAtScale`, the sprint history's dated fixture with
+2,000 threads linked to its tickets, two turns each, 1,000 worklogs of
+the viewer's and 1,000 of another person's, and 180 read days of each:
+`seedRelationsAtScale`). VM steps are the same in all 12 exports of a
+size (all changed and 10% changed, each with no column, one and every
+column, with and without `changes`); a time is the range of those
+exports' best of 5:
+
+| Fill | Rows | 2,000 tickets | 20,000 tickets |
+|---|---|---|---|
+| threads | 2,000 | 158,303 steps, 4.0 to 5.0 ms | 158,303 steps, 4.2 to 8.3 ms |
+| worklogs | 1,000 | 27,042 steps, 0.88 to 1.1 ms | 27,042 steps, 0.91 to 1.5 ms |
+| worklog_days | 180 | 2,740 steps, 32 to 44 µs | 2,740 steps, 36 to 64 µs |
+
+The steps follow the links and the viewer's worklogs, not the board's
+tickets: about 79 a link (each with its newest turn) and 27 a worklog of
+the viewer's; the other person's are not read.
+
 ## Planning poker add-on
 
 Applies only to a site with Easy Agile TeamRhythm installed

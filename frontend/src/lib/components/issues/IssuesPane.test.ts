@@ -4942,6 +4942,153 @@ describe("the board's summary row", () => {
     view.unmount();
   });
 
+  it('says on a pinned tile of your logged time why its read failed beside the number, and that the computer reads it after Read again', async () => {
+    const hours = { id: 'w_2', title: 'Your hours', form: 'number', width: 3, unit: 'time', how: { ...how, reads: ['worklogs'] } };
+    const kept = { ...KEPT, widgets: [...KEPT.widgets, hours] };
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['w_2'] } as Partial<BoardView>) });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' };
+    let next: unknown = { range, estimates: 'points', at: 1, widgets: [{ id: 'w_2', value: { v: 3600 } }], logged: { failure: 'Jira asked to wait.' } };
+    setBindingMock('EvaluateTrackerDashboard', async () => next);
+    const reads = setBindingMock('ReadTrackerWorklogDays', async () => {
+      next = { range, estimates: 'points', at: 2, widgets: [{ id: 'w_2', value: { ur: 2 }, unread: ['2026-11-24', '2026-11-25'] }], logged: { reading: true } };
+    });
+    const view = mount();
+    await view.findByTestId('board-row-chip');
+    await fireEvent.click(view.getByTestId('board-row-toggle'));
+    const [tile] = await view.findAllByTestId('board-row-tile');
+    await waitFor(() => expect(within(tile).getByTestId('dashboard-widget-unread').textContent).toContain('Your logged time was not read again: Jira asked to wait.'));
+    expect(within(tile).getByTestId('board-row-tile-value').textContent).toBe('1h');
+    await fireEvent.click(within(tile).getByTestId('dashboard-widget-unread-retry'));
+    await waitFor(() => expect(within(tile).getByTestId('dashboard-widget-reading').textContent).toBe('Reading your logged time…'));
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(reads.mock.calls[0][0]).toBe('c1');
+    expect(within(tile).queryByTestId('dashboard-widget-unread')).toBeNull();
+    view.unmount();
+  });
+
+  it("has the board's Refresh read your logged time again while a pinned tile needs it, and not otherwise", async () => {
+    const hours = { id: 'w_2', title: 'Your hours', form: 'number', width: 3, unit: 'time', how: { ...how, reads: ['worklogs'] } };
+    const kept = { ...KEPT, widgets: [...KEPT.widgets, hours] };
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['w_2'] } as Partial<BoardView>) });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' };
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [{ id: 'w_2', value: { v: 3600 } }], logged: {} }));
+    const board = setBindingMock('RefreshTrackerSubscription', async () => undefined);
+    const reads = setBindingMock('ReadTrackerWorklogDays', async () => undefined);
+    const view = mount();
+    const chip = await view.findByTestId('board-row-chip');
+    await waitFor(() => expect(chip.textContent).toContain('1h'));
+    await fireEvent.click(view.getByTestId('issues-refresh'));
+    await waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+    expect(reads.mock.calls[0][0]).toBe('c1');
+    expect(board).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it("has the board's Refresh read no logged time when no pinned tile needs it", async () => {
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['stuck'] } as Partial<BoardView>) });
+    setBindingMock('TrackerDashboards', async () => listing());
+    setBindingMock('EvaluateTrackerDashboard', async () => answer());
+    const board = setBindingMock('RefreshTrackerSubscription', async () => undefined);
+    const reads = setBindingMock('ReadTrackerWorklogDays', async () => undefined);
+    const view = mount();
+    await waitFor(() => expect(view.getByTestId('board-row-chip').textContent).toContain('1 ticket'));
+    await fireEvent.click(view.getByTestId('issues-refresh'));
+    await waitFor(() => expect(board).toHaveBeenCalledTimes(1));
+    for (let i = 0; i < 10; i += 1) await tick();
+    expect(reads).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it('says a pinned list of your logged time is not known while its days are not read, and does not filter the board by it', async () => {
+    const logged = { id: 'w_3', title: 'Tickets I logged time on', form: 'list', width: 6, unit: 'time', now: true, how: { ...how, reads: ['worklogs'] } };
+    const kept = { ...KEPT, widgets: [...KEPT.widgets, logged] };
+    install({ view: { ...sprintBoard([row('1', 'a', 's1'), row('2', 'b', 's1')]), plan: [], pins: ['w_3'] } as unknown as BoardView });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' };
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [{ id: 'w_3', tickets: [], unread: ['2026-11-25'] }], logged: { failure: 'Jira asked to wait.' } }));
+    setBindingMock('TrackerDashboardDrill', async () => ({ title: 'Tickets I logged time on', ids: [], value: { ur: 1 }, count: 0, tickets: 0, counted: 0, page: 0, pages: 0, rows: [], at: 1 }));
+    const view = mount();
+    await waitFor(() => expect(view.getAllByTestId('issues-card')).toHaveLength(2));
+    const chip = await view.findByTestId('board-row-chip');
+    await waitFor(() => expect(chip.textContent?.replace(/\s+/g, ' ').trim()).toBe('Not known · Tickets I logged time on'));
+    await fireEvent.click(chip);
+    await waitFor(() => expect(view.getByTestId('issues-ticket-set-text').textContent?.replace(/\s+/g, ' ').trim()).toBe('Showing every ticket: Tickets I logged time on is not known, 1 day not read of your logged time'));
+    expect(view.getAllByTestId('issues-card')).toHaveLength(2);
+    view.unmount();
+  });
+
+  it('says a pinned list of your logged time that counts days older than those kept is not known', async () => {
+    const logged = { id: 'w_3', title: 'Tickets I logged time on', form: 'list', width: 6, unit: 'time', bucket: 'period', how: { ...how, reads: ['worklogs'] } };
+    const kept = { ...KEPT, widgets: [...KEPT.widgets, logged] };
+    install({ view: { ...sprintBoard([row('1', 'a', 's1')]), plan: [], pins: ['w_3'] } as unknown as BoardView });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'sprints_10', label: 'Last 10 sprints', periods: [], previous: '' };
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [{ id: 'w_3', tickets: [{ row: 0, key: 'WEB-1', title: 'One' }], old: true }] }));
+    const view = mount();
+    const chip = await view.findByTestId('board-row-chip');
+    await waitFor(() => expect(chip.textContent?.replace(/\s+/g, ' ').trim()).toBe('Not known · Tickets I logged time on'));
+    view.unmount();
+  });
+
+  it('shows no count on the chip of a pinned widget that cannot count here, and an old number\'s reason on its tile with no Read again', async () => {
+    const list = { id: 'w_3', title: 'Time by ticket', form: 'list', width: 6, unit: 'time', now: true, how: { ...how, reads: ['worklogs'] } };
+    const hours = { id: 'w_4', title: 'Your hours', form: 'number', width: 3, unit: 'time', bucket: 'sprint', how: { ...how, reads: ['worklogs'] } };
+    const kept = { ...KEPT, widgets: [...KEPT.widgets, list, hours] };
+    install({ view: { ...sprintBoard([row('1', 'a', 's1')]), plan: [], pins: ['w_3', 'w_4'] } as unknown as BoardView });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'sprints_10', label: 'Last 10 sprints', periods: [], previous: '' };
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [
+      { id: 'w_3', note: 'Linear has no time tracking, so this board has no logged time.' },
+      { id: 'w_4', value: { old: true }, trend: [{ old: true }, { ur: 1 }], unread: ['2026-11-25'] },
+    ], logged: { failure: 'Jira asked to wait.' } }));
+    const view = mount();
+    await waitFor(() => expect(view.getAllByTestId('board-row-chip')).toHaveLength(2));
+    const [time, old] = view.getAllByTestId('board-row-chip');
+    await waitFor(() => expect(old.textContent?.replace(/\s+/g, ' ').trim()).toBe('Not known · Your hours'));
+    expect(time.textContent?.replace(/\s+/g, ' ').trim()).toBe('Time by ticket');
+    await fireEvent.click(view.getByTestId('board-row-toggle'));
+    expect((await view.findByTestId('board-row-tile-not-read')).textContent).toBe('older than the logged time kept');
+    expect(view.getByTestId('board-row-tile-note').textContent).toBe('Linear has no time tracking, so this board has no logged time.');
+    expect(view.queryByTestId('dashboard-widget-unread-retry')).toBeNull();
+    view.unmount();
+  });
+
+  it('says an empty tile of your logged time is not known while its days are not read, not that it has nothing', async () => {
+    const ranked = { id: 'w_5', title: 'Hours by assignee', form: 'bars', width: 6, unit: 'time', bucket: 'person', how: { ...how, reads: ['worklogs'] } };
+    const list = { id: 'w_6', title: 'Tickets I logged time on', form: 'list', width: 6, unit: 'time', how: { ...how, reads: ['worklogs'] } };
+    const kept = { ...KEPT, widgets: [...KEPT.widgets, ranked, list] };
+    install({ view: { ...sprintBoard([row('1', 'a', 's1')]), plan: [], pins: ['w_5', 'w_6'] } as unknown as BoardView });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' };
+    let unread = ['2026-11-25'];
+    let old = false;
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [{ id: 'w_5', unread, old }, { id: 'w_6', unread, old }], logged: {} }));
+    const view = mount();
+    await view.findAllByTestId('board-row-chip');
+    await fireEvent.click(view.getByTestId('board-row-toggle'));
+    await waitFor(() => expect(view.getAllByTestId('dashboard-widget-unread')).toHaveLength(2));
+    const tiles = view.getByTestId('board-row-tiles');
+    expect(tiles.textContent).not.toContain('Nothing to count.');
+    expect(tiles.textContent).not.toContain('No tickets.');
+    view.unmount();
+    unread = [];
+    // The row stays open for the next pane.
+    const read = mount();
+    await read.findByTestId('board-row-tiles');
+    await waitFor(() => expect(read.getByTestId('board-row-tiles').textContent).toContain('Nothing to count.'));
+    expect(read.getByTestId('board-row-tiles').textContent).toContain('No tickets.');
+    read.unmount();
+    // Older than the logged time kept, every day read.
+    old = true;
+    const kept_ = mount();
+    await waitFor(() => expect(kept_.getAllByTestId('dashboard-widget-unread')).toHaveLength(2));
+    expect(kept_.getByTestId('board-row-tiles').textContent).not.toContain('Nothing to count.');
+    expect(kept_.getByTestId('board-row-tiles').textContent).not.toContain('No tickets.');
+    kept_.unmount();
+  });
+
   it('takes a tile off, adds one from a dashboard, says a full row is full, and asks the agent for a new one', async () => {
     install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['stuck'] } as Partial<BoardView>) });
     setBindingMock('TrackerDashboards', async () => listing());

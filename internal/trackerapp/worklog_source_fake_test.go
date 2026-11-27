@@ -18,23 +18,32 @@ import (
 // the same day: Jira's 20001 and Tempo's 7001.
 
 // worklogGateStore runs gate, once, before the first ReplaceMirrorWorklogs
-// after it is set: a test holds a refresh between its read and its store
-// with it.
+// after it is set, and after, once, after the first one that follows it
+// is set: a test holds a refresh between its read and its store with
+// gate, and changes the connection between two reads with after. It
+// records the days of each replace, "from..to", in spans.
 type worklogGateStore struct {
 	*store.Store
-	mu   sync.Mutex
-	gate func()
+	mu    sync.Mutex
+	gate  func()
+	after func()
+	spans []string
 }
 
 func (g *worklogGateStore) ReplaceMirrorWorklogs(root, sourceGen int64, author, from, to string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
 	g.mu.Lock()
-	gate := g.gate
-	g.gate = nil
+	gate, after := g.gate, g.after
+	g.gate, g.after = nil, nil
+	g.spans = append(g.spans, from+".."+to)
 	g.mu.Unlock()
 	if gate != nil {
 		gate()
 	}
-	return g.Store.ReplaceMirrorWorklogs(root, sourceGen, author, from, to, read, logs)
+	changes, err := g.Store.ReplaceMirrorWorklogs(root, sourceGen, author, from, to, read, logs)
+	if after != nil {
+		after()
+	}
+	return changes, err
 }
 
 // timeScenario is a fake scenario with a Jira connection whose site and

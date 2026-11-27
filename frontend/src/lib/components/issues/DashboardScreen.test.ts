@@ -4,17 +4,19 @@
 // controls are the list's, so a count that fails leaves every one of them
 // to press. A ticket list's moves go to the board's connection, and what
 // the tracker refused shows under the row while the dashboard is shown
-// and in a toast while it is not.
+// and in a toast while it is not. A widget of your logged time says it is
+// reading, then why a read failed, with Read again.
 
 import { fireEvent, render, within } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { TrackerDashboardsView } from '../../../../bindings/agent-overflow/internal/app/models';
 import type { Answer, DashboardView, ProposalView, WidgetView } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { getToasts } from '../../stores/toast.svelte';
 import { setCarriedSessionScopes } from '../../transport/scopes';
 import DashboardScreen from './DashboardScreen.svelte';
+import { DASHBOARD_CHANGE_INTERVAL_MS } from '../../stores/trackerDashboard.svelte';
 
 const VIEW = { id: 'overview_sprints', title: 'Overview', default_range: 'sprints_5', ranges: [{ id: 'sprints_5', label: 'Last 5 sprints' }], widgets: [] } as unknown as DashboardView;
 const SOURCE = { backend: 'home', board: { backend: 'home', projectId: 'p1', connection: 'conn-1', board: '1' }, subscription: 'sub-1', changes: 0, dashboards: 0 };
@@ -245,6 +247,51 @@ describe('a ticket list', () => {
     expect((screen.getByTestId('ticket-list-move') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('ticket-list-assign') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('ticket-list-thread') as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe('your logged time', () => {
+  // A kept dashboard whose one widget counts your logged time, of which
+  // one day was not read, and reads threads.
+  const LOGGED = {
+    ...VIEW, id: 'd_1', title: 'Mine',
+    widgets: [{ ...widget('w_1', 'Your hours'), unit: 'time', how: { words: [], counts: '', range: '', rules: '', sql: '', reads: ['tickets', 'threads', 'worklogs'] } }],
+  } as unknown as DashboardView;
+  const answer = (value: object, unread: string[] | undefined, logged: object) => ({
+    range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1, widgets: [{ id: 'w_1', value, unread }], logged,
+  }) as unknown as Answer;
+
+  it('says the computer is reading, then why its read failed with Read again, which reads every day again and counts again; How names the computer whose threads it counts', async () => {
+    setBindingMock('TrackerDashboards', async () => listed([LOGGED]));
+    const answers = [answer({ ur: 1 }, ['2026-11-25'], { reading: true }), answer({ ur: 1 }, ['2026-11-25'], { failure: 'Jira asked to wait.' }), answer({ ur: 1 }, ['2026-11-25'], { reading: true })];
+    let evaluations = 0;
+    setBindingMock('EvaluateTrackerDashboard', async () => answers[Math.min(evaluations++, answers.length - 1)]);
+    const reads: unknown[][] = [];
+    setBindingMock('ReadTrackerWorklogDays', async (...args: unknown[]) => {
+      reads.push(args);
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const screen = render(DashboardScreen, { props: { source: SOURCE, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {}, pins: [] } });
+    unmount = screen.unmount;
+    await flush();
+    expect(screen.getByTestId('dashboard-widget-reading').textContent).toBe('Reading your logged time…');
+    expect(reads).toHaveLength(0);
+    // The computer's reads ended: the board's changes move.
+    await screen.rerender({ source: { ...SOURCE, changes: 1 } });
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    expect(screen.getByTestId('dashboard-number-not-read').textContent).toBe('1 day not read');
+    expect(screen.getByTestId('dashboard-widget-unread').textContent).toContain('Not known: 1 day not read of your logged time. Jira asked to wait.');
+    await fireEvent.click(screen.getByTestId('dashboard-widget-unread-retry'));
+    await flush();
+    expect(reads.map((r) => r[0])).toEqual(['conn-1']);
+    expect(evaluations).toBe(3);
+    expect(screen.getByTestId('dashboard-widget-reading').textContent).toBe('Reading your logged time…');
+    await fireEvent.click(screen.getByTestId('dashboard-how-toggle'));
+    expect(screen.getByTestId('dashboard-how-threads').textContent).toContain('the threads on Laptop');
   });
 });
 

@@ -256,7 +256,7 @@ describe('the board subscription', () => {
     board.release();
   });
 
-  it('counts the changes a dashboard reads again on: rows named, read again, and a gap, and not a sync alone', async () => {
+  it('counts the changes a dashboard reads again on: rows named, read again, the end of the reads of logged time, and a gap, and not a sync alone', async () => {
     install();
     const board = attachTrackerBoard(REF, true);
     await flush();
@@ -268,9 +268,12 @@ describe('the board subscription', () => {
     expect(board.current?.changes).toBe(1);
     applyTrackerBoardEvent(event(13, { read_again: true }), HOME_BACKEND);
     expect(board.current?.changes).toBe(2);
+    applyTrackerBoardEvent(event(14, { logged: true }), HOME_BACKEND);
+    expect(board.current?.changes).toBe(3);
+    expect(board.current?.dashboards).toBe(1);
     await flush();
     await resyncTrackerBoardsAfterGap(HOME_BACKEND);
-    expect(board.current?.changes).toBe(3);
+    expect(board.current?.changes).toBe(4);
     board.release();
   });
 

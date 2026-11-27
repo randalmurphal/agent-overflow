@@ -164,7 +164,7 @@ func creditExportAtScale(t *testing.T, s *Store, root int64, board string, regro
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := namedArgs(mirrorExportArgs(root, board, regroup, reset, true, from, window, math.MaxInt64, CardShapeForTest))
+	args := namedArgs(mirrorExportArgs(root, board, regroup, reset, true, from, window, math.MaxInt64, MirrorLoggedDays{}, CardShapeForTest))
 	steps, best := map[string]int{}, map[string]time.Duration{}
 	var order []string
 	var kinds string

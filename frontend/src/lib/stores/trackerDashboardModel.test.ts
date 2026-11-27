@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { changeMark, drillCountWords, formatNum, GAP_TEXT, limitSide, limitWords, numValue, numWords, overLimit, pastLimitWords, showsTotal } from './trackerDashboardModel';
-import { band, labelEvery, valueScale } from '../components/issues/charts/chartScale';
+import { band, labelEvery, unitScale, valueScale } from '../components/issues/charts/chartScale';
 
 describe('a number', () => {
   it('reads in its unit, as none, or as a gap', () => {
@@ -23,9 +23,18 @@ describe('a number', () => {
   it('says what it could not count beside it, and is not known when it counted nothing', () => {
     expect(formatNum({ v: 12, nc: 3 }, 'days', 'points')).toBe('12 days, 3 not counted');
     expect(formatNum({ nc: 2 }, 'tickets', 'points')).toBe('Not known, 2 not counted');
-    expect(numWords({ nc: 2 }, 'tickets', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '2 not counted' });
-    expect(numWords({ v: 1, nc: 1 }, 'tickets', 'points')).toEqual({ amount: '1', word: 'ticket', value: '1 ticket', notCounted: '1 not counted' });
+    expect(numWords({ nc: 2 }, 'tickets', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '2 not counted', notRead: '' });
+    expect(numWords({ v: 1, nc: 1 }, 'tickets', 'points')).toEqual({ amount: '1', word: 'ticket', value: '1 ticket', notCounted: '1 not counted', notRead: '' });
     expect(numValue({ nc: 2 })).toBeNull();
+  });
+
+  it('of logged time says the days it could not read, and is not known when it counted nothing', () => {
+    expect(formatNum({ ur: 3 }, 'time', 'points')).toBe('Not known, 3 days not read');
+    expect(formatNum({ ur: 1 }, 'time', 'points')).toBe('Not known, 1 day not read');
+    expect(numWords({ ur: 2 }, 'time', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '', notRead: '2 days not read' });
+    expect(formatNum({ gap: true, ur: 2 }, 'time', 'points')).toBe(GAP_TEXT);
+    expect(numWords({ old: true }, 'time', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '', notRead: 'older than the logged time kept' });
+    expect(formatNum({ v: 0 }, 'time', 'points')).toBe('0m');
   });
 });
 
@@ -46,6 +55,12 @@ describe('the change mark', () => {
 
   it('is none for a number without a value', () => {
     expect(changeMark({}, { v: 2 }, 'up', 'tickets', 'points', null)).toBeNull();
+  });
+
+  it('says how many days of the range before are not read when only those keep it from comparing', () => {
+    expect(changeMark({ v: 3600 }, { ur: 10 }, 'up', 'time', 'points', null)).toEqual({ kind: 'gap', text: '10 days of the range before are not read.' });
+    expect(changeMark({ v: 3600 }, { ur: 1 }, 'up', 'time', 'points', null)).toEqual({ kind: 'gap', text: '1 day of the range before is not read.' });
+    expect(changeMark({ v: 3600 }, { old: true }, 'up', 'time', 'points', null)).toEqual({ kind: 'gap', text: 'The range before is older than the logged time kept.' });
   });
 
   it('is none when either range is not known, and stands beside what was not counted', () => {
@@ -83,6 +98,25 @@ describe('the charts\' geometry', () => {
     expect(valueScale(0.7).max).toBeCloseTo(0.8);
   });
 
+  it('reads the axis in the numbers\' unit: time in whole hours, labeled as the numbers are', () => {
+    const hours = unitScale(7200, 'time', 'points');
+    expect(hours.max).toBe(7200);
+    expect(hours.ticks.map((t) => t.label)).toEqual(['0m', '30m', '1h', '1.5h', '2h']);
+    expect(unitScale(30 * 3600, 'estimate', 'time').ticks.map((t) => t.label)).toEqual(['0m', '10h', '20h', '30h']);
+    expect(unitScale(17, 'tickets', 'points').ticks.map((t) => [t.value, t.label])).toEqual([[0, '0'], [5, '5'], [10, '10'], [15, '15'], [20, '20']]);
+  });
+
+  it('steps a time axis below an hour in whole minutes, so no two ticks read the same', () => {
+    expect(unitScale(60, 'time', 'points').ticks.map((t) => t.label)).toEqual(['0m', '1m']);
+    expect(unitScale(150, 'time', 'points').ticks.map((t) => t.label)).toEqual(['0m', '1m', '2m', '3m']);
+    expect(unitScale(7 * 60, 'time', 'points').ticks.map((t) => t.label)).toEqual(['0m', '2m', '4m', '6m', '8m']);
+    expect(unitScale(20, 'time', 'points').ticks.map((t) => t.label)).toEqual(['0m', '1m']);
+    for (let top = 1; top < 2 * 3600; top += 7) {
+      const labels = unitScale(top, 'time', 'points').ticks.map((t) => t.label);
+      expect(new Set(labels).size, `a top of ${top} s: ${labels.join(', ')}`).toBe(labels.length);
+    }
+  });
+
   it('counts its ticks whatever the top, the largest number included', () => {
     expect(valueScale(1.79e308)).toEqual({ max: 1.79e308, ticks: [0, 1.79e308] });
     expect(valueScale(Number.MAX_VALUE).ticks).toHaveLength(2);
@@ -117,6 +151,9 @@ describe("a number's limit", () => {
     // A number in another unit than its limit's is never past it.
     expect(overLimit({ v: 20 }, 'estimate', 'points', { value: 25, unit: 'tickets' }, 'up')).toBe(false);
     expect(overLimit({ v: 20 }, 'estimate', 'none', { value: 25, unit: 'tickets' }, 'up')).toBe(true);
+    // Logged time is in seconds, as its limit is stored.
+    expect(overLimit({ v: 7200 }, 'time', 'points', { value: 3600, unit: 'seconds' }, '')).toBe(true);
+    expect(overLimit({ v: 1800 }, 'time', 'points', { value: 3600, unit: 'seconds' }, '')).toBe(false);
     expect(overLimit({ v: 15 }, 'estimate', 'time', { value: 25, unit: 'points' }, 'up')).toBe(false);
     expect(overLimit({ v: 15 }, 'estimate', 'time', { value: 25, unit: 'seconds' }, 'up')).toBe(true);
     expect(overLimit({ v: 3 }, 'days', '', { value: 2, unit: 'days' }, 'down')).toBe(true);

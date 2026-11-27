@@ -96,7 +96,7 @@ func creditOf(t *testing.T, s *Store, root int64, regroup MirrorRegroup) (rows, 
 func creditAt(t *testing.T, s *Store, root int64, regroup MirrorRegroup, window int64) (rows, people []string) {
 	t.Helper()
 	conn := exportConn(t)
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", regroup, []string{"credit"}, window, time.Now().UnixMilli(), CardShapeForTest); err != nil || !ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", regroup, []string{"credit"}, window, time.Now().UnixMilli(), MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok {
 		t.Fatalf("export: %v, %v", ok, err)
 	}
 	rows = exportRows(t, conn, `SELECT concat_ws(' ', coalesce(sprint, '-'), coalesce(at, '-'), ticket, kind, coalesce(person, '-'),
@@ -153,7 +153,7 @@ func TestAReviewRowNamesTheKindsItsRuleCounts(t *testing.T) {
 	} {
 		conn := exportConn(t)
 		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", creditRegroup(t, creditRules(c.approved)), []string{"credit"}, 0,
-			time.Now().UnixMilli(), CardShapeForTest); err != nil || !ok {
+			time.Now().UnixMilli(), MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok {
 			t.Fatalf("export: %v, %v", ok, err)
 		}
 		if got := exportRows(t, conn, `SELECT DISTINCT kind || ' ' || coalesce(review_kinds, '-') FROM main.credit ORDER BY 1`); !reflect.DeepEqual(got, c.want) {
@@ -411,7 +411,7 @@ func TestMirrorCreditOnABoardWithoutSprints(t *testing.T) {
 			act("w3", "acc-user2", 960, 7200), act("w4", "acc-user2", 50, 3600)}})
 	rules := []MirrorCreditRule{creditRules(false)[0], {From: 750, ReviewShare: 20, ReviewNeed: 2, Commented: true, LoggedTime: true, HoursPerPoint: 2}}
 	conn := exportConn(t)
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", creditRegroup(t, rules), []string{"credit"}, 100, math.MaxInt64, CardShapeForTest); err != nil || !ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", creditRegroup(t, rules), []string{"credit"}, 100, math.MaxInt64, MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok {
 		t.Fatalf("export: %v, %v", ok, err)
 	}
 	rows := exportRows(t, conn, `SELECT concat_ws(' ', coalesce(sprint, '-'), coalesce(at, '-'), ticket, kind, coalesce(person, '-'),

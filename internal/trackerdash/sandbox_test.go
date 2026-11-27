@@ -39,7 +39,7 @@ func sealedOpen(t *testing.T) *session {
 	}
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3000)
 		INSERT INTO changes SELECT 't1', 'status', i, i, NULL, '1', '3', NULL, NULL FROM n`)
-	if _, _, err := f.fill()(ctx, s.conn, nil); err != nil {
+	if _, _, err := f.fill()(ctx, s.conn, nil, "2026-11-25"); err != nil {
 		t.Fatal(errors.Join(err, s.close()))
 	}
 	if err := s.gate(ctx); err != nil {
@@ -205,8 +205,8 @@ func TestLikePatternsAreBounded(t *testing.T) {
 func TestGateRefusesAConnectionHoldingAnotherDatabase(t *testing.T) {
 	t.Parallel()
 	f := teamBoard()
-	leaky := func(ctx context.Context, conn *sql.Conn, _ []string) (store.MirrorExport, bool, error) {
-		export, ok, err := f.fill()(ctx, conn, nil)
+	leaky := func(ctx context.Context, conn *sql.Conn, _ []string, _ string) (store.MirrorExport, bool, error) {
+		export, ok, err := f.fill()(ctx, conn, nil, "2026-11-25")
 		if err != nil {
 			return export, ok, err
 		}
@@ -222,7 +222,7 @@ func TestGateRefusesAConnectionHoldingAnotherDatabase(t *testing.T) {
 	if !errors.As(err, &r) || r.Code != "dashboard_unsealed" || !strings.Contains(err.Error(), `still holds database "mirror_file"`) {
 		t.Fatalf("evaluate with a database left attached = %v; want the gate's refusal", err)
 	}
-	failing := func(context.Context, *sql.Conn, []string) (store.MirrorExport, bool, error) {
+	failing := func(context.Context, *sql.Conn, []string, string) (store.MirrorExport, bool, error) {
 		return store.MirrorExport{}, false, errors.New("store: detach the database after exporting board 10: busy")
 	}
 	if _, err := e.Evaluate(context.Background(), Board{Fill: failing}, utcSprints3); err == nil || !strings.Contains(err.Error(), "detach") {
@@ -294,11 +294,11 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := evaluator()
-	failing := func(context.Context, *sql.Conn, []string) (store.MirrorExport, bool, error) {
+	failing := func(context.Context, *sql.Conn, []string, string) (store.MirrorExport, bool, error) {
 		return store.MirrorExport{}, false, errors.New("the fill failed")
 	}
-	unsealed := func(ctx context.Context, conn *sql.Conn, _ []string) (store.MirrorExport, bool, error) {
-		export, ok, err := teamBoard().fill()(ctx, conn, nil)
+	unsealed := func(ctx context.Context, conn *sql.Conn, _ []string, _ string) (store.MirrorExport, bool, error) {
+		export, ok, err := teamBoard().fill()(ctx, conn, nil, "2026-11-25")
 		if err == nil {
 			_, err = conn.ExecContext(ctx, `ATTACH 'file::memory:' AS left_open`)
 		}
@@ -334,8 +334,8 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 	_, hasUTC := zoneDrivers.m["UTC"]
 	_, hasYork := zoneDrivers.m["America/New_York"]
 	zoneDrivers.mu.Unlock()
-	if !hasUTC || !hasYork || registrations != 4*zones {
-		t.Errorf("%d registrations over %d zone drivers (UTC %v, New York %v); want 4 a zone", registrations, zones, hasUTC, hasYork)
+	if !hasUTC || !hasYork || registrations != 5*zones {
+		t.Errorf("%d registrations over %d zone drivers (UTC %v, New York %v); want 5 a zone", registrations, zones, hasUTC, hasYork)
 	}
 	sessionSinks.mu.Lock()
 	left := len(sessionSinks.m)

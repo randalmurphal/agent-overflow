@@ -250,7 +250,7 @@ func TestMirrorParentNamesAreReadByKey(t *testing.T) {
 		if wants[fill.name] == nil {
 			continue
 		}
-		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.text(everyExportColumn()), mirrorExportArgs(1, "10", MirrorRegroup{}, 0, true, 0, 0, math.MaxInt64, CardShapeForTest)...)
+		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.text(everyExportColumn()), mirrorExportArgs(1, "10", MirrorRegroup{}, 0, true, 0, 0, math.MaxInt64, MirrorLoggedDays{}, CardShapeForTest)...)
 		if err != nil {
 			t.Fatalf("plan %s: %v", fill.name, err)
 		}
@@ -297,7 +297,7 @@ func TestMirrorExportNamesEpicsFromTheParents(t *testing.T) {
 	feature := namedChildRow("4", 5, "70", "A feature", 0)
 	writeParentPage(t, s, root, 2, story, subtask, loose, feature, webRow("5", 5, "a5"))
 	conn := exportConn(t)
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"tickets", "epics"}, 0, math.MaxInt64, CardShapeForTest); err != nil || !ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"tickets", "epics"}, 0, math.MaxInt64, MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok {
 		t.Fatalf("export = %v, %v", ok, err)
 	}
 	if got, want := exportRows(t, conn, `SELECT id || '|' || coalesce(parent, '-') || '|' || coalesce(epic, '-') FROM tickets ORDER BY id`),

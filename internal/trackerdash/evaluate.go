@@ -1,6 +1,7 @@
 package trackerdash
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -90,10 +91,15 @@ type Kind struct {
 	Credit bool
 }
 
-// Board is the board an evaluation reads: Fill exports it, Epics and
-// Credit are as Kind has them, Viewer is the connection's verified
-// account, which Mine narrows to ("" before one), and Own is what its
-// project keeps and its agents proposed beside the built-in dashboard.
+// Board is the board an evaluation reads: Fill exports it, Epics is as
+// Kind has it, Credit too, TimeTracking is whether its tracker logs time (Jira), and
+// Own is what its project keeps and its agents proposed beside the
+// built-in dashboard. The viewer, whom Mine narrows to and whose logged
+// time the copy holds, is the export's (store.MirrorExport.Viewer), read
+// in the snapshot its rows are. Worklogs is the reads of the viewer's
+// logged time (worklogs.go): an evaluation or a Try in which a widget
+// counted it tells them what it needs, once, and answers the state they
+// return; nil, there are none. It must not wait on I/O.
 // EvidenceFailure is why the last read of who worked on the connection's
 // tickets failed, "" while none did, which an answer says while credit it
 // counts is not read (Answer.Evidence).
@@ -101,8 +107,9 @@ type Board struct {
 	Fill            Fill
 	Epics           bool
 	Credit          bool
-	Viewer          string
+	TimeTracking    bool
 	Own             Own
+	Worklogs        func(WorklogNeed) WorklogState
 	EvidenceFailure string
 }
 
@@ -243,6 +250,13 @@ type WidgetValue struct {
 	// the rule every number's NC follows, or the tickets of a chart's or
 	// table's range that it places in no bucket (a row with no instant).
 	NotCounted int `json:"not_counted,omitempty"`
+	// Unread is the range's working days of the viewer's logged time the
+	// copy holds no read of, for a metric that reads it (worklogs.go).
+	Unread []string `json:"unread,omitempty"`
+	// Old is a list's or a ranked chart's whose rows reach a day of the
+	// viewer's logged time older than the copy holds, so it is never
+	// whole, even with no rows (worklogs.go); a number says so in its Num.
+	Old bool `json:"old,omitempty"`
 }
 
 // Answer is one evaluation of a dashboard and of the widgets agents
@@ -262,6 +276,9 @@ type Answer struct {
 	Epic      *Name         `json:"epic,omitempty"`
 	At        int64         `json:"at"`
 	Widgets   []WidgetValue `json:"widgets"`
+	// Logged is the state of the reads of the viewer's logged time
+	// (Board.Worklogs) when a widget counted it.
+	Logged *WorklogState `json:"logged,omitempty"`
 }
 
 // Listing is what a board offers as the screen lays it out: its
@@ -479,13 +496,16 @@ func valueUnit(m Metric, estimates string) string {
 		return "tickets"
 	case UnitDays:
 		return "days"
+	case UnitTime:
+		return "seconds"
+	case UnitEstimate:
 	}
 	return map[string]string{"points": "points", "time": "seconds", "none": "tickets"}[estimates]
 }
 
 // how renders How this is counted from m's definition.
 func how(m Metric, p prepared, plansSprints bool, estimates string) How {
-	unit := map[Unit]string{UnitTickets: "tickets", UnitDays: "days"}[m.Unit]
+	unit := map[Unit]string{UnitTickets: "tickets", UnitDays: "days", UnitTime: "hours logged"}[m.Unit]
 	if m.Unit == UnitEstimate {
 		unit = map[string]string{"points": "points", "time": "estimated hours", "none": "tickets"}[estimates]
 	}
@@ -506,9 +526,12 @@ func how(m Metric, p prepared, plansSprints bool, estimates string) How {
 	case ReduceAverageOfPeriodSums:
 		counts = "The " + unit + " of each " + period + " added up, then averaged over the range's " + periods + "; a " + period + " with none counts as zero"
 	}
-	if p.cols.has(ColumnPerson) {
+	switch {
+	case p.cols.has(ColumnPerson):
 		counts += "; each row counts for the person the query names."
-	} else {
+	case p.readsWorklogs():
+		counts += "; each row of logged time counts for you, whose time it is."
+	default:
 		counts += "; each ticket counts for its assignee now."
 	}
 	rng := "It counts what is true now; the range does not change it, and it has no earlier value to compare with."
@@ -540,15 +563,30 @@ func dayRangeWords(sprint string) string {
 // and the placement of a row with no instant read for every row; a shown
 // row's title, status and estimate are read with its page (titles).
 type evaluation struct {
-	s *session
+	s   *session
+	loc *time.Location
 	// filled is the relations the copy was filled with.
-	filled    map[string]bool
-	export    store.MirrorExport
-	estimates string
-	sprints   []sprintRow
-	tickets   map[string]ticketRow
-	people    map[string]string
-	epics     map[string]Name
+	filled map[string]bool
+	export store.MirrorExport
+	// readDays is the days of the viewer's (export.Viewer) logged time the
+	// copy holds as read, filled when a metric reads worklogs.
+	readDays map[string]bool
+	// now is the evaluation's instant. keptFrom is the first instant of
+	// the copy's first day of logged time (export.LoggedFrom) in the
+	// request's zone, before which it holds none (reach). windowDays is
+	// the days from it up to now not read, once windowRead
+	// (windowUnread). logged counts the widgets that needed the window
+	// (wantWindow), so the reads hear of them (Board.Worklogs).
+	now        int64
+	keptFrom   int64
+	windowDays []string
+	windowRead bool
+	logged     int
+	estimates  string
+	sprints    []sprintRow
+	tickets    map[string]ticketRow
+	people     map[string]string
+	epics      map[string]Name
 }
 
 type ticketRow struct {
@@ -556,17 +594,18 @@ type ticketRow struct {
 	created, updated    int64
 }
 
-// open opens a session, fills it with b's export of relations and seals
-// it, then reads the rows every widget names. asked is what each metric
+// open opens a session, fills it with b's export of relations, with the
+// viewer's logged time up to today in loc at now, and seals it, then
+// reads the rows every widget names. asked is what each metric
 // reads of the copy, from its plan on an empty session.
-func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, relations []string, asked map[string]asks) (*evaluation, error) {
+func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, now time.Time, relations []string, asked map[string]asks) (*evaluation, error) {
 	s, err := openSession(ctx, loc)
 	if err != nil {
 		return nil, err
 	}
 	s.asked = asked
-	ev := &evaluation{s: s}
-	if err := ev.fill(ctx, b, relations); err != nil {
+	ev := &evaluation{s: s, loc: loc, now: now.UnixMilli()}
+	if err := ev.fill(ctx, b, relations, now.In(loc).Format(time.DateOnly)); err != nil {
 		if closeErr := s.close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
@@ -575,12 +614,12 @@ func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, relat
 	return ev, nil
 }
 
-func (ev *evaluation) fill(ctx context.Context, b Board, relations []string) error {
+func (ev *evaluation) fill(ctx context.Context, b Board, relations []string, loggedThrough string) error {
 	ev.filled = map[string]bool{}
 	for _, r := range relations {
 		ev.filled[r] = true
 	}
-	export, ok, err := b.Fill(ctx, ev.s.conn, relations)
+	export, ok, err := b.Fill(ctx, ev.s.conn, relations, loggedThrough)
 	switch {
 	case err != nil:
 		return tooSlow(ctx, fmt.Errorf("copy the board for its dashboard: %w", err))
@@ -592,7 +631,21 @@ func (ev *evaluation) fill(ctx context.Context, b Board, relations []string) err
 	}
 	ev.export = export
 	ev.estimates = estimatesOf(export.EstimateUnit)
-	return tooSlow(ctx, ev.readBoard(ctx))
+	if err := ev.readBoard(ctx); err != nil || !slices.Contains(relations, "worklog_days") {
+		return tooSlow(ctx, err)
+	}
+	first, err := time.Parse(time.DateOnly, export.LoggedFrom)
+	if err != nil {
+		return fmt.Errorf("the copy's first day of logged time %q is not a date: %w", export.LoggedFrom, err)
+	}
+	ev.keptFrom = placed(first, ev.loc) - 1
+	ev.readDays = map[string]bool{}
+	return tooSlow(ctx, ev.query(ctx, `SELECT day FROM worklog_days`, func(r *sql.Rows) error {
+		var day string
+		err := r.Scan(&day)
+		ev.readDays[day] = true
+		return err
+	}))
 }
 
 // firstReadGap is the range before's gap while the board's first read has
@@ -706,8 +759,9 @@ type narrowing struct {
 	person, epic *Name
 }
 
-func (ev *evaluation) narrowing(r Request, viewer string) (narrowing, error) {
+func (ev *evaluation) narrowing(r Request) (narrowing, error) {
 	var n narrowing
+	viewer := ev.export.Viewer
 	person := r.Person
 	if r.Mine {
 		if r.Person != "" {
@@ -732,19 +786,24 @@ func (ev *evaluation) narrowing(r Request, viewer string) (narrowing, error) {
 }
 
 // keep is the rows of the narrowed page: a row's person is the metric's
-// person column, else its ticket's assignee; its epic likewise. A row of
-// a metric with a person column that is not counted and names no person
-// could be anyone's (credit whose evidence is not read), so every person
-// narrowing keeps it, as not counted.
-func (ev *evaluation) keep(n narrowing, cols columns, rows []contribution) []contribution {
+// person column, else the viewer for a metric of the viewer's logged time
+// (p reads worklogs), else its ticket's assignee; its epic likewise. A row
+// of a metric with a person column that is not counted and names no
+// person could be anyone's (credit whose evidence is not read), so every
+// person narrowing keeps it, as not counted.
+func (ev *evaluation) keep(n narrowing, p prepared, rows []contribution) []contribution {
 	if n.person == nil && n.epic == nil {
 		return rows
 	}
+	cols := p.cols
 	var out []contribution
 	for _, c := range rows {
 		t := ev.tickets[c.ticket]
 		person, epic := t.assignee, t.epic
 		anyone := false
+		if p.readsWorklogs() {
+			person = ev.export.Viewer
+		}
 		if cols.has(ColumnPerson) {
 			person, anyone = c.person, !c.counted && c.person == ""
 		}
@@ -770,11 +829,13 @@ func location(name string) (*time.Location, error) {
 	return loc, nil
 }
 
-// counted is one metric's rows, narrowed, or the sentence of its failure.
+// counted is one metric's rows, narrowed, or the sentence of its failure,
+// or why it counts nothing on this page (note, worklogNote).
 type counted struct {
 	p    prepared
 	rows []contribution
 	err  *MetricError
+	note string
 }
 
 // run runs metric m's prepared statement p, narrowed by n, a state
@@ -791,7 +852,7 @@ func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing
 	if err != nil {
 		return counted{}, fmt.Errorf("count metric %s: %w", m.Name, err)
 	}
-	rows = ev.keep(n, p.cols, rows)
+	rows = ev.keep(n, p, rows)
 	if m.numbersUnit() == UnitEstimate && ev.estimates == "none" {
 		// The board counts tickets (it has no estimates, or its project
 		// counts tickets): each counted row is its share of a ticket, one
@@ -826,6 +887,8 @@ type opened struct {
 	sp        span
 	n         narrowing
 	now       time.Time
+	// timeTracking is Board.TimeTracking.
+	timeTracking bool
 }
 
 // widgets is the dashboard's widgets and then the proposals.
@@ -872,7 +935,7 @@ func (e *Evaluator) begin(ctx context.Context, b Board, r Request, counts func(w
 	relations, asked, err := e.relationsOf(ctx, o.kind, o.metrics, builtins, own)
 	var ev *evaluation
 	if err == nil {
-		ev, err = e.open(ctx, b, loc, relations, asked)
+		ev, err = e.open(ctx, b, loc, o.now, relations, asked)
 	}
 	if err != nil {
 		cancel()
@@ -910,7 +973,8 @@ func (o *opened) resolve(b Board, r Request, loc *time.Location) error {
 	if !o.ev.export.FirstReadDone {
 		o.sp.previousGap = firstReadGap
 	}
-	if o.n, err = o.ev.narrowing(r, b.Viewer); err != nil {
+	o.timeTracking = b.TimeTracking
+	if o.n, err = o.ev.narrowing(r); err != nil {
 		return err
 	}
 	o.view, o.preps = o.ev.s.view(o.d, o.metrics, plansSprints, o.ev.estimates)
@@ -1000,6 +1064,10 @@ func (e *Evaluator) relationsOf(ctx context.Context, k *Kind, metrics map[string
 	out := slices.Clone(boardRelations)
 	for _, a := range asked {
 		out = append(out, a.fills()...)
+		if slices.Contains(a.tables, "worklogs") {
+			// Which days of it were read (worklogs.go).
+			out = append(out, "worklog_days")
+		}
 	}
 	slices.Sort(out)
 	return slices.Compact(out), asked, nil
@@ -1012,6 +1080,9 @@ func (o *opened) count(m Metric, r reads) (counted, error) {
 	pr := o.preps[m.Name]
 	if pr.err != nil {
 		return counted{err: pr.err}, nil
+	}
+	if note := o.worklogNote(pr.p); note != "" {
+		return counted{p: pr.p, note: note}, nil
 	}
 	now := o.now.UnixMilli()
 	at := r.instants(now)
@@ -1030,23 +1101,29 @@ func (o *opened) count(m Metric, r reads) (counted, error) {
 // (proposals) instead of failing the answer. A request that names its
 // widgets counts only those.
 func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (Answer, error) {
-	a, err := e.dashboard(ctx, b, r)
-	if err != nil || len(b.Own.Proposals) == 0 || r.Widgets != nil {
+	a, need, err := e.dashboard(ctx, b, r)
+	if err == nil && len(b.Own.Proposals) > 0 && r.Widgets == nil {
+		var proposed []WidgetValue
+		var also *WorklogNeed
+		if proposed, also, err = e.proposals(ctx, b, r); err != nil {
+			return Answer{}, err
+		}
+		a.Widgets = append(a.Widgets, proposed...)
+		need = cmp.Or(need, also)
+	}
+	if err != nil {
 		return a, err
 	}
-	proposed, err := e.proposals(ctx, b, r)
-	if err != nil {
-		return Answer{}, err
-	}
-	a.Widgets = append(a.Widgets, proposed...)
+	a.Logged = tellWorklogs(b, need)
 	return a, nil
 }
 
-// dashboard is the evaluation of dashboard r.Dashboard's own widgets.
-func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer, err error) {
+// dashboard is the evaluation of dashboard r.Dashboard's own widgets, and
+// what it needs of the viewer's logged time.
+func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer, _ *WorklogNeed, err error) {
 	o, err := e.begin(ctx, b, r, func(_ Widget, proposed bool) bool { return !proposed })
 	if err != nil {
-		return Answer{}, err
+		return Answer{}, nil, err
 	}
 	defer func() {
 		if closeErr := o.end(); closeErr != nil {
@@ -1067,7 +1144,7 @@ func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer
 		c, ok := runs[m.Name]
 		if !ok {
 			if c, err = o.count(m, read[m.Name]); err != nil {
-				return Answer{}, err
+				return Answer{}, nil, err
 			}
 			runs[m.Name] = c
 		}
@@ -1075,12 +1152,12 @@ func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer
 		unread = unread || b.EvidenceFailure != "" && o.unreadCredit(m, c)
 	}
 	if err := o.ev.titles(o.ctx, listed(a.Widgets)); err != nil {
-		return Answer{}, err
+		return Answer{}, nil, err
 	}
 	if unread {
 		a.Evidence = EvidenceSentence(b.EvidenceFailure)
 	}
-	return a, nil
+	return a, o.worklogNeed(), nil
 }
 
 // unreadCredit reports that metric m, which read the credit relation,
@@ -1091,9 +1168,8 @@ func (o *opened) unreadCredit(m Metric, c counted) bool {
 	if c.err != nil || !slices.Contains(o.preps[m.Name].p.asks.tables, "credit") {
 		return false
 	}
-	g := o.ev.inRange(m, c, o.sp)
 	unread := func(r contribution) bool { return !r.counted && r.series != seriesFinished }
-	return slices.ContainsFunc(g.rows, unread) || slices.ContainsFunc(g.unplaced, unread)
+	return slices.ContainsFunc(o.ev.inRange(m, c, o.sp).listed().rows, unread)
 }
 
 // EvidenceSentence is what a screen says where credit it counts is not
@@ -1111,18 +1187,19 @@ func EvidenceSentence(failure string) string {
 // from an evaluation of their own, each proposal's rows let go once its
 // value is drawn. A proposal the deadline stops, or leaves no time for,
 // says so (outOfTime), and a failure of the evaluation itself is each
-// proposal's sentence; only the caller's leaving fails the call.
-func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []WidgetValue, err error) {
-	failed := func(err error) ([]WidgetValue, error) {
+// proposal's sentence; only the caller's leaving fails the call. It
+// returns what they need of the viewer's logged time.
+func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []WidgetValue, _ *WorklogNeed, err error) {
+	failed := func(err error) ([]WidgetValue, *WorklogNeed, error) {
 		if ctx.Err() != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		sentence := proposalsFailed(err)
 		out := make([]WidgetValue, 0, len(b.Own.Proposals))
 		for _, p := range b.Own.Proposals {
 			out = append(out, WidgetValue{ID: p.Widget.ID, Error: sentence})
 		}
-		return out, nil
+		return out, nil, nil
 	}
 	o, err := e.begin(ctx, b, r, func(_ Widget, proposed bool) bool { return proposed })
 	if err != nil {
@@ -1158,7 +1235,7 @@ func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []Widg
 			}
 		}
 	}
-	return out, nil
+	return out, o.worklogNeed(), nil
 }
 
 // proposalsFailed is the sentence each proposal shows when their
@@ -1198,71 +1275,108 @@ func rangeView(sp span) RangeView {
 }
 
 // ranged is a metric's rows sorted into a range and the one before it
-// (inRange). A period's rows and number are read through it alone (of,
-// value), so every widget form and drill reads a period the same way.
+// (inRange). Its rows are handed out only by its takes, each with what
+// they need of the viewer's logged time (taken), so every widget form,
+// drill and Try reads a period the same way and no number is made from
+// rows of logged time without it (num). The takes are closures over the
+// rows: nothing else holds them.
 type ranged struct {
 	// periods is what the metric counts by: the range's periods, or the
-	// sprint's days for a metric grouped by day.
+	// sprint's days for a metric grouped by day; nil for one that counts
+	// now.
 	periods []period
-	// rows is the rows in the periods; all of the metric's rows for one
-	// that counts now; those that hold now for a state.
-	rows []contribution
-	// placed is an event metric's rows of the periods and the previous
-	// range's by period ID; nil for a metric that counts now or a state.
-	placed map[string][]contribution
-	// unplaced and unplacedBefore are the rows with no instant of the
-	// range and of the one before it: not counted, in no period (place).
-	unplaced, unplacedBefore []contribution
-	// state is a state metric's: all is its rows, which a period selects
-	// where they hold at its end; before is the rows that held where the
-	// range begins, which its number compares with; compared is false when
-	// there is nothing to compare (the sprint's days).
-	// bySprint is a state's grouped by sprint: a period holds only the rows
-	// of its sprints.
-	state, bySprint bool
-	all             []contribution
-	before          []contribution
-	compared        bool
-	// buf holds the rows of the state period of last asked for.
-	buf []contribution
+	// events is an event metric's counted by period, whose number is its
+	// periods' (whole); state is a state metric's, whose number is what
+	// holds now (held). compared is false when there is nothing to
+	// compare (the sprint's days).
+	events, state, compared bool
+	// logged is whether the metric reads the viewer's logged time
+	// (needsWindow).
+	logged bool
+	// notCounted is the range's tickets that its rows with no instant
+	// leave not counted (notCounted).
+	notCounted int
+	// held is the range's rows: all of the metric's for one that counts
+	// now, those that hold now for a state, those in the periods for an
+	// event. whole is the rows the range's number counts: an event's in
+	// the periods with its rows of no instant; held for the others.
+	// earlier is what that number compares with: an event's previous
+	// range, a state's rows that held where the range begins. listed is
+	// held with the rows of no instant. of is period p's rows: none for a
+	// period still to come, which has not happened; a state's rows that
+	// hold at its end (holdsAt), of its sprints for one grouped by sprint,
+	// valid until the next call; an event's that fall in it.
+	held, whole, earlier, listed func() taken
+	of                           func(p period) taken
 }
 
-// of is period p's rows: none for a period still to come, which has not
-// happened; a state's rows that hold at its end (holdsAt), of its sprints
-// for one grouped by sprint; an event's that fall in it. A state's are
-// valid until the next call.
-func (g *ranged) of(p period) []contribution {
-	switch {
-	case p.future:
-		return nil
-	case !g.state:
-		return g.placed[p.id]
-	}
-	g.buf = g.buf[:0]
-	for _, c := range g.all {
-		if c.holdsAt(p.to) && (!g.bySprint || slices.Contains(p.sprints, c.bucket)) {
-			c.period = p.label
-			g.buf = append(g.buf, c)
-		}
-	}
-	return g.buf
+// taken is rows a reduction takes from a ranged (worklogs.go).
+type taken struct {
+	rows []contribution
+	// periods is how many periods the rows are of, which an average of
+	// period sums divides by; 0 for rows of no range.
+	periods int
+	// none is nothing to reduce: a period still to come, a range with no
+	// period.
+	none bool
+	// cover is what the rows need of the viewer's logged time.
+	cover cover
+}
+
+// sub is rows, a part of t's rows, as t takes them.
+func (t taken) sub(rows []contribution) taken {
+	t.rows = rows
+	return t
 }
 
 // inRange is c's rows sorted into the range sp and the one before it, or
 // into the sprint's days for a metric grouped by day; a state's rows are
 // read where they hold.
 func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
+	logged := c.p.readsWorklogs()
+	// A state at t holds the instant t alone; a period holds the instants
+	// after its start, so rows placed in periods can hold the instant
+	// after the earliest start.
+	at := func(t int64) cover { return ev.reach(logged, t) }
+	from := func(ps []period) cover {
+		first := ps[0].from
+		for _, p := range ps {
+			first = min(first, p.from)
+		}
+		return ev.reach(logged, first+1)
+	}
+	nothing := func() taken { return taken{none: true} }
 	if !c.p.cols.periodBound(m) {
-		return &ranged{rows: c.rows}
+		all := func() taken { return taken{rows: c.rows, cover: at(sp.now)} }
+		return &ranged{logged: logged, held: all, whole: all, earlier: nothing, listed: all, of: func(period) taken { return taken{none: true} }}
 	}
 	periods, previous := periodsOf(m, sp), sp.previous
 	if m.Bucket == BucketDay {
 		previous = nil
 	}
 	if c.p.cols.state() {
-		g := &ranged{periods: periods, rows: holding(c.rows, sp.now), all: c.rows, state: true, bySprint: m.Bucket == BucketSprint}
+		g := &ranged{periods: periods, state: true, logged: logged, earlier: nothing}
+		now := func() taken { return taken{rows: holding(c.rows, sp.now), cover: at(sp.now)} }
+		g.held, g.whole, g.listed = now, now, now
 		if m.Bucket != BucketDay && len(periods) > 0 {
-			g.before, g.compared = holding(c.rows, periods[0].from), true
+			start := periods[0].from
+			g.earlier = func() taken { return taken{rows: holding(c.rows, start), cover: at(start)} }
+			g.compared = true
+		}
+		bySprint := m.Bucket == BucketSprint
+		var buf []contribution
+		g.of = func(p period) taken {
+			if p.future {
+				return taken{none: true}
+			}
+			buf = buf[:0]
+			for _, r := range c.rows {
+				if r.holdsAt(p.to) && (!bySprint || slices.Contains(p.sprints, r.bucket)) {
+					r.period = p.label
+					buf = append(buf, r)
+				}
+			}
+			return taken{rows: buf, cover: at(p.to)}
 		}
 		return g
 	}
@@ -1271,11 +1385,37 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 		return t.created, t.updated
 	}
 	placed, unplaced := place(m, c.rows, spanOf, periods, previous)
-	g := &ranged{periods: periods, placed: placed, unplaced: unplaced[0], unplacedBefore: unplaced[1], compared: m.Bucket != BucketDay}
-	for _, p := range periods {
-		g.rows = append(g.rows, placed[p.id]...)
+	over := func(ps []period, loose []contribution) taken {
+		if len(ps) == 0 {
+			return taken{none: true}
+		}
+		rows := slices.Clone(loose)
+		for _, p := range ps {
+			rows = append(rows, placed[p.id]...)
+		}
+		return taken{rows: rows, periods: len(ps), cover: from(ps)}
 	}
-	return g
+	var inPeriods []contribution
+	for _, p := range periods {
+		inPeriods = append(inPeriods, placed[p.id]...)
+	}
+	held := taken{rows: inPeriods, none: len(periods) == 0}
+	if len(periods) > 0 {
+		held.cover = from(periods)
+	}
+	return &ranged{
+		periods: periods, events: true, compared: m.Bucket != BucketDay, logged: logged, notCounted: notCounted(unplaced[0]),
+		held:    func() taken { return held },
+		whole:   func() taken { return over(periods, unplaced[0]) },
+		earlier: func() taken { return over(previous, unplaced[1]) },
+		listed:  func() taken { return held.sub(append(slices.Clone(inPeriods), unplaced[0]...)) },
+		of: func(p period) taken {
+			if p.future {
+				return taken{none: true}
+			}
+			return taken{rows: placed[p.id], cover: from([]period{p})}
+		},
+	}
 }
 
 // periodsOf is what metric m counts by in span sp: the range's periods,
@@ -1376,14 +1516,14 @@ type ranked struct {
 	total      Num
 }
 
-// rank is the buckets of rows as widget w shows them: by total, largest
-// first, then by label; the first limit shown, the rest left out. The
-// widget and its drill of the rest take them from here.
-func (ev *evaluation) rank(w Widget, m Metric, rows []contribution) (shown, rest []ranked, grouped map[string][]contribution) {
-	keys, grouped := group(rows, func(c contribution) string { return c.bucket })
+// rank is the buckets of t's rows as widget w shows them: by total,
+// largest first, then by label; the first limit shown, the rest left out.
+// The widget and its drill of the rest take them from here.
+func (ev *evaluation) rank(w Widget, m Metric, t taken) (shown, rest []ranked, grouped map[string][]contribution) {
+	keys, grouped := group(t.rows, func(c contribution) string { return c.bucket })
 	all := make([]ranked, 0, len(keys))
 	for _, k := range keys {
-		all = append(all, ranked{key: k, label: ev.label(m.Bucket, k), total: reduceRows(m.Reduce, grouped[k])})
+		all = append(all, ranked{key: k, label: ev.label(m.Bucket, k), total: ev.num(m.Reduce, t.sub(grouped[k]))})
 	}
 	slices.SortStableFunc(all, func(a, b ranked) int {
 		av, bv := -1.0, -1.0
@@ -1411,11 +1551,16 @@ func (ev *evaluation) rank(w Widget, m Metric, rows []contribution) (shown, rest
 	return all[:limit], all[limit:], grouped
 }
 
-// widget is w's numbers from its metric's rows.
-func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue {
-	out := WidgetValue{ID: w.ID}
+// widget is w's numbers from its metric's rows. It lists the window's
+// days of logged time not read when one of its numbers needed them.
+func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out WidgetValue) {
+	out = WidgetValue{ID: w.ID}
 	if c.err != nil {
 		out.Error = c.err.Sentence
+		return out
+	}
+	if c.note != "" {
+		out.Note = c.note
 		return out
 	}
 	if m.Bucket == BucketDay && sp.daysNote != "" {
@@ -1426,44 +1571,38 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 		out.RangeWords = dayRangeWords(sp.daysLabel)
 	}
 	g := ev.inRange(m, c, sp)
-	rows := g.rows
+	if g.needsWindow(w, m) {
+		out.Unread = ev.wantWindow()
+	}
 	switch w.Form {
 	case FormNumber:
-		if g.periods == nil && !g.state && g.placed == nil {
-			v := reduceRows(m.Reduce, rows)
-			out.Value = &v
+		v := ev.num(m.Reduce, g.whole())
+		out.Value = &v
+		if g.periods == nil && !g.state && !g.events {
 			return out
 		}
-		var v, prev Num
+		prev := gapNum
 		switch {
-		case g.state:
-			v = reduceRows(m.Reduce, rows)
-			// What held where the range begins needs no earlier sprints: only
-			// a copy still in its first read has nothing to compare with.
-			prev = reduceRows(m.Reduce, g.before)
-			if sp.previousGap == firstReadGap {
-				prev = gapNum
-			}
-		default:
-			v = reduceRange(m.Reduce, g.periods, g.placed, g.unplaced)
-			prev = gapNum
-			if sp.previousGap == "" {
-				prev = reduceRange(m.Reduce, sp.previous, g.placed, g.unplacedBefore)
-			}
+		case g.state && sp.previousGap == firstReadGap:
+			// What held where the range begins needs no earlier sprints:
+			// only a copy still in its first read has nothing to compare
+			// with.
+		case g.state || sp.previousGap == "":
+			prev = ev.num(m.Reduce, g.earlier())
 		}
-		out.Value = &v
 		if g.compared {
 			out.Previous = &prev
 		}
 		for _, p := range g.periods {
-			out.Trend = append(out.Trend, p.value(m.Reduce, g.of(p)))
+			out.Trend = append(out.Trend, ev.num(m.Reduce, g.of(p)))
 		}
 	case FormList:
-		rows = append(slices.Clone(rows), g.unplaced...)
-		rowsCopy := slices.Clone(rows)
-		sortDrill(rowsCopy, ev.keyOf)
-		out.NotCounted = notCounted(rows)
-		for _, r := range rowsCopy {
+		t := g.listed()
+		_, out.Old = ev.lacks(t.cover)
+		rows := slices.Clone(t.rows)
+		sortDrill(rows, ev.keyOf)
+		out.NotCounted = notCounted(t.rows)
+		for _, r := range rows {
 			if !r.counted {
 				continue
 			}
@@ -1476,21 +1615,20 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 	case FormBars, FormLine, FormTable:
 		out.Series = seriesOf(m, c.p.cols)
 		named := c.p.cols.has(ColumnSeries)
-		cell := func(key, label string, partial bool, total Num, rows []contribution, reduce func([]contribution) Num) BucketValue {
+		cell := func(key, label string, partial bool, total Num, t taken) BucketValue {
 			b := BucketValue{Key: key, Label: label, Partial: partial, Total: total}
 			for _, s := range out.Series {
-				b.Cells = append(b.Cells, reduce(bySeries(rows, s, named)))
+				b.Cells = append(b.Cells, ev.num(m.Reduce, t.sub(bySeries(t.rows, s, named))))
 			}
 			return b
 		}
 		// The range's rows with no instant are in no bucket; its "not
 		// counted" lists them and opens the whole widget.
-		out.NotCounted = notCounted(g.unplaced)
+		out.NotCounted = g.notCounted
 		if !ranks(w, m) {
 			for _, p := range g.periods {
-				reduce := func(rows []contribution) Num { return p.value(m.Reduce, rows) }
-				rows := g.of(p)
-				b := cell(p.id, p.label, p.partial, reduce(rows), rows, reduce)
+				t := g.of(p)
+				b := cell(p.id, p.label, p.partial, ev.num(m.Reduce, t), t)
 				b.Last = p.last
 				out.Buckets = append(out.Buckets, b)
 			}
@@ -1499,10 +1637,12 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 		// The shown buckets are chosen by their totals before any of their
 		// cells is made, so an answer holds at most limit buckets of the
 		// declared series' cells however many buckets the rows name.
-		shown, rest, grouped := ev.rank(w, m, rows)
+		t := g.held()
+		_, out.Old = ev.lacks(t.cover)
+		shown, rest, grouped := ev.rank(w, m, t)
 		out.More = len(rest)
 		for _, b := range shown {
-			out.Buckets = append(out.Buckets, cell(b.key, b.label, false, b.total, grouped[b.key], func(rows []contribution) Num { return reduceRows(m.Reduce, rows) }))
+			out.Buckets = append(out.Buckets, cell(b.key, b.label, false, b.total, t.sub(grouped[b.key])))
 		}
 	}
 	return out
@@ -1524,7 +1664,7 @@ func (ev *evaluation) label(b Bucket, key string) string {
 			return e.Label
 		}
 		return key
-	case BucketNone, BucketPeriod, BucketSprint, BucketText:
+	case BucketNone, BucketPeriod, BucketSprint, BucketDay, BucketText:
 		return cmpOr(key, "(none)")
 	}
 	panic(fmt.Sprintf("trackerdash: bucket %q reached a label without validation", b))
@@ -1655,14 +1795,16 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	if c.err != nil {
 		return DrillAnswer{}, refuse("dashboard_metric_failed", c.err.Sentence, nil)
 	}
+	if c.note != "" {
+		return DrillAnswer{}, refuse("dashboard_request_invalid", c.note, nil)
+	}
 	ev, sp := o.ev, o.sp
 	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Reading: !ev.export.FirstReadDone, Unit: m.numbersUnit(), Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
 	if m.Bucket == BucketDay && sp.daysNote != "" {
 		return DrillAnswer{}, refuse("dashboard_request_invalid", sp.daysNote, nil)
 	}
 	g := ev.inRange(m, c, sp)
-	rows := g.rows
-	reduce := func(rows []contribution) Num { return reduceRows(m.Reduce, rows) }
+	t := g.held()
 	switch {
 	case r.Cell != nil && r.Rest:
 		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("a drill of widget %q names one cell or the rest, not both", truncate(w.ID, 64)), nil)
@@ -1671,23 +1813,24 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	case r.Rest && !ranks(w, m):
 		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q shows all it counts; its drill names no rest", truncate(w.ID, 64)), nil)
 	case r.Rest:
-		_, rest, grouped := ev.rank(w, m, rows)
-		rows = nil
+		_, rest, grouped := ev.rank(w, m, t)
+		var rows []contribution
 		for _, b := range rest {
 			rows = append(rows, grouped[b.key]...)
 		}
+		t = t.sub(rows)
 		out.Title += fmt.Sprintf(", %d more%s", len(rest), map[Bucket]string{BucketPerson: " people", BucketEpic: " epics"}[m.Bucket])
-		out.Value = reduceRows(m.Reduce, rows)
-	case r.Cell == nil && (g.placed == nil || g.state):
-		out.Value = reduceRows(m.Reduce, rows)
+	case r.Cell == nil && !g.events:
 	case r.Cell == nil:
-		out.Value = reduceRange(m.Reduce, g.periods, g.placed, g.unplaced)
 		if m.Bucket == BucketDay {
 			out.Title += ", " + sp.daysLabel
 		} else {
 			out.Title += ", " + strings.ToLower(sp.label[:1]) + sp.label[1:]
 		}
-		rows = append(rows, g.unplaced...)
+		// The number is the range's; the rows are listed with those of no
+		// instant.
+		out.Value = ev.num(m.Reduce, g.whole())
+		t = g.listed()
 	case !ranks(w, m):
 		j := slices.IndexFunc(g.periods, func(p period) bool { return p.id == r.Cell.Bucket })
 		if j < 0 {
@@ -1695,28 +1838,28 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		}
 		p := g.periods[j]
 		out.Title += ", " + p.label
-		rows = g.of(p)
-		reduce = func(rows []contribution) Num { return p.value(m.Reduce, rows) }
+		t = g.of(p)
 	default:
 		var cell []contribution
-		for _, row := range rows {
+		for _, row := range t.rows {
 			if row.bucket == r.Cell.Bucket {
 				cell = append(cell, row)
 			}
 		}
-		rows = cell
+		t = t.sub(cell)
 		out.Title += ", " + ev.label(m.Bucket, r.Cell.Bucket)
 	}
-	if r.Cell != nil {
-		if r.Cell.Series != "" {
-			if !slices.Contains(m.Series, r.Cell.Series) || !c.p.cols.has(ColumnSeries) {
-				return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q has no series %q", truncate(w.ID, 64), truncate(r.Cell.Series, 64)), nil)
-			}
-			rows = bySeries(rows, r.Cell.Series, true)
-			out.Title += ", " + r.Cell.Series
+	if r.Cell != nil && r.Cell.Series != "" {
+		if !slices.Contains(m.Series, r.Cell.Series) || !c.p.cols.has(ColumnSeries) {
+			return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q has no series %q", truncate(w.ID, 64), truncate(r.Cell.Series, 64)), nil)
 		}
-		out.Value = reduce(rows)
+		t = t.sub(bySeries(t.rows, r.Cell.Series, true))
+		out.Title += ", " + r.Cell.Series
 	}
+	if r.Cell != nil || !g.events || r.Rest {
+		out.Value = ev.num(m.Reduce, t)
+	}
+	rows := t.rows
 	rows = slices.Clone(rows)
 	sortDrill(rows, ev.keyOf)
 	out.Count = len(rows)

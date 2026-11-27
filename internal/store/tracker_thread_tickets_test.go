@@ -589,7 +589,7 @@ func TestThreadLinkColumnReadsByKey(t *testing.T) {
 	if !slices.Equal(got, list) {
 		t.Fatalf("list links plan:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(list, "\n"))
 	}
-	withItems, _ := listThreadsWithItemsQuery()
+	withItems := listThreadsWithItemsQuery()
 	for _, query := range []string{listThreadsQuery, withItems} {
 		if !strings.Contains(query, `LEFT JOIN links ON links.thread_id = threads.id`) || strings.Count(query, "links") != 4 {
 			t.Fatalf("a whole-catalog list names its links CTE other than once:\n%s", query)
@@ -598,7 +598,7 @@ func TestThreadLinkColumnReadsByKey(t *testing.T) {
 	// A list of part of the catalog reads its rows' links per row: its plan
 	// holds the column's probe of the link by thread and no links CTE.
 	project, _ := listProjectThreadsQuery("p")
-	archive, _ := listArchivedThreadsQuery()
+	archive := listArchivedThreadsQuery()
 	for name, query := range map[string]string{"the project list": project, "the archive list": archive} {
 		got := plan(query)
 		if slices.Contains(got, "MATERIALIZE links") || !slices.Contains(got, "SEARCH tt USING INDEX sqlite_autoindex_thread_tickets_1 (thread_id=?)") {

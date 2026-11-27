@@ -727,8 +727,7 @@ func (s *Store) ListThreads() ([]Thread, error) {
 // drafts, so the item/draft gates would otherwise hide them. A hidden-mode
 // or owned thread is never listed (catalogThreadClause).
 func (s *Store) ListThreadsWithItems() ([]Thread, error) {
-	query, args := listThreadsWithItemsQuery()
-	rows, err := s.reader().Query(query, args...)
+	rows, err := s.reader().Query(listThreadsWithItemsQuery())
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads with items: %w", err)
 	}
@@ -742,8 +741,7 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 // so the user can unarchive or permanently delete them; an archived owned
 // thread is its owner's to show.
 func (s *Store) ListArchivedThreads() ([]Thread, error) {
-	query, args := listArchivedThreadsQuery()
-	rows, err := s.reader().Query(query, args...)
+	rows, err := s.reader().Query(listArchivedThreadsQuery())
 	if err != nil {
 		return nil, fmt.Errorf("store: list archived threads: %w", err)
 	}
@@ -769,20 +767,21 @@ func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
 // ListArchivedThreads), over the threads alias: not a hidden mode, and not
 // owned by the thread that spawned it (thread_placement.go). Search and the
 // thread tools read owned threads like any other and apply
-// hiddenThreadModesClause alone.
-func catalogThreadClause(alias string) (string, []any) {
-	hidden, args := hiddenThreadModesClause(alias + ".mode")
-	return hidden + " AND " + alias + ".placement <> '" + PlacementOwned + "'", args
+// hiddenThreadModesSQL alone.
+func catalogThreadClause(alias string) string {
+	return hiddenThreadModesSQL(alias+".mode") + " AND " + alias + ".placement <> '" + PlacementOwned + "'"
 }
 
-func hiddenThreadModesClause(column string) (string, []any) {
+// hiddenThreadModesSQL is the condition that column holds no hidden mode
+// (threadmode.HiddenModes), the modes written in the text as the code
+// constants they are.
+func hiddenThreadModesSQL(column string) string {
 	modes := threadmode.HiddenModes()
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(modes)), ",")
-	args := make([]any, len(modes))
-	for index, mode := range modes {
-		args[index] = mode
+	literals := make([]string, len(modes))
+	for i, mode := range modes {
+		literals[i] = sqlTextLiteral(mode)
 	}
-	return column + " NOT IN (" + placeholders + ")", args
+	return column + " NOT IN (" + strings.Join(literals, ", ") + ")"
 }
 
 // ListThreadWorkspaceRefs returns workspace/worktree pointers for all thread
@@ -2146,17 +2145,15 @@ func normalizeRuntimeMode(mode string) string {
 // listProjectThreadsQuery the ListThreadsByProject statement. Each returns
 // a part of the catalog, so each reads its rows' links per row
 // (threadColumns), not every link on the computer (threadListSelect).
-func listArchivedThreadsQuery() (string, []any) {
-	hiddenClause, hiddenArgs := catalogThreadClause("threads")
+func listArchivedThreadsQuery() string {
 	return `SELECT ` + threadColumns + ` FROM owned_threads AS threads
-		 WHERE archived = 1 AND ` + hiddenClause + ` ORDER BY updated_at DESC`, hiddenArgs
+		 WHERE archived = 1 AND ` + catalogThreadClause("threads") + ` ORDER BY updated_at DESC`
 }
 
 func listProjectThreadsQuery(projectID string) (string, []any) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	return `SELECT ` + threadColumns + ` FROM owned_threads AS threads
-		 WHERE project_id = ? AND archived = 0 AND ` + hiddenClause + `
-		 ORDER BY updated_at DESC`, append([]any{projectID}, hiddenArgs...)
+		 WHERE project_id = ? AND archived = 0 AND ` + hiddenThreadModesSQL("mode") + `
+		 ORDER BY updated_at DESC`, []any{projectID}
 }
 
 // listThreadsQuery is the ListThreads statement. It is a package-level
@@ -2175,11 +2172,10 @@ var listThreadsQuery = threadListSelect(`owned_threads AS threads`) + `
 // `timeline_items` through correlated terms from OUTSIDE the view's UNION
 // ALL, the one shape where SQLite can decline to push the term into the
 // arms and scan `items` once per sidebar row (see importedItemRevExpr).
-func listThreadsWithItemsQuery() (string, []any) {
-	listed, args := sidebarListedClause()
+func listThreadsWithItemsQuery() string {
 	return threadListSelect(`owned_threads AS threads`) + `
-		 WHERE ` + listed + `
-		 ORDER BY updated_at DESC`, args
+		 WHERE ` + sidebarListedClause() + `
+		 ORDER BY updated_at DESC`
 }
 
 // The sidebar lists a thread that is real and visible (sidebarListedClause;
@@ -2227,10 +2223,9 @@ var threadRealClause = `(
 // `threads`, for the thread to be listed in the sidebar
 // (ListThreadsWithItems): visible (not archived, not a hidden mode, not an
 // owned worker; catalogThreadClause) and real.
-func sidebarListedClause() (string, []any) {
-	hiddenClause, hiddenArgs := catalogThreadClause("threads")
-	return `threads.archived = 0 AND ` + hiddenClause + `
-		   AND ` + threadRealClause, hiddenArgs
+func sidebarListedClause() string {
+	return `threads.archived = 0 AND ` + catalogThreadClause("threads") + `
+		   AND ` + threadRealClause
 }
 
 // ListingChange is how a write moved its thread across the sidebar listing
@@ -2264,10 +2259,8 @@ func (s *Store) ThreadListed(threadID string) (bool, error) {
 
 // threadListed reports whether ListThreadsWithItems lists the thread.
 func threadListed(q sqlQueryer, threadID string) (bool, error) {
-	listed, args := sidebarListedClause()
 	var yes bool
-	err := q.QueryRow(`SELECT EXISTS (SELECT 1 FROM owned_threads AS threads WHERE threads.id = ? AND `+listed+`)`,
-		append([]any{threadID}, args...)...).Scan(&yes)
+	err := q.QueryRow(`SELECT EXISTS (SELECT 1 FROM owned_threads AS threads WHERE threads.id = ? AND `+sidebarListedClause()+`)`, threadID).Scan(&yes)
 	if err != nil {
 		return false, fmt.Errorf("store: thread %s listed: %w", threadID, err)
 	}

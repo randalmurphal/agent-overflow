@@ -737,11 +737,10 @@ func (s *Store) ListThreadsForTicket(ticket TicketRef) ([]Thread, error) {
 	if err := ticket.validate(); err != nil {
 		return nil, err
 	}
-	hidden, args := hiddenThreadModesClause("threads.mode")
 	rows, err := s.reader().Query(`SELECT `+threadColumns+` FROM owned_threads AS threads
 		WHERE threads.id IN (SELECT thread_id FROM thread_tickets WHERE kind = ? AND site = ? AND issue_id = ?)
-		  AND `+hidden+`
-		ORDER BY updated_at DESC`, append([]any{ticket.Kind, ticket.Site, ticket.IssueID}, args...)...)
+		  AND `+hiddenThreadModesSQL("threads.mode")+`
+		ORDER BY updated_at DESC`, ticket.Kind, ticket.Site, ticket.IssueID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads of %s ticket %s: %w", ticket.Kind, ticket.IssueID, err)
 	}

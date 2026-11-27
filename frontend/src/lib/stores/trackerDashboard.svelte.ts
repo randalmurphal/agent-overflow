@@ -79,6 +79,7 @@ import {
   EvaluateTrackerDashboard,
   KeepTrackerWidget,
   PinTrackerWidget,
+  ReadTrackerWorklogDays,
   RemoveTrackerWidget,
   SetTrackerWidgetLimit,
   StartTrackerDashboardThread,
@@ -86,6 +87,7 @@ import {
   TrackerDashboards,
 } from './bindings';
 import { readFrontendValue, writeFrontendValue } from './frontendStorage';
+import { errString } from '../utils/errors';
 import { getSettings } from './settings.svelte';
 import { openTicketThread } from './ticketWork.svelte';
 import { prependThreadReply } from './threads.svelte';
@@ -134,6 +136,20 @@ export interface DrillState {
   readonly error: unknown;
 }
 
+/** The reads of your logged time as the answer shown gives them (the
+ * board's computer's, trackerapp/worklog_reads.go), and the person's
+ * Read again. */
+export interface LoggedTimeRead {
+  /** The board's computer is reading days: a widget that waits on them
+   * (WidgetValue.unread) says so. */
+  readonly reading: boolean;
+  /** Why the last read failed, '' when none failed: nothing is read on
+   * its own until the person asks. */
+  readonly failure: string;
+  /** Reads every day of the window again, as Read again and Refresh ask. */
+  retry(): void;
+}
+
 export interface TrackerDashboard {
   /** The dashboards the board offers; null until read; 'older' for a
    * computer whose release has none. Reactive. */
@@ -175,6 +191,8 @@ export interface TrackerDashboard {
   /** The last evaluation failed; null after one succeeds. */
   readonly error: unknown;
   readonly drill: DrillState | null;
+  /** The read of your logged time's days not read. Reactive. */
+  readonly logged: LoggedTimeRead;
   pick(dashboard: string): void;
   /** Keeps a proposed widget on `to`, and shows that dashboard. */
   keep(proposal: string, to: KeepTarget): Promise<void>;
@@ -190,8 +208,13 @@ export interface TrackerDashboard {
   setMine(mine: boolean): void;
   narrowPerson(person: Name | null): void;
   narrowEpic(epic: Name | null): void;
-  /** Lists the dashboards again and evaluates now, as Refresh asks. */
+  /** Lists the dashboards again and evaluates now, as Refresh asks, and
+   * reads your logged time again (refreshLogged). */
   refresh(): void;
+  /** Reads every day of your logged time again on the board's computer
+   * when a number shown needs it (the answer's `logged`); nothing
+   * otherwise. Refresh on the Dashboards screen and on the board. */
+  refreshLogged(): void;
   openDrill(target: DrillTarget): void;
   drillPage(page: number): void;
   closeDrill(): void;
@@ -301,6 +324,17 @@ export function createTrackerDashboard(opts: {
   let error = $state.raw<unknown>(null);
   let drill = $state.raw<DrillState | null>(null);
   let drillGen = 0;
+  // Your logged time (trackerdash worklogs.go, trackerapp
+  // worklog_reads.go): the board's computer reads it when an evaluation
+  // finds a widget that counts it, and tells the board when a run of reads
+  // ends (TrackerBoardState.changes moves), so the dashboard counts again.
+  // The page asks only for the person: Refresh and Read again
+  // (ReadTrackerWorklogDays). A failure of that call is the page's own:
+  // the latest ask's, shown for the computer and connection it asked,
+  // until another ask or an answer that says the board's computer reads.
+  let personRead = $state.raw<{ target: string; failure: string } | null>(null);
+  let personReadSeq = 0;
+  const personReadTarget = (s: DashboardSource): string => `${s.backend}\n${s.board.connection}`;
 
   const dashboard: DashboardView | null = $derived.by(() => {
     if (dashboards === null || dashboards === 'older') return null;
@@ -349,6 +383,7 @@ export function createTrackerDashboard(opts: {
         if (!token.isCurrent()) return;
         answer = a;
         answerKey = key;
+        if (a.logged?.reading) personRead = null;
         answerOf = r.dashboard;
         answered = { source: s, request: r };
         settledKey = key;
@@ -409,6 +444,39 @@ export function createTrackerDashboard(opts: {
     // The board changed: evaluate, at most once every 5 s.
     recountOnChanges(scheduler, () => opts.source()?.changes ?? -1, opts.shown);
   });
+
+  // Reads every day of your logged time again on the board's computer,
+  // then counts again, whose answer says it is reading.
+  async function readLoggedAgain(): Promise<void> {
+    const s = opts.source();
+    if (!s) return;
+    const seq = ++personReadSeq;
+    const target = personReadTarget(s);
+    personRead = null;
+    try {
+      await withBackendTarget(s.backend, () => ReadTrackerWorklogDays(s.board.connection, timeZone()));
+    } catch (err) {
+      if (seq === personReadSeq) personRead = { target, failure: errString(err) };
+      return;
+    }
+    if (seq === personReadSeq) scheduler.request({ immediate: true });
+  }
+
+  function refreshLogged(): void {
+    if (shownAnswer?.logged) void readLoggedAgain();
+  }
+
+  const logged: LoggedTimeRead = {
+    get reading() { return shownAnswer?.logged?.reading ?? false; },
+    get failure() {
+      const s = opts.source();
+      const own = personRead && s && personRead.target === personReadTarget(s) ? personRead.failure : '';
+      return own || (shownAnswer?.logged?.failure ?? '');
+    },
+    retry() {
+      void readLoggedAgain();
+    },
+  };
 
   function list(s: DashboardSource, key: string): Promise<void> {
     listedFor = key;
@@ -521,6 +589,7 @@ export function createTrackerDashboard(opts: {
     get stale() { return shownAnswer !== null && answerKey !== requestKey; },
     get error() { return error; },
     get drill() { return drill; },
+    logged,
     setRange(next) {
       const d = dashboard;
       if (!d) return;
@@ -547,7 +616,9 @@ export function createTrackerDashboard(opts: {
       listGen += 1;
       scheduler.reset();
       scheduler.request({ immediate: true });
+      refreshLogged();
     },
+    refreshLogged,
     openDrill(target) {
       if (!answered || !shownAnswer) return;
       drillOf = { ...answered, estimates: shownAnswer.estimates };
