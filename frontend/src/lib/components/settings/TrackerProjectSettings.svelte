@@ -24,7 +24,8 @@
   // save that lost to another or failed said under the page. Every change
   // saves at once; what shows is what the computer stored. A page adds its
   // own holds (`hold`), their failure (`readError`) and readiness
-  // (`ready`), and renders its body from what the frame gives it.
+  // (`ready`), why its settings do not apply to a project (`none`), and
+  // renders its body from what the frame gives it.
   import { onMount, untrack, type Snippet } from 'svelte';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { isLoaded } from '../../stores/projects.svelte';
@@ -62,12 +63,16 @@
     ready?: (project: string) => boolean;
     /** Reads again what else the body reads. */
     retry?: (project: string) => void;
+    /** Why the page's settings do not apply to `project`, read once
+     * `ready`: said in place of the body and of a newer section's
+     * prompt. Null when they apply. */
+    none?: (project: string) => string | null;
     /** What shows while the setup or the rest is read. */
     reading: string;
     body: Snippet<[TrackerProjectPage]>;
   }
 
-  let { page, projectField, bodyField, heading, hint, what, section, hold, readError, ready, retry, reading, body }: Props = $props();
+  let { page, projectField, bodyField, heading, hint, what, section, hold, readError, ready, retry, none, reading, body }: Props = $props();
 
   const { backend, scopeGrant } = settingsComputer();
 
@@ -96,6 +101,7 @@
   let newer = $derived(setup?.view?.newer?.includes(section) ?? false);
   let otherError = $derived(selectedId ? readError?.(selectedId) ?? null : null);
   let otherReady = $derived(selectedId ? ready?.(selectedId) ?? true : false);
+  let noneNote = $derived(selectedId && otherReady ? none?.(selectedId) ?? null : null);
 
   let operateGrant = $derived(scopeGrant('tracker:operate'));
   // A control is never disabled for a save or a read in flight, which
@@ -175,7 +181,9 @@
             <button type="button" class={GHOST_BUTTON_CLASS} onclick={retryAll} data-testid="settings-tracker-{page}-retry">Try again</button>
           </div>
         {/if}
-        {#if newer}
+        {#if noneNote !== null}
+          <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-{page}-none">{noneNote}</p>
+        {:else if newer && (none === undefined || otherReady)}
           <p class="text-[0.75rem] text-warning" data-testid="settings-tracker-{page}-newer">
             A newer version of Agent Overflow saved this project's {what}. They are kept as they are; update the app on {settingsComputerName(backend) || 'this computer'} to change them here.
           </p>

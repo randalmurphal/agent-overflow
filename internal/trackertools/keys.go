@@ -40,6 +40,17 @@ type keyQuery struct {
 	failed   error
 }
 
+// keyNotFound is the cause of a refusal of a key that no site asked
+// has: the key, in capitals, and the sites asked.
+type keyNotFound struct {
+	key   string
+	sites []string
+}
+
+func (e *keyNotFound) Error() string {
+	return fmt.Sprintf("trackertools: %s is on none of %s", e.key, strings.Join(e.sites, ", "))
+}
+
 // keyParam is the argument a call names its keys with, as a refusal of
 // one says it.
 type keyParam struct{ which, where, naming string }
@@ -159,7 +170,11 @@ func (s *Server) resolveKeys(ctx context.Context, threadID string, keys []string
 			// A source that could not answer may hold the key.
 			return nil, nil, q.failed
 		default:
-			return nil, nil, errorsx.Public(CodeNotFound, fmt.Sprintf("No ticket %s on %s.", q.bare, siteList(q.asked)), nil)
+			sites := make([]string, len(q.asked))
+			for j, src := range q.asked {
+				sites[j] = src.Site
+			}
+			return nil, nil, errorsx.Public(CodeNotFound, fmt.Sprintf("No ticket %s on %s.", q.bare, siteList(q.asked)), &keyNotFound{key: q.bare, sites: sites})
 		}
 	}
 	return out, sources, nil
@@ -213,7 +228,7 @@ func (s *Server) lookUp(ctx context.Context, sources []trackerapp.TicketSource, 
 				i := slices.IndexFunc(found.Found, func(m trackerapp.KeyMatchView) bool { return strings.EqualFold(m.Key, q.bare) })
 				if i >= 0 {
 					c := found.Found[i].Card
-					q.hits = append(q.hits, ticket{connection: src.ID, site: src.Site, issue: c.ID, key: q.bare, title: c.Title})
+					q.hits = append(q.hits, ticket{connection: src.ID, site: src.Site, issue: c.ID, key: q.bare, title: c.Title, kind: c.Type})
 				}
 			}
 		}

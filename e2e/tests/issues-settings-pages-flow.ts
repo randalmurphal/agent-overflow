@@ -1,5 +1,5 @@
-// Settings > Issues > Fields, Starting work and Agents (docs/specs/issues.md,
-// "Setup"), shared by the desktop and compact projects, through the
+// Settings > Issues > Fields, Starting work, Time and Agents
+// (docs/specs/issues.md, "Setup"), shared by the desktop and compact projects, through the
 // shipped UI, the real backend, the project's tracker.json, the fake
 // trackers and mock provider sessions that call the tracker tools.
 //
@@ -9,9 +9,11 @@
 // Start work form, and the form's Save as defaults shown on the page; with
 // Change tickets off, a thread's ticket change refused with the sentence
 // the agent is told and nothing sent, and with Ask before changing
-// several at once off, a change to two tickets sent with no prompt; a
-// Linear-only project's Fields page saying it has nothing to pin; on each
-// of the three pages, a save that lost to a hand edit of the file said in
+// several at once off, a change to two tickets sent with no prompt; the
+// Time page's meetings ticket found by key and time-off ticket by title,
+// saved with their titles shown, one cleared, and a ticket that is gone
+// said; a Linear-only project's Fields page saying it has nothing to pin;
+// on each of the four pages, a save that lost to a hand edit of the file said in
 // words with the hand edit shown and kept, a save whose outcome is unknown
 // (the project's directory refuses the write) said in the computer's
 // words, a file that cannot be read said with its path, and a section a
@@ -76,6 +78,22 @@ function startWorkPage(page: Page, compact: boolean): Promise<Locator> {
   return openIssuesSetting(page, compact, 'Starting work', 'settings-tracker-start-work');
 }
 
+function timePage(page: Page, compact: boolean): Promise<Locator> {
+  return openIssuesSetting(page, compact, 'Time', 'settings-tracker-time');
+}
+
+/** The Time page's row of the meetings or the time-off ticket. */
+function timeRow(screen: Locator, role: 'meetings' | 'time_off'): Locator {
+  return screen.locator(`[data-testid="tracker-time-ticket"][data-role="${role}"]`);
+}
+
+/** Opens the row's finder, types `text` and picks the ticket `key`. */
+async function chooseTimeTicket(page: Page, screen: Locator, role: 'meetings' | 'time_off', text: string, key: string, compact: boolean): Promise<void> {
+  await press(timeRow(screen, role).getByTestId('tracker-time-ticket-find'), compact);
+  await page.getByTestId('ticket-picker-find').pressSequentially(text);
+  await press(page.getByTestId('ticket-picker-item').filter({ hasText: key }), compact);
+}
+
 function agentsPage(page: Page, compact: boolean): Promise<Locator> {
   return openIssuesSetting(page, compact, 'Agents', 'settings-tracker-agents');
 }
@@ -94,7 +112,7 @@ function rule(screen: Locator, name: string): Locator {
   return screen.getByRole('switch', { name, exact: true });
 }
 
-/** One of the three pages, for what their shared frame does. */
+/** One of the four pages, for what their shared frame does. */
 interface PageCase {
   name: string;
   open: (page: Page, compact: boolean) => Promise<Locator>;
@@ -146,6 +164,16 @@ const CASES: PageCase[] = [
     showsHandEdit: (screen) => expect(place(screen, 'WEB').getByTestId('tracker-start-work-branch-example')).toHaveText('web/WEB-123'),
   },
   {
+    name: 'Time',
+    open: timePage,
+    id: 'time',
+    section: 'time',
+    what: 'time settings',
+    handEdit: () => ({ time: { version: 1, never_epics: false } }),
+    control: (screen) => rule(screen, 'Never log to an epic'),
+    showsHandEdit: (screen) => expect(rule(screen, 'Never log to an epic')).toHaveAttribute('aria-checked', 'false'),
+  },
+  {
     name: 'Agents',
     open: agentsPage,
     id: 'agents',
@@ -160,7 +188,7 @@ const CASES: PageCase[] = [
 /** The controls a page offers for a change: none while it cannot be read
  * or a newer build saved its section. */
 function controls(screen: Locator): Locator {
-  return screen.locator('[role="switch"], [data-testid="tracker-fields-pinned"], [data-testid="tracker-fields-find"]');
+  return screen.locator('[role="switch"], [data-testid="tracker-fields-pinned"], [data-testid="tracker-fields-find"], [data-testid="tracker-time-ticket-find"]');
 }
 
 /** A project on the fake Jira site with one thread on the mock Claude,
@@ -335,6 +363,40 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     await expandActivityRuns(page);
     await expect(toolRow(page, 'update', 'WEB-1').first().getByTestId('row-error-code').first()).toHaveText('tracker_changes_off', { timeout: 30_000 });
     await expect(page.getByTestId('composer-pending-approval')).toHaveCount(0);
+  });
+
+  test('the Time page saves a ticket found by key and one found by title, clears one, and says a ticket that is gone', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    const board = await connectFakeJiraBoard(harness, 'settings-time', SETUP);
+    const file = await setupFile(harness, board.projectId);
+    const gone = { tracker: 'jira', site: board.site, key: 'WEB-404' };
+    await writeSetup(file, JSON.stringify({ time: { version: 1, time_off: gone } }));
+    await harness.open(page);
+    const pane = await openIssuesPane(page, compact);
+    await expect(card(pane, '10101')).toBeVisible({ timeout: 30_000 });
+
+    const screen = await timePage(page, compact);
+    await expect(timeRow(screen, 'time_off').getByTestId('tracker-time-ticket-note')).toHaveText(
+      `WEB-404 cannot be found on ${board.site.replace(/^https:\/\//, '')}, or this connection cannot see it. Choose another ticket.`,
+      { timeout: 15_000 },
+    );
+    await expect(rule(screen, 'Never log to an epic')).toHaveAttribute('aria-checked', 'true');
+
+    await chooseTimeTicket(page, screen, 'meetings', 'web-4', 'WEB-4', compact);
+    await expect(timeRow(screen, 'meetings').getByTestId('tracker-time-ticket-value')).toHaveText(/WEB-4\s*Ticket to pin from/, { timeout: 15_000 });
+    const meetings = { tracker: 'jira', site: board.site, key: 'WEB-4' };
+    expect(await storedSetup(file)).toEqual({ time: { version: 1, meetings, time_off: gone } });
+
+    await chooseTimeTicket(page, screen, 'time_off', 'Another', 'WEB-5', compact);
+    await expect(timeRow(screen, 'time_off').getByTestId('tracker-time-ticket-value')).toHaveText(/WEB-5\s*Another ticket/, { timeout: 15_000 });
+    await expect(screen.getByTestId('tracker-time-ticket-note')).toHaveCount(0);
+    const timeOff = { tracker: 'jira', site: board.site, key: 'WEB-5' };
+    expect(await storedSetup(file)).toEqual({ time: { version: 1, meetings, time_off: timeOff } });
+
+    await press(timeRow(screen, 'meetings').getByTestId('tracker-time-ticket-clear'), compact);
+    await expect(timeRow(screen, 'meetings').getByTestId('tracker-time-ticket-value')).toHaveCount(0);
+    await expect(timeRow(screen, 'meetings').getByTestId('tracker-time-ticket-find')).toHaveText('Choose a ticket');
+    expect(await storedSetup(file)).toEqual({ time: { version: 1, time_off: timeOff } });
   });
 
   test('a Linear-only project\'s Fields page says it has nothing to pin', async ({ harness, page }) => {
@@ -535,6 +597,9 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
         const start = await startWorkPage(device, false);
         await press(rule(place(start, 'WEB'), 'Assign it to me'), false);
         await expect(rule(place(start, 'WEB'), 'Assign it to me')).toHaveAttribute('aria-checked', 'false', { timeout: 15_000 });
+        const time = await timePage(device, false);
+        await chooseTimeTicket(device, time, 'meetings', 'WEB-4', 'WEB-4', false);
+        await expect(timeRow(time, 'meetings').getByTestId('tracker-time-ticket-value')).toHaveText(/WEB-4\s*Ticket to pin from/, { timeout: 15_000 });
         const pins = await fieldsPage(device, false);
         await press(pinList(pins, 'sections').locator('[data-testid="tracker-fields-pinned"][data-id="description"]'), false);
         await expect(pinList(pins, 'sections').getByTestId('tracker-fields-pinned')).toHaveText(['Linked tickets', 'Attachments'], { timeout: 15_000 });
@@ -542,6 +607,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
           ticket_pins: { version: 1, sites: [{ tracker: 'jira', site: board.site, sections: ['links', 'attachments'] }] },
           start_work: { version: 1, projects: [{ tracker: 'jira', site: board.site, project: 'WEB', assign: false }] },
           agents: { version: 1, change_tickets: false },
+          time: { version: 1, meetings: { tracker: 'jira', site: board.site, key: 'WEB-4' } },
         });
         const there = await fieldsPage(page, false);
         await expect(pinList(there, 'sections').getByTestId('tracker-fields-pinned')).toHaveText(['Linked tickets', 'Attachments'], { timeout: 15_000 });
@@ -576,6 +642,9 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
         const start = await onLaptop(startWorkPage);
         await press(rule(place(start, 'WEB'), 'Assign it to me'), false);
         await expect(rule(place(start, 'WEB'), 'Assign it to me')).toHaveAttribute('aria-checked', 'false', { timeout: 15_000 });
+        const time = await onLaptop(timePage);
+        await chooseTimeTicket(page, time, 'meetings', 'WEB-4', 'WEB-4', false);
+        await expect(timeRow(time, 'meetings').getByTestId('tracker-time-ticket-value')).toHaveText(/WEB-4\s*Ticket to pin from/, { timeout: 15_000 });
         const pins = await onLaptop(fieldsPage);
         await pinList(pins, 'fields').getByTestId('tracker-fields-find').fill('effo');
         await press(pinList(pins, 'fields').getByTestId('tracker-fields-match').filter({ hasText: /^Effort$/ }), false);
@@ -584,6 +653,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
           ticket_pins: { version: 1, sites: [{ tracker: 'jira', site: board.site, fields: [EFFORT] }] },
           start_work: { version: 1, projects: [{ tracker: 'jira', site: board.site, project: 'WEB', assign: false }] },
           agents: { version: 1, change_tickets: false },
+          time: { version: 1, meetings: { tracker: 'jira', site: board.site, key: 'WEB-4' } },
         });
         await closeSettings(page, false);
         const ticket = await openTicket(pane, PINNED_ID, false);

@@ -154,6 +154,15 @@ describe('<TrackerFieldsSettings>', () => {
     expect(names(list('fields'), 'tracker-fields-match')).toEqual(['Team(customfield_2)', 'Teams']);
   });
 
+  it('tells a long text field named Description apart from the ticket\'s own description by their IDs', async () => {
+    catalogs = { [SITE]: [{ id: 'customfield_9', name: 'Description', kind: 'rich_text' }] };
+    render(TrackerFieldsSettings);
+    await screen.findAllByTestId('tracker-fields-find');
+    expect(names(list('sections'), 'tracker-fields-pinned')).toEqual(['Description(description)', 'Linked tickets', 'Attachments']);
+    await fireEvent.input(within(list('sections')).getByTestId('tracker-fields-find'), { target: { value: 'desc' } });
+    expect(names(list('sections'), 'tracker-fields-match')).toEqual(['Description(customfield_9)']);
+  });
+
   it('ranks every field named exactly as typed first, two of one name included', async () => {
     // Jira sorts its catalog by name, case first: TEAM 0 to TEAM 19 before Team.
     catalogs = { [SITE]: [
