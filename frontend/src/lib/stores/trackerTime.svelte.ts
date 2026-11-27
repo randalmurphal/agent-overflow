@@ -39,6 +39,13 @@
 // The five weeks used last are held, each with its last answer, so a week
 // the person returns to shows at once; a sixth drops the one used least
 // recently that no surface holds.
+//
+// The agent's draft rides the stored read (`WorklogDays.drafted`). A
+// `tracker:time_entries_updated` frame (an agent drafted, a person
+// changed, removed or approved entries) reads the computer's copy of each
+// shown week holding one of its days again, coalesced
+// (`DRAFT_REREAD_DELAY_MS`); a week not shown reads it when it shows. A
+// gap on the channel reads every shown week of its computer again.
 
 import { SvelteMap } from 'svelte/reactivity';
 import type { FailureView, WorklogDays } from '../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -51,6 +58,8 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { errString } from '../utils/errors';
 import { documentHidden } from '../utils/pageVisibility';
 import { addDays } from './trackerTimeModel';
+import { takeTrackerTimeEntriesChannel } from './trackerBoardEvents';
+import { createRefreshScheduler } from '../utils/refreshScheduler';
 
 /** One person's week on one connection. */
 export interface TrackerWeekRef {
@@ -151,10 +160,10 @@ function visibleOf(week: Week): boolean {
   return week.holders > 0 && week.shown && !documentHidden();
 }
 
-function readStored(week: Week): void {
+function readStored(week: Week): Promise<void> {
   const { backend, connection, author, monday } = week.ref;
   const n = ++week.started;
-  withBackendTarget(backend, () => TrackerWorklogs(connection, author, monday, addDays(monday, 6))).then(
+  return withBackendTarget(backend, () => TrackerWorklogs(connection, author, monday, addDays(monday, 6))).then(
     (days) => {
       if (n <= week.applied) return;
       week.applied = n;
@@ -200,7 +209,7 @@ function startRefresh(week: Week): Promise<WeekReread> {
     week.rereadAfter = false;
     if (week.visible) {
       if (again) void startRefresh(week).then(again.settle);
-      if (reread) readStored(week);
+      if (reread) void readStored(week);
     } else if (again) {
       // Hidden now: its showing reads the stored copy and, due, refreshes.
       week.refreshedAt = 0;
@@ -235,7 +244,7 @@ function settle(week: Week): void {
   if (visible === week.visible) return;
   week.visible = visible;
   if (!visible) return;
-  readStored(week);
+  void readStored(week);
   if (Date.now() - week.refreshedAt >= WEEK_REFRESH_AFTER_MS) void joinRefresh(week);
 }
 
@@ -328,7 +337,7 @@ export function rereadTrackerWorklogDays(backend: string, connection: string, au
   for (const week of weeksOfDays(backend, connection, author, days)) {
     if (!week.visible) continue;
     if (week.refresh) week.rereadAfter = true;
-    else readStored(week);
+    else void readStored(week);
   }
 }
 
@@ -354,6 +363,39 @@ function receiptOnDays(backend: string, connection: string, author: string, days
   for (const week of held) setReceipts(week, [...week.receipts, { id, sentence, after: week.started }]);
   return held.length > 0;
 }
+
+/** The coalescing of a burst of draft frames into one read per week. */
+export const DRAFT_REREAD_DELAY_MS = 100;
+
+// The shown weeks a draft frame named since the last coalesced read.
+const draftChanged = new Set<Week>();
+const draftRereads = createRefreshScheduler({
+  name: 'trackerTimeDraftRereads',
+  delayMs: DRAFT_REREAD_DELAY_MS,
+  maxWaitMs: 5 * DRAFT_REREAD_DELAY_MS,
+  run: () => {
+    const changed = [...draftChanged];
+    draftChanged.clear();
+    for (const week of changed) {
+      if (!week.visible) continue;
+      if (week.refresh) week.rereadAfter = true;
+      else void readStored(week);
+    }
+  },
+});
+
+takeTrackerTimeEntriesChannel({
+  event(event, backend) {
+    for (const week of weeksOfDays(backend, event.connection, event.author, event.days ?? [])) {
+      if (week.visible) draftChanged.add(week);
+    }
+    if (draftChanged.size > 0) draftRereads.request();
+  },
+  gap(backend) {
+    const reads = [...weeks.values()].filter((w) => w.ref.backend === backend && w.visible).map(readStored);
+    return reads.length > 0 ? Promise.all(reads).then(() => undefined) : undefined;
+  },
+});
 
 takeWorklogWrites({
   refresh: (ctx, days) => refreshTrackerWorklogDays(ctx.backend, ctx.connection, ctx.author, days),
@@ -382,4 +424,6 @@ onBackendStatusChange((backend, status) => {
 export function resetTrackerTimeForTest(): void {
   weeks.clear();
   states.clear();
+  draftChanged.clear();
+  draftRereads.reset();
 }

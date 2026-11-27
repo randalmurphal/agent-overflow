@@ -25,13 +25,23 @@
 // holds it (`holdTimeWriteTarget`), and an outcome that settles with no
 // surface holding its target becomes a toast unless it was made. An
 // outcome goes when the last surface holding its target lets go.
+//
+// The changes of an agent's draft go through here too, under the same
+// rules: a change of one entry (its ticket, hours or reason, or a
+// question left out) and its removal under the entry (`entryTarget`), an
+// approval or a discard of several under what it covers (`draftTarget`:
+// a day, the week shown, a call's card). Nothing of them goes to the
+// tracker but an approval (`PostTrackerTimeEntries`), whose sentence, in
+// the tracker's words, is held as its outcome until the surface lets go.
+// What the week and the cards show after one is the computer's
+// `tracker:time_entries_updated`, which they read again on.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { WorklogView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { AddTrackerWorklog, DeleteTrackerWorklog, EditTrackerWorklog } from './bindings';
+import type { TimeEntryEdit, TimeEntryView, WorklogView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { AddTrackerWorklog, DeleteTrackerWorklog, EditTrackerTimeEntry, EditTrackerWorklog, PostTrackerTimeEntries, RemoveTrackerTimeEntries } from './bindings';
 import { addErrorToast, addToast } from './toast.svelte';
 import { dayInSentence } from './trackerTimeModel';
-import { LossConsent, refusalSentence, sendWrite, type WriteOutcome, type WriteSubject } from './trackerWriteOutcome';
+import { LossConsent, refusalSentence, sendCall, sendWrite, type WriteOutcome, type WriteSubject } from './trackerWriteOutcome';
 import { errString } from '../utils/errors';
 import { formatTimeSpent } from '../utils/timeSpent';
 
@@ -43,17 +53,25 @@ const WORKLOG_SUBJECT: WriteSubject = {
   reads: (resource) => resource.kind === 'worklogs',
 };
 
-/** The connection a write is made on, and whose time it is. */
-export interface TimeWriteContext {
+/** The connection a change of an agent's draft is made on: the
+ * connection is the entries', whose author the computer knows. */
+export interface DraftWriteContext {
   readonly backend: string;
   readonly connection: string;
-  /** The person's account ID, whose weeks show the write. */
-  readonly author: string;
   /** The computer's name, for an answer the connection lost. */
   readonly computer: string;
 }
 
-export type TimeWriteKind = 'add' | 'edit' | 'delete';
+/** The connection a write is made on, and whose time it is. */
+export interface TimeWriteContext extends DraftWriteContext {
+  /** The person's account ID, whose weeks show the write. */
+  readonly author: string;
+}
+
+/** What a target's write is: a worklog's log, change or delete; a draft
+ * entry's change or removal (a discard is a removal of several); an
+ * approval. */
+export type TimeWriteKind = 'add' | 'edit' | 'delete' | 'change' | 'remove' | 'post';
 
 /** How the read a write asked of the tracker ended: the weeks holding
  * its days were read again, the read failed (`message` says why), or no
@@ -106,17 +124,17 @@ export function worklogTarget(id: string): string {
   return `worklog:${id}`;
 }
 
-function writeKey(ctx: TimeWriteContext, target: string): string {
+function writeKey(ctx: DraftWriteContext, target: string): string {
   return `${ctx.backend}\n${ctx.connection}\n${target}`;
 }
 
 /** The target's last write; reactive. */
-export function timeWrite(ctx: TimeWriteContext, target: string): TimeWrite | null {
+export function timeWrite(ctx: DraftWriteContext, target: string): TimeWrite | null {
   return writes.get(writeKey(ctx, target)) ?? null;
 }
 
 /** Drops a settled outcome the person read. */
-export function dismissTimeWrite(ctx: TimeWriteContext, target: string): void {
+export function dismissTimeWrite(ctx: DraftWriteContext, target: string): void {
   const k = writeKey(ctx, target);
   if (writes.get(k)?.pending === false) writes.delete(k);
 }
@@ -128,7 +146,7 @@ export function reviseTimeDraft(ctx: TimeWriteContext, target: string): void {
 }
 
 /** A surface shows the target's outcome until the release. */
-export function holdTimeWriteTarget(ctx: TimeWriteContext, target: string): () => void {
+export function holdTimeWriteTarget(ctx: DraftWriteContext, target: string): () => void {
   const k = writeKey(ctx, target);
   holds.set(k, (holds.get(k) ?? 0) + 1);
   let released = false;
@@ -308,6 +326,90 @@ export function deleteWorklog(ctx: TimeWriteContext, from: WorklogView): Promise
   };
   return write(ctx, worklogTarget(from.id), 'delete', label, [from.day], () =>
     DeleteTrackerWorklog(ctx.connection, { from }), false);
+}
+
+const DRAFT_SUBJECT: WriteSubject = {
+  look: "the day's time",
+  shows: 'The week',
+  ended: 'the week no longer shows its time',
+  reads: (resource) => resource.kind === 'worklogs',
+};
+
+/** A draft entry's target: its change and its removal. */
+export function entryTarget(id: number): string {
+  return `entry:${id}`;
+}
+
+/** An approval or a discard of several entries: of a day
+ * (`day:<day>`), the week shown (`week:<monday>`), or a call's card
+ * (`call:<thread>:<call>`). */
+export function draftTarget(scope: string): string {
+  return `draft:${scope}`;
+}
+
+function refs(entries: readonly TimeEntryView[]): { id: number; revision: number }[] {
+  return entries.map((e) => ({ id: e.id, revision: e.revision }));
+}
+
+// One change of the draft: sent once, its outcome held under its target
+// while a surface holds it, else a toast. An answer that says nothing the
+// surface does not show (`done` answers null) leaves nothing held.
+async function draftWrite<T>(
+  ctx: DraftWriteContext,
+  target: string,
+  kind: TimeWriteKind,
+  toast: string,
+  send: () => Promise<T>,
+  done: (value: T) => string | null,
+): Promise<WriteOutcome | null> {
+  const k = writeKey(ctx, target);
+  if (writes.get(k)?.pending) return null;
+  writes.set(k, { kind, pending: true, outcome: null, reread: null, saveAnyway: null });
+  const sent = await sendCall(ctx.backend, ctx.computer, DRAFT_SUBJECT, send);
+  const outcome: WriteOutcome = sent.ok ? { kind: 'applied', note: done(sent.value) } : sent.outcome;
+  if (outcome.kind === 'applied' && outcome.note === null) {
+    writes.delete(k);
+    return outcome;
+  }
+  if (!holds.has(k)) {
+    writes.delete(k);
+    if (outcome.kind === 'applied') addToast('info', `${toast}: ${outcome.note}`);
+    else toastUnheld(toast, outcome);
+    return outcome;
+  }
+  writes.set(k, { kind, pending: false, outcome, reread: null, saveAnyway: null });
+  return outcome;
+}
+
+function entryName(e: TimeEntryView): string {
+  return e.key ? `the entry on ${e.key} for ${dayInSentence(e.day)}` : `the question for ${dayInSentence(e.day)}`;
+}
+
+/** Changes a draft entry as read: its ticket, hours or reason, or leaves
+ * a question out (EditTrackerTimeEntry). Nothing is sent to the tracker. */
+export function changeDraftEntry(ctx: DraftWriteContext, entry: TimeEntryView, edit: TimeEntryEdit): Promise<WriteOutcome | null> {
+  return draftWrite(ctx, entryTarget(entry.id), 'change', `The change of ${entryName(entry)}`,
+    () => EditTrackerTimeEntry(ctx.connection, { id: entry.id, revision: entry.revision }, edit), () => null);
+}
+
+/** Removes draft entries as read, under `target` (RemoveTrackerTimeEntries):
+ * one entry, or a discard. Nothing is sent to the tracker. An entry that
+ * changed or was posted since it was read stays, and the outcome says so. */
+export function removeDraftEntries(ctx: DraftWriteContext, target: string, entries: readonly TimeEntryView[]): Promise<WriteOutcome | null> {
+  return draftWrite(ctx, target, 'remove', entries.length === 1 ? `The removal of ${entryName(entries[0])}` : 'The discard of the draft',
+    () => RemoveTrackerTimeEntries(ctx.connection, refs(entries)),
+    (gone) => gone.length < entries.length
+      ? `${gone.length} of ${entries.length} entries were removed; the others changed or were posted since they were read.`
+      : null);
+}
+
+/** Approves draft entries as read, under `target` (PostTrackerTimeEntries):
+ * a day, the week shown, a call's card, or one entry `alone`, which posts
+ * it though time was logged on its ticket that day since. Its outcome is
+ * the computer's sentence of what was posted and what was not, and why. */
+export function postDraftEntries(ctx: DraftWriteContext, target: string, entries: readonly TimeEntryView[], alone = false): Promise<WriteOutcome | null> {
+  return draftWrite(ctx, target, 'post', alone ? `Logging ${entryName(entries[0])}` : 'The approval of the draft',
+    () => PostTrackerTimeEntries(ctx.connection, { entries: refs(entries), alone: alone || undefined }), (view) => view.sentence);
 }
 
 export function resetTrackerTimeWritesForTest(): void {

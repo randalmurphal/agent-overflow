@@ -174,13 +174,28 @@ export async function sendWrite(
   send: () => Promise<WriteView>,
   failure?: (err: unknown) => WriteOutcome | null,
 ): Promise<WriteOutcome> {
+  const sent = await sendCall(backend, computer, subject, send, failure);
+  return sent.ok ? writeOutcome(sent.value, subject) : sent.outcome;
+}
+
+/** Sends a call that answers something other than a write's view (an
+ * agent's time draft change) once on `backend`, as `sendWrite` does: its
+ * answer, or what its failure means. */
+export async function sendCall<T>(
+  backend: string,
+  computer: string,
+  subject: WriteSubject,
+  send: () => Promise<T>,
+  failure?: (err: unknown) => WriteOutcome | null,
+): Promise<{ readonly ok: true; readonly value: T } | { readonly ok: false; readonly outcome: WriteOutcome }> {
   try {
-    return writeOutcome(await withBackendTarget(backend, send), subject);
+    return { ok: true, value: await withBackendTarget(backend, send) };
   } catch (err) {
     const known = failure?.(err);
-    if (known) return known;
-    return isTransportClassError(err)
-      ? { kind: 'lost', message: lostWriteSentence(computer, subject) }
-      : { kind: 'failed', error: err };
+    if (known) return { ok: false, outcome: known };
+    return {
+      ok: false,
+      outcome: isTransportClassError(err) ? { kind: 'lost', message: lostWriteSentence(computer, subject) } : { kind: 'failed', error: err },
+    };
   }
 }
