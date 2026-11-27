@@ -563,8 +563,8 @@ func dayRangeWords(sprint string) string {
 // and the placement of a row with no instant read for every row; a shown
 // row's title, status and estimate are read with its page (titles).
 type evaluation struct {
-	s   *session
-	loc *time.Location
+	s      *session
+	loc    *time.Location
 	export store.MirrorExport
 	// readDays is the days of the viewer's (export.Viewer) logged time the
 	// copy holds as read, filled when a metric reads worklogs.
