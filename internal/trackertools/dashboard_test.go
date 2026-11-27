@@ -275,7 +275,7 @@ func TestDashboardWidgetSaysTheDaysNotReadAndItsNote(t *testing.T) {
 	hour := 3600.0
 	f := &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
 		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{
-			Value:    &trackerdash.Num{UR: 2},
+			Value:    &trackerdash.Num{UR: 3},
 			Previous: &trackerdash.Num{UR: 5},
 			Buckets:  []trackerdash.BucketValue{{Label: "Nov 16", Total: trackerdash.Num{V: &hour}}, {Label: "Nov 23", Total: trackerdash.Num{UR: 2}}},
 		}}, nil
@@ -284,7 +284,7 @@ func TestDashboardWidgetSaysTheDaysNotReadAndItsNote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"not_read":2`, `"previous_not_read":5`, `{"label":"Nov 16","total":3600}`, `{"label":"Nov 23","total":null,"not_read":2}`} {
+	for _, want := range []string{`"unit":"seconds","not_read":3`, `"previous_not_read":5`, `{"label":"Nov 16","total":3600}`, `{"label":"Nov 23","total":null,"not_read":2}`} {
 		if !strings.Contains(answer, want) {
 			t.Errorf("answer %s lacks %s", answer, want)
 		}
