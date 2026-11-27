@@ -15,7 +15,11 @@
 // said; the Points and credit page's Count tickets summing the Board's
 // columns and the Backlog's sprint in tickets without a reload while the
 // cards keep their points, and back, and Planning poker off taking the
-// poker section from the project's tickets and on bringing it back; a
+// poker section from the project's tickets and on bringing it back; its
+// Credit group turned on and saved in the file, a support type picked
+// taking that type's tickets out of the Backlog's count without an
+// estimate without a reload, and off putting them back with its rules
+// kept; a
 // Linear-only project's Fields page saying it has nothing to pin;
 // on each of the five pages, a save that lost to a hand edit of the file said in
 // words with the hand edit shown and kept, a save whose outcome is unknown
@@ -484,6 +488,41 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
     await expect(sprint).toHaveText(/points done$/, { timeout: 15_000 });
+  });
+
+  test('the Credit group saves credit in the file, and a support type leaves its tickets out of the Backlog\'s count without an estimate until credit is off', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    // WEB-3, a Task with no Effort, is the backlog's one ticket.
+    const { board, pane, file } = await openBoard(harness, page, 'settings-credit', compact, { ...SETUP, estimation: EFFORT });
+    const backlog = await openBacklog(page, pane, compact);
+    const numbers = backlog.locator('[data-testid="issues-backlog-section"][data-list="backlog"] [data-testid="issues-backlog-numbers"]');
+    await expect(numbers).toContainText('1 without an estimate', { timeout: 15_000 });
+
+    const screen = await pointsPage(page, compact);
+    await expect(screen.getByTestId('tracker-credit-review')).toHaveCount(0, { timeout: 15_000 });
+    await press(rule(screen, 'Count credit'), compact);
+    await expect(rule(screen, 'Count credit')).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
+    const rules = [{ from: 0, review_share: 10, review_need: 2, review_actions: ['commented', 'approved', 'logged_time'], hours_per_point: 4 }];
+    await expect.poll(() => storedOrAbsent(file), { timeout: 15_000 }).toEqual({ credit: { version: 1, on: true, rules } });
+    await expect(screen.getByTestId('tracker-credit-support-line')).toHaveText('1 point for every 4 hours logged on support tickets, which carry no points.');
+    // The types are the board's project's, read from the tracker.
+    const task = screen.locator('[data-testid="tracker-credit-type"][data-type="10002"]');
+    await expect(task).toHaveText('Task', { timeout: 15_000 });
+    await press(task, compact);
+    await expect(task).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 });
+    const support = [{ tracker: 'jira', site: board.site, types: ['10002'], labels: [], boards: [] }];
+    await expect.poll(() => storedOrAbsent(file), { timeout: 15_000 }).toEqual({ credit: { version: 1, on: true, rules, support } });
+
+    await closeSettings(page, compact);
+    await openIssuesPane(page, compact);
+    await expect(numbers).toHaveText('1 ticket', { timeout: 15_000 });
+
+    const off = await pointsPage(page, compact);
+    await press(rule(off, 'Count credit'), compact);
+    await expect.poll(() => storedOrAbsent(file), { timeout: 15_000 }).toEqual({ credit: { version: 1, on: false, rules, support } });
+    await closeSettings(page, compact);
+    await openIssuesPane(page, compact);
+    await expect(numbers).toContainText('1 without an estimate', { timeout: 15_000 });
   });
 
   test('a Linear-only project\'s Fields page says it has nothing to pin', async ({ harness, page }) => {

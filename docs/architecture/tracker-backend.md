@@ -383,7 +383,8 @@ no step runs at root creation, restore or start.
   `estimates` (`count`, `tickets` to count tickets in place of the
   boards' estimates, absent for the estimates; and `poker`, true when
   absent and stored only when false; the section dropped when it sets
-  nothing; it applies only to the project's Jira boards). The writer (`validateSetup`)
+  nothing; it applies only to the project's Jira boards) and `credit`
+  (below). The writer (`validateSetup`)
   owns these defaults: a client sends the value it shows. Beside them,
   `dashboards` (by tracker site and board, the dashboards the project
   keeps) is written only by its own edits ([Own dashboards and
@@ -454,6 +455,45 @@ no step runs at root creation, restore or start.
   rule: it asks no poker support and shows no poker for a ticket of the
   project, so the votes are not followed, and it asks nothing until the
   project's setup is read.
+- **Credit** (`credit`, `trackerapp.Credit`) is `on`, the `rules` as
+  whole snapshots (`from`, Unix milliseconds, the first at 0, each later
+  one after the one before; `review_share` 0 to 100, `review_need` 1 to
+  the number of `review_actions`, which are distinct of `commented`,
+  `approved` and `logged_time` and kept in that order; `hours_per_point`
+  1 to 16), and `support` by Jira site (`types`, `labels`, `boards`, at
+  most 100 each, an entry naming none dropped; a Linear site refused).
+  Off keeps everything. No section reads as off with the defaults (10%,
+  2 of the three actions, 4 hours) and a save of exactly that writes no
+  section (`Credit.stored`). A section a newer version saved reads as
+  none: the view carries no credit, and the project counts none.
+  `heldSetup.credit` is the one answer to whether a project counts
+  credit. A client sends a changed newest snapshot without `from`, and
+  the writer stamps it (`stampCredit`): the first gets 0; a later one
+  replaces the one before it, taking its time, while no closed sprint of
+  the project's Jira boards in the mirror completed after that time, and
+  otherwise takes effect from the save. So the rules grow by at most one
+  snapshot a sprint. A change for every sprint rewrites one value in
+  every snapshot and keeps each `from`.
+- **A support ticket** is a row the project's support entry for the
+  board's site names by type, label or board while the row has no
+  estimate (an estimate reset counts as none); on a board with no
+  estimates every named row is. The rule rides in the board read's
+  regrouping (`MirrorRegroup.WithSupport`, only while the project counts
+  credit) and is decided in one SQL fragment (`mirrorSupportSQL`), which
+  reads the row's estimate first and the issue's `type_id` and `labels`
+  columns only for a row with none. A row says it (`RowView.support`),
+  and every total, the client's too (`trackerBoardModel.ts` `sumOf`,
+  `withRow`), counts a support row as no estimate but not as without
+  one. The rule is part of the site's counting version, so a save that
+  changes it, or turns credit on or off, reads the project's open boards
+  on that site again, and a page or patch read with the old rule is
+  stale. `ProjectTrackerSupport` answers which of up to 500 issues are
+  support tickets of one listed board, with the newest snapshot's hours
+  a point and the unit the board is counted in (`ListMirrorSupport`, one
+  statement over the issues named, no tracker request), and nothing for
+  a project that counts no credit, a board the mirror has not read or a
+  board estimated in time. The Time screen reads it for the week's
+  tickets, again on `tracker:setup_updated` and on reconnect.
 - **Status groups apply to a board read** as a bound argument
   (`store.MirrorRegroup`), resolved from the board handle's project and
   its connection's site, so two projects that list one board each read it

@@ -984,6 +984,37 @@ closed: 3.2 MB in use, 2 goroutines and 8 open files before it opened,
 8.7 MB and 3 goroutines with its four queries stopped, and 3.3 MB, 2
 goroutines and the same 8 files after it closed.
 
+### Support tickets in the totals
+
+A project's support rule ([Project setup](../architecture/tracker-backend.md#project-setup))
+reads a row's type and labels only for a row with no estimate, so its
+cost shows on a board whose rows have none. Measured with
+`TestMirrorAtScale` in `internal/store` at 20,000 issues (15,000 rows on
+board 0 at that step) and five boards of 4,000, the median of five runs,
+with the labels read from the card's data (the build before v176) and
+from the `labels` column v176 adds, on the development machine of [Costs
+at scale](../architecture/tracker-backend.md#costs-at-scale), its load
+average between 15 and 23 for the column's run:
+
+| No row estimated | Card's data | `labels` column |
+|---|---|---|
+| Section counts, no rule | 32.2 ms | 31.2 ms |
+| Section counts, 2 labels no card has | 77.7 ms | 45.7 ms |
+| Section counts, a label every card has | 97.7 ms | 51.0 ms |
+| Section counts, a type no card has | 33.9 ms | 43.0 ms |
+| Section counts, the board | 39.6 ms | 40.1 ms |
+| Board view of 3 sections, no rule | 34.6 ms | 35.6 ms |
+| Board view of 3 sections, 2 labels no card has | 92.0 ms | 49.4 ms |
+| Board view of 3 sections, a label every card has | 98.3 ms | 56.4 ms |
+| Five boards, section counts, no rule | 8.7 ms | 5.8 ms |
+| Five boards, section counts, 2 labels no card has | 25.1 ms | 8.9 ms |
+| Five boards, section counts, a label every card has | 19.8 ms | 16.2 ms |
+
+With every row estimated, a rule costs nothing: the section counts took
+31.0 to 33.3 ms on the card's data and 31.0 to 37.0 ms on the column,
+with and without a rule. v176 fills the column of 20,000 stored cards in
+139 ms (`TestTrackerLabelsMigration`).
+
 ## Planning poker add-on
 
 Applies only to a site with Easy Agile TeamRhythm installed
