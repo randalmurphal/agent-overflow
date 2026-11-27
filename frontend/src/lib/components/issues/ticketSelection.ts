@@ -155,42 +155,44 @@ export async function readMoves(tickets: readonly ListTicket[], signal: AbortSig
   return { moves: read.map((r) => (r as PromiseFulfilledResult<MoveView[]>).value) };
 }
 
-/** What a batch of writes came to: the tickets the tracker made it on, by
- * key, and how many were asked. A ticket whose write of the same target
- * was already out is not sent again and counts as not made. */
+/** What a batch of writes came to: how many the tracker made, and how
+ * many were asked. A ticket whose write of the same target was already
+ * out is not sent again and counts as not made. */
 export interface BatchOutcome {
-  readonly made: ReadonlySet<string>;
+  readonly made: number;
   readonly sent: number;
 }
 
 // Each write is the store's from the press, so its row says "Saving…"
 // while it waits for a slot, and is sent once it has one.
+// `applied` hears each ticket the tracker made it on as its write settles.
 async function sendEach(
   tickets: readonly TicketWriteContext[],
   send: (t: TicketWriteContext, after: Promise<void>) => Promise<WriteOutcome | null>,
+  applied?: (t: TicketWriteContext) => void,
 ): Promise<BatchOutcome> {
   // The write store keeps each failure as its outcome (under the row or in
   // a toast) and never throws one; a throw here is a defect, and is said.
   const results = await Promise.allSettled(tickets.map(async (t) => {
     const slot = takeSlot();
     try {
-      return await send(t, slot.then(() => undefined));
+      const out = await send(t, slot.then(() => undefined));
+      if (out?.kind === 'applied') applied?.(t);
+      return out;
     } finally {
       (await slot)();
     }
   }));
   for (const r of results) if (r.status === 'rejected') throw r.reason;
-  const made = new Set(tickets.filter((_, i) => {
-    const r = results[i];
-    return r.status === 'fulfilled' && r.value?.kind === 'applied';
-  }).map((t) => t.key));
+  const made = results.filter((r) => r.status === 'fulfilled' && r.value?.kind === 'applied').length;
   return { made, sent: tickets.length };
 }
 
-/** Moves each ticket of `status.moves` that is not there yet by its move. */
-export function moveTickets(tickets: readonly ListTicket[], status: ListStatus): Promise<BatchOutcome> {
+/** Moves each ticket of `status.moves` that is not there yet by its move;
+ * `moved` hears each the tracker moved as its move settles. */
+export function moveTickets(tickets: readonly ListTicket[], status: ListStatus, moved: (t: ListTicket) => void): Promise<BatchOutcome> {
   const moving = tickets.filter((t) => status.moves.get(t.ctx.key));
-  return sendEach(moving.map((t) => t.ctx), (t, after) => moveTicket(t, status.moves.get(t.key)!, undefined, after));
+  return sendEach(moving.map((t) => t.ctx), (t, after) => moveTicket(t, status.moves.get(t.key)!, undefined, after), (ctx) => moved(moving.find((t) => t.ctx === ctx)!));
 }
 
 /** Assigns each ticket to `person`, or unassigns it for null. */
