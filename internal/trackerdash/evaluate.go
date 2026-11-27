@@ -470,6 +470,7 @@ func valueUnit(m Metric, estimates string) string {
 		return "days"
 	case UnitTime:
 		return "seconds"
+	case UnitEstimate:
 	}
 	return map[string]string{"points": "points", "time": "seconds", "none": "tickets"}[estimates]
 }
@@ -1478,7 +1479,7 @@ func (ev *evaluation) label(b Bucket, key string) string {
 			return e.Label
 		}
 		return key
-	case BucketNone, BucketPeriod, BucketSprint, BucketText:
+	case BucketNone, BucketPeriod, BucketSprint, BucketDay, BucketText:
 		return cmpOr(key, "(none)")
 	}
 	panic(fmt.Sprintf("trackerdash: bucket %q reached a label without validation", b))
