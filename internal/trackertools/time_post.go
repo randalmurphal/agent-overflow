@@ -3,6 +3,7 @@ package trackertools
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -133,7 +134,11 @@ func (s *Server) timePost(ctx context.Context, caller Caller, post []string) (an
 	}
 	var sites []timePostSite
 	var unread []timeUnread
-	var failed error
+	// codes are unread's refusal codes, in its order.
+	var codes []string
+	// read is whether a connection was read: it holds no entry when no
+	// site does.
+	read := false
 	total, offered := 0, 0
 	for _, src := range jira {
 		if src.Account == "" {
@@ -146,17 +151,16 @@ func (s *Server) timePost(ctx context.Context, caller Caller, post []string) (an
 			// A refusal the model can read leaves the other connections
 			// posted and is named in the answer and the approval, as
 			// time_read names it; anything else fails the call.
-			_, message, public := errorsx.PublicDetails(err)
+			code, message, public := errorsx.PublicDetails(err)
 			if !public || ctx.Err() != nil {
 				return nil, onSite(src.Site, err)
 			}
-			if failed == nil {
-				failed = onSite(src.Site, err)
-			}
+			codes = append(codes, code)
 			message, _ = textClip(message, 0, refusalCut)
 			unread = append(unread, timeUnread{Site: src.Site, Account: postAccount(jira, src), Error: message})
 			continue
 		}
+		read = true
 		if len(got) == 0 {
 			continue
 		}
@@ -171,8 +175,8 @@ func (s *Server) timePost(ctx context.Context, caller Caller, post []string) (an
 		sites = append(sites, site)
 	}
 	switch {
-	case len(sites) == 0 && failed != nil:
-		return nil, failed
+	case len(sites) == 0 && len(unread) > 0:
+		return nil, unreadRefusal(days, unread, codes, read)
 	case len(sites) == 0:
 		return nil, invalidf("%s has no entry not yet logged; time_read shows the draft.", trackerapp.DayRange(days))
 	case total > tracker.MaxWorklogInputs:
@@ -254,10 +258,14 @@ func (s *Server) timePost(ctx context.Context, caller Caller, post []string) (an
 		if missed := trackerapp.ReadBackSentence(got.Stale); missed != "" {
 			warn = append(warn, missed)
 		}
-		if err != nil {
+		if errors.Is(err, trackerapp.ErrPostUnrecorded) {
 			// The send happened, and this computer could not record its
 			// outcomes: the entries stay sent while the app runs, and read
-			// as may already be logged after it restarts.
+			// as may already be logged after it restarts. The cause is the
+			// person's to fix (a full disk, a locked database), so it is
+			// said. An error after the outcomes were stored (the read of
+			// the entries after them) changes nothing the answer says and
+			// is only logged.
 			warn = append(warn, fmt.Sprintf("The time listed as logged is logged, but this computer could not record it (%s); "+
 				"the Time screen shows these entries as may already be logged after the app restarts.", strings.TrimSuffix(err.Error(), ".")))
 		}
@@ -416,13 +424,40 @@ func timeApproval(id string, days []string, sites []timePostSite, unread []timeU
 		}
 	}
 	for _, u := range unread {
-		name := u.Site
-		if u.Account != "" {
-			name += " (" + u.Account + ")"
-		}
-		a.Notes = append(a.Notes, fmt.Sprintf("%s could not be read: %s; its time is not in this post.", name, strings.TrimSuffix(u.Error, ".")))
+		a.Notes = append(a.Notes, u.sentence()+"; its time is not in this post.")
 	}
 	return a
+}
+
+// sentence says that u could not be read, and why: "example.atlassian.net
+// (Work) could not be read: …", as the approval's notes and a refusal say
+// it.
+func (u timeUnread) sentence() string {
+	name := u.Site
+	if u.Account != "" {
+		name += " (" + u.Account + ")"
+	}
+	return fmt.Sprintf("%s could not be read: %s", name, strings.TrimSuffix(u.Error, "."))
+}
+
+// unreadRefusal is a post's refusal when no connection it could read
+// holds an entry of days: each connection that could not be read and why,
+// with its refusal's code when they share one, and that the others, when
+// any was read, hold none.
+func unreadRefusal(days []string, unread []timeUnread, codes []string, read bool) error {
+	lines := make([]string, len(unread))
+	for i, u := range unread {
+		lines[i] = u.sentence()
+	}
+	code := codes[0]
+	if slices.ContainsFunc(codes, func(c string) bool { return c != code }) {
+		code = CodeFailed
+	}
+	text := fmt.Sprintf("Nothing was posted for %s: %s.", trackerapp.DayRange(days), strings.Join(lines, "; "))
+	if read {
+		text += " The other connections hold no entry not yet logged for those days."
+	}
+	return errorsx.Public(code, text, nil)
 }
 
 // Title is row's title in the thread's timeline: "Logged 2 of 3 entries

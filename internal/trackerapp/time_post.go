@@ -2,6 +2,7 @@ package trackerapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -46,6 +47,19 @@ type PostOutcome struct {
 	State string `json:"state"`
 	Why   string `json:"why,omitempty"`
 }
+
+// ErrPostUnrecorded is in the error of a post that sent its worklogs and
+// could not store their outcomes: its entries stay sent while this
+// process runs and read as may already be logged after it restarts
+// (recoverEarlier). Any other error a post answers with outcomes came
+// after they were stored.
+var ErrPostUnrecorded = errors.New("trackerapp: the post's outcomes are not stored")
+
+// postUnrecorded is a settle's failure, which is ErrPostUnrecorded.
+type postUnrecorded struct{ error }
+
+func (postUnrecorded) Is(target error) bool { return target == ErrPostUnrecorded }
+func (e postUnrecorded) Unwrap() error      { return e.error }
 
 // A PostOutcome's states.
 const (
@@ -395,7 +409,7 @@ func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends 
 			}
 		}
 		if settled, err = s.store.SettleTimeEntries(id, settles, millis(s.now())); err != nil {
-			storeErr = fmt.Errorf("trackerapp: settle the posted entries: %w", err)
+			storeErr = postUnrecorded{fmt.Errorf("trackerapp: settle the posted entries: %w", err)}
 		}
 		return res
 	}})

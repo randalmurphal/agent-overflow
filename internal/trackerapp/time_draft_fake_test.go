@@ -33,6 +33,20 @@ type markGateStore struct {
 	mu        sync.Mutex
 	gate      func()
 	settleErr error
+	// rereadErr fails the first read of entries after a settle that
+	// committed: the read of a post's entries after their outcomes.
+	rereadErr, armed error
+}
+
+func (g *markGateStore) TimeEntriesByID(connection string, ids []int64) ([]store.TimeEntry, error) {
+	g.mu.Lock()
+	err := g.armed
+	g.armed = nil
+	g.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return g.worklogGateStore.TimeEntriesByID(connection, ids)
 }
 
 func (g *markGateStore) SettleTimeEntries(connection string, outcomes []store.TimeEntrySettle, now int64) ([]store.TimeEntry, error) {
@@ -43,7 +57,13 @@ func (g *markGateStore) SettleTimeEntries(connection string, outcomes []store.Ti
 	if err != nil {
 		return nil, err
 	}
-	return g.worklogGateStore.SettleTimeEntries(connection, outcomes, now)
+	settled, err := g.worklogGateStore.SettleTimeEntries(connection, outcomes, now)
+	if err == nil {
+		g.mu.Lock()
+		g.armed, g.rereadErr = g.rereadErr, nil
+		g.mu.Unlock()
+	}
+	return settled, err
 }
 
 func (g *markGateStore) MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now int64) ([]store.TimeEntry, error) {
@@ -534,13 +554,27 @@ func TestAPostAnswersEachEntrysOutcome(t *testing.T) {
 		if again, _ := d.post(t, false, unsent...); len(unsent) != 2 || !slices.Equal(again.Outcomes, told) {
 			t.Fatalf("the entries not sent were answered\n%+v\nNotSentOutcome told\n%+v", again.Outcomes, told)
 		}
+		// A post whose outcomes were stored and whose read of the entries
+		// after them failed answers them with an error that is no
+		// unrecorded post.
+		y := d.draft(t, d.on("WEB-1", 1, "Built the form"))
+		d.marks.mu.Lock()
+		d.marks.rereadErr = errors.New("database is locked")
+		d.marks.mu.Unlock()
+		again, err := d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(y.Made...)})
+		if err == nil || errors.Is(err, ErrPostUnrecorded) || !slices.Equal(again.Outcomes, []PostOutcome{{ID: y.Made[0].ID, State: OutcomePosted}}) {
+			t.Fatalf("the post whose last read failed answered %+v, %v; want WEB-1 posted with an error that is no unrecorded post", again.Outcomes, err)
+		}
+		if e, _ := d.st.TimeEntriesByID(d.conn.ID, []int64{y.Made[0].ID}); len(e) != 1 || e[0].State != store.TimeEntryPosted {
+			t.Fatalf("the entry is %+v; want it posted", e)
+		}
 		w := d.draft(t, d.on("WEB-1", 1, "Built the form again"))
 		d.marks.mu.Lock()
 		d.marks.settleErr = errors.New("disk I/O error")
 		d.marks.mu.Unlock()
-		got, err := d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(w.Made...)})
-		if err == nil || !slices.Equal(got.Outcomes, []PostOutcome{{ID: w.Made[0].ID, State: OutcomePosted}}) {
-			t.Fatalf("the post whose settle failed answered %+v, %v; want WEB-1 posted with the error", got.Outcomes, err)
+		got, err = d.svc.PostTimeEntries(t.Context(), d.conn.ID, PostTimeRequest{Entries: entryRefs(w.Made...), Alone: true})
+		if !errors.Is(err, ErrPostUnrecorded) || !slices.Equal(got.Outcomes, []PostOutcome{{ID: w.Made[0].ID, State: OutcomePosted}}) {
+			t.Fatalf("the post whose settle failed answered %+v, %v; want WEB-1 posted with the error, unrecorded", got.Outcomes, err)
 		}
 		d.restart()
 		x := d.draft(t, d.on("WEB-3", 1, "Triaged again"))

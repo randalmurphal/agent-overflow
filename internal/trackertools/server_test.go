@@ -70,15 +70,20 @@ type fakeTracker struct {
 	drafts []string
 	// open answers OpenTimeEntries by connection; post answers PostTime,
 	// and posts are the posts asked, by connection.
-	open  map[string][]trackerapp.TimeEntryView
-	post  func(connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error)
-	posts []string
+	open map[string][]trackerapp.TimeEntryView
+	// openErr refuses a connection's read of its open entries.
+	openErr map[string]error
+	post    func(connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error)
+	posts   []string
 	// postCtx is each post's context error as the post began.
 	postCtx []error
 }
 
 func (f *fakeTracker) OpenTimeEntries(connection string, days []string) ([]trackerapp.TimeEntryView, error) {
 	f.asked = append(f.asked, "open time "+connection+" "+strings.Join(days, " "))
+	if err := f.openErr[connection]; err != nil {
+		return nil, err
+	}
 	got, ok := f.open[connection]
 	if !ok {
 		return nil, errorsx.Public("tracker_connection_unverified", "this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings", nil)

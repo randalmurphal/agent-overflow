@@ -274,9 +274,39 @@ func TestAPostReadsTheConnectionsThatCanHoldItsDays(t *testing.T) {
 	f = &fakeTracker{sources: []trackerapp.TicketSource{timeJira, added}}
 	h = &fakeHost{}
 	_, err = timeCall(t, timeServer(f, h), "time_draft", map[string]any{"post": []string{"2026-11-24"}})
-	refused(t, err, "tracker_connection_unverified", "example.atlassian.net: this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings")
+	refused(t, err, "tracker_connection_unverified", "Nothing was posted for Tue Nov 24: example.atlassian.net could not be read: this connection has no verified account, "+
+		"so whose time it is is not known; check the connection in the Issues settings.")
 	if len(h.approvals)+len(f.posts) != 0 {
 		t.Fatalf("asked %d, posted %v", len(h.approvals), f.posts)
+	}
+}
+
+// With nothing readable to post, the refusal names every connection that
+// could not be read, by account where two share a site, and says when the
+// others hold nothing; refusals of two kinds are the call's failure.
+func TestARefusalOfAPostNamesEveryUnreadConnection(t *testing.T) {
+	t.Parallel()
+	work := timeJira
+	work.Label, work.Email = "Work", "user1@example.com"
+	second := trackerapp.TicketSource{ID: "conn-jira-b", Site: timeJira.Site, Kind: "jira", Account: "acc-user2", Email: "user2@example.com"}
+	f := &fakeTracker{sources: []trackerapp.TicketSource{work, second}}
+	_, err := timeCall(t, timeServer(f, &fakeHost{}), "time_draft", map[string]any{"post": []string{"2026-11-24"}})
+	unverified := "could not be read: this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings"
+	refused(t, err, "tracker_connection_unverified", "Nothing was posted for Tue Nov 24: example.atlassian.net (Work) "+unverified+
+		"; example.atlassian.net (user2@example.com) "+unverified+".")
+
+	// One unread beside one read whose day is empty.
+	f = &fakeTracker{sources: []trackerapp.TicketSource{work, second}, open: map[string][]trackerapp.TimeEntryView{work.ID: {}}}
+	_, err = timeCall(t, timeServer(f, &fakeHost{}), "time_draft", map[string]any{"post": []string{"2026-11-24"}})
+	refused(t, err, "tracker_connection_unverified", "Nothing was posted for Tue Nov 24: example.atlassian.net (user2@example.com) "+unverified+
+		". The other connections hold no entry not yet logged for those days.")
+
+	// Two kinds of refusal.
+	f = &fakeTracker{sources: []trackerapp.TicketSource{work, second}, openErr: map[string]error{
+		second.ID: errorsx.Public("tracker_disabled", "this connection is turned off", nil)}}
+	_, err = timeCall(t, timeServer(f, &fakeHost{}), "time_draft", map[string]any{"post": []string{"2026-11-24"}})
+	if code, message, _ := errorsx.PublicDetails(err); code != CodeFailed || !strings.Contains(message, "(user2@example.com) could not be read: this connection is turned off") {
+		t.Fatalf("refused [%s] %s; want [%s] naming both", code, message, CodeFailed)
 	}
 }
 
@@ -408,7 +438,7 @@ func TestAPostThatFailedAfterSendingWritesItsRow(t *testing.T) {
 	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, open: map[string][]trackerapp.TimeEntryView{timeJira.ID: openDay()[:2]},
 		post: func(string, trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
 			return trackerapp.PostTimeView{Outcomes: []trackerapp.PostOutcome{{ID: 1, State: "posted"}, {ID: 2, State: "uncertain", Why: mayHave}}},
-				fmt.Errorf("trackerapp: settle the posted entries: disk I/O error")
+				fmt.Errorf("trackerapp: settle the posted entries: disk I/O error: %w", trackerapp.ErrPostUnrecorded)
 		}}
 	h := &fakeHost{}
 	srv := timeServer(f, h)
@@ -420,13 +450,27 @@ func TestAPostThatFailedAfterSendingWritesItsRow(t *testing.T) {
 	}
 	if want := `{"logged":[{"day":"2026-11-24","key":"WEB-1","hours":1.5}],"may_be_logged":[{"why":"` + mayHave + `","entries":[{"day":"2026-11-24","key":"WEB-2","hours":0.5}]}],` +
 		`"warnings":[{"site":"example.atlassian.net","warning":"The time listed as logged is logged, but this computer could not record it ` +
-		`(example.atlassian.net: trackerapp: settle the posted entries: disk I/O error); the Time screen shows these entries as may already be logged after the app restarts."}]}`; answer != want {
+		`(example.atlassian.net: trackerapp: settle the posted entries: disk I/O error: trackerapp: the post's outcomes are not stored); the Time screen shows these entries as may already be logged after the app restarts."}]}`; answer != want {
 		t.Fatalf("answered %s\nwant     %s", answer, want)
 	}
 	if len(h.postRows) != 1 || h.postRows[0].Title() != "Logged 1 of 2 entries for Tue Nov 24; 1 may have been logged" || h.postRows[0].Uncertain != 1 {
 		t.Fatalf("the timeline rows are %+v", h.postRows)
 	}
 	if len(logged) != 1 || !strings.Contains(logged[0], "disk I/O error") {
+		t.Fatalf("logged %q", logged)
+	}
+	// An error after the outcomes were stored (the read of the entries
+	// after them) changes nothing the answer says: it is logged alone.
+	f.post = func(string, trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
+		return trackerapp.PostTimeView{Outcomes: []trackerapp.PostOutcome{{ID: 1, State: "posted"}, {ID: 2, State: "posted"}}},
+			fmt.Errorf("trackerapp: read the entries after the post: database is locked")
+	}
+	logged = nil
+	answer, err = timeCall(t, srv, "time_draft", map[string]any{"post": []string{"2026-11-24"}})
+	if want := `{"logged":[{"day":"2026-11-24","key":"WEB-1","hours":1.5},{"day":"2026-11-24","key":"WEB-2","hours":0.5}]}`; err != nil || answer != want {
+		t.Fatalf("a post whose last read failed answered %s, %v\nwant %s", answer, err, want)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "database is locked") {
 		t.Fatalf("logged %q", logged)
 	}
 	f.post = func(_ string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
@@ -522,7 +566,7 @@ func TestAPostsAnswerAtTheBudgetsEdgeKeepsItsWarning(t *testing.T) {
 				}
 				out.Outcomes = append(out.Outcomes, o)
 			}
-			return out, fmt.Errorf("trackerapp: settle the posted entries: %s", strings.Repeat("disk I/O error ", 100))
+			return out, fmt.Errorf("trackerapp: settle the posted entries: %s%w", strings.Repeat("disk I/O error ", 100), trackerapp.ErrPostUnrecorded)
 		}}
 	answer, err := timeCall(t, timeServer(f, &fakeHost{}), "time_draft", map[string]any{"post": []string{"2026-11-24"}})
 	if err != nil {

@@ -2963,7 +2963,10 @@ verified Jira connection, with no tracker request
 every entry, whichever thread or person drafted it, as a day's approval
 names them. A connection never verified holds no draft and is not read;
 one whose read is refused is named in `unread` and on the prompt, and the
-others go on; the call fails when every connection read is refused. Days
+others go on. When no connection that was read holds an entry, the
+refusal names each connection that could not be read, by account where
+two share a site, and why, with their code when they share one
+(`tracker_call_failed` when not). Days
 with no entry not yet logged are refused, as are more than 250 entries,
 256 KiB of approval, or more entries than one answer names. When no entry
 is one the post would send, the answer gives each entry's reason and
@@ -2995,9 +2998,12 @@ warning per connection. A connection whose post was refused before it
 sent lists its entries as not sent with the refusal; when no
 connection's post sent anything, that answer is the call's, and nothing
 goes on the timeline. `warnings` names, per connection, the days whose
-read-back failed (`trackerapp.ReadBackSentence`) and a post that failed
-after it sent, whose outcomes this computer could not record; that error
-is also logged.
+read-back failed (`trackerapp.ReadBackSentence`) and a post that sent
+and could not store its outcomes (`trackerapp.ErrPostUnrecorded`), with
+the store's error, which the person may need to fix; those entries read
+as may already be logged after the app restarts. An error after the
+outcomes were stored (the read of the entries after them) changes
+nothing the answer says and is only logged.
 
 **The draft.** There is no draft object: the entries of a connection's
 author by day (`tracker_time_entries`, [schema](schema.md)), each naming
