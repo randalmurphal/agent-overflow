@@ -81,7 +81,7 @@ func TestLoggedTimeCountsOnlyWhereItsDaysWereRead(t *testing.T) {
 	if want := []string{"week:2026-11-16 3600", "week:2026-11-23 not known, 1 days not read"}; !reflect.DeepEqual(bars, want) {
 		t.Fatalf("bars = %v; want %v", bars, want)
 	}
-	if p := widgetOf(t, a, "people").Buckets; len(p) != 2 || num(&p[0].Cells[0]) != "not known, 1 days not read" {
+	if p := widgetOf(t, a, "people").Buckets; len(p) != 2 || num(&p[0].Cells[0]) != "not known, 1 days not read" || num(&p[1].Total) != "not known, 1 days not read" {
 		t.Fatalf("people = %+v; want each not known", p)
 	}
 	if a.Viewer != "u1" {
