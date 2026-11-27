@@ -2768,22 +2768,27 @@ The rules are the comments at the top of
   drill refuses with the same sentence.
 - A day with no read is not zero hours, and a row of logged time can
   count in a period other than its day's (a sprint's tickets, a state that
-  holds from its day on). `ranged` hands out rows only with what they
-  reach (`taken.cover`), and one function, `evaluation.num`, turns a
-  reduction and its reach into every number: a widget's, a period's, a
-  bar's or a cell's, a total, the range before, a drill's, and a Try's. A
-  state at an instant before `LoggedFrom`'s first instant, or rows placed
-  in a period that begins before it, reach a day the copy never holds:
-  the number is never known (`Num.Old`), and the widget lists no day for
-  it. Any other rows of logged time are not known while a day of the
-  window up to now is not read (`Num.UR`, the count of those days). A
-  period still to come, or a range with no period, takes no row and is
-  not marked. A weekend's day is a day like any other. A widget one of
-  whose numbers needed the window lists its days not read
-  (`WidgetValue.Unread`); a list whose rows reach a day the copy never
-  holds says so (`WidgetValue.Old`).
+  holds from its day on). A widget needs the window by what it is,
+  decided before any row is looked at (`ranged.needsWindow`): its metric
+  reads logged time, the page can count it, and its range has something
+  to count for it (a chart of periods, or an event metric's number, list
+  or ranked chart, has nothing over a range with no period). Such a
+  widget lists the window's days not read (`WidgetValue.Unread`) and
+  counts toward the reads, with rows or none. `ranged` hands out rows
+  only with what they reach (`taken.cover`), and one function,
+  `evaluation.num`, turns a reduction and its reach into every number: a
+  widget's, a period's, a bar's or a cell's, a total, the range before, a
+  drill's, and a Try's. Older than kept is one comparison
+  (`evaluation.reach`): a reduction whose interval can hold an instant
+  before the first instant of `LoggedFrom` in the request's zone (a state
+  at such an instant, rows placed in a period whose start is earlier than
+  that instant's millisecond before) is never known (`Num.Old`; a list's
+  or a ranked chart's `WidgetValue.Old`). Any other is not known while a
+  day of the window up to now is not read (`Num.UR`, the count of those
+  days). A period still to come, or a range with no period, takes no row
+  and is not marked. A weekend's day is a day like any other.
 - The evaluator makes no tracker request: an evaluation (or an agent's
-  Try) in which a widget counted logged time calls `Board.Worklogs` once
+  Try) in which a widget needed the window calls `Board.Worklogs` once
   with the days it found not read and today, and puts the answer, whether
   the reads run and why the last failed, on `Answer.Logged`.
 - The reads have one owner on the board's computer
