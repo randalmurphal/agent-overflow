@@ -156,7 +156,7 @@ func quote(s string) string {
 
 // fill is the fixture as a Fill.
 func (f *fixture) fill() Fill {
-	return func(ctx context.Context, conn *sql.Conn, _ []string) (store.MirrorExport, bool, error) {
+	return func(ctx context.Context, conn *sql.Conn, _ []string, through string) (store.MirrorExport, bool, error) {
 		if _, err := conn.ExecContext(ctx, store.MirrorExportSchema); err != nil {
 			return store.MirrorExport{}, false, err
 		}
@@ -168,8 +168,16 @@ func (f *fixture) fill() Fill {
 			}
 		}
 		window := ms(testNow) - 180*day
+		// The logged time is the store's: the days from the first to
+		// through alone (store.MirrorLoggedDays).
+		from := time.UnixMilli(window).UTC().AddDate(0, 0, -1).Format(time.DateOnly)
+		for _, table := range []string{"worklogs", "worklog_days"} {
+			if _, err := conn.ExecContext(ctx, `DELETE FROM `+table+` WHERE day NOT BETWEEN ? AND ?`, from, through); err != nil {
+				return store.MirrorExport{}, false, err
+			}
+		}
 		return store.MirrorExport{Name: "WEB board", EstimateUnit: unit, PlansSprints: f.plansSprints, FirstReadDone: !f.reading,
-			Earliest: cmp.Or(f.earliest, window), LoggedFrom: time.UnixMilli(window).UTC().AddDate(0, 0, -1).Format(time.DateOnly), Viewer: map[bool]string{false: "u1"}[f.unverified]}, true, nil
+			Earliest: cmp.Or(f.earliest, window), LoggedFrom: from, Viewer: map[bool]string{false: "u1"}[f.unverified]}, true, nil
 	}
 }
 
@@ -219,6 +227,8 @@ func num(n *Num) string {
 		return "absent"
 	case n.Gap:
 		return "gap"
+	case n.Old:
+		return "not known, older than kept"
 	case n.UR > 0:
 		return fmt.Sprintf("not known, %d days not read", n.UR)
 	case n.V == nil && n.NC > 0:

@@ -24,7 +24,8 @@ import (
 // connection's board with Logged set.
 
 // dashTime is a time scenario whose connection is verified as user 1,
-// whose steady clock is the fake's, and which holds a hidden subscription
+// whose steady clock is the fake's, whose evaluator's clock is the
+// service's, and which holds a hidden subscription
 // of the connection's board (no reads of its own), whose events tell the
 // end of each run. today is the service's day in UTC.
 func dashTime(t *testing.T) (*timeScenario, string) {
@@ -32,6 +33,9 @@ func dashTime(t *testing.T) (*timeScenario, string) {
 	s := newTimeScenario(t)
 	s.conn = must[Connection](t)(s.svc.Verify(t.Context(), s.conn.ID))
 	s.svc.useClock(s.svc.now, s.clock.Now)
+	// The evaluator counts on the service's clock, as one clock (Deps.Now)
+	// gives both in the app.
+	s.svc.dash = trackerdash.NewEvaluator(s.svc.now)
 	scope := Scope{Connection: s.conn.ID, Board: "1"}
 	s.listBoards(s.conn.ID, scope.Board)
 	must[BoardSubscription](t)(s.svc.SubscribeBoard("boards-"+s.conn.ID, scope, []Section{{Kind: SectionBacklog}}, false, untied))
@@ -80,6 +84,26 @@ func (s *timeScenario) shownNeeding(t *testing.T, need trackerdash.WorklogNeed) 
 		t.Fatal(err)
 	}
 	return s.svc.worklogsOf(row)(need)
+}
+
+// record is the reads' record of the connection: its days queued and
+// handed, and its failure.
+func (s *timeScenario) record() (queued, handed int, failure string) {
+	r := &s.svc.worklogs
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c := r.conn(s.conn.ID)
+	return len(c.queued), len(c.handed), c.failure
+}
+
+// sourceGen is the connection's time source generation now.
+func (s *timeScenario) sourceGen(t *testing.T) int64 {
+	t.Helper()
+	row, err := s.st.GetTrackerConnection(s.conn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return row.TimeSourceGen
 }
 
 // told waits until the connection's board was told n ends of runs.
@@ -488,6 +512,122 @@ func TestARunStopsWhenTheAccountChanges(t *testing.T) {
 	if got := s.spanCount(); got != 1 {
 		t.Fatalf("the run read %v after the account changed; want the read in flight alone", s.spansSince(0))
 	}
+	if queued, handed, failure := s.record(); queued != 0 || handed != 0 || failure != "" {
+		t.Fatalf("the stopped run left %d days queued, %d handed, failure %q; want none", queued, handed, failure)
+	}
+}
+
+// A run reads nothing more once the time source changes between two of
+// its reads, though no evaluation came to start the reads over: the read
+// of the next span checks the connection row it runs with, so no span is
+// read from Tempo for Jira's run. The run forgets what it queued and
+// handed, and a show under Tempo reads every day of the window.
+func TestARunStopsWhenTheTimeSourceChangesBetweenReads(t *testing.T) {
+	t.Parallel()
+	s, today := dashTime(t)
+	n := len(s.window(t, today))
+	s.gate.mu.Lock()
+	s.gate.after = func() { s.addTempoOn(t) }
+	s.gate.mu.Unlock()
+	s.shown(t, today)
+	s.told(t, 1)
+	if got := s.spanCount(); got != 1 {
+		t.Fatalf("Jira's run read %v; want its first read alone", s.spansSince(0))
+	}
+	if queued, handed, failure := s.record(); queued != 0 || handed != 0 || failure != "" {
+		t.Fatalf("the stopped run left %d days queued, %d handed, failure %q; want none", queued, handed, failure)
+	}
+	if st := s.shown(t, today); !st.Reading {
+		t.Fatalf("a show under Tempo answered %+v; want the reads started", st)
+	}
+	s.told(t, 2)
+	if spans := s.spansSince(1); len(spans) != (n+worklogSpan-1)/worklogSpan || spans[0] != newestSpan(today) {
+		t.Fatalf("under Tempo the show read %v; want the whole window, newest first", spans)
+	}
+}
+
+// An evaluation of an older time source changes nothing: after Tempo's
+// read failed, one that copied the board under Jira answers the failure
+// and neither forgets it nor queues a day, so a show under Tempo still
+// reads nothing until a person asks.
+func TestAnOlderEvaluationChangesNothing(t *testing.T) {
+	t.Parallel()
+	s, today := dashTime(t)
+	jira := s.sourceGen(t)
+	s.addTempoOn(t)
+	tempo := s.sourceGen(t)
+	tempoOrigin := trackerfake.Origin{Tracker: trackerfake.TrackerTempo}
+	if err := s.e.AddFault(trackerfake.Fault{Origin: tempoOrigin, Route: "GET 4/worklogs/user/{account}", Kind: trackerfake.FaultRefuse, Times: 1, Status: 400,
+		Body: json.RawMessage(`{"errors":[{"message":"refused"}]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	s.shown(t, today)
+	s.told(t, 1)
+	if _, _, failure := s.record(); failure == "" {
+		t.Fatal("Tempo's first read did not fail")
+	}
+	late := s.svc.wantWorklogs(s.conn.ID, "acc-user1", jira, trackerdash.WorklogNeed{Unread: s.window(t, today), Today: today})
+	if late.Reading || late.Failure == "" || jira >= tempo {
+		t.Fatalf("an evaluation of generation %d, after %d, answered %+v; want Tempo's failure and no read", jira, tempo, late)
+	}
+	if st := s.shown(t, today); st.Reading || st.Failure == "" || s.spanCount() != 0 {
+		t.Fatalf("a show under Tempo after it answered %+v with reads %v; want the failure and nothing more read", st, s.spansSince(0))
+	}
+}
+
+// An evaluation that copied the board before a run stored its days finds
+// them not read; the days a read took are not queued again: once the
+// window is read, such a show reads nothing.
+func TestALateEvaluationQueuesNoDayAReadTook(t *testing.T) {
+	t.Parallel()
+	s, today := dashTime(t)
+	stale := s.unread(t, today)
+	s.shown(t, today)
+	s.told(t, 1)
+	mark := s.spanCount()
+	if st := s.shownNeeding(t, trackerdash.WorklogNeed{Unread: stale, Today: today}); st.Reading || s.spanCount() != mark {
+		t.Fatalf("a show with the window found unread before the run answered %+v and read %v", st, s.spansSince(mark))
+	}
+}
+
+// Turning the connection off while a read is in flight, between its days
+// being handed out and stored, forgets them: once on again, a show reads
+// every day of the window.
+func TestTurningAConnectionOffMidReadForgetsWhatItTook(t *testing.T) {
+	t.Parallel()
+	s, today := dashTime(t)
+	n := len(s.window(t, today))
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	let := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	s.gate.mu.Lock()
+	s.gate.gate = func() {
+		close(arrived)
+		<-release
+	}
+	s.gate.mu.Unlock()
+	s.shown(t, today)
+	select {
+	case <-arrived:
+	case <-time.After(gateWait):
+		t.Fatal("the first read never reached its store")
+	}
+	must[Connection](t)(s.svc.SetEnabled(s.conn.ID, false))
+	if queued, handed, _ := s.record(); queued != 0 || handed != 0 {
+		t.Fatalf("turned off mid-read, the reads hold %d days queued, %d handed", queued, handed)
+	}
+	let()
+	must[Connection](t)(s.svc.SetEnabled(s.conn.ID, true))
+	must[BoardSubscription](t)(s.svc.SubscribeBoard("boards-"+s.conn.ID, Scope{Connection: s.conn.ID, Board: "1"}, []Section{{Kind: SectionBacklog}}, false, untied))
+	mark := s.spanCount()
+	if st := s.shown(t, today); !st.Reading {
+		t.Fatalf("a show after off and on answered %+v", st)
+	}
+	s.told(t, 1)
+	if spans := s.spansSince(mark); len(spans) != (n+worklogSpan-1)/worklogSpan || spans[0] != newestSpan(today) {
+		t.Fatalf("after off and on the show read %v; want the whole window, newest first", spans)
+	}
 }
 
 // Turning a connection off stops its run and forgets its reads but the
@@ -600,6 +740,9 @@ func TestStoppingTheServiceMidRunJoinsItsReads(t *testing.T) {
 	if got := s.spanCount(); got != 1 {
 		t.Fatalf("the run read %v after Stop", s.spansSince(0))
 	}
+	if queued, handed, _ := s.record(); queued != 0 || handed != 0 {
+		t.Fatalf("after Stop the reads hold %d days queued, %d handed", queued, handed)
+	}
 	// An evaluation in flight through Stop tells the reads its need after
 	// it: no run starts.
 	if st := s.shownNeeding(t, trackerdash.WorklogNeed{Unread: []string{today}, Today: today}); st.Reading {
@@ -633,5 +776,44 @@ func TestAnAgentsWidgetOfLoggedTimeStartsTheReads(t *testing.T) {
 	s.told(t, 1)
 	if s.spanCount() == 0 {
 		t.Fatal("the agent's widget read nothing")
+	}
+}
+
+// A number of the logged time counts the days up to today in the zone it
+// is counted in, not a day after it the mirror holds: an hour logged
+// tomorrow, which the Time screen read, is not in a widget's total today.
+func TestALoggedNumberCountsNoDayAfterToday(t *testing.T) {
+	t.Parallel()
+	s, _ := dashTime(t)
+	scope := Scope{Connection: s.conn.ID, Board: "1"}
+	s.syncBoard(t, scope)
+	if err := s.svc.ReadWorklogDays(s.conn.ID, "Local"); err != nil {
+		t.Fatal(err)
+	}
+	s.told(t, 1)
+	tomorrow := s.svc.now().In(time.Local).AddDate(0, 0, 1)
+	site := s.e.Snapshot().Jira[0]
+	site.Token = "fake-jira-token-1"
+	if site.Tempo != nil {
+		site.Tempo.Token = tempoTokenFake
+	}
+	at := s.clock.Now()
+	site.Issues[0].Worklogs = append(site.Issues[0].Worklogs, trackerfake.JiraWorklog{ID: "20011", Author: "acc-user1",
+		Started: time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 12, 0, 0, 0, time.Local), TimeSpent: 7200, Created: at, Updated: at})
+	if err := s.e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}); err != nil {
+		t.Fatal(err)
+	}
+	day := tomorrow.Format(time.DateOnly)
+	if got := must[WorklogDays](t)(s.svc.RefreshWorklogs(t.Context(), s.conn.ID, "acc-user1", day, day)); !slices.ContainsFunc(got.Worklogs, func(w WorklogView) bool { return w.ID == "20011" }) {
+		t.Fatalf("the Time screen's read of %s holds %+v; want worklog 20011", day, got.Worklogs)
+	}
+	w := KeptWidget{ID: "w_1", Form: "number", Width: 3, Metric: trackerdash.Metric{Name: "w_1", Title: "All your hours", Words: []string{"All your logged time."},
+		SQL: `SELECT ticket, seconds AS value FROM worklogs`, Reduce: trackerdash.ReduceSum, Unit: trackerdash.UnitTime}}
+	tried, err := s.svc.TryWidget(t.Context(), "boards-"+s.conn.ID, scope, w, TileMarks{}, "thread-1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := tried.Value.Value; v == nil || v.V == nil || *v.V != 3600 {
+		t.Fatalf("the total today = %+v; want 3600 seconds, without tomorrow's 7200; unread %v", v, tried.Value.Unread)
 	}
 }

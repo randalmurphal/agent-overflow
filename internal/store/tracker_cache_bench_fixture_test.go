@@ -159,10 +159,10 @@ const (
 	benchRecentSprints = 13
 )
 
-// BenchLoggedFromForTest is the first day of logged time the fixture is
-// exported with, as trackerapp's loggedFrom gives it: the day before the
-// history window's.
-var BenchLoggedFromForTest = time.UnixMilli(BenchWindowForTest).UTC().AddDate(0, 0, -1).Format(time.DateOnly)
+// BenchLoggedForTest is the days of logged time the fixture is exported
+// with: from the day before the history window's, as trackerapp's
+// loggedFrom gives it, to the fixture's today in UTC.
+var BenchLoggedForTest = MirrorLoggedDays{From: time.UnixMilli(BenchWindowForTest).UTC().AddDate(0, 0, -1).Format(time.DateOnly), Through: time.UnixMilli(BenchNowForTest).UTC().Format(time.DateOnly)}
 
 // benchRecentStructure is board's structure as a recent fixture keeps it:
 // 12 closed two-week sprints inside the window and an active one.

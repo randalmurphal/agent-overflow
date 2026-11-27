@@ -6,25 +6,25 @@ import (
 )
 
 // The viewer's logged time (the export's worklogs and worklog_days, the
-// rules in store/tracker_cache_export_relations.go). The copy holds the
-// worklogs of the days the mirror read from its first day
-// (MirrorExport.LoggedFrom), and says which days those are; a day not
-// read is not zero hours. What must hold:
-//   - The days a metric's query can see are the days the copy checks: from
-//     LoggedFrom up to today, the window. A number a reduction took rows
-//     of logged time for (ranged.took) is known only once every day of the
-//     window up to now is read: a row can count in a period other than its
-//     day's (a sprint's tickets, a state that holds from its day on), so no
-//     number is known while a day it could hold is not read. Each counts
-//     the window's days not read, with those of its periods before
-//     LoggedFrom, which the copy never holds (a sprint that began before
-//     it), in Num.UR, and is not known while it counts any. The widget
-//     lists the window's days not read (WidgetValue.Unread). A reduction
-//     that took no rows (a metric counted by period over a range with no
-//     period) marks and lists nothing. A day is in the period that holds
-//     its placed instant, the one day_start places a row of it at. A
-//     weekend's day counts like any other.
-//   - An evaluation in which a widget counted logged time tells the reads
+// rules in store/tracker_cache_export_relations.go). What must hold:
+//   - A number counted from the viewer's logged time is shown only when
+//     it is what the tracker holds for the days it counts. The copy holds
+//     the days from its first (MirrorExport.LoggedFrom) to today in the
+//     request's time zone (the export binds both, Fill's loggedThrough),
+//     the window, and says which of them were read; a day not read is not
+//     zero hours.
+//   - One rule decides it, in one place (num), from what the reduction's
+//     rows need (cover), which ranged hands out with every row it holds:
+//     a state at an instant before the first day, or rows placed in a
+//     period that begins before that day's instant, reach a day the copy
+//     never holds and are not known for good (Num.Old); any other rows of
+//     it are not known while a day of the window is not read (Num.UR, the
+//     count), since a row can count in a period other than its day's (a
+//     sprint's tickets, a state that holds from its day on); a period
+//     still to come, or a range with no period, takes no row and is not
+//     marked. A widget one of whose numbers needed the window lists its
+//     days not read (WidgetValue.Unread).
+//   - An evaluation in which a number needed the window tells the reads
 //     what it needs (Board.Worklogs) and answers their state
 //     (Answer.Logged); the reads are the caller's, so the evaluation does
 //     no I/O for them.
@@ -96,69 +96,66 @@ func (ev *evaluation) unread(from, to, now int64) []string {
 
 // windowUnread is the days of the window up to now not read, read once
 // an evaluation.
-func (ev *evaluation) windowUnread(now int64) []string {
+func (ev *evaluation) windowUnread() []string {
 	if !ev.windowRead {
-		ev.windowDays, ev.windowRead = ev.unread(ev.loggedFrom-1, now, now), true
+		ev.windowDays, ev.windowRead = ev.unread(ev.loggedFrom-1, ev.now, ev.now), true
 	}
 	return ev.windowDays
 }
 
-// notRead is the days a number over periods ps needs read and are not:
-// the window's, with those of ps before it.
-func (ev *evaluation) notRead(ps []period, now int64) int {
-	days := slices.Clone(ev.windowUnread(now))
-	for _, p := range ps {
-		days = append(days, ev.unread(p.from, min(p.to, ev.loggedFrom-1), now)...)
+// cover is what a reduction's rows need of the viewer's logged time:
+// nothing (a metric that does not read it, a period still to come, a
+// range with no period), every day of the window, or a day before it,
+// which the copy never holds (ranged.inRange decides which).
+type cover uint8
+
+const (
+	coverNone cover = iota
+	coverWindow
+	coverOld
+)
+
+// num is r over t's rows as a number, not known by what they need of the
+// viewer's logged time: the one place a widget's, a drill's or a Try's
+// number is made from a ranged's rows.
+func (ev *evaluation) num(r Reducer, t taken) Num {
+	if t.none {
+		return Num{}
 	}
-	slices.Sort(days)
-	return len(slices.Compact(days))
+	n := reduceRows(r, t.rows)
+	if r == ReduceAverageOfPeriodSums && t.periods > 0 && n.V != nil {
+		*n.V /= float64(t.periods)
+	}
+	switch unread, old := ev.need(t.cover); {
+	case old:
+		return Num{Old: true}
+	case unread > 0:
+		n.V, n.UR = nil, unread
+	}
+	return n
 }
 
-// markUnread makes n not known where days of it were not read.
-func markUnread(n *Num, days int) {
-	if n != nil && days > 0 {
-		n.V, n.UR = nil, days
+// need is what rows of cover c lack: the window's days not read, or a
+// day before it. Rows that need the window count toward the reads
+// (worklogNeed) and the widget's list of days (WidgetValue.Unread).
+func (ev *evaluation) need(c cover) (unread int, old bool) {
+	switch c {
+	case coverOld:
+		return 0, true
+	case coverWindow:
+		ev.logged++
+		return len(ev.windowUnread()), false
 	}
-}
-
-// markWidget marks widget value out of metric m, its rows sorted into
-// the range as g, not known while days it needs are not read, and lists
-// the window's days not read, when its reduction took rows.
-func (ev *evaluation) markWidget(out *WidgetValue, w Widget, m Metric, g *ranged, sp span) {
-	if !g.took {
-		return
-	}
-	ev.logged = true
-	out.Unread = ev.windowUnread(sp.now)
-	whole := ev.notRead(g.periods, sp.now)
-	markUnread(out.Value, whole)
-	if out.Previous != nil && !out.Previous.Gap {
-		markUnread(out.Previous, ev.notRead(sp.previous, sp.now))
-	}
-	for i := range out.Trend {
-		markUnread(&out.Trend[i], ev.notRead(g.periods[i:i+1], sp.now))
-	}
-	for i := range out.Buckets {
-		n := whole
-		if !ranks(w, m) {
-			n = ev.notRead(g.periods[i:i+1], sp.now)
-		}
-		b := &out.Buckets[i]
-		markUnread(&b.Total, n)
-		for j := range b.Cells {
-			markUnread(&b.Cells[j], n)
-		}
-	}
+	return 0, false
 }
 
 // worklogNeed is what o's evaluation needs of the viewer's logged time,
-// nil when no widget of it counted it.
+// nil when no number of it needed the window.
 func (o *opened) worklogNeed() *WorklogNeed {
-	if !o.ev.logged {
+	if o.ev.logged == 0 {
 		return nil
 	}
-	now := o.now.UnixMilli()
-	return &WorklogNeed{Unread: o.ev.windowUnread(now), Today: o.now.In(o.ev.loc).Format(time.DateOnly)}
+	return &WorklogNeed{Unread: o.ev.windowUnread(), Today: o.now.In(o.ev.loc).Format(time.DateOnly)}
 }
 
 // tellWorklogs tells b's reads need, and returns their state: nil for no

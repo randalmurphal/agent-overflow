@@ -86,7 +86,7 @@ func (e *Evaluator) Try(ctx context.Context, b Board, w Widget, m Metric, timeZo
 	ev := o.ev
 	out := Tried{View: o.view.Widgets[0], Value: ev.widget(w, m, c, o.sp), Unit: valueUnit(m, ev.estimates), Range: rangeView(o.sp), Reading: !ev.export.FirstReadDone, Rows: []TicketRow{}}
 	g := ev.inRange(m, c, o.sp)
-	rows := append(slices.Clone(g.held()), g.unplaced...)
+	rows := slices.Clone(g.listed().rows)
 	sortDrill(rows, ev.keyOf)
 	out.Count = len(rows)
 	for i, r := range rows[:min(len(rows), triedRows)] {

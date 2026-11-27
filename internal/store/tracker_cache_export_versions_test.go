@@ -56,7 +56,7 @@ func exportIntervals(t *testing.T, s *Store, root, window int64) (status, sprint
 	t.Helper()
 	for k, relations := range [][]string{{"status_intervals", "sprint_intervals", "tickets"}, {"status_intervals", "sprint_intervals", "tickets", "changes"}} {
 		conn := exportConn(t)
-		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, relations, window, "", CardShapeForTest); err != nil || !ok {
+		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, relations, window, MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok {
 			t.Fatalf("export of %v: %v, %v", relations, ok, err)
 		}
 		st := exportRows(t, conn, `SELECT ticket || '|' || status || '|' || from_at || '|' || coalesce(to_at, '-') || '|' || coalesce(began, '-') || '|' || open
@@ -483,7 +483,7 @@ func TestAClosedSprintsMemberWhoseStatusThenIsNotKnownIsNotDoneOrNot(t *testing.
 	versionCard(t, s, root, 20_000, "10001", 1, "40", "41")
 	finished := func() []string {
 		conn := exportConn(t)
-		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"sprint_finished"}, 500, "", CardShapeForTest); err != nil || !ok {
+		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"sprint_finished"}, 500, MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok {
 			t.Fatalf("export: %v, %v", ok, err)
 		}
 		return exportRows(t, conn, `SELECT sprint || '|' || ticket || '|' || coalesce(done, '-') FROM sprint_finished ORDER BY sprint`)

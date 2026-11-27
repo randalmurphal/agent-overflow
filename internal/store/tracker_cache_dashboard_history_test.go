@@ -56,8 +56,8 @@ func TestStuckOverTheIntervalsCountsNowAsOverStatusSince(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := trackerdash.NewEvaluator(func() time.Time { return c.now })
-			b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-				return c.s.ExportMirrorBoard(ctx, conn, c.root, c.board, c.regroup, relations, c.window, "", store.CardShapeForTest)
+			b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string, _ string) (store.MirrorExport, bool, error) {
+				return c.s.ExportMirrorBoard(ctx, conn, c.root, c.board, c.regroup, relations, c.window, store.MirrorLoggedDays{}, store.CardShapeForTest)
 			}}
 			stuck := builtinStuck(t, e, b)
 			read := func(sql string, form trackerdash.Form) string {
@@ -129,8 +129,8 @@ func TestTheBurndownCountsOpenAsTheTicketsDo(t *testing.T) {
 	created := time.Now().Add(-24 * time.Hour).UnixMilli()
 	s, root, regroup := store.DashboardOpenFixtureForTest(t, created)
 	e := trackerdash.NewEvaluator(time.Now)
-	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-		return s.ExportMirrorBoard(ctx, conn, root, "10", regroup, relations, 0, "", store.CardShapeForTest)
+	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string, _ string) (store.MirrorExport, bool, error) {
+		return s.ExportMirrorBoard(ctx, conn, root, "10", regroup, relations, 0, store.MirrorLoggedDays{}, store.CardShapeForTest)
 	}}
 	a, err := e.Evaluate(context.Background(), b, trackerdash.Request{Dashboard: "overview_sprints", TimeZone: "UTC"})
 	if err != nil {

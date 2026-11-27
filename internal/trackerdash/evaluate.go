@@ -546,15 +546,19 @@ type evaluation struct {
 	// readDays is the days of the viewer's (export.Viewer) logged time the
 	// copy holds as read, filled when a metric reads worklogs.
 	readDays map[string]bool
-	// loggedFrom is where the copy's logged time begins: the instant its
-	// first day (export.LoggedFrom) is placed at. windowDays is the days
-	// from it up to the evaluation's now not read, once windowRead
-	// (windowUnread). logged is whether a widget counted the viewer's
-	// logged time (markWidget), so the reads hear of it (Board.Worklogs).
+	// now is the evaluation's instant. loggedFrom is where the copy's
+	// logged time begins: the instant its first day (export.LoggedFrom)
+	// is placed at; lastOld is where the day before it is, the last the
+	// copy never holds. windowDays is the days from loggedFrom up to now
+	// not read, once windowRead (windowUnread). logged counts the numbers
+	// that needed the window (num), so the reads hear of them
+	// (Board.Worklogs) and a widget lists its days (WidgetValue.Unread).
+	now        int64
 	loggedFrom int64
+	lastOld    int64
 	windowDays []string
 	windowRead bool
-	logged     bool
+	logged     int
 	estimates  string
 	sprints    []sprintRow
 	tickets    map[string]ticketRow
@@ -567,17 +571,18 @@ type ticketRow struct {
 	created, updated    int64
 }
 
-// open opens a session, fills it with b's export of relations and seals
-// it, then reads the rows every widget names. asked is what each metric
+// open opens a session, fills it with b's export of relations, with the
+// viewer's logged time up to today in loc at now, and seals it, then
+// reads the rows every widget names. asked is what each metric
 // reads of the copy, from its plan on an empty session.
-func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, relations []string, asked map[string]asks) (*evaluation, error) {
+func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, now time.Time, relations []string, asked map[string]asks) (*evaluation, error) {
 	s, err := openSession(ctx, loc)
 	if err != nil {
 		return nil, err
 	}
 	s.asked = asked
-	ev := &evaluation{s: s, loc: loc}
-	if err := ev.fill(ctx, b, relations); err != nil {
+	ev := &evaluation{s: s, loc: loc, now: now.UnixMilli()}
+	if err := ev.fill(ctx, b, relations, now.In(loc).Format(time.DateOnly)); err != nil {
 		if closeErr := s.close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
@@ -586,8 +591,8 @@ func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, relat
 	return ev, nil
 }
 
-func (ev *evaluation) fill(ctx context.Context, b Board, relations []string) error {
-	export, ok, err := b.Fill(ctx, ev.s.conn, relations)
+func (ev *evaluation) fill(ctx context.Context, b Board, relations []string, loggedThrough string) error {
+	export, ok, err := b.Fill(ctx, ev.s.conn, relations, loggedThrough)
 	switch {
 	case err != nil:
 		return tooSlow(ctx, fmt.Errorf("copy the board for its dashboard: %w", err))
@@ -606,7 +611,7 @@ func (ev *evaluation) fill(ctx context.Context, b Board, relations []string) err
 	if err != nil {
 		return fmt.Errorf("the copy's first day of logged time %q is not a date: %w", export.LoggedFrom, err)
 	}
-	ev.loggedFrom = placed(first, ev.loc)
+	ev.loggedFrom, ev.lastOld = placed(first, ev.loc), placed(first.AddDate(0, 0, -1), ev.loc)
 	ev.readDays = map[string]bool{}
 	return tooSlow(ctx, ev.query(ctx, `SELECT day FROM worklog_days`, func(r *sql.Rows) error {
 		var day string
@@ -898,7 +903,7 @@ func (e *Evaluator) begin(ctx context.Context, b Board, r Request, counts func(w
 	relations, asked, err := e.relationsOf(ctx, o.kind, o.metrics, builtins, own)
 	var ev *evaluation
 	if err == nil {
-		ev, err = e.open(ctx, b, loc, relations, asked)
+		ev, err = e.open(ctx, b, loc, o.now, relations, asked)
 	}
 	if err != nil {
 		cancel()
@@ -1206,93 +1211,115 @@ func rangeView(sp span) RangeView {
 }
 
 // ranged is a metric's rows sorted into a range and the one before it
-// (inRange). A period's rows and number are read through it alone (of,
-// value), so every widget form and drill reads a period the same way.
+// (inRange). Its rows are handed out only by its takes, each with what
+// they need of the viewer's logged time (taken), so every widget form,
+// drill and Try reads a period the same way and no number is made from
+// rows of logged time without it (num). The takes are closures over the
+// rows: nothing else holds them.
 type ranged struct {
 	// periods is what the metric counts by: the range's periods, or the
 	// sprint's days for a metric grouped by day; nil for one that counts
 	// now.
 	periods []period
-	// rows is the rows in the periods; all of the metric's rows for one
-	// that counts now; those that hold now for a state. It is read through
-	// held. none is an event metric's counted by period over a range with
-	// no period: it has no rows to count, not zero of them.
+	// events is an event metric's counted by period, whose number is its
+	// periods' (whole); state is a state metric's, whose number is what
+	// holds now (held). compared is false when there is nothing to
+	// compare (the sprint's days).
+	events, state, compared bool
+	// notCounted is the range's tickets that its rows with no instant
+	// leave not counted (notCounted).
+	notCounted int
+	// held is the range's rows: all of the metric's for one that counts
+	// now, those that hold now for a state, those in the periods for an
+	// event. whole is the rows the range's number counts: an event's in
+	// the periods with its rows of no instant; held for the others.
+	// earlier is what that number compares with: an event's previous
+	// range, a state's rows that held where the range begins. listed is
+	// held with the rows of no instant. of is period p's rows: none for a
+	// period still to come, which has not happened; a state's rows that
+	// hold at its end (holdsAt), of its sprints for one grouped by sprint,
+	// valid until the next call; an event's that fall in it.
+	held, whole, earlier, listed func() taken
+	of                           func(p period) taken
+}
+
+// taken is rows a reduction takes from a ranged (worklogs.go).
+type taken struct {
 	rows []contribution
+	// periods is how many periods the rows are of, which an average of
+	// period sums divides by; 0 for rows of no range.
+	periods int
+	// none is nothing to reduce: a period still to come, a range with no
+	// period.
 	none bool
-	// took is whether a reduction took rows of the range: held, of, or
-	// reduce over at least one period. A number counted from none has
-	// none to read (markWidget).
-	took bool
-	// placed is an event metric's rows of the periods and the previous
-	// range's by period ID; nil for a metric that counts now or a state.
-	placed map[string][]contribution
-	// unplaced and unplacedBefore are the rows with no instant of the
-	// range and of the one before it: not counted, in no period (place).
-	unplaced, unplacedBefore []contribution
-	// state is a state metric's: all is its rows, which a period selects
-	// where they hold at its end; before is the rows that held where the
-	// range begins, which its number compares with; compared is false when
-	// there is nothing to compare (the sprint's days).
-	// bySprint is a state's grouped by sprint: a period holds only the rows
-	// of its sprints.
-	state, bySprint bool
-	all             []contribution
-	before          []contribution
-	compared        bool
-	// buf holds the rows of the state period of last asked for.
-	buf []contribution
+	// cover is what the rows need of the viewer's logged time.
+	cover cover
 }
 
-// held is the range's rows (rows) for a reduction to take.
-func (g *ranged) held() []contribution {
-	g.took = g.took || !g.none
-	return g.rows
-}
-
-// reduce is r over the rows placed in periods with the unplaced ones, as
-// reduceRange counts them.
-func (g *ranged) reduce(r Reducer, periods []period, unplaced []contribution) Num {
-	g.took = g.took || len(periods) > 0
-	return reduceRange(r, periods, g.placed, unplaced)
-}
-
-// of is period p's rows: none for a period still to come, which has not
-// happened; a state's rows that hold at its end (holdsAt), of its sprints
-// for one grouped by sprint; an event's that fall in it. A state's are
-// valid until the next call.
-func (g *ranged) of(p period) []contribution {
-	g.took = g.took || !p.future
-	switch {
-	case p.future:
-		return nil
-	case !g.state:
-		return g.placed[p.id]
-	}
-	g.buf = g.buf[:0]
-	for _, c := range g.all {
-		if c.holdsAt(p.to) && (!g.bySprint || slices.Contains(p.sprints, c.bucket)) {
-			c.period = p.label
-			g.buf = append(g.buf, c)
-		}
-	}
-	return g.buf
+// sub is rows, a part of t's rows, as t takes them.
+func (t taken) sub(rows []contribution) taken {
+	t.rows = rows
+	return t
 }
 
 // inRange is c's rows sorted into the range sp and the one before it, or
 // into the sprint's days for a metric grouped by day; a state's rows are
 // read where they hold.
 func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
+	logged := c.p.readsWorklogs()
+	need := func(old bool) cover {
+		switch {
+		case !logged:
+			return coverNone
+		case old:
+			return coverOld
+		}
+		return coverWindow
+	}
+	// A state at t counts the days up to t: none of the copy's before its
+	// first. Rows placed in periods from ps[0] on fall on a day before the
+	// copy's first when the earliest of them begins before that day's
+	// instant, which the copy never holds.
+	at := func(t int64) cover { return need(t < ev.loggedFrom) }
+	from := func(ps []period) cover {
+		first := ps[0].from
+		for _, p := range ps {
+			first = min(first, p.from)
+		}
+		return need(first < ev.lastOld)
+	}
+	nothing := func() taken { return taken{none: true} }
 	if !c.p.cols.periodBound(m) {
-		return &ranged{rows: c.rows}
+		all := func() taken { return taken{rows: c.rows, cover: at(sp.now)} }
+		return &ranged{held: all, whole: all, earlier: nothing, listed: all, of: func(period) taken { return taken{none: true} }}
 	}
 	periods, previous := periodsOf(m, sp), sp.previous
 	if m.Bucket == BucketDay {
 		previous = nil
 	}
 	if c.p.cols.state() {
-		g := &ranged{periods: periods, rows: holding(c.rows, sp.now), all: c.rows, state: true, bySprint: m.Bucket == BucketSprint}
+		g := &ranged{periods: periods, state: true, earlier: nothing}
+		now := func() taken { return taken{rows: holding(c.rows, sp.now), cover: at(sp.now)} }
+		g.held, g.whole, g.listed = now, now, now
 		if m.Bucket != BucketDay && len(periods) > 0 {
-			g.before, g.compared = holding(c.rows, periods[0].from), true
+			start := periods[0].from
+			g.earlier = func() taken { return taken{rows: holding(c.rows, start), cover: at(start)} }
+			g.compared = true
+		}
+		bySprint := m.Bucket == BucketSprint
+		var buf []contribution
+		g.of = func(p period) taken {
+			if p.future {
+				return taken{none: true}
+			}
+			buf = buf[:0]
+			for _, r := range c.rows {
+				if r.holdsAt(p.to) && (!bySprint || slices.Contains(p.sprints, r.bucket)) {
+					r.period = p.label
+					buf = append(buf, r)
+				}
+			}
+			return taken{rows: buf, cover: at(p.to)}
 		}
 		return g
 	}
@@ -1301,11 +1328,37 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 		return t.created, t.updated
 	}
 	placed, unplaced := place(m, c.rows, spanOf, periods, previous)
-	g := &ranged{periods: periods, none: len(periods) == 0, placed: placed, unplaced: unplaced[0], unplacedBefore: unplaced[1], compared: m.Bucket != BucketDay}
-	for _, p := range periods {
-		g.rows = append(g.rows, placed[p.id]...)
+	over := func(ps []period, loose []contribution) taken {
+		if len(ps) == 0 {
+			return taken{none: true}
+		}
+		rows := slices.Clone(loose)
+		for _, p := range ps {
+			rows = append(rows, placed[p.id]...)
+		}
+		return taken{rows: rows, periods: len(ps), cover: from(ps)}
 	}
-	return g
+	var inPeriods []contribution
+	for _, p := range periods {
+		inPeriods = append(inPeriods, placed[p.id]...)
+	}
+	held := taken{rows: inPeriods, none: len(periods) == 0}
+	if len(periods) > 0 {
+		held.cover = from(periods)
+	}
+	return &ranged{
+		periods: periods, events: true, compared: m.Bucket != BucketDay, notCounted: notCounted(unplaced[0]),
+		held:    func() taken { return held },
+		whole:   func() taken { return over(periods, unplaced[0]) },
+		earlier: func() taken { return over(previous, unplaced[1]) },
+		listed:  func() taken { return held.sub(append(slices.Clone(inPeriods), unplaced[0]...)) },
+		of: func(p period) taken {
+			if p.future {
+				return taken{none: true}
+			}
+			return taken{rows: placed[p.id], cover: from([]period{p})}
+		},
+	}
 }
 
 // periodsOf is what metric m counts by in span sp: the range's periods,
@@ -1406,14 +1459,14 @@ type ranked struct {
 	total      Num
 }
 
-// rank is the buckets of rows as widget w shows them: by total, largest
-// first, then by label; the first limit shown, the rest left out. The
-// widget and its drill of the rest take them from here.
-func (ev *evaluation) rank(w Widget, m Metric, rows []contribution) (shown, rest []ranked, grouped map[string][]contribution) {
-	keys, grouped := group(rows, func(c contribution) string { return c.bucket })
+// rank is the buckets of t's rows as widget w shows them: by total,
+// largest first, then by label; the first limit shown, the rest left out.
+// The widget and its drill of the rest take them from here.
+func (ev *evaluation) rank(w Widget, m Metric, t taken) (shown, rest []ranked, grouped map[string][]contribution) {
+	keys, grouped := group(t.rows, func(c contribution) string { return c.bucket })
 	all := make([]ranked, 0, len(keys))
 	for _, k := range keys {
-		all = append(all, ranked{key: k, label: ev.label(m.Bucket, k), total: reduceRows(m.Reduce, grouped[k])})
+		all = append(all, ranked{key: k, label: ev.label(m.Bucket, k), total: ev.num(m.Reduce, t.sub(grouped[k]))})
 	}
 	slices.SortStableFunc(all, func(a, b ranked) int {
 		av, bv := -1.0, -1.0
@@ -1441,7 +1494,8 @@ func (ev *evaluation) rank(w Widget, m Metric, rows []contribution) (shown, rest
 	return all[:limit], all[limit:], grouped
 }
 
-// widget is w's numbers from its metric's rows.
+// widget is w's numbers from its metric's rows. It lists the window's
+// days of logged time not read when one of its numbers needed them.
 func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out WidgetValue) {
 	out = WidgetValue{ID: w.ID}
 	if c.err != nil {
@@ -1459,47 +1513,42 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 	if m.Bucket == BucketDay {
 		out.RangeWords = dayRangeWords(sp.daysLabel)
 	}
+	logged := ev.logged
+	defer func() {
+		if ev.logged > logged {
+			out.Unread = ev.windowUnread()
+		}
+	}()
 	g := ev.inRange(m, c, sp)
-	if c.p.readsWorklogs() {
-		defer ev.markWidget(&out, w, m, g, sp)
-	}
 	switch w.Form {
 	case FormNumber:
-		if g.periods == nil && !g.state && g.placed == nil {
-			v := reduceRows(m.Reduce, g.held())
-			out.Value = &v
+		v := ev.num(m.Reduce, g.whole())
+		out.Value = &v
+		if g.periods == nil && !g.state && !g.events {
 			return out
 		}
-		var v, prev Num
+		prev := gapNum
 		switch {
-		case g.state:
-			v = reduceRows(m.Reduce, g.held())
-			// What held where the range begins needs no earlier sprints: only
-			// a copy still in its first read has nothing to compare with.
-			prev = reduceRows(m.Reduce, g.before)
-			if sp.previousGap == firstReadGap {
-				prev = gapNum
-			}
-		default:
-			v = g.reduce(m.Reduce, g.periods, g.unplaced)
-			prev = gapNum
-			if sp.previousGap == "" {
-				prev = g.reduce(m.Reduce, sp.previous, g.unplacedBefore)
-			}
+		case g.state && sp.previousGap == firstReadGap:
+			// What held where the range begins needs no earlier sprints:
+			// only a copy still in its first read has nothing to compare
+			// with.
+		case g.state || sp.previousGap == "":
+			prev = ev.num(m.Reduce, g.earlier())
 		}
-		out.Value = &v
 		if g.compared {
 			out.Previous = &prev
 		}
 		for _, p := range g.periods {
-			out.Trend = append(out.Trend, p.value(m.Reduce, g.of(p)))
+			out.Trend = append(out.Trend, ev.num(m.Reduce, g.of(p)))
 		}
 	case FormList:
-		rows := append(slices.Clone(g.held()), g.unplaced...)
-		rowsCopy := slices.Clone(rows)
-		sortDrill(rowsCopy, ev.keyOf)
-		out.NotCounted = notCounted(rows)
-		for _, r := range rowsCopy {
+		t := g.listed()
+		ev.need(t.cover)
+		rows := slices.Clone(t.rows)
+		sortDrill(rows, ev.keyOf)
+		out.NotCounted = notCounted(t.rows)
+		for _, r := range rows {
 			if !r.counted {
 				continue
 			}
@@ -1512,21 +1561,20 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 	case FormBars, FormLine, FormTable:
 		out.Series = seriesOf(m, c.p.cols)
 		named := c.p.cols.has(ColumnSeries)
-		cell := func(key, label string, partial bool, total Num, rows []contribution, reduce func([]contribution) Num) BucketValue {
+		cell := func(key, label string, partial bool, total Num, t taken) BucketValue {
 			b := BucketValue{Key: key, Label: label, Partial: partial, Total: total}
 			for _, s := range out.Series {
-				b.Cells = append(b.Cells, reduce(bySeries(rows, s, named)))
+				b.Cells = append(b.Cells, ev.num(m.Reduce, t.sub(bySeries(t.rows, s, named))))
 			}
 			return b
 		}
 		// The range's rows with no instant are in no bucket; its "not
 		// counted" lists them and opens the whole widget.
-		out.NotCounted = notCounted(g.unplaced)
+		out.NotCounted = g.notCounted
 		if !ranks(w, m) {
 			for _, p := range g.periods {
-				reduce := func(rows []contribution) Num { return p.value(m.Reduce, rows) }
-				rows := g.of(p)
-				b := cell(p.id, p.label, p.partial, reduce(rows), rows, reduce)
+				t := g.of(p)
+				b := cell(p.id, p.label, p.partial, ev.num(m.Reduce, t), t)
 				b.Last = p.last
 				out.Buckets = append(out.Buckets, b)
 			}
@@ -1535,10 +1583,11 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 		// The shown buckets are chosen by their totals before any of their
 		// cells is made, so an answer holds at most limit buckets of the
 		// declared series' cells however many buckets the rows name.
-		shown, rest, grouped := ev.rank(w, m, g.held())
+		t := g.held()
+		shown, rest, grouped := ev.rank(w, m, t)
 		out.More = len(rest)
 		for _, b := range shown {
-			out.Buckets = append(out.Buckets, cell(b.key, b.label, false, b.total, grouped[b.key], func(rows []contribution) Num { return reduceRows(m.Reduce, rows) }))
+			out.Buckets = append(out.Buckets, cell(b.key, b.label, false, b.total, t.sub(grouped[b.key])))
 		}
 	}
 	return out
@@ -1694,10 +1743,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		return DrillAnswer{}, refuse("dashboard_request_invalid", sp.daysNote, nil)
 	}
 	g := ev.inRange(m, c, sp)
-	rows := g.held()
-	reduce := func(rows []contribution) Num { return reduceRows(m.Reduce, rows) }
-	// cellPeriod is the period a drill of one bar or point counts.
-	var cellPeriod []period
+	t := g.held()
 	switch {
 	case r.Cell != nil && r.Rest:
 		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("a drill of widget %q names one cell or the rest, not both", truncate(w.ID, 64)), nil)
@@ -1706,60 +1752,53 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	case r.Rest && !ranks(w, m):
 		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q shows all it counts; its drill names no rest", truncate(w.ID, 64)), nil)
 	case r.Rest:
-		_, rest, grouped := ev.rank(w, m, rows)
-		rows = nil
+		_, rest, grouped := ev.rank(w, m, t)
+		var rows []contribution
 		for _, b := range rest {
 			rows = append(rows, grouped[b.key]...)
 		}
+		t = t.sub(rows)
 		out.Title += fmt.Sprintf(", %d more%s", len(rest), map[Bucket]string{BucketPerson: " people", BucketEpic: " epics"}[m.Bucket])
-		out.Value = reduceRows(m.Reduce, rows)
-	case r.Cell == nil && (g.placed == nil || g.state):
-		out.Value = reduceRows(m.Reduce, rows)
+	case r.Cell == nil && !g.events:
 	case r.Cell == nil:
-		out.Value = g.reduce(m.Reduce, g.periods, g.unplaced)
 		if m.Bucket == BucketDay {
 			out.Title += ", " + sp.daysLabel
 		} else {
 			out.Title += ", " + strings.ToLower(sp.label[:1]) + sp.label[1:]
 		}
-		rows = append(rows, g.unplaced...)
+		// The number is the range's; the rows are listed with those of no
+		// instant.
+		out.Value = ev.num(m.Reduce, g.whole())
+		t = g.listed()
 	case !ranks(w, m):
 		j := slices.IndexFunc(g.periods, func(p period) bool { return p.id == r.Cell.Bucket })
 		if j < 0 {
 			return DrillAnswer{}, refuse("dashboard_request_invalid", "that bar is not in the range any more; read the dashboard again", nil)
 		}
 		p := g.periods[j]
-		cellPeriod = []period{p}
 		out.Title += ", " + p.label
-		rows = g.of(p)
-		reduce = func(rows []contribution) Num { return p.value(m.Reduce, rows) }
+		t = g.of(p)
 	default:
 		var cell []contribution
-		for _, row := range rows {
+		for _, row := range t.rows {
 			if row.bucket == r.Cell.Bucket {
 				cell = append(cell, row)
 			}
 		}
-		rows = cell
+		t = t.sub(cell)
 		out.Title += ", " + ev.label(m.Bucket, r.Cell.Bucket)
 	}
-	if r.Cell != nil {
-		if r.Cell.Series != "" {
-			if !slices.Contains(m.Series, r.Cell.Series) || !c.p.cols.has(ColumnSeries) {
-				return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q has no series %q", truncate(w.ID, 64), truncate(r.Cell.Series, 64)), nil)
-			}
-			rows = bySeries(rows, r.Cell.Series, true)
-			out.Title += ", " + r.Cell.Series
+	if r.Cell != nil && r.Cell.Series != "" {
+		if !slices.Contains(m.Series, r.Cell.Series) || !c.p.cols.has(ColumnSeries) {
+			return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("widget %q has no series %q", truncate(w.ID, 64), truncate(r.Cell.Series, 64)), nil)
 		}
-		out.Value = reduce(rows)
+		t = t.sub(bySeries(t.rows, r.Cell.Series, true))
+		out.Title += ", " + r.Cell.Series
 	}
-	if c.p.readsWorklogs() && g.took {
-		ps := g.periods
-		if cellPeriod != nil {
-			ps = cellPeriod
-		}
-		markUnread(&out.Value, ev.notRead(ps, sp.now))
+	if r.Cell != nil || !g.events || r.Rest {
+		out.Value = ev.num(m.Reduce, t)
 	}
+	rows := t.rows
 	rows = slices.Clone(rows)
 	sortDrill(rows, ev.keyOf)
 	out.Count = len(rows)

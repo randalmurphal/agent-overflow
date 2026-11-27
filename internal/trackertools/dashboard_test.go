@@ -304,7 +304,8 @@ func TestDashboardWidgetSaysItsUnitAndTicketsNotCounted(t *testing.T) {
 }
 
 // A widget of the person's logged time tells the agent the days not read
-// on each number, and a widget that counts nothing on this page says why.
+// on each number, and which count days older than the logged time kept;
+// a widget that counts nothing on this page says why.
 func TestDashboardWidgetSaysTheDaysNotReadAndItsNote(t *testing.T) {
 	t.Parallel()
 	hour := 3600.0
@@ -320,6 +321,22 @@ func TestDashboardWidgetSaysTheDaysNotReadAndItsNote(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{`"unit":"seconds","not_read":3`, `"previous_not_read":5`, `{"label":"Nov 16","total":3600}`, `{"label":"Nov 23","total":null,"not_read":2}`} {
+		if !strings.Contains(answer, want) {
+			t.Errorf("answer %s lacks %s", answer, want)
+		}
+	}
+	f = &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
+		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{
+			Value:    &trackerdash.Num{Old: true},
+			Previous: &trackerdash.Num{Old: true},
+			Buckets:  []trackerdash.BucketValue{{Label: "Sprint 1", Total: trackerdash.Num{Old: true}}},
+		}}, nil
+	}}
+	answer, err = widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": openWidget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"unit":"seconds","old":true,"previous_old":true`, `{"label":"Sprint 1","total":null,"old":true}`} {
 		if !strings.Contains(answer, want) {
 			t.Errorf("answer %s lacks %s", answer, want)
 		}

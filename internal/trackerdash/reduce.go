@@ -10,15 +10,17 @@ import (
 
 // Num is one number a widget shows: a value, none (nothing to reduce:
 // the median of no rows), not known (no row counted and NC rows not
-// counted, or UR days of the viewer's logged time it counts not read), or
-// a gap (the mirror cannot answer: a previous range it holds too few
-// sprints for). NC is the tickets the metric could not count beside the
-// value. On the wire: {"v":3}, {"v":3,"nc":2}, {}, {"nc":2}, {"ur":4}
-// or {"gap":true}.
+// counted, UR days of the viewer's logged time it counts not read, or Old:
+// it counts days of that time older than the copy keeps, which nothing
+// reads; worklogs.go), or a gap (the mirror cannot answer: a previous
+// range it holds too few sprints for). NC is the tickets the metric could
+// not count beside the value. On the wire: {"v":3}, {"v":3,"nc":2}, {},
+// {"nc":2}, {"ur":4}, {"old":true} or {"gap":true}.
 type Num struct {
 	V   *float64 `json:"v,omitempty"`
 	NC  int      `json:"nc,omitempty"`
 	UR  int      `json:"ur,omitempty"`
+	Old bool     `json:"old,omitempty"`
 	Gap bool     `json:"gap,omitempty"`
 }
 
@@ -110,26 +112,6 @@ func reduceCounted(r Reducer, rows []contribution) Num {
 		return value((values[mid-1] + values[mid]) / 2)
 	}
 	panic(fmt.Sprintf("trackerdash: reducer %q reached a reduction without validation", r))
-}
-
-// reduceRange is the metric's number over a range's periods and the
-// range's unplaced rows (not counted, in no period). An average of period
-// sums averages over the periods, a period with no counted rows as zero;
-// any other reducer reduces the range's rows as one. A range of no
-// periods has none.
-func reduceRange(r Reducer, periods []period, placed map[string][]contribution, unplaced []contribution) Num {
-	if len(periods) == 0 {
-		return Num{}
-	}
-	rows := slices.Clone(unplaced)
-	for _, p := range periods {
-		rows = append(rows, placed[p.id]...)
-	}
-	n := reduceRows(r, rows)
-	if r == ReduceAverageOfPeriodSums && n.V != nil {
-		*n.V /= float64(len(periods))
-	}
-	return n
 }
 
 // place sorts a period-bound metric's rows into the periods of ranges by

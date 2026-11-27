@@ -17,16 +17,24 @@ import "strconv"
 //     the dashboard's Mine reads (MirrorExport.Viewer, read in the same
 //     snapshot). worklogs holds
 //     the time on the board's tickets alone; worklog_days holds every day
-//     of that person's the mirror read, whatever it logged. Both start at
-//     the day the export is given (MirrorExport.LoggedFrom, trackerapp's
-//     loggedFrom), the first day the dashboards read and check, so a count
-//     of them sees no day it does not check.
+//     of that person's the mirror read, whatever it logged. Both hold the
+//     days the export is given (MirrorLoggedDays: trackerapp's loggedFrom
+//     to today in the request's time zone, trackerdash's), the days the
+//     dashboards read and check, so a count of them sees no day it does
+//     not check.
 //     The mirror holds the worklogs of the connection's time source alone
 //     (its time-source triggers), so neither needs to name the source.
 //   - Each fill seeks by its keys: the site's links, the person's days.
 
-// mirrorExportFirstDaySQL is the first day the export's logged time holds.
-var mirrorExportFirstDaySQL = `?` + strconv.Itoa(mirrorExportLoggedArg)
+// mirrorExportLoggedDaysSQL bounds column day to the days the export's
+// logged time holds.
+func mirrorExportLoggedDaysSQL(day string) string {
+	return day + ` BETWEEN ?` + strconv.Itoa(mirrorExportLoggedArg) + ` AND ?` + strconv.Itoa(mirrorExportLoggedArg+1)
+}
+
+// MirrorLoggedDays is the days, YYYY-MM-DD, the export's logged time
+// holds: From to Through, both included.
+type MirrorLoggedDays struct{ From, Through string }
 
 // mirrorExportViewerSQL is the verified account of root ?1's connection.
 const mirrorExportViewerSQL = `(SELECT c.verified_account_id FROM tracker_cache_roots r
@@ -51,9 +59,9 @@ func mirrorExportRelationFills() []mirrorExportFill {
 		  SELECT w.worklog_id, w.issue_id, w.day, w.spent_seconds
 		  FROM tracker_cache_worklogs w
 		  CROSS JOIN main.tickets k ON k.id = w.issue_id
-		  WHERE w.root_id = CAST(?1 AS INTEGER) AND w.author_id = ` + mirrorExportViewerSQL + ` AND w.day >= ` + mirrorExportFirstDaySQL},
+		  WHERE w.root_id = CAST(?1 AS INTEGER) AND w.author_id = ` + mirrorExportViewerSQL + ` AND ` + mirrorExportLoggedDaysSQL("w.day")},
 		{relation: "worklog_days", name: "worklog_days", sql: `INSERT INTO main.worklog_days(day)
 		  SELECT d.day FROM tracker_cache_worklog_days d
-		  WHERE d.root_id = CAST(?1 AS INTEGER) AND d.author_id = ` + mirrorExportViewerSQL + ` AND d.day >= ` + mirrorExportFirstDaySQL},
+		  WHERE d.root_id = CAST(?1 AS INTEGER) AND d.author_id = ` + mirrorExportViewerSQL + ` AND ` + mirrorExportLoggedDaysSQL("d.day")},
 	}
 }

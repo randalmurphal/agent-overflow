@@ -15,16 +15,25 @@ import (
 
 // The reads of the logged time of each connection's verified account
 // that the dashboards count (trackerdash worklogs.go). What must hold:
-//   - One read at a time per connection: the dashboards' reads,
-//     RefreshWorklogs (the Time screen, an agent's ReadTime) take one gate,
-//     which is the connection's for the life of the process and never
-//     replaced (worklogConn.turn).
-//   - A read starts on its own only from an evaluation in which a widget
-//     counted the logged time (Board.Worklogs, wantWorklogs): it queues the
-//     days the evaluation found not read, and the newest worklogSpan days
-//     once worklogRereadEvery has passed since they were last queued. A
-//     person's Refresh or Read again (ReadWorklogDays) queues every day of
-//     the window.
+//   - One run at a time reads a connection's verified account from its
+//     current time source. Every read takes one gate, the dashboards' and
+//     RefreshWorklogs' (the Time screen, an agent's ReadTime) alike, which
+//     is the connection's for the life of the process and never replaced
+//     (worklogConn.turn).
+//   - The record is of one identity: an account and a time source
+//     generation (TrackerConnection.TimeSourceGen, which only grows). It
+//     never moves back: an evaluation of an older generation changes
+//     nothing (worklogConn.current).
+//   - A read starts on its own only from an evaluation in which a number
+//     needed the window (Board.Worklogs, wantWorklogs): it queues the days
+//     the evaluation found not read but those a read under the identity
+//     already took (handed), and the newest worklogSpan days, taken or
+//     not, once worklogRereadEvery has passed since they were last
+//     queued. A person's Refresh or Read again (ReadWorklogDays) queues
+//     every day of the window.
+//   - A day handed out ends stored, with a failure shown, or with the
+//     record reset: no day sits handed and unread with nothing reading
+//     it and nothing said.
 //   - One run reads what is queued, newest first, worklogSpan days a read,
 //     back to back, and tells the connection's boards once when it ends
 //     (BoardEvent.Logged), so their dashboards count again. A screen that
@@ -34,8 +43,9 @@ import (
 //   - After a run's read failed, nothing is read on its own until a person
 //     asks or the account or time source changes; the failure is shown
 //     (trackerdash.WorklogState) until then.
-//   - Before each read the run checks that the connection's account and
-//     time source are still the ones it reads for.
+//   - Each read checks, on the connection row it reads with, that the
+//     account and time source are the ones its run reads for; one that
+//     moved ends the run and forgets what it queued and handed.
 
 // worklogRereadEvery is the least time between two automatic queues of
 // the newest worklogSpan days of a connection's verified account: a
@@ -62,10 +72,11 @@ type worklogConn struct {
 	// (TrackerConnection.TimeSourceGen) the state below is of.
 	author string
 	gen    int64
-	// queued is the days to read, at most the window's; reading is the
-	// first and last day of the read in flight, "" when none is.
-	queued  map[string]bool
-	reading [2]string
+	// queued is the days to read, at most the window's; handed is the
+	// days a read under this identity took since it began or a person
+	// last asked, read or in flight.
+	queued map[string]bool
+	handed map[string]bool
 	// run is the run going, nil when none is.
 	run *worklogRun
 	// failure is why the last run's read failed, "" when none did.
@@ -88,7 +99,7 @@ func (r *worklogReads) conn(id string) *worklogConn {
 		if r.byID == nil {
 			r.byID = map[string]*worklogConn{}
 		}
-		c = &worklogConn{turn: make(chan struct{}, 1), queued: map[string]bool{}}
+		c = &worklogConn{turn: make(chan struct{}, 1), queued: map[string]bool{}, handed: map[string]bool{}}
 		r.byID[id] = c
 	}
 	return c
@@ -101,24 +112,39 @@ func (r *worklogReads) gate(id string) *worklogConn {
 	return r.conn(id)
 }
 
-// reset makes c's state author's under gen, with nothing queued, failed
-// or read, stopping its run. The caller holds mu.
+// reset makes c's state author's under gen, with nothing queued, handed
+// or failed, stopping its run. The caller holds mu.
 func (c *worklogConn) reset(author string, gen int64) {
 	if c.run != nil {
 		c.run.cancel()
 		c.run = nil
 	}
-	c.author, c.gen, c.failure, c.newest, c.reading = author, gen, "", time.Time{}, [2]string{}
+	c.author, c.gen, c.failure, c.newest = author, gen, "", time.Time{}
 	clear(c.queued)
+	clear(c.handed)
 }
 
-// stop forgets connection id's reads but its gate: its run stops, and the
-// next starts with nothing queued, failed or read.
+// current makes c's state author's under gen when they are newer than
+// its own, and reports whether they are c's now: false for a generation
+// older than c's, whose demand is late. The caller holds mu.
+func (c *worklogConn) current(author string, gen int64) bool {
+	switch {
+	case gen < c.gen:
+		return false
+	case gen > c.gen || author != c.author:
+		c.reset(author, gen)
+	}
+	return true
+}
+
+// stop forgets connection id's reads but its gate and the generation it
+// has seen: its run stops, and the next starts with nothing queued,
+// handed or failed.
 func (r *worklogReads) stop(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if c := r.byID[id]; c != nil {
-		c.reset("", 0)
+		c.reset("", c.gen)
 	}
 }
 
@@ -128,7 +154,7 @@ func (r *worklogReads) halt() {
 	defer r.mu.Unlock()
 	r.halted = true
 	for _, c := range r.byID {
-		c.reset("", 0)
+		c.reset("", c.gen)
 	}
 }
 
@@ -146,32 +172,27 @@ func (c *worklogConn) give() { <-c.turn }
 
 // wantWorklogs is Board.Worklogs of a board of connection id, whose
 // verified account was author under time source generation gen when the
-// board was read: it queues what need finds not read and, once
-// worklogRereadEvery has passed, the newest days, but the days of the
-// read in flight, which an evaluation that copied the board before it
-// stored finds not read; starts a run when one is due; and answers the
-// state of the reads. It waits on nothing.
+// board was read: it queues what need finds not read but the days a read
+// already took, which an evaluation that copied the board before they
+// were stored finds not read, and, once worklogRereadEvery has passed,
+// the newest days; starts a run when one is due; and answers the state of
+// the reads. An evaluation of an older generation queues nothing. It
+// waits on nothing.
 func (s *Service) wantWorklogs(id, author string, gen int64, need trackerdash.WorklogNeed) trackerdash.WorklogState {
 	r := &s.worklogs
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	c := r.conn(id)
-	if c.author != author || c.gen != gen {
-		c.reset(author, gen)
-	}
-	if c.failure == "" {
-		queue := func(d string) {
-			if d < c.reading[0] || d > c.reading[1] {
+	if c.current(author, gen) && c.failure == "" {
+		for _, d := range need.Unread {
+			if !c.handed[d] {
 				c.queued[d] = true
 			}
-		}
-		for _, d := range need.Unread {
-			queue(d)
 		}
 		if now := s.steady(); c.newest.IsZero() || now.Sub(c.newest) >= worklogRereadEvery {
 			if today, err := tracker.ParseDate(need.Today); err == nil {
 				for i := range worklogSpan {
-					queue(dayTime(today).AddDate(0, 0, -i).Format(time.DateOnly))
+					c.queued[dayTime(today).AddDate(0, 0, -i).Format(time.DateOnly)] = true
 				}
 				c.newest = now
 			} else {
@@ -186,7 +207,8 @@ func (s *Service) wantWorklogs(id, author string, gen int64, need trackerdash.Wo
 // ReadWorklogDays is a person's Refresh or Read again of the logged time
 // the dashboards count of connection id's verified account: every day of
 // the window, from loggedFrom to today in timeZone, is read again now,
-// and a failure that stopped the reads is forgotten. It starts the reads
+// and a failure that stopped the reads, and what the reads took, are
+// forgotten. It starts the reads
 // and returns; the boards are told when they end.
 func (s *Service) ReadWorklogDays(id, timeZone string) error {
 	loc, err := time.LoadLocation(timeZone)
@@ -213,10 +235,11 @@ func (s *Service) ReadWorklogDays(id, timeZone string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	c := r.conn(id)
-	if c.author != author || c.gen != row.TimeSourceGen {
-		c.reset(author, row.TimeSourceGen)
+	if !c.current(author, row.TimeSourceGen) {
+		return fmt.Errorf("trackerapp: the time source of %s is generation %d, older than the %d its reads of logged time are of", id, row.TimeSourceGen, c.gen)
 	}
 	c.failure, c.newest = "", s.steady()
+	clear(c.handed)
 	for d := dayTime(first); !d.After(dayTime(last)); d = d.AddDate(0, 0, 1) {
 		c.queued[d.Format(time.DateOnly)] = true
 	}
@@ -281,48 +304,21 @@ func (s *Service) runWorklogs(id string, c *worklogConn, run *worklogRun, author
 // errWorklogsDone is a run with nothing left to read.
 var errWorklogsDone = errors.New("trackerapp: no logged time is queued")
 
+// errWorklogsMoved is a read whose connection's account or time source
+// is no longer its run's.
+var errWorklogsMoved = errors.New("trackerapp: the account or time source of the logged time moved")
+
 // readNextWorklogs takes the turn and reads the newest span of what c
-// queues for run: at most worklogSpan days ending at the newest queued
-// day and starting no earlier than the oldest. It reads nothing, with
-// errWorklogsDone, once nothing is queued or run is not c's.
+// queues for run (handOut). It reads nothing, with errWorklogsDone, once
+// nothing is queued or run is not c's, and when the connection row the
+// read runs with is of another account or time source than the run's,
+// forgetting then what c queued and handed for the run.
 func (s *Service) readNextWorklogs(id string, c *worklogConn, run *worklogRun, author string, gen int64) (*FailureView, error) {
 	if err := c.take(run.ctx); err != nil {
 		return nil, err
 	}
 	defer c.give()
-	s.worklogs.mu.Lock()
-	var days []string
-	if c.run == run {
-		for d := range c.queued {
-			days = append(days, d)
-		}
-	}
-	if len(days) == 0 {
-		s.worklogs.mu.Unlock()
-		return nil, errWorklogsDone
-	}
-	slices.Sort(days)
-	last, err := tracker.ParseDate(days[len(days)-1])
-	if err != nil {
-		s.worklogs.mu.Unlock()
-		return nil, err
-	}
-	start := max(days[0], dayTime(last).AddDate(0, 0, 1-worklogSpan).Format(time.DateOnly))
-	for _, d := range days {
-		if d >= start {
-			delete(c.queued, d)
-		}
-	}
-	c.reading = [2]string{start, days[len(days)-1]}
-	s.worklogs.mu.Unlock()
-	defer func() {
-		s.worklogs.mu.Lock()
-		if c.run == run {
-			c.reading = [2]string{}
-		}
-		s.worklogs.mu.Unlock()
-	}()
-	first, err := tracker.ParseDate(start)
+	first, last, err := s.handOut(c, run)
 	if err != nil {
 		return nil, err
 	}
@@ -330,16 +326,56 @@ func (s *Service) readNextWorklogs(id string, c *worklogConn, run *worklogRun, a
 		return nil, err
 	}
 	defer s.leave()
-	row, now, err := s.timeAuthor(id)
-	switch {
-	case err != nil:
+	if _, _, err := s.timeAuthor(id); err != nil {
 		return nil, err
-	case now != author || row.TimeSourceGen != gen:
-		// Another account or time source: the next evaluation starts its
-		// reads over (wantWorklogs).
+	}
+	failure, err := s.readWorklogSpan(run.ctx, id, author, first, last, func(row store.TrackerConnection) error {
+		if row.VerifiedAccountID != author || row.TimeSourceGen != gen {
+			return errWorklogsMoved
+		}
+		return nil
+	})
+	if errors.Is(err, errWorklogsMoved) {
+		s.worklogs.mu.Lock()
+		if c.run == run {
+			clear(c.queued)
+			clear(c.handed)
+		}
+		s.worklogs.mu.Unlock()
 		return nil, errWorklogsDone
 	}
-	return s.readWorklogSpan(run.ctx, id, author, first, last)
+	return failure, err
+}
+
+// handOut takes the newest span of what c queues for run off the queue
+// and hands it out: at most worklogSpan days ending at the newest queued
+// day and starting no earlier than the oldest. errWorklogsDone is nothing
+// queued, or run not c's.
+func (s *Service) handOut(c *worklogConn, run *worklogRun) (first, last tracker.Date, err error) {
+	s.worklogs.mu.Lock()
+	defer s.worklogs.mu.Unlock()
+	var days []string
+	if c.run == run {
+		for d := range c.queued {
+			days = append(days, d)
+		}
+	}
+	if len(days) == 0 {
+		return first, last, errWorklogsDone
+	}
+	slices.Sort(days)
+	if last, err = tracker.ParseDate(days[len(days)-1]); err != nil {
+		return first, last, err
+	}
+	if first, err = tracker.ParseDate(max(days[0], dayTime(last).AddDate(0, 0, 1-worklogSpan).Format(time.DateOnly))); err != nil {
+		return first, last, err
+	}
+	for d := dayTime(first); !d.After(dayTime(last)); d = d.AddDate(0, 0, 1) {
+		day := d.Format(time.DateOnly)
+		delete(c.queued, day)
+		c.handed[day] = true
+	}
+	return first, last, nil
 }
 
 // tellLogged tells every board pump of connection id, on the board's

@@ -321,8 +321,8 @@ func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends 
 		}
 		return out
 	}
-	view, err := s.write(ctx, id, writeOp{unable: func(p tracker.Provider) error {
-		if p.Time() == nil {
+	view, err := s.write(ctx, id, writeOp{unable: func(r *run) error {
+		if r.p.Time() == nil {
 			return fmt.Errorf("trackerapp: connection %s has no time tracking: %w", id, tracker.ErrUnsupported)
 		}
 		return nil

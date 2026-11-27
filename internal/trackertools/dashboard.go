@@ -55,7 +55,8 @@ type widgetSpec struct {
 // in their unit (seconds for logged time or a time board's estimates,
 // which the screen shows as hours), the tickets each number could not
 // count, the days of the person's logged time each could not read (not
-// known until the person's Dashboards screen reads them), why it counts
+// known until the board's computer reads them) or whether it counts days
+// older than the logged time kept (never known), why it counts
 // nothing when it does not (Note), how many rows its query returned, the
 // first of them, and, when shown, where the person finds it.
 type widgetAnswer struct {
@@ -68,9 +69,13 @@ type widgetAnswer struct {
 	// PreviousNotCounted is the range before's tickets not counted.
 	PreviousNotCounted int `json:"previous_not_counted,omitempty"`
 	// NotRead and PreviousNotRead are the days of logged time not read: a
-	// number's, else the widget's (a chart or list of no rows yet).
+	// number's, else the widget's (a chart or list of no rows yet). Old
+	// and PreviousOld say a number counts days of logged time older than
+	// the 182 days kept, so it is never known.
 	NotRead         int             `json:"not_read,omitempty"`
 	PreviousNotRead int             `json:"previous_not_read,omitempty"`
+	Old             bool            `json:"old,omitempty"`
+	PreviousOld     bool            `json:"previous_old,omitempty"`
 	Note            string          `json:"note,omitempty"`
 	Series          []string        `json:"series,omitempty"`
 	Buckets         []widgetBucket  `json:"buckets,omitempty"`
@@ -91,6 +96,7 @@ type widgetBucket struct {
 	Total           *float64 `json:"total"`
 	NotCounted      int      `json:"not_counted,omitempty"`
 	NotRead         int      `json:"not_read,omitempty"`
+	Old             bool     `json:"old,omitempty"`
 }
 
 type widgetRow struct {
@@ -149,15 +155,15 @@ func (s *Server) dashboardWidget(ctx context.Context, caller Caller, raw json.Ra
 		if v.NC > 0 {
 			out.NotCounted = v.NC
 		}
-		out.NotRead = v.UR
+		out.NotRead, out.Old = v.UR, v.Old
 	} else {
 		out.NotRead = len(tried.Value.Unread)
 	}
 	if p := tried.Value.Previous; p != nil {
-		out.PreviousNotCounted, out.PreviousNotRead = p.NC, p.UR
+		out.PreviousNotCounted, out.PreviousNotRead, out.PreviousOld = p.NC, p.UR, p.Old
 	}
 	for _, b := range tried.Value.Buckets {
-		wb := widgetBucket{Label: b.Label, Total: numOf(&b.Total), NotCounted: b.Total.NC, NotRead: b.Total.UR}
+		wb := widgetBucket{Label: b.Label, Total: numOf(&b.Total), NotCounted: b.Total.NC, NotRead: b.Total.UR, Old: b.Total.Old}
 		if len(b.Cells) > 1 {
 			nc := make([]int, len(b.Cells))
 			for i := range b.Cells {

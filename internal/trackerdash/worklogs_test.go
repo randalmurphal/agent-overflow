@@ -247,9 +247,10 @@ func TestLoggedTimeCountingNowNeedsEveryDayTheCopyHolds(t *testing.T) {
 }
 
 // A sprint that began before the copy's first day holds days the copy
-// never holds: its period stays not known by them, never a part of its
-// time, and only the window's are listed to read. The sprint ran from 190
-// days ago to 176 days ago: 14 days, the first 8 before 28 May.
+// never holds: its number and its period are not known for good, with no
+// day to read, whatever the copy has read, and ask the reads for nothing.
+// The sprint ran from 190 days ago to 176 days ago: 14 days, the first 8
+// before 28 May.
 func TestLoggedTimeOfASprintBeforeTheWindowIsNotKnown(t *testing.T) {
 	t.Parallel()
 	board := func(read ...string) Board {
@@ -261,13 +262,12 @@ func TestLoggedTimeOfASprintBeforeTheWindowIsNotKnown(t *testing.T) {
 		return loggedTime(f)
 	}
 	r := Request{Dashboard: "mine", Range: RangeSprints3, TimeZone: "UTC"}
-	n := widgetOf(t, mustEvaluate(t, evaluator(), board(), r), "n")
-	if num(n.Value) != "not known, 190 days not read" || !reflect.DeepEqual(n.Unread, window()) {
-		t.Fatalf("none read: %s, unread %d days", num(n.Value), len(n.Unread))
-	}
-	n = widgetOf(t, mustEvaluate(t, evaluator(), board(window()...), r), "n")
-	if num(n.Value) != "not known, 8 days not read" || n.Unread != nil {
-		t.Fatalf("the window's days read: %s, unread %v", num(n.Value), n.Unread)
+	for _, read := range [][]string{nil, window()} {
+		a := mustEvaluate(t, evaluator(), board(read...), r)
+		n := widgetOf(t, a, "n")
+		if num(n.Value) != "not known, older than kept" || !reflect.DeepEqual(trendOf(n), []string{"not known, older than kept"}) || n.Unread != nil {
+			t.Fatalf("%d days read: %s, trend %v, unread %d days", len(read), num(n.Value), trendOf(n), len(n.Unread))
+		}
 	}
 }
 
@@ -553,5 +553,158 @@ func TestAnEvaluationTellsTheReadsWhatItNeeds(t *testing.T) {
 	told = nil
 	if _, err := evaluator().Try(context.Background(), tell(loggedTime(worklogBoard())), Widget{Form: FormNumber, Width: 3}, week, "UTC"); err != nil || len(told) != 1 {
 		t.Fatalf("a try: told %d, %v", len(told), err)
+	}
+}
+
+// coverageBoard is a sprints board of the viewer's logged time, today
+// (25 November) not read, with six closed sprints: p1, p2 and p3 from 200
+// days ago to 160 days ago, around the copy's first day (28 May, 181 days
+// ago), and r1, r2 and r3 from 60 days ago to 18 days ago; and active,
+// from 5 days ago to 9 days on. Its metrics count the logged time now
+// (now), by the period of each row's day (event), and as a state that
+// holds from its day on (state), and by the active sprint's days (days).
+func coverageBoard() Board {
+	f := worklogBoard(window("2026-11-25")...)
+	f.plansSprints = true
+	f.earliest = ago(200)
+	for i, s := range []struct {
+		id         string
+		start, end float64
+	}{{"p1", 200, 190}, {"p2", 190, 176}, {"p3", 176, 160}, {"r1", 60, 46}, {"r2", 46, 32}, {"r3", 32, 18}} {
+		f.sprint(s.id, s.id, "closed", ago(s.start), ago(s.end), i+1)
+	}
+	f.dated("active", "active", "active", ago(5), ago(-9), 0, 7)
+	metric := func(name, sql string, bucket Bucket) Metric {
+		return Metric{Name: name, Title: name, Words: []string{"Your logged time."}, SQL: sql, Reduce: ReduceSum, Unit: UnitTime, Bucket: bucket}
+	}
+	b := f.board()
+	b.TimeTracking = true
+	b.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine", Widgets: []Widget{
+		{ID: "now", Metric: "now", Form: FormNumber, Width: 3}, {ID: "now_bars", Metric: "now_by", Form: FormBars, Width: 6},
+		{ID: "event", Metric: "event", Form: FormNumber, Width: 3}, {ID: "event_bars", Metric: "event", Form: FormBars, Width: 6},
+		{ID: "state", Metric: "state", Form: FormNumber, Width: 3}, {ID: "state_bars", Metric: "state", Form: FormBars, Width: 6},
+		{ID: "days", Metric: "days", Form: FormNumber, Width: 3}, {ID: "days_bars", Metric: "days", Form: FormBars, Width: 6},
+	}}}, Metrics: map[string]Metric{
+		"now":    metric("now", `SELECT ticket, seconds AS value FROM worklogs`, ""),
+		"now_by": metric("now_by", `SELECT ticket, seconds AS value, ticket AS bucket FROM worklogs`, BucketText),
+		"event":  metric("event", `SELECT ticket, seconds AS value, day_start(day) AS at FROM worklogs`, BucketPeriod),
+		"state":  metric("state", `SELECT ticket, seconds AS value, day_start(day) AS at, NULL AS until FROM worklogs`, BucketPeriod),
+		"days":   metric("days", `SELECT ticket, seconds AS value, day_start(day) AS at FROM worklogs`, BucketDay),
+	}}
+	return b
+}
+
+// Each number of logged time is not known by what its own reduction
+// took: a value of now, of rows placed in periods, and of a state at an
+// instant on or after the copy's first day by the window's day not read;
+// a period, several periods or a state at an instant that reach before
+// that day for good (old); a period still to come, and a range with no
+// period, not at all. Each kind is checked where it can occur: the
+// widget's number, a bucket, a trend point, the comparison, the drill and
+// Try.
+func TestEachLoggedNumberIsKnownByWhatItsReductionTook(t *testing.T) {
+	t.Parallel()
+	const unread, old, none = "not known, 1 days not read", "not known, older than kept", "none"
+	b := coverageBoard()
+	drill := func(r Request, widget string, cell string) string {
+		dr := DrillRequest{Request: r, Widget: widget}
+		if cell != "" {
+			dr.Cell = &DrillCell{Bucket: cell}
+		}
+		d := mustDrill(t, b, dr)
+		return num(&d.Value)
+	}
+	buckets := func(w WidgetValue) []string {
+		var out []string
+		for _, bk := range w.Buckets {
+			out = append(out, num(&bk.Total))
+		}
+		return out
+	}
+	check := func(what, got, want string) {
+		t.Helper()
+		if got != want {
+			t.Errorf("%s = %s; want %s", what, got, want)
+		}
+	}
+	checkAll := func(what string, got, want []string) {
+		t.Helper()
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %v; want %v", what, got, want)
+		}
+	}
+
+	// The last 3 sprints, r1 to r3; the range before is p1 to p3, which
+	// begins before the copy's first day.
+	r := Request{Dashboard: "mine", Range: RangeSprints3, TimeZone: "UTC"}
+	a := mustEvaluate(t, evaluator(), b, r)
+	now := widgetOf(t, a, "now")
+	check("now: the number", num(now.Value), unread)
+	checkAll("now: its buckets", buckets(widgetOf(t, a, "now_bars")), []string{unread, unread})
+	check("now: the drill", drill(r, "now", ""), unread)
+	event := widgetOf(t, a, "event")
+	check("several periods: the number", num(event.Value), unread)
+	check("several periods before the window: the comparison", num(event.Previous), old)
+	checkAll("an event period: the trend", trendOf(event), []string{unread, unread, unread})
+	checkAll("an event period: the buckets", buckets(widgetOf(t, a, "event_bars")), []string{unread, unread, unread})
+	check("an event period: a bar's drill", drill(r, "event_bars", "sprint:r1"), unread)
+	check("several periods: the drill", drill(r, "event", ""), unread)
+	state := widgetOf(t, a, "state")
+	check("a state now: the number", num(state.Value), unread)
+	check("a state at the range's start, 60 days ago: the comparison", num(state.Previous), unread)
+	checkAll("a state at a period's end: the trend", trendOf(state), []string{unread, unread, unread})
+	check("a state now: the drill", drill(r, "state", ""), unread)
+	if len(now.Unread) != 1 || len(event.Unread) != 1 {
+		t.Errorf("the widgets list %v and %v; want today", now.Unread, event.Unread)
+	}
+
+	// The last 10 sprints, p1 to r3: p1 and p2 begin before the copy's
+	// first day; p1 ends before it, p2 after.
+	r.Range = RangeSprints10
+	a = mustEvaluate(t, evaluator(), b, r)
+	event = widgetOf(t, a, "event")
+	check("several periods from before the window: the number", num(event.Value), old)
+	checkAll("an event period from before the window: the trend", trendOf(event), []string{old, old, unread, unread, unread, unread})
+	checkAll("an event period from before the window: the buckets", buckets(widgetOf(t, a, "event_bars")), []string{old, old, unread, unread, unread, unread})
+	check("an event period from before the window: a bar's drill", drill(r, "event_bars", "sprint:p2"), old)
+	check("several periods from before the window: the drill", drill(r, "event", ""), old)
+	state = widgetOf(t, a, "state")
+	check("a state now, the range from before the window: the number", num(state.Value), unread)
+	check("a state at a start before the window: the comparison", num(state.Previous), old)
+	checkAll("a state at a period's end, before the window and after: the trend", trendOf(state), []string{old, unread, unread, unread, unread, unread})
+	checkAll("a state at a period's end: the buckets", buckets(widgetOf(t, a, "state_bars")), []string{old, unread, unread, unread, unread, unread})
+	check("a state at the end of p1, before the window: a bar's drill", drill(r, "state_bars", "sprint:p1"), old)
+	check("a state at the end of p2, in the window: a bar's drill", drill(r, "state_bars", "sprint:p2"), unread)
+	check("a state now, the range from before the window: the drill", drill(r, "state", ""), unread)
+
+	// This sprint by its days: the days still to come take no row.
+	r.Range = RangeThisSprint
+	a = mustEvaluate(t, evaluator(), b, r)
+	// The days so far are not known by the day not read, the days still
+	// to come none: the first of them is where they change.
+	split := func(what string, got []string) int {
+		t.Helper()
+		k := slices.Index(got, none)
+		if k < 1 || slices.ContainsFunc(got[:k], func(v string) bool { return v != unread }) || slices.ContainsFunc(got[k:], func(v string) bool { return v != none }) {
+			t.Errorf("%s = %v; want the days so far %q, then the days to come %q", what, got, unread, none)
+		}
+		return k
+	}
+	split("the active sprint's days: the trend", trendOf(widgetOf(t, a, "days")))
+	daysBars := widgetOf(t, a, "days_bars")
+	if k := split("the active sprint's days: the buckets", buckets(daysBars)); k > 0 {
+		check("a day still to come: its drill", drill(r, "days_bars", daysBars.Buckets[k].Key), none)
+		check("a day so far: its drill", drill(r, "days_bars", daysBars.Buckets[k-1].Key), unread)
+	}
+
+	// Try counts over the board's default range, the last 5 sprints, p2
+	// to r3, which begins before the copy's first day.
+	for _, c := range []struct{ metric, value, previous string }{{"now", unread, "absent"}, {"event", old, "gap"}, {"state", unread, old}} {
+		tried, err := evaluator().Try(context.Background(), b, Widget{Form: FormNumber, Width: 3}, b.Own.Metrics[c.metric], "UTC")
+		if err != nil {
+			t.Fatal(err)
+		}
+		check("Try of "+c.metric+": the number", num(tried.Value.Value), c.value)
+		check("Try of "+c.metric+": the comparison", num(tried.Value.Previous), c.previous)
 	}
 }
