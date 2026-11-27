@@ -47,7 +47,8 @@ async function reviewProject(harness: HarnessApp, name: string, key = 'WEB-1'): 
     forge: 'github',
     project: `ao-e2e/${name}-${Date.now().toString(36)}`,
     pulls: [{
-      number: 801, title: TITLE.replace('WEB-1', key), author: 'alice', authorName: 'Alice Ng', state: 'merged',
+      // Made after its ticket, as a pull request that names one is.
+      number: 801, title: TITLE.replace('WEB-1', key), author: 'alice', authorName: 'Alice Ng', state: 'merged', createdAt: new Date(Date.now() - 3600_000).toISOString(),
       ci: { id: 9_900, jobs: [{ id: 9_901, name: 'unit', stage: 'test', status: 'success', log: 'unit line 1\nunit line 2\n' }] },
     }],
   };
@@ -66,7 +67,7 @@ function keyboardIn(page: Page): Promise<string> {
   });
 }
 
-/** Opens Work's row of 801 once the forge search has answered. */
+/** Opens Work's row of 801 once Work lists it. */
 async function openRow(work: Locator, compact: boolean): Promise<void> {
   const row = work.getByTestId('ticket-work-pull').filter({ hasText: '#801' });
   await expect(row).toHaveAttribute('data-opens', 'review', { timeout: 30_000 });
