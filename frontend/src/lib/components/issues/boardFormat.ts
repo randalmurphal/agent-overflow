@@ -99,10 +99,11 @@ export interface LinePart {
 /** A Backlog section's numbers line (`SectionNumbers`), in the board's
  * measure: its points or time, else its tickets. An active sprint says how
  * much is done once it is read; a future sprint its total of about the
- * pace, and how far over; the backlog its tickets, points and tickets with
- * no estimate. A moved row shows as the number before, an arrow and the
- * number it makes. */
-export function sectionLine(kind: 'active' | 'future' | 'backlog', n: SectionNumbers, unit: string): LinePart[] {
+ * pace, and how far over; the backlog its tickets, points and, on a board
+ * with estimates (`estimates`, the board's own unit), its tickets with no
+ * estimate whatever unit it is counted in (`unit`). A moved row shows as
+ * the number before, an arrow and the number it makes. */
+export function sectionLine(kind: 'active' | 'future' | 'backlog', n: SectionNumbers, unit: string, estimates: string): LinePart[] {
   const estimated = unit === 'points' || unit === 'time';
   const measure = (t: { rows: number; estimate: number }) => (estimated ? t.estimate : t.rows);
   const bare = (v: number) => (estimated ? (formatEstimateSum(v, unit) ?? '0') : trim(v));
@@ -136,9 +137,11 @@ export function sectionLine(kind: 'active' | 'future' | 'backlog', n: SectionNum
   const wasRows = n.before ? n.before.rows : null;
   if (wasRows !== null && wasRows !== n.total.rows) parts.push({ text: `${wasRows} ` }, { text: `→ ${n.total.rows}${tickets(n.total.rows)}`, tone: 'to' });
   else parts.push({ text: `${n.total.rows}${tickets(n.total.rows)}` });
-  if (!estimated) return parts;
-  parts.push({ text: ' · ' });
-  moving(n.before ? n.before.estimate : null, n.total.estimate, word(n.total.estimate));
+  if (estimated) {
+    parts.push({ text: ' · ' });
+    moving(n.before ? n.before.estimate : null, n.total.estimate, word(n.total.estimate));
+  }
+  if (estimates !== 'points' && estimates !== 'time') return parts;
   const none = n.total.unestimated ?? 0;
   if (none > 0) parts.push({ text: ' · ' }, { text: `${none} without an estimate`, tone: 'warn' });
   return parts;

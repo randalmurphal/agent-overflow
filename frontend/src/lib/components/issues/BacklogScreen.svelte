@@ -380,6 +380,7 @@
               {sec}
               numbers={numbers[item.section]}
               unit={countIn}
+              estimates={held.shape.unit}
               open={isOpen(sec)}
               {now}
               {target}

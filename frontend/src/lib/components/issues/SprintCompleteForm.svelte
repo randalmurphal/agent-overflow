@@ -45,7 +45,7 @@
   const target = $derived(sprintTarget(sprint.id));
   const pending = $derived(ticketWrite(b.key, target)?.pending ?? false);
   const completion = $derived(completionNumbers(held, sec, moved));
-  const done = $derived(sectionLine('active', completion.numbers, unit).map((p) => p.text).join(''));
+  const done = $derived(sectionLine('active', completion.numbers, unit, held.shape.unit).map((p) => p.text).join(''));
 
   // svelte-ignore state_referenced_locally
   let moveTo = $state(into.find((sp) => sp.state === 'future')?.id ?? '');

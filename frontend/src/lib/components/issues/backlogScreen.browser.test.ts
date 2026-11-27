@@ -251,13 +251,14 @@ function watchRows(host: HTMLElement): { changes: () => string[]; stop: () => vo
 }
 
 describe('a ticket made at a sprint\'s foot', () => {
-  it('says a section\'s numbers in tickets for a project that counts tickets, each row keeping its points', async () => {
+  it('says a section\'s numbers in tickets for a project that counts tickets, each row keeping its points and the backlog its tickets with no estimate', async () => {
     const view = backlogBoard();
-    const small = { ...view, counts: 'none', backlog: { rows: 2, estimate: 4 }, sections: [view.sections[0], { section: { kind: 'backlog' }, rows: MANY.slice(0, 2), next: null }] } as unknown as BoardView;
+    const small = { ...view, counts: 'none', backlog: { rows: 2, estimate: 4, unestimated: 1 }, sections: [view.sections[0], { section: { kind: 'backlog' }, rows: MANY.slice(0, 2), next: null }] } as unknown as BoardView;
     const { host } = await mountBacklog('jira', small);
     const numbers = () => host.querySelector<HTMLElement>('[data-testid="issues-backlog-section"][data-list="backlog"] [data-testid="issues-backlog-numbers"]')?.textContent?.replace(/\s+/g, ' ').trim();
     await waitFor(() => numbers() !== undefined, 'the backlog\'s numbers');
-    expect(numbers()).toBe('2 tickets');
+    // A ticket with no estimate is still one: the board has estimates.
+    expect(numbers()).toBe('2 tickets · 1 without an estimate');
     expect(host.querySelector('[data-testid="issues-backlog-row"] [data-testid="issues-card-estimate"]')?.textContent).toBe('2');
     // Complete sprint counts what is done in tickets too.
     host.querySelector<HTMLElement>('[data-testid="issues-backlog-section"][data-list="sprint:8"] [data-testid="issues-backlog-sprint-complete"]')!.click();
