@@ -305,10 +305,12 @@ const (
 // project's tracker setup changed as it is stored. Receivers read again,
 // through ProjectTrackerSetup, the setups they hold.
 //
-// TrackerDashboardsUpdated is a payload-less refetch nudge sent after a
-// board's dashboards changed: one its project keeps, or a widget an agent
-// proposed on it. Receivers showing a dashboard of that computer read the
-// board's dashboards again (TrackerDashboards) and count again.
+// TrackerDashboardsUpdated is trackerapp.DashboardsChange: a project's
+// board's dashboards changed (one its project keeps, a widget an agent
+// proposed on it, a limit, or the unit the project counts in), every
+// board of the project when it names none. Receivers showing a dashboard
+// of that board read its dashboards again (TrackerDashboards), and count
+// again when Counts says what they count changed.
 const (
 	TrackerConnectionsUpdated Channel = "tracker:connections_updated"
 	TrackerBoardUpdated       Channel = "tracker:board_updated"

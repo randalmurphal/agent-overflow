@@ -70,10 +70,6 @@ export interface BoardShape {
   /** A card's address less its key; empty when cards carry their own
    * (`cardURL`). */
   readonly issueURL: string;
-  /** The widgets the board's project pins to its summary row, in the
-   * row's order (`BoardView.pins`); empty for none, and from a computer
-   * whose release has no row. */
-  readonly pins: readonly string[];
 }
 
 /** What the client holds of a board: its shape, lifetime and revision,
@@ -133,7 +129,6 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView,
       columns: view.columns,
       sprints: view.sprints,
       issueURL: view.issue_url ?? '',
-      pins: view.pins ?? [],
     },
     lifetime: view.lifetime,
     revision: view.revision,

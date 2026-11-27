@@ -57,11 +57,11 @@ describe('the list of dashboards', () => {
     let lists = 0;
     setBindingMock('TrackerDashboards', () => answers[lists++]());
     setBindingMock('EvaluateTrackerDashboard', () => new Promise<Answer>(() => {}));
-    const screen = render(DashboardScreen, { props: { source: SOURCE, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    const screen = render(DashboardScreen, { props: { source: SOURCE, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {}, pins: [] } });
     unmount = screen.unmount;
     await flush();
     expect(screen.getByTestId('dashboard-title').textContent).toBe('Overview');
-    trackerDashboardsUpdated('home');
+    trackerDashboardsUpdated('home', { project: 'p1', board: '1', counts: true });
     await flush();
     expect(screen.getByTestId('dashboard-toolbar')).toBeTruthy();
     expect(screen.getByTestId('dashboard-list-error').textContent).toContain("Could not list this board's dashboards again");
@@ -79,7 +79,7 @@ describe('a count that fails', () => {
   beforeEach(() => setCarriedSessionScopes('laptop', ['tracker:read', 'tracker:operate', 'threads:read', 'threads:operate']));
 
   function mount() {
-    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {}, pins: [] } });
     unmount = screen.unmount;
     return screen;
   }
@@ -152,7 +152,7 @@ describe('a ticket list', () => {
     setCarriedSessionScopes('laptop', scopes);
     setBindingMock('TrackerDashboards', async () => listed([LIST]));
     setBindingMock('EvaluateTrackerDashboard', async () => ({ range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1, widgets: [{ id: 'w_list', tickets: ROWS }] } as unknown as Answer));
-    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {}, pins: [] } });
     unmount = screen.unmount;
     return screen;
   }
@@ -195,7 +195,7 @@ describe('a ticket list', () => {
     setBindingMock('TrackerDashboardDrill', async () => ({ title: 'Stuck', value: { v: 2 }, unit: 'tickets', estimates: 'points', count: 2, tickets: 2, counted: 2, page: 0, pages: 1, rows: ROWS, at: 1 }));
     setBindingMock('StartTicketsThread', async () => ({ id: 't-drill', projectId: 'p1' }));
     setBindingMock('SwitchThread', async (id: string) => ({ id, projectId: 'p1' }));
-    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {}, pins: [] } });
     unmount = screen.unmount;
     await flush();
     await fireEvent.click(screen.getByTestId('dashboard-number'));
@@ -216,7 +216,7 @@ describe('a ticket list', () => {
     let made: () => void = () => {};
     setBindingMock('StartTicketsThread', () => new Promise((resolve) => { made = () => resolve({ id: 't-drill', projectId: 'p1' }); }));
     setBindingMock('SwitchThread', async (id: string) => ({ id, projectId: 'p1' }));
-    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {}, pins: [] } });
     unmount = screen.unmount;
     await flush();
     const page = within(document.body);
@@ -259,23 +259,33 @@ describe("a widget's limit and pin", () => {
     range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1,
     widgets: [{ id: 'stuck', value: { v: 4 } }, { id: 'pace', value: { v: 20 } }, { id: 'stuck_list', tickets: [] }],
   } as unknown as Answer;
-  type Tiles = { pins: string[]; limits: Record<string, number>; proposed: string[] };
+  /** The board's pins (its subscription's) and the list's limits and
+   * proposals asked for the row. */
+  type Tiles = { pins: string[] | null; limits: Record<string, number>; proposed: string[] };
 
-  function mount(tiles: Tiles | undefined, opts: { compact?: boolean; proposals?: ProposalView[] } = {}) {
+  function mount(tiles: Tiles, opts: { compact?: boolean; proposals?: ProposalView[] } = {}) {
     setCarriedSessionScopes('laptop', ['tracker:read', 'tracker:operate', 'threads:read', 'threads:operate']);
     const state = { tiles };
-    setBindingMock('TrackerDashboards', async () => ({ ...listed([OVERVIEW, KEPT], opts.proposals ?? []), ...(state.tiles ? { tiles: state.tiles } : {}) }));
+    setBindingMock('TrackerDashboards', async () => ({ ...listed([OVERVIEW, KEPT], opts.proposals ?? []), tiles: { limits: state.tiles.limits, proposed: state.tiles.proposed, max: 5 } }));
     setBindingMock('EvaluateTrackerDashboard', async () => ANSWER);
-    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: opts.compact ?? false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: opts.compact ?? false, computerName: 'Laptop', onOpenTicket: () => {}, pins: tiles.pins } });
     unmount = screen.unmount;
-    return { screen, state };
+    /** The board's computer stored `next`: its subscription tells the pins
+     * and its dashboards event the rest. */
+    async function set(next: Tiles): Promise<void> {
+      state.tiles = next;
+      await screen.rerender({ pins: next.pins });
+      trackerDashboardsUpdated('laptop', { project: 'p1', board: '1', counts: false });
+      await flush();
+    }
+    return { screen, set };
   }
   const cell = (screen: { container: HTMLElement }, id: string) => screen.container.querySelector<HTMLElement>(`[data-testid="dashboard-widget"][data-widget="${id}"]`)!;
 
   it('sets a number\'s limit from its bell, marks the number past it, and turns it off', async () => {
     const limits: unknown[][] = [];
     setBindingMock('SetTrackerWidgetLimit', async (...args: unknown[]) => { limits.push(args); });
-    const { screen, state } = mount({ pins: [], limits: {}, proposed: [] });
+    const { screen, set } = mount({ pins: [], limits: {}, proposed: [] });
     await flush();
     const stuck = cell(screen, 'stuck');
     expect(within(stuck).getByTestId('dashboard-limit-toggle').title).toBe('Warn me at a limit');
@@ -291,9 +301,7 @@ describe("a widget's limit and pin", () => {
     expect(limits).toEqual([['sub-1', 'stuck', 4]]);
 
     // The board's computer stored 3 and said so.
-    state.tiles = { pins: [], limits: { stuck: 3 }, proposed: [] };
-    trackerDashboardsUpdated('laptop');
-    await flush();
+    await set({ pins: [], limits: { stuck: 3 }, proposed: [] });
     expect(stuck.dataset.over).toBe('true');
     expect(within(stuck).getByTestId('dashboard-over').textContent?.trim()).toBe('over your limit of 3 tickets');
     expect(within(stuck).getByTestId('dashboard-limit-toggle').title).toBe('Warns above 3 tickets');
@@ -303,6 +311,46 @@ describe("a widget's limit and pin", () => {
     await fireEvent.click(within(pop).getByTestId('dashboard-limit-switch'));
     await flush();
     expect(limits).toEqual([['sub-1', 'stuck', 4], ['sub-1', 'stuck', 4], ['sub-1', 'stuck', null]]);
+  });
+
+  it('raises twice from the limit the first raise stored while the list read after it is out', async () => {
+    const writes: unknown[] = [];
+    setBindingMock('SetTrackerWidgetLimit', async (_sub: string, _id: string, limit: unknown) => {
+      writes.push(limit);
+      // The computer tells the change before it answers.
+      trackerDashboardsUpdated('laptop', { project: 'p1', board: '1', counts: false });
+    });
+    const { screen } = mount({ pins: [], limits: { stuck: 3 }, proposed: [] });
+    await flush();
+    // Every list after the first is out until the test answers it.
+    const lists: Array<() => void> = [];
+    setBindingMock('TrackerDashboards', () => new Promise((resolve) => lists.push(() => resolve({ ...listed([OVERVIEW, KEPT]), tiles: { limits: { stuck: 4 }, proposed: [], max: 5 } }))));
+    await fireEvent.click(within(cell(screen, 'stuck')).getByTestId('dashboard-limit-toggle'));
+    await flush();
+    const pop = within(document.body).getByTestId('dashboard-limit');
+    await fireEvent.click(within(pop).getByTestId('dashboard-limit-raise'));
+    await flush();
+    expect(lists.length).toBeGreaterThan(0);
+    await fireEvent.click(within(pop).getByTestId('dashboard-limit-raise'));
+    await flush();
+    expect(writes).toEqual([4, 5]);
+    expect(within(pop).getByTestId('dashboard-limit-value').textContent).toBe('5');
+  });
+
+  it('shows a limit only while the list has it in the widget\'s unit now, and again when it is back', async () => {
+    const { screen, set } = mount({ pins: [], limits: { pace: 25 }, proposed: [] });
+    await flush();
+    const pace = cell(screen, 'pace');
+    expect(pace.dataset.over).toBe('true');
+    // The project counts in tickets now: the list leaves the limit set in
+    // points out, so the widget shows none and no mark.
+    await set({ pins: [], limits: {}, proposed: [] });
+    expect(pace.dataset.over).toBe('false');
+    expect(within(pace).queryByTestId('dashboard-over')).toBeNull();
+    expect(within(pace).getByTestId('dashboard-limit-toggle').dataset.on).toBe('false');
+    await set({ pins: [], limits: { pace: 25 }, proposed: [] });
+    expect(pace.dataset.over).toBe('true');
+    expect(within(pace).getByTestId('dashboard-limit-toggle').dataset.on).toBe('true');
   });
 
   it('warns below a limit where up is good news', async () => {
@@ -321,7 +369,7 @@ describe("a widget's limit and pin", () => {
   it('pins a widget to the board row and takes no pin once the row is full', async () => {
     const pins: unknown[][] = [];
     setBindingMock('PinTrackerWidget', async (...args: unknown[]) => { pins.push(args); });
-    const { screen, state } = mount({ pins: [], limits: {}, proposed: [] });
+    const { screen, set } = mount({ pins: [], limits: {}, proposed: [] });
     await flush();
     const pin = within(cell(screen, 'stuck_list')).getByTestId('dashboard-pin');
     expect(pin.title).toBe('Show on the board row');
@@ -329,9 +377,7 @@ describe("a widget's limit and pin", () => {
     await flush();
     expect(pins).toEqual([['sub-1', 'stuck_list', true]]);
 
-    state.tiles = { pins: ['a', 'b', 'c', 'd', 'stuck_list'], limits: {}, proposed: [] };
-    trackerDashboardsUpdated('laptop');
-    await flush();
+    await set({ pins: ['a', 'b', 'c', 'd', 'stuck_list'], limits: {}, proposed: [] });
     const on = within(cell(screen, 'stuck_list')).getByTestId('dashboard-pin');
     expect(on.getAttribute('aria-pressed')).toBe('true');
     expect(on.title).toBe('Take off the board row');
@@ -343,8 +389,8 @@ describe("a widget's limit and pin", () => {
     expect(pins).toEqual([['sub-1', 'stuck_list', true], ['sub-1', 'stuck_list', false]]);
   });
 
-  it('shows no bell or pin from a computer that keeps no tiles', async () => {
-    const { screen } = mount(undefined);
+  it('shows no bell or pin until the board\'s pins are read', async () => {
+    const { screen } = mount({ pins: null, limits: {}, proposed: [] });
     await flush();
     expect(screen.getAllByTestId('dashboard-widget')).toHaveLength(3);
     expect(screen.queryAllByTestId('dashboard-limit-toggle')).toHaveLength(0);
@@ -365,12 +411,10 @@ describe("a widget's limit and pin", () => {
 
   it('says what Keep does with a proposal its agent asked to show on the board row', async () => {
     const asked = { view: widget('w_8', 'Reviews waiting'), thread: 't-1' } as unknown as ProposalView;
-    const { screen, state } = mount({ pins: [], limits: {}, proposed: ['w_8'] }, { proposals: [asked, PROPOSED] });
+    const { screen, set } = mount({ pins: [], limits: {}, proposed: ['w_8'] }, { proposals: [asked, PROPOSED] });
     await flush();
     expect(screen.getAllByTestId('dashboard-keep-pin').map((n) => n.textContent)).toEqual(['Keep also shows it on the board row.']);
-    state.tiles = { pins: ['a', 'b', 'c', 'd', 'e'], limits: {}, proposed: ['w_8'] };
-    trackerDashboardsUpdated('laptop');
-    await flush();
+    await set({ pins: ['a', 'b', 'c', 'd', 'e'], limits: {}, proposed: ['w_8'] });
     expect(screen.getAllByTestId('dashboard-keep-pin').map((n) => n.textContent)).toEqual(['Asked for the board row, which already shows 5 tiles: Keep adds it to a dashboard only.']);
     // A proposal takes no bell or pin until it is kept.
     expect(within(cell(screen, 'w_8')).queryByTestId('dashboard-pin')).toBeNull();

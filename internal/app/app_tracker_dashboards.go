@@ -18,16 +18,18 @@ import (
 // keeps, and the widgets agents proposed on it (trackerapp/dashboards.go).
 // trackerdash evaluates them in a copy of the board it makes for each
 // call, so nothing outlives a call; the wire shapes are trackerdash's own.
-// tracker:dashboards_updated tells every client of this computer that a
-// board's dashboards changed.
+// tracker:dashboards_updated tells every client of this computer which
+// project's board's dashboards changed and whether what they count did
+// (trackerapp.DashboardsChange).
 
 // TrackerDashboardsView is what a subscribed board's Dashboards screen
 // lays out: the dashboards it offers, the built-in first, each with its
 // ranges and its widgets' layout and How this is counted, and the widgets
 // agents proposed on the board with their threads (trackerdash.Listing),
-// and the board's summary row: its pins, the number widgets' limits and
-// the proposals Keep pins (trackerapp.BoardTilesView), which an older
-// computer's answer lacks. Ask is why Ask your agent cannot start a thread
+// and the board's summary row: the number widgets' limits that apply, the
+// proposals Keep pins and how many tiles the row shows
+// (trackerapp.BoardTilesView); its pins are the board subscription's
+// (BoardView.Pins). Ask is why Ask your agent cannot start a thread
 // on this computer, "" when it can (trackerToolsProvider).
 type TrackerDashboardsView struct {
 	Dashboards []trackerdash.DashboardView `json:"dashboards"`

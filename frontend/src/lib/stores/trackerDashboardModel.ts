@@ -147,7 +147,8 @@ export function pastLimitWords(limit: number, good: string, unit: DashboardUnit,
 }
 
 /** How far one press of a limit's − or + moves it: an hour for a board
- * whose estimates are time (seconds), else 1. */
+ * whose estimates are time (seconds), half a day for days, else 1. */
 export function limitStep(unit: DashboardUnit, estimates: string): number {
+  if (unit === 'days') return 0.5;
   return unit === 'estimate' && estimates === 'time' ? 3600 : 1;
 }

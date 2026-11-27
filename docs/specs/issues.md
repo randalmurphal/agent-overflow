@@ -331,10 +331,11 @@ else in a toast. The summary row: the widgets pinned from the
 dashboards, as chips or tiles, each tile amber past its limit; a tile
 of a widget that counts now, a number or a list, filters the board to
 its tickets with a "Showing only" chip that clears, kept on the Backlog
-and following the tile's count, and any other tile opens its dashboard;
-the row edited in place (take a tile off, add one from the dashboards,
-or ask the agent, whose proposal Keep pins while the row has room); a
-board that pins nothing reads nothing for it. A sprint on the board is read whole, and while Only mine,
+and following the tile's count, and any other tile opens its dashboard
+at that widget; the row edited in place (take a tile off, add one from
+the dashboards, or ask the agent, whose proposal Keep pins while the row
+has room); a board that pins nothing shows Add a tile and reads nothing
+for the row until it is pressed. A sprint on the board is read whole, and while Only mine,
 Search or a tile's filter is on every column is read whole, so a board of thousands of
 cards holds them all. A card's state line shows days in the status but not a
 running thread or what blocks it; its parent shows as a chip but is not
@@ -346,7 +347,8 @@ avatar.
   expanded into tiles. Its tiles are dashboard widgets pinned to the board,
   at most five. A tile that stands for a set of tickets filters the board
   when clicked. The row is edited in place: remove a tile, add one from a
-  dashboard, or ask the agent for a new one.
+  dashboard, or ask the agent for a new one. A board with no tiles offers
+  Add a tile in the row's place.
 - A card shows type, key, title, epic, labels, priority, points, assignee
   and one state line (a running thread, days in the same status, what
   blocks it). Display chooses which of these show, per board. Type,
@@ -727,7 +729,9 @@ time are not built, nor the credit rules in How this is counted.
   the dashboard only when kept.
 - A number tile can carry a limit, set from its bell: the side it warns
   on follows whether up is good news. Over the limit, the tile is marked
-  on the dashboard and on the board's summary row.
+  on the dashboard and on the board's summary row. A limit holds in the
+  unit it was set in: while the project counts the tile in another unit,
+  it shows no limit.
 - A widget's pin shows it on the board's summary row, at most five; a
   full row takes no other pin and says so. A proposal whose agent asked
   for the row says before Keep whether Keep puts it there.

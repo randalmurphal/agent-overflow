@@ -124,8 +124,11 @@ func postedAsRead(open []trackerapp.TimeEntryView, in trackerapp.PostTimeRequest
 
 func (f *fakeTracker) TryWidget(_ context.Context, project, connection, board string, w trackerapp.KeptWidget, marks trackerapp.TileMarks, thread string, show bool) (trackerdash.Tried, error) {
 	f.tries = append(f.tries, fmt.Sprintf("%s %s/%s %d %v %s", project, connection, board, w.Width, show, thread))
-	if marks.Limit != nil || marks.Pin {
-		f.tries = append(f.tries, fmt.Sprintf("marks %v %v", *marks.Limit, marks.Pin))
+	if marks.Limit != nil {
+		f.tries = append(f.tries, fmt.Sprintf("limit %v", *marks.Limit))
+	}
+	if marks.Pin {
+		f.tries = append(f.tries, "pin")
 	}
 	return f.try(w)
 }

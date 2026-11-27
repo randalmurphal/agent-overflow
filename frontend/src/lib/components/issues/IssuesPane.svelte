@@ -82,6 +82,7 @@
   import UserRound from '@lucide/svelte/icons/user-round';
   import X from '@lucide/svelte/icons/x';
   import Funnel from '@lucide/svelte/icons/funnel';
+  import Plus from '@lucide/svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import ToolPaneHeader from '../panes/ToolPaneHeader.svelte';
@@ -282,7 +283,7 @@
       return;
     }
     ticketSetLoad ??= import('../../stores/boardTicketSet.svelte').then((m) => {
-      const made = m.createBoardTicketSet({ source: () => dashboardSource, shown: () => selection.boardShown });
+      const made = m.createBoardTicketSet({ board: () => board, source: () => dashboardSource, pins: () => boardState?.pins ?? null, shown: () => selection.boardShown });
       if (paneGone) made.destroy();
       else ticketSet = made;
       return made;
@@ -407,6 +408,14 @@
   const dashboardSource = $derived(
     board && boardState?.subscription ? { backend: board.backend, board, subscription: boardState.subscription, changes: boardState.changes } : null,
   );
+  // The board's summary row: mounted while the board pins a widget or the
+  // person edits the row, which a board with none starts from its Add a
+  // tile. Editing is the board's: another board shows out of it.
+  const rowPins = $derived(boardState?.pins ?? null);
+  let rowEditedOn = $state('');
+  const boardId = $derived(board ? `${board.backend}\n${board.projectId}\n${board.connection}\n${board.board}` : '');
+  const rowEditing = $derived(boardId !== '' && rowEditedOn === boardId);
+  const rowAddable = $derived(!!board && scopeGrant('tracker:operate', board.backend) === 'granted');
 
   // The board's listing: its connection's kind, whether it may be opened.
   // The board's tracker, jira or linear; empty until a listing names it.
@@ -427,6 +436,8 @@
         <Icon icon={Funnel} size={13} strokeWidth={2} class="shrink-0" />
         {#if set.ids}
           <span class="truncate" data-testid="issues-ticket-set-text">Showing only <b class="font-semibold text-fg">{tile.title}</b> · {set.ids.size === 1 ? '1 ticket' : `${set.ids.size} tickets`}</span>
+        {:else if set.error}
+          <span class="truncate" data-testid="issues-ticket-set-text">Could not find the tickets of <b class="font-semibold text-fg">{tile.title}</b></span>
         {:else}
           <span class="truncate" data-testid="issues-ticket-set-text">Finding the tickets of <b class="font-semibold text-fg">{tile.title}</b>…</span>
         {/if}
@@ -436,7 +447,7 @@
       </span>
     </div>
     {#if ticketSetFailure}
-      <ErrorNotice message="Could not read the tickets of {tile.title} again: {ticketSetFailure.report.reason}" captured={ticketSetFailure} testId="issues-ticket-set-error" />
+      <ErrorNotice message="{set.ids ? `Could not read the tickets of ${tile.title} again` : `Could not find the tickets of ${tile.title}`}: {ticketSetFailure.report.reason}" captured={ticketSetFailure} testId="issues-ticket-set-error" />
     {/if}
   {/if}
 {/snippet}
@@ -664,6 +675,7 @@
             bind:this={dashboardView}
             bind:counting={dashboardCounting}
             source={dashboardSource}
+            pins={rowPins}
             boardName={boardChoice?.name ?? 'this board'}
             shown={selection.dashboardsShown}
             {compact}
@@ -674,12 +686,17 @@
           <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="dashboard-load-error">The Dashboards screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
         {/await}
       {:else if held && attachment && screen !== 'dashboards'}
-        {#if held.shape.pins.length > 0 && dashboardSource}
+        {#if rowPins && (rowPins.length > 0 || rowEditing) && dashboardSource}
           {@const rowSource = dashboardSource}
+          {@const pins = rowPins}
           {#await loadSummaryRow() then mod}
             <mod.default
               source={rowSource}
+              {pins}
               shown={selection.boardShown}
+              editing={rowEditing}
+              onEditing={(on) => { rowEditedOn = on ? boardId : ''; }}
+              adding={pins.length === 0}
               filteredTo={ticketSet?.tile?.widget ?? ''}
               onFilter={pickTicketSet}
               onOpenDashboards={() => selection.setScreen('dashboards')}
@@ -687,6 +704,19 @@
           {:catch err}
             <p class="border-b border-border-subtle px-3 py-1.5 text-xs text-error" role="alert" data-testid="board-row-load-error">The board's summary row could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
           {/await}
+        {:else if rowPins && dashboardSource && rowAddable}
+          <div class="flex border-b border-border-subtle px-3 py-1" data-testid="board-row-empty">
+            <button
+              type="button"
+              class="inline-flex h-6 items-center gap-1 rounded-[var(--radius-control)] px-1.5 text-[0.75rem] text-fg-muted hover:bg-surface-1 hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:h-8 compact:select-none"
+              title="Show dashboard numbers above the board"
+              data-testid="board-row-start"
+              onclick={() => { rowEditedOn = boardId; }}
+            >
+              <Icon icon={Plus} size={13} strokeWidth={2} />
+              Add a tile
+            </button>
+          </div>
         {/if}
         {@render ticketSetChip()}
         <BoardScreen

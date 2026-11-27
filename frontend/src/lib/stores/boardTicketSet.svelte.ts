@@ -1,23 +1,27 @@
 // The set of tickets a summary row tile filters the board to
 // (docs/specs/issues.md, "Board"): one per Issues pane, made by
-// IssuesPane.svelte, so the filter stays on from the Board to the Backlog
-// and goes with the pane or another board.
+// IssuesPane.svelte, so the filter stays on from the Board to the Backlog.
+// It is the pane's board's: it clears when the pane shows another board,
+// when the person clears it, and when the board's pins, once known, no
+// longer hold its widget. A new subscription of the same board (a
+// reconnect) keeps it.
 //
 // The set follows its tile's count: it is the tickets a drill of the
 // tile's widget answers (trackerdash.DrillRequest.IDs), read when the tile
 // is picked, again by the rule a dashboard counts again by
 // (recountOnChanges: the board's changes, at most once every 5 s, and
 // every 10 minutes) while the board or the backlog shows, at once when it
-// shows again or the subscription changes, and on each change of the
-// board's dashboards. Until the first read lands there is no set and the
-// board shows every card; a read that fails keeps the last set and says
-// why.
+// shows again or a new subscription answers, and on each change of the
+// board's dashboards that moves what they count. With no subscription it
+// reads nothing. Until the first read lands there is no set and the board
+// shows every card; a read that fails keeps the last set and says why.
 
 import { untrack } from 'svelte';
 import type { Request } from '../../../bindings/agent-overflow/internal/trackerdash/models';
 import { withBackendTarget } from '../transport/backends';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
 import { TrackerDashboardDrill } from './bindings';
+import type { TrackerBoardRef } from './trackerBoard.svelte';
 import { DASHBOARD_CHANGE_INTERVAL_MS, recountOnChanges, type DashboardSource } from './trackerDashboard.svelte';
 import { onTrackerDashboardsUpdated } from './trackerBoardEvents';
 
@@ -41,7 +45,15 @@ export interface BoardTicketSet {
   destroy(): void;
 }
 
-export function createBoardTicketSet(opts: { source: () => DashboardSource | null; shown: () => boolean }): BoardTicketSet {
+export function createBoardTicketSet(opts: {
+  /** The board the pane shows; null for none. */
+  board: () => TrackerBoardRef | null;
+  /** Its subscription, while one is held. */
+  source: () => DashboardSource | null;
+  /** The widgets the board's project pins to its row; null until read. */
+  pins: () => readonly string[] | null;
+  shown: () => boolean;
+}): BoardTicketSet {
   let tile = $state.raw<TicketSetTile | null>(null);
   let ids = $state.raw<ReadonlySet<string> | null>(null);
   let error = $state.raw<unknown>(null);
@@ -71,27 +83,27 @@ export function createBoardTicketSet(opts: { source: () => DashboardSource | nul
     },
   });
 
-  function boardOf(s: DashboardSource | null): string {
-    return s ? `${s.backend}\n${s.board.projectId}\n${s.board.connection}\n${s.board.board}` : '';
+  function boardOf(b: TrackerBoardRef | null): string {
+    return b ? `${b.backend}\n${b.projectId}\n${b.connection}\n${b.board}` : '';
   }
 
   function pick(next: TicketSetTile | null): void {
     tile = next;
     ids = null;
     error = null;
-    pickedOn = boardOf(opts.source());
+    pickedOn = boardOf(opts.board());
     scheduler.reset();
-    if (next && opts.shown()) scheduler.request({ immediate: true });
+    if (next && opts.shown() && opts.source()) scheduler.request({ immediate: true });
   }
 
   const stop = $effect.root(() => {
     // Another board clears the filter; a new subscription of the same
-    // board, or the board shown again, reads the set at once.
-    // Strings, so a change of the board's count alone moves neither.
-    const board = $derived(boardOf(opts.source()));
+    // board, or the board shown again, reads the set at once. Strings, so
+    // a change of the board's count alone moves neither.
+    const board = $derived(boardOf(opts.board()));
     const subscription = $derived(opts.source()?.subscription ?? '');
     $effect(() => {
-      void subscription;
+      const sub = subscription;
       const on = board;
       const shown = opts.shown();
       untrack(() => {
@@ -101,15 +113,24 @@ export function createBoardTicketSet(opts: { source: () => DashboardSource | nul
           return;
         }
         scheduler.reset();
-        if (shown) scheduler.request({ immediate: true });
+        if (sub && shown) scheduler.request({ immediate: true });
       });
+    });
+    // The widget left the board's row: the tile that filtered is gone.
+    $effect(() => {
+      const pins = opts.pins();
+      const t = tile;
+      if (t && pins && !pins.includes(t.widget)) untrack(() => pick(null));
     });
     $effect(() => {
       if (!tile) return;
       recountOnChanges(scheduler, () => opts.source()?.changes ?? -1, opts.shown);
     });
-    $effect(() => onTrackerDashboardsUpdated((backend) => {
-      if (tile && opts.source()?.backend === backend && opts.shown()) scheduler.request();
+    $effect(() => onTrackerDashboardsUpdated((backend, change) => {
+      const b = opts.board();
+      if (!tile || !b || b.backend !== backend || change.project !== b.projectId || !change.counts) return;
+      if (change.board && change.board !== b.board) return;
+      if (opts.source() && opts.shown()) scheduler.request();
     }));
   });
 

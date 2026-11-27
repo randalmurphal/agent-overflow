@@ -1426,7 +1426,6 @@ import {
   RecordActivity as RecordActivityRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import type { TrackerConnection as TrackerConnectionRow, TicketWork as TicketWorkAnswer, TrackerDashboardsView } from '../../../bindings/agent-overflow/internal/app/models.js';
-import type { BoardTilesView } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 import type { BoardChoice as TrackerBoardChoiceRow } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
 export { ArchiveThreadResult, DeleteDependents, DeleteThreadResult };
@@ -1638,15 +1637,10 @@ export function TrackerConnections(): Promise<TrackerConnectionRow[] | null> {
   return orOlder(() => TrackerConnectionsRaw(), () => null);
 }
 
-/** What a subscribed board's Dashboards screen lays out, its summary
- * row's tiles null on a computer whose release keeps none; null on a
+/** What a subscribed board's Dashboards screen lays out; null on a
  * computer whose release has no dashboards. */
-export type DashboardsAnswer = Omit<TrackerDashboardsView, 'tiles'> & { readonly tiles: BoardTilesView | null };
-export function TrackerDashboards(subscriptionId: string): Promise<DashboardsAnswer | null> {
-  return orOlder(async () => {
-    const view = await TrackerDashboardsRaw(subscriptionId);
-    return { ...view, tiles: view.tiles ?? null };
-  }, () => null);
+export function TrackerDashboards(subscriptionId: string): Promise<TrackerDashboardsView | null> {
+  return orOlder(() => TrackerDashboardsRaw(subscriptionId), () => null);
 }
 
 /** A ticket's Work with the forge searched by its key

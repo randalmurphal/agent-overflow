@@ -206,7 +206,8 @@ board methods, events and the patch read in
   (`TrackerBoardState.changes`), at most once every 5 s, and every 10
   minutes; its rules are at the top of the store. The board's summary
   row (`BoardSummaryRow.svelte`) is one of these stores made with `row`,
-  counting the pinned widgets alone; the tickets its tile filters the
+  counting the pinned widgets alone, whose pins are the board
+  subscription's (`TrackerBoardState.pins`); the tickets its tile filters the
   board to are `stores/boardTicketSet.svelte.ts`, one per pane, which
   follows the tile's count by the same rule.
   `stores/trackerDashboardModel.ts` is the pure part: how a number reads,
@@ -228,7 +229,8 @@ or the first ticket pane (`panes/TicketPane.svelte` imports
 first open of a ticket (`TicketHost.svelte`),
 `BacklogScreen.svelte` on the first switch to Backlog,
 `DashboardScreen.svelte` on the first switch to Dashboards,
-`BoardSummaryRow.svelte` for the first board that pins a widget,
+`BoardSummaryRow.svelte` for the first board that pins a widget or
+whose Add a tile is pressed,
 `stores/boardTicketSet.svelte.ts` with the first tile picked, and
 `TimeScreen.svelte` on the first switch to Time.
 The always-loaded stores reach them only through

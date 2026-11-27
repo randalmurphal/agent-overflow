@@ -177,14 +177,17 @@ type boardKept struct {
 	tiles      BoardTiles
 }
 
-// editBoard replaces what slug's project keeps for board of site with
-// what edit makes of it, reading the file again and writing it under
-// setupMu as a replace does (rewriteSetup). edit gets a copy it may
-// change; errNoEdit writes nothing and is no failure, and answers changed
-// false. Whoever holds the setup is told it moved (setupMoved), so a
-// board whose pins changed reads again; the caller tells the dashboards'
-// clients, once its whole change is made.
-func (s *Service) editBoard(slug string, site siteKey, board string, edit func(*boardKept) error) (changed bool, err error) {
+// editBoard replaces what slug's project keeps for board of site, a board
+// of kind k, with what edit makes of it, reading the file again and
+// writing it under setupMu as a replace does (rewriteSetup). edit gets a
+// copy it may change and the widgets the board has as the file is read
+// (tileWidgets); the tiles it is given, and those it leaves, hold only
+// those widgets (pruneTiles), so a widget removed from another window
+// leaves no tile. errNoEdit writes nothing and is no failure, and answers
+// changed false. Whoever holds the setup is told it moved (setupMoved),
+// so a board whose pins changed is told them; the caller tells the
+// dashboards' clients, once its whole change is made.
+func (s *Service) editBoard(slug string, site siteKey, board string, k trackerdash.Kind, edit func(*boardKept, map[string]tileWidget) error) (changed bool, err error) {
 	var editErr error
 	var before, after *heldSetup
 	before, after, err = s.rewriteSetup(slug, func(stored *heldSetup) (Setup, keptSections, bool) {
@@ -192,9 +195,12 @@ func (s *Service) editBoard(slug string, site siteKey, board string, edit func(*
 			dashboards: cloneDashboards(dashboardsOf(stored.kept.dashboards, site, board)),
 			tiles:      cloneTiles(tilesOf(stored.kept.tiles, site, board)),
 		}
-		if editErr = edit(&b); editErr != nil {
+		ws := tileWidgets(k, b.dashboards)
+		pruneTiles(&b.tiles, ws)
+		if editErr = edit(&b, ws); editErr != nil {
 			return Setup{}, keptSections{}, false
 		}
+		pruneTiles(&b.tiles, tileWidgets(k, b.dashboards))
 		next := keptSections{
 			dashboards: slices.DeleteFunc(slices.Clone(stored.kept.dashboards), func(d BoardDashboards) bool {
 				return d.Tracker == site.tracker && d.Site == site.site && d.Board == board

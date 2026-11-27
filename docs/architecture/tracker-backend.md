@@ -2348,49 +2348,75 @@ the proposal under the proposals' lock, and every reader of both (the
 list, a count, a drill) reads them under that lock too, so it sees the
 widget proposed or kept and never both or neither, and a failed write
 leaves it proposed.
-Each change, from any client, emits the payload-less
-`tracker:dashboards_updated` once, on which an open screen of that
-computer lists the board's dashboards and counts again; a hidden screen
-lists them when it shows.
+Each change, from any client, emits `tracker:dashboards_updated` once
+(`trackerapp.DashboardsChange`): the project, the board (empty for every
+board of the project, as a change of the unit it counts in is), and
+`counts`, whether what the dashboards count moved. An open screen of
+that project's board lists the board's dashboards again, and counts
+again when `counts` says so; a screen of another board or project reads
+nothing, and a hidden screen lists them when it shows.
 
 ### Limits and the summary row
 
-A board's summary row is the widgets its project pins to it, at most 5,
-in the row's order, and a number widget may carry a limit. Both live in
+A board's summary row is the widgets its project pins to it, at most 5
+(the list's `tiles.max`), in the row's order, and a number widget may
+carry a limit. Both live in
 the setup file's `board_tiles` section, by tracker site and board, a
 section of its own so an older build, which refuses a field it does not
 know, keeps it as it keeps any section it does not read; like
 `dashboards` it is not part of `Setup` and only its own edits write it.
 A widget is named by its ID on the board's dashboards, a built-in's
-included; a pin or a limit naming a widget the board no longer has is
-ignored where it is read, and Remove drops the widget's pin and limit.
-Which way a limit warns is the widget's `good` (below it when up is good
-news, else above it); nothing is stored for it.
+included. One rule says which tiles hold (`board_tiles.go`,
+`tileWidgets`): a pin or a limit of a widget the board has, a limit only
+on a number, every reader (the board's pins, the list, the row's room)
+reads through it, and every edit of the board's section drops the rest
+before and after it, so Remove drops the widget's pin and limit.
+A limit is stored with the unit it was set in (`trackerdash.ValueUnit`:
+tickets, days, points or seconds) and shows only while the widget counts
+in that unit: a project that changes what it counts in shows no limit
+and no mark until it counts in that unit again, which shows the limit
+again. Which way a limit warns is the widget's `good` (below it when up
+is good news, else above it); nothing is stored for it.
 `SetTrackerWidgetLimit` and `PinTrackerWidget` (`tracker:operate`) set
-them, refuse a limit on a widget that is not a number or one that is
-not finite, and a pin past a full row, and emit
-`tracker:dashboards_updated`. The list answers them as `tiles` (pins,
-limits, and the proposals whose agent asked for a pin), which an older
-computer's list lacks, so its screen shows no limit or pin. An agent's
-widget may name `limit` and `pin` (the rules `dashboard_widget` answers
-say so); Keep gives the kept widget that limit, and pins it while the
-row has room.
+them inside the setup file's write (`editBoard`), against the widgets
+the board has in that write, so a removal written beside a pin leaves no
+pin of a widget that is gone. They refuse a widget the board does not
+have, a limit on a widget that is not a number or one that is not
+finite, and a pin past a full row (`admitPin`, which Keep shares). A
+limit emits `tracker:dashboards_updated` with `counts` false; a pin
+emits none. The list answers `tiles` (the limits shown, the proposals
+whose agent asked for a pin, and `max`). An agent's widget may name
+`limit` and `pin` (the rules `dashboard_widget` answers say so); Keep
+gives the kept widget that limit, and pins it while the row has room.
+`EvaluateTrackerDashboard` refuses a request naming more widgets than
+the row holds.
 
-`BoardView.pins` carries the pins with the board, and a change of them
-reads the board again, so the Board screen loads the row
-(`components/issues/BoardSummaryRow.svelte`) only for a board that pins
-a widget: one that pins none reads nothing more. The row lists the
+The pins are the board subscription's: `BoardView.pins` carries them
+with the board, and a change of them is the board event's `pins`
+(`ProjectPins`, which names the project, since a board's pump serves
+every project that lists the board), which reads nothing. A subscription
+of another project on the same board folds in none of it. The Board
+screen loads the row (`components/issues/BoardSummaryRow.svelte`) only
+for a board that pins a widget or while the person edits it from the
+empty board's Add a tile: one that pins none reads nothing more. The row
+lists the
 board's dashboards and counts one request whose `Widgets` names the
 pinned widgets on the built-in dashboard: one evaluation of those
 widgets alone over its default range, for the team, without the
 proposals, counted again by the dashboards' rule (the board's changes,
-at most once every 5 s, and every 10 minutes). A change of a limit lists
-again and counts nothing. A tile of a widget that counts now and is a
+at most once every 5 s, and every 10 minutes); a change of its pins
+changes that request. A change of a limit lists again and counts
+nothing. A screen steps a limit from the value its last accepted write
+stored until a list begun after that write lands. A tile of a widget
+that counts now and is a
 number or a list filters the board to its tickets: a drill of it asked
 for `IDs` answers every ticket of its rows, in the drill's order, and no
 page. The set follows the tile's count: it is read again by the same
 rule while the Board or the Backlog shows, and on each dashboards
-change. The filter is applied on the page, as Only mine and Search are,
+change of its board that moves counts. It is the pane's board's: it
+holds through a reconnect, reading nothing until the new subscription
+answers, and clears when the pane shows another board or its widget
+leaves the board's pins. The filter is applied on the page, as Only mine and Search are,
 so while it is on every column and section is read whole. Measured on
 the fixture's copy (`TestATicketSetsCost`, `AO_TRACKER_SCALE=5000`), a
 set of 5,000 tickets is 5,000 rows from the metric and an answer of

@@ -11,7 +11,9 @@
 // show; a move made in Jira reaches the filter with no Refresh (it
 // follows its tile's count); Clear shows every card; the row expands into
 // tiles and is edited in place: a tile added from a dashboard, both taken
-// off, and the row goes with its last tile.
+// off, the editor kept until it is closed, and the row gone with it; the
+// empty board's Add a tile fills the row to its five tiles, which stay on
+// one line when shrunk; a chart's tile opens its dashboard at the chart.
 
 import type { Locator, Page } from '@playwright/test';
 
@@ -117,6 +119,34 @@ export function registerBoardRowFlow({ compact }: BoardRowSurface): void {
     await press(pane.getByTestId('board-row-remove').first(), compact);
     await expect(pane.getByTestId('board-row-tile')).toHaveCount(1, { timeout: 15_000 });
     await press(pane.getByTestId('board-row-remove'), compact);
-    await expect(pane.getByTestId('board-row')).toHaveCount(0, { timeout: 15_000 });
+    await expect(pane.getByTestId('board-row-tile')).toHaveCount(0, { timeout: 15_000 });
+    await expect(pane.getByTestId('board-row-add')).toBeVisible();
+    await press(pane.getByTestId('board-row-edit'), compact);
+    await expect(pane.getByTestId('board-row')).toHaveCount(0);
+
+    // The empty board adds its tiles in place, up to the row's five.
+    await press(pane.getByTestId('board-row-start'), compact);
+    const five = ['pace', 'start_to_done', 'finished', 'carrying', 'start_to_done_line'];
+    for (const [i, id] of five.entries()) {
+      if (i > 0) await press(pane.getByTestId('board-row-add'), compact);
+      await press(page.getByTestId(`board-row-offer-${id}`), compact);
+      await expect(pane.getByTestId('board-row-tile')).toHaveCount(i + 1, { timeout: 15_000 });
+    }
+    await press(pane.getByTestId('board-row-add'), compact);
+    await expect(page.getByTestId('board-row-full')).toBeVisible();
+    await page.keyboard.press('Escape');
+
+    // Shrunk, the five chips stay on one line.
+    await press(pane.getByTestId('board-row-toggle'), compact);
+    const chips = pane.getByTestId('board-row-chip');
+    await expect(chips).toHaveCount(5);
+    const tops = await chips.evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().top)));
+    expect(new Set(tops).size).toBe(1);
+
+    // A chart's tile opens its dashboard at the chart.
+    await press(pane.locator('[data-testid="board-row-chip"][data-widget="start_to_done_line"]'), compact);
+    const opened = pane.getByTestId('dashboard-screen');
+    await expect(opened).toBeVisible({ timeout: 15_000 });
+    await expect(widget(opened, 'start_to_done_line')).toBeInViewport({ timeout: 15_000 });
   });
 }

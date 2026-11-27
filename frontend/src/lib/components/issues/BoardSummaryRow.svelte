@@ -1,16 +1,18 @@
 <script lang="ts">
   // The board's summary row (docs/specs/issues.md, "Board"): the dashboard
-  // widgets the board's project pins to the board, at most five, above the
-  // columns, as one line of chips or expanded into tiles (kept on the
-  // device). The Issues pane loads it only for a board that pins a widget
-  // (BoardView.pins), so a board that pins none reads nothing more. Its
-  // numbers are one evaluation of the pinned widgets, counted again as a
-  // dashboard is (stores/trackerDashboard.svelte.ts, `row`). A tile past
-  // its limit is amber. A tile of a "Now" number or list filters the board
-  // to its tickets, and a second press clears it; any other opens the
-  // dashboard that holds it. Edit takes a tile off, adds one from the
-  // board's dashboards, or asks the agent for a new one, whose proposal
-  // Keep puts on the row while the row has room.
+  // widgets the board's project pins to the board (TrackerBoardState.pins),
+  // as many as its computer allows, above the columns, as one line of
+  // chips or expanded into tiles (kept on the device). The Issues pane
+  // loads it only for a board that pins a widget, or while the person
+  // edits it, so a board that pins none reads nothing more until its Add a
+  // tile is pressed. Its numbers are one evaluation of the pinned widgets,
+  // counted again as a dashboard is (stores/trackerDashboard.svelte.ts,
+  // `row`). A tile past its limit is amber. A tile of a "Now" number or
+  // list filters the board to its tickets, and a second press clears it;
+  // any other opens the dashboard that holds it, at the widget. Edit, which
+  // the pane holds, takes a tile off, adds one from the board's
+  // dashboards, or asks the agent for a new one, whose proposal Keep puts
+  // on the row while the row has room.
   import { onDestroy } from 'svelte';
   import ChartColumn from '@lucide/svelte/icons/chart-column';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
@@ -43,7 +45,14 @@
 
   interface Props {
     source: DashboardSource;
+    /** The widgets pinned to the row, in its order. */
+    pins: readonly string[];
     shown: boolean;
+    /** The row is being edited: shown as tiles, each with its remove. */
+    editing: boolean;
+    onEditing: (on: boolean) => void;
+    /** Open Add when the row mounts (the pane's Add a tile). */
+    adding?: boolean;
     /** The widget the board is filtered to; '' for none. */
     filteredTo: string;
     onFilter: (tile: TicketSetTile | null) => void;
@@ -51,12 +60,11 @@
     onOpenDashboards: () => void;
   }
 
-  let { source, shown, filteredTo, onFilter, onOpenDashboards }: Props = $props();
+  let { source, pins, shown, editing, onEditing, adding = false, filteredTo, onFilter, onOpenDashboards }: Props = $props();
 
   const OPEN_KEY = 'issues-board-row-open';
-  const ROW_MAX = 5;
 
-  const store: TrackerDashboard = createTrackerDashboard({ source: () => source, shown: () => shown, row: () => store.tiles?.pins ?? [] });
+  const store: TrackerDashboard = createTrackerDashboard({ source: () => source, shown: () => shown, row: () => pins });
   onDestroy(() => store.destroy());
 
   // Every widget of the board's dashboards by ID, with the dashboard that
@@ -68,16 +76,17 @@
     }
     return out;
   });
-  const pins = $derived(store.tiles?.pins ?? []);
   const pinned = $derived(pins.flatMap((id) => { const w = widgets.get(id); return w ? [w] : []; }));
   const values = $derived(new Map((store.answer?.widgets ?? []).map((v) => [v.id, v])));
   const estimates = $derived(store.answer?.estimates ?? '');
 
+  // Expanded as the person left it, and always while edited.
   let open = $state(readFrontendValue(OPEN_KEY) === true);
-  let editing = $state(false);
+  const expanded = $derived(open || editing);
   function toggle(): void {
-    open = !open;
-    editing = false;
+    open = !expanded;
+    addOpen = false;
+    if (!open) onEditing(false);
     writeFrontendValue(OPEN_KEY, open);
   }
 
@@ -93,7 +102,7 @@
     if (filters(w.view) && builtin) {
       onFilter(filteredTo === w.view.id ? null : { widget: w.view.id, title: w.view.title, request: rowRequest(builtin, [w.view.id]) });
     } else {
-      pickDashboardNext(source.board, w.dashboard.id);
+      pickDashboardNext(source.board, w.dashboard.id, w.view.id);
       onOpenDashboards();
     }
   }
@@ -103,7 +112,7 @@
   }
 
   function over(v: WidgetView, value: WidgetValue | undefined): boolean {
-    return v.form === 'number' && !!value && !value.error && overLimit(value.value as Num | undefined, store.tiles?.limits[v.id], v.good ?? '');
+    return v.form === 'number' && !!value && !value.error && overLimit(value.value as Num | undefined, store.limitOf(v.id), v.good ?? '');
   }
   // A number's words; a list's tickets; nothing for a chart.
   function chipNumber(v: WidgetView, value: WidgetValue | undefined): { amount: string; word: string } | null {
@@ -119,8 +128,8 @@
     return v.form === 'number' ? Hash : v.form === 'list' ? List : ChartColumn;
   }
   function overText(v: WidgetView): string {
-    const limit = store.tiles?.limits[v.id];
-    return limit === undefined ? '' : pastLimitWords(limit, v.good ?? '', v.unit as DashboardUnit, estimates);
+    const limit = store.limitOf(v.id);
+    return limit === null ? '' : pastLimitWords(limit, v.good ?? '', v.unit as DashboardUnit, estimates);
   }
   // A chart's or a table's last three buckets with their totals.
   function rowsOf(v: WidgetView, value: WidgetValue): { label: string; total: string }[] {
@@ -140,11 +149,13 @@
 
   // The Add menu: the dashboards' widgets not on the row, or the sentence
   // that the row is full; and the agent's ask.
-  let addOpen = $state(false);
+  // svelte-ignore state_referenced_locally
+  let addOpen = $state(adding);
   let addAnchor: HTMLElement | undefined = $state();
   let askText = $state('');
   let asking = $state(false);
   const offered = $derived([...widgets.values()].filter((w) => !pins.includes(w.view.id)));
+  const full = $derived(!!store.tiles && pins.length >= store.tiles.max);
   function closeAdd(): void {
     addOpen = false;
   }
@@ -173,20 +184,20 @@
   });
 </script>
 
-<div class="flex items-start gap-2 border-b border-border-subtle px-3 py-2" data-testid="board-row" data-open={open} data-editing={editing}>
+<div class="flex items-start gap-2 border-b border-border-subtle px-3 py-2" data-testid="board-row" data-open={expanded} data-editing={editing}>
   <div class="min-w-0 flex-1">
     {#if evalFailure}
       <ErrorNotice message="{store.answer ? 'Not counted again' : 'Could not count the summary row'}: {evalFailure.report.reason}" captured={evalFailure} testId="board-row-error" />
     {/if}
-    {#if !open}
-      <div class="flex flex-wrap gap-2" data-testid="board-row-chips">
+    {#if !expanded}
+      <div class="flex gap-2 overflow-x-auto" data-testid="board-row-chips">
         {#each pinned as w (w.view.id)}
           {@const value = values.get(w.view.id)}
           {@const n = chipNumber(w.view, value)}
           {@const isOver = over(w.view, value)}
           <button
             type="button"
-            class="inline-flex h-7 max-w-full items-center gap-1.5 rounded-[var(--radius-control)] border px-2 text-[0.75rem] tabular-nums transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:h-8 compact:select-none {filteredTo === w.view.id ? 'border-accent bg-accent/15 text-fg' : 'border-border-subtle bg-surface-1 text-fg-muted hover:text-fg'} {store.stale ? 'opacity-60' : ''}"
+            class="inline-flex h-7 max-w-[16rem] shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] border px-2 text-[0.75rem] tabular-nums transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:h-8 compact:select-none {filteredTo === w.view.id ? 'border-accent bg-accent/15 text-fg' : 'border-border-subtle bg-surface-1 text-fg-muted hover:text-fg'} {store.stale ? 'opacity-60' : ''}"
             title={pressTitle(w.view)}
             aria-pressed={filters(w.view) ? filteredTo === w.view.id : undefined}
             data-testid="board-row-chip"
@@ -289,15 +300,15 @@
     <button
       type="button"
       class="inline-flex size-7 items-center justify-center rounded-[var(--radius-control)] text-fg-muted hover:bg-surface-1 hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:size-8"
-      title={open ? 'Shrink to one line' : 'Show tiles'}
-      aria-label={open ? 'Shrink to one line' : 'Show tiles'}
-      aria-expanded={open}
+      title={expanded ? 'Shrink to one line' : 'Show tiles'}
+      aria-label={expanded ? 'Shrink to one line' : 'Show tiles'}
+      aria-expanded={expanded}
       data-testid="board-row-toggle"
       onclick={toggle}
     >
-      <Icon icon={open ? ChevronUp : ChevronDown} size={14} strokeWidth={2} />
+      <Icon icon={expanded ? ChevronUp : ChevronDown} size={14} strokeWidth={2} />
     </button>
-    {#if open}
+    {#if expanded}
       <button
         type="button"
         class="inline-flex size-7 items-center justify-center rounded-[var(--radius-control)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:size-8 {editing ? 'bg-accent text-accent-fg' : 'text-fg-muted hover:bg-surface-1 hover:text-fg'}"
@@ -305,7 +316,7 @@
         aria-label="Choose what shows here"
         aria-pressed={editing}
         data-testid="board-row-edit"
-        onclick={() => { editing = !editing; addOpen = false; }}
+        onclick={() => { onEditing(!editing); addOpen = false; }}
       >
         <Icon icon={SlidersHorizontal} size={14} strokeWidth={2} />
       </button>
@@ -316,7 +327,7 @@
   <!-- The ask field sits below the menu, not in it: the menu takes j, k
        and the arrows from any descendant to move between its items. -->
   <div class="flex w-[320px] flex-col gap-1 compact:w-full" data-testid="board-row-add-menu">
-    {#if pins.length >= ROW_MAX}
+    {#if full}
       <p class="rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 px-3 py-2 text-[0.75rem] text-fg-muted shadow-menu" data-testid="board-row-full">The row is full. Remove one to add another.</p>
     {:else}
       {#if offered.length > 0}

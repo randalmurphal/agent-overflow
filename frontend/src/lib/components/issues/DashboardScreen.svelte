@@ -17,7 +17,8 @@
   // count does; every widget's numbers are from one answer of the
   // dashboard shown (stores/trackerDashboard.svelte.ts). While a new one
   // is counted the last stays, its numbers dimmed and taking no click, and
-  // says so.
+  // says so. Opened from a tile of the board's summary row, it shows that
+  // tile's widget.
   import { onDestroy } from 'svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import X from '@lucide/svelte/icons/x';
@@ -34,7 +35,7 @@
   import { mountThreadForToolPane } from '../../stores/panes.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
-  import { askAgentAboutDashboards, createTrackerDashboard, type DashboardSource } from '../../stores/trackerDashboard.svelte';
+  import { askAgentAboutDashboards, createTrackerDashboard, takeShownWidget, type DashboardSource } from '../../stores/trackerDashboard.svelte';
   import { FIRST_READ_TEXT } from '../../stores/trackerDashboardModel';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { scopeGrant } from '../../transport/scopes';
@@ -48,6 +49,9 @@
 
   interface Props {
     source: DashboardSource | null;
+    /** The widgets the board's project pins to its summary row
+     * (TrackerBoardState.pins); null until the board is read. */
+    pins: readonly string[] | null;
     /** The board's name, which a failed Ask names. */
     boardName: string;
     shown: boolean;
@@ -58,7 +62,7 @@
     counting?: boolean;
   }
 
-  let { source, boardName, shown, compact, computerName, onOpenTicket, counting = $bindable(false) }: Props = $props();
+  let { source, pins, boardName, shown, compact, computerName, onOpenTicket, counting = $bindable(false) }: Props = $props();
 
   const store = createTrackerDashboard({ source: () => source, shown: () => shown });
   // A ticket list's rows say what became of their writes while the
@@ -71,6 +75,20 @@
   export function refresh(): void {
     store.refresh();
   }
+
+  // The widget a tile of the summary row opened this screen at: shown once
+  // its dashboard is listed.
+  // svelte-ignore state_referenced_locally
+  let showWidget = source ? takeShownWidget(source.board) : '';
+  let gridEl: HTMLElement | undefined = $state();
+  $effect(() => {
+    const d = store.dashboard;
+    const grid = gridEl;
+    if (!showWidget || !d || !grid || !d.widgets.some((w) => w.id === showWidget)) return;
+    const cell = grid.querySelector<HTMLElement>(`[data-widget-cell="${CSS.escape(showWidget)}"]`);
+    showWidget = '';
+    cell?.scrollIntoView({ block: 'start' });
+  });
 
   /** The screen's width that the grid lays out to. */
   let width = $state(0);
@@ -158,16 +176,16 @@
     editing = false;
   });
 
-  // The board's summary row as the list has it; null from a computer
-  // whose release keeps none.
+  // The limits and the row's size as the list has them; null from a
+  // computer whose release keeps none.
   const tiles = $derived(store.tiles);
-  const ROW_MAX = 5;
   function tileOf(w: WidgetView): TileControls | undefined {
     const t = tiles;
-    if (!t) return undefined;
+    if (!t || !pins) return undefined;
     return {
-      pinned: t.pins.includes(w.id),
-      rowFull: t.pins.length >= ROW_MAX,
+      pinned: pins.includes(w.id),
+      rowFull: pins.length >= t.max,
+      max: t.max,
       busy: store.busy.has(w.id),
       blocked: editBlocked,
       onlyOn: compact && !editing,
@@ -178,9 +196,9 @@
   // What Keep does with a proposal an agent asked to show on the board's
   // row; empty for one it did not.
   function keepPinText(p: ProposalView): string {
-    if (!tiles?.proposed.includes(p.view.id)) return '';
-    return tiles.pins.length >= ROW_MAX
-      ? `Asked for the board row, which already shows ${ROW_MAX} tiles: Keep adds it to a dashboard only.`
+    if (!tiles?.proposed.includes(p.view.id) || !pins) return '';
+    return pins.length >= tiles.max
+      ? `Asked for the board row, which already shows ${tiles.max} tiles: Keep adds it to a dashboard only.`
       : 'Keep also shows it on the board row.';
   }
 
@@ -236,7 +254,7 @@
 </script>
 
 {#snippet widgetCell(w: WidgetView, actions?: import('svelte').Snippet, proposed = false)}
-  <div class="min-w-0" style:grid-column="span {span(w)} / span {span(w)}" data-testid="dashboard-cell-span" data-span={span(w)}>
+  <div class="min-w-0" style:grid-column="span {span(w)} / span {span(w)}" data-testid="dashboard-cell-span" data-span={span(w)} data-widget-cell={proposed ? undefined : w.id}>
     <DashboardWidget
       view={w}
       value={values.get(w.id)}
@@ -250,7 +268,7 @@
       onTicket={openTicket}
       {tickets}
       {actions}
-      limit={tiles?.limits[w.id] ?? null}
+      limit={proposed ? null : store.limitOf(w.id)}
       tile={proposed ? undefined : tileOf(w)}
     />
   </div>
@@ -357,6 +375,7 @@
     <div class="min-h-0 flex-1 overflow-y-auto" bind:clientWidth={width}>
       <div
         class="grid grid-cols-12 gap-2 p-3"
+        bind:this={gridEl}
         aria-busy={store.counting}
         data-testid="dashboard-grid"
         data-stale={stale}

@@ -115,9 +115,10 @@ describe("a number's limit", () => {
     expect(overLimit({ nc: 2 }, 0, 'down')).toBe(false);
   });
 
-  it('steps by an hour on a board of time estimates, else by 1', () => {
+  it('steps by an hour on a board of time estimates, by half a day for days, else by 1', () => {
     expect(limitStep('estimate', 'time')).toBe(3600);
     expect(limitStep('estimate', 'points')).toBe(1);
     expect(limitStep('tickets', 'time')).toBe(1);
+    expect(limitStep('days', 'points')).toBe(0.5);
   });
 });

@@ -428,6 +428,7 @@ func TestACountOverlappingAKeepFindsTheWidgetOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tb := must[tileBoard](t)(m.svc.tileBoardOf(scope, key))
 	m.svc.propMu.Lock()
 	unlock := sync.OnceFunc(m.svc.propMu.Unlock)
 	defer unlock()
@@ -441,7 +442,7 @@ func TestACountOverlappingAKeepFindsTheWidgetOnce(t *testing.T) {
 		done <- outcome{a, err}
 	}()
 	waitBlockedIn(t, "trackerapp.(*Service).ownOf", done)
-	err = m.svc.keepLocked(proposalKey{key.slug, key.site, scope.Board}, key, string(scope.Board), q, KeepTarget{Dashboard: id}, id)
+	err = m.svc.keepLocked(proposalKey{key.slug, key.site, scope.Board}, key, string(scope.Board), tb, q, KeepTarget{Dashboard: id}, id)
 	unlock()
 	if err != nil {
 		t.Fatal(err)

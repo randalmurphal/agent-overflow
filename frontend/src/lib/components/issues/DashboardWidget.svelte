@@ -4,6 +4,8 @@
     readonly pinned: boolean;
     /** The board's row is full, so it takes no other pin. */
     readonly rowFull: boolean;
+    /** How many widgets the board's row holds. */
+    readonly max: number;
     /** A change of this widget is out. */
     readonly busy: boolean;
     /** Why a change takes no press; undefined when it does. */
@@ -186,7 +188,7 @@
       </span>
     {/if}
     {#if pinShown && tile}
-      {@const pinBlocked = tile.blocked ?? (!tile.pinned && tile.rowFull ? "The board's row already shows 5 tiles. Take one off to pin this one." : undefined)}
+      {@const pinBlocked = tile.blocked ?? (!tile.pinned && tile.rowFull ? `The board's row already shows ${tile.max} tiles. Take one off to pin this one.` : undefined)}
       <button
         type="button"
         class="inline-flex size-5 shrink-0 items-center justify-center rounded-[var(--radius-control)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50 compact:size-8 {tile.pinned ? 'bg-accent text-accent-fg' : 'text-fg-muted hover:bg-surface-1 hover:text-fg'}"

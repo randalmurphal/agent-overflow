@@ -79,9 +79,10 @@ type Deps struct {
 	// setup as it is stored (setup.go). It must not block.
 	SetupChanged func()
 	// DashboardsChanged is told after every change of a board's
-	// dashboards: one its project keeps, or a widget proposed on it
-	// (dashboards.go). It must not block.
-	DashboardsChanged func()
+	// dashboards: one its project keeps, a widget proposed on it, a
+	// limit, or the unit its project counts in, with which board and
+	// whether what it counts changed (dashboards.go). It must not block.
+	DashboardsChanged func(DashboardsChange)
 	// Origin says where a connection's client connects.
 	Origin Origin
 	// Version is the app version the clients send in their User-Agent.
@@ -178,7 +179,7 @@ type Service struct {
 	// while holding setupMu or any other of the service's locks.
 	propMu            sync.Mutex
 	proposals         map[proposalKey][]heldProposal
-	dashboardsChanged func()
+	dashboardsChanged func(DashboardsChange)
 
 	// opMu serializes every change to a connection, from its first store
 	// read to its last write. It is never held across a tracker call.

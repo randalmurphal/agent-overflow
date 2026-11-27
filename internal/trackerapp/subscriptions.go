@@ -62,8 +62,10 @@ var (
 // reads them, BoardPatch); ReadAgain says the change moved rows it does
 // not name (the board's structure, a status's name or group) or named more
 // than maxEventIssues (Truncated), and the client reads the board view
-// again. Sync is the board's sync state; Failure in it is sent once when
-// it starts or changes and once when it clears. Ended is the last event:
+// again. Pins are one project's pins that changed, which its subscribers
+// hold with no read. Sync is the board's sync state; Failure in it is sent
+// once when it starts or changes and once when it clears. Ended is the
+// last event:
 // the subscription ended (the connection was turned off or removed, or the
 // board is no longer listed), and every handle on it with it.
 type BoardEvent struct {
@@ -73,8 +75,18 @@ type BoardEvent struct {
 	Removed   []tracker.IssueID `json:"removed,omitempty"`
 	Truncated bool              `json:"truncated,omitempty"`
 	ReadAgain bool              `json:"read_again,omitempty"`
+	Pins      *ProjectPins      `json:"pins,omitempty"`
 	Sync      SyncView          `json:"sync"`
 	Ended     bool              `json:"ended,omitempty"`
+}
+
+// ProjectPins is the widgets a project now pins to a board's summary row,
+// in the row's order (BoardView.Pins), told on the board's event: a
+// board's pump holds the handles of every project that lists the board,
+// and only the subscriptions of Project take them.
+type ProjectPins struct {
+	Project string   `json:"project"`
+	Pins    []string `json:"pins"`
 }
 
 // IssueEvent tells an open ticket's subscribers, of Issue on Connection,

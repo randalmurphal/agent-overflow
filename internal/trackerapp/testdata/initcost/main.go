@@ -193,7 +193,7 @@ func reachTrackerApp(arg string) {
 		CredentialsDir:    arg,
 		ConfigDir:         arg,
 		SetupChanged:      func() {},
-		DashboardsChanged: func() {},
+		DashboardsChanged: func(trackerapp.DashboardsChange) {},
 		Origin:            trackerapp.APIOrigin,
 		Version:           arg,
 		Now:               time.Now,

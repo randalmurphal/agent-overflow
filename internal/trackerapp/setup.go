@@ -20,6 +20,7 @@ import (
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/trackerdash"
 )
 
 // A project's tracker setup: the per-project choices of the Issues
@@ -578,12 +579,13 @@ func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setu
 // setupMoved tells what a change of slug's held setup from before to
 // after moves, either nil when none is held: every board subscription of
 // the project on a site whose status groups or count of tickets changed
-// reads again, and so does one of a board whose pins changed
-// (BoardView.Pins), a change of the count has the dashboards read again,
-// and a change of what is stored is told. A side that holds nothing is not
-// known to agree with the other on any site, so every site counts as
-// moved: a board of the project read with groups that may be stale, or
-// failed to read them, reads again.
+// reads again, one of a board whose pins changed is told them
+// (tellPins), a change of the count has the project's dashboards listed
+// and counted again, and a change of what is stored is told. A side that
+// holds nothing is not known to agree with the other on any site, so
+// every site counts as moved: a board of the project read with groups
+// that may be stale, or failed to read them, reads again, its pins with
+// it.
 func (s *Service) setupMoved(slug string, before, after *heldSetup) {
 	switch {
 	case before == nil && after == nil:
@@ -596,15 +598,61 @@ func (s *Service) setupMoved(slug string, before, after *heldSetup) {
 			return true
 		}
 		was, now := before.counting(site), after.counting(site)
-		return was.version != now.version || was.tickets != now.tickets ||
-			!slices.Equal(tilesOf(before.kept.tiles, site, string(board)).Pins, tilesOf(after.kept.tiles, site, string(board)).Pins)
+		return was.version != now.version || was.tickets != now.tickets
 	})
-	// A board's dashboards are laid out in the unit the project counts it
-	// in (Dashboards): a change of it has them read again.
+	if before != nil && after != nil {
+		s.tellPins(slug, before, after)
+	}
+	// A board's dashboards are laid out and counted in the unit the
+	// project counts it in (Dashboards): a change of it has them listed
+	// and counted again.
 	if before == nil || after == nil || before.view.Setup.Estimates.countsTickets() != after.view.Setup.Estimates.countsTickets() {
-		s.dashboardsChanged()
+		if project := s.projectOfSlug(slug); project != "" {
+			s.dashboardsChanged(DashboardsChange{Project: project, Counts: true})
+		}
 	}
 	s.setupChanged()
+}
+
+// projectOfSlug is the project of slug as a board subscription names it,
+// empty when no board subscription holds one: no client shows its
+// dashboards.
+func (s *Service) projectOfSlug(slug string) string {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for _, h := range s.subs.handles {
+		if h.board != nil && h.setup.slug == slug {
+			return h.project
+		}
+	}
+	return ""
+}
+
+// tellPins tells every board pump holding a handle of slug's project on a
+// board whose pins changed from before to after the project's pins now,
+// on the board's event (BoardEvent.Pins), so a subscriber of the project
+// holds them with no read and one of another project on the board holds
+// its own. A setup's pins are written only by editBoard, which keeps them
+// to the widgets the board has.
+func (s *Service) tellPins(slug string, before, after *heldSetup) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	told := map[*boardPump]bool{}
+	for _, h := range s.subs.handles {
+		p := h.board
+		if p == nil || told[p] || h.setup.slug != slug || p.over || p.core.DeadLocked() {
+			continue
+		}
+		board := string(p.scope.Board)
+		pins := tilesOf(after.kept.tiles, h.setup.site, board).Pins
+		if slices.Equal(tilesOf(before.kept.tiles, h.setup.site, board).Pins, pins) {
+			continue
+		}
+		told[p] = true
+		p.pending.pins = &ProjectPins{Project: h.project, Pins: append([]string{}, pins...)}
+		p.pending.due = true
+		s.flushBoardLocked(p)
+	}
 }
 
 // readBoardsAgain has every board pump with a handle of project slug on a
@@ -636,7 +684,7 @@ func (s *Service) boardViewOf(key setupKey, scope Scope, sections []Section) (Bo
 	if err != nil {
 		return BoardView{}, err
 	}
-	view.Pins, err = s.boardPins(key, string(scope.Board))
+	view.Pins, err = s.boardPins(key, string(scope.Board), trackerdash.Kind{PlansSprints: view.PlansSprints, Epics: hasEpics(key.site.tracker)})
 	return view, err
 }
 

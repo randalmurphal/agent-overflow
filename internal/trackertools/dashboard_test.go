@@ -3,6 +3,7 @@ package trackertools
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -173,6 +174,40 @@ func TestDashboardWidgetAnswersTheCount(t *testing.T) {
 	}
 	if f.tries[0] != "p1 conn-jira/1 3 true thread-1" {
 		t.Fatalf("tries = %v", f.tries)
+	}
+}
+
+// What the agent asks for the widget's tile reaches the service as it
+// asked: a pin alone, or a limit with it.
+func TestDashboardWidgetPassesTheTileMarks(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  string
+		marks map[string]any
+		want  []string
+	}{
+		{"a pin alone", map[string]any{"pin": true}, []string{"pin"}},
+		{"a limit and a pin", map[string]any{"pin": true, "limit": 3}, []string{"limit 3", "pin"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f := &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
+				return trackerdash.Tried{View: trackerdash.WidgetView{How: trackerdash.How{Counts: "The number of tickets."}}, Unit: "tickets"}, nil
+			}}
+			widget := map[string]any{}
+			for k, v := range openWidget {
+				widget[k] = v
+			}
+			for k, v := range c.marks {
+				widget[k] = v
+			}
+			if _, err := widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": widget, "show": true}); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.tries[1:]; !slices.Equal(got, c.want) {
+				t.Fatalf("marks = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 

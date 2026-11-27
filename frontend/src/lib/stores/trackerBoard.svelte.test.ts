@@ -868,6 +868,50 @@ describe('the board subscription', () => {
     board.release();
   });
 
+  it("holds its project's pins from the read and each event that tells them, with no read, and not another project's of the same board", async () => {
+    const mocks = install({ view: { ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), pins: ['stuck'] } as unknown as BoardView });
+    const mine = attachTrackerBoard(REF, true);
+    const other = attachTrackerBoard({ ...REF, projectId: 'p2' }, true);
+    await flush();
+    expect(mocks.subscribe).toHaveBeenCalledTimes(2);
+    expect(mine.current?.pins).toEqual(['stuck']);
+    expect(other.current?.pins).toEqual(['stuck']);
+    const otherHeld = other.current?.held;
+    applyTrackerBoardEvent(event(11, { pins: { project: 'p1', pins: ['stuck', 'pace'] } }), HOME_BACKEND);
+    await flush();
+    expect(mine.current?.pins).toEqual(['stuck', 'pace']);
+    expect(mine.current?.changes).toBe(0);
+    expect(other.current?.pins).toEqual(['stuck']);
+    expect(other.current?.changes).toBe(0);
+    expect(other.current?.held).toBe(otherHeld);
+    expect(mocks.board).not.toHaveBeenCalled();
+    expect(mocks.patch).not.toHaveBeenCalled();
+    expect(mocks.page).not.toHaveBeenCalled();
+    mine.release();
+    other.release();
+  });
+
+  it('keeps pins an event told during a full read over the pins the read answers', async () => {
+    install({ view: { ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), pins: ['stuck'] } as unknown as BoardView });
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    const reads = held<BoardView>('TrackerBoard');
+    applyTrackerBoardEvent(event(11, { read_again: true }), HOME_BACKEND);
+    await flush();
+    expect(reads.calls).toHaveLength(1);
+    applyTrackerBoardEvent(event(12, { pins: { project: 'p1', pins: [] } }), HOME_BACKEND);
+    reads.answer({ ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), pins: ['stuck'] } as unknown as BoardView);
+    await flush();
+    expect(board.current?.pins).toEqual([]);
+    // A read begun after it takes the read's.
+    applyTrackerBoardEvent(event(13, { read_again: true }), HOME_BACKEND);
+    await flush();
+    reads.answer({ ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), pins: ['pace'] } as unknown as BoardView);
+    await flush();
+    expect(board.current?.pins).toEqual(['pace']);
+    board.release();
+  });
+
   it('takes the failure a gap read answers, unless an event told a newer one during the read', async () => {
     const failure = { kind: 'auth', message: 'Jira refused the token', at: 50 };
     const mocks = install({ failure, view: { ...view([]), sync: { read_at: 100, failure } } as unknown as BoardView });

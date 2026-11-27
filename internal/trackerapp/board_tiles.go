@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerdash"
 )
 
@@ -20,9 +21,11 @@ import (
 // fields of the dashboards section, so an older build, which refuses a
 // field it does not know, keeps it as it keeps any section it does not
 // read. Like the dashboards it is not part of Setup and is written only
-// by editBoard. Which way a limit warns is the widget's good direction
-// (overLimit); nothing is stored for it. A pin or a limit naming a widget
-// the board no longer has is ignored where it is read.
+// by editBoard, which checks every edit against the widgets the board has
+// as it writes (tileWidgets) and drops a pin or a limit naming one it no
+// longer has; a reader drops them too (livePins, shownLimits), for a file
+// an older build or a hand left so. Which way a limit warns is the
+// widget's good direction (overLimit); nothing is stored for it.
 
 // maxPins is how many widgets a board's summary row shows.
 const maxPins = 5
@@ -30,12 +33,25 @@ const maxPins = 5
 // BoardTiles is what a project keeps for one board's summary row: the
 // widgets pinned to it in its order, and each number widget's limit.
 type BoardTiles struct {
-	Tracker string             `json:"tracker"`
-	Site    string             `json:"site"`
-	Board   string             `json:"board"`
-	Pins    []string           `json:"pins,omitempty"`
-	Limits  map[string]float64 `json:"limits,omitempty"`
+	Tracker string               `json:"tracker"`
+	Site    string               `json:"site"`
+	Board   string               `json:"board"`
+	Pins    []string             `json:"pins,omitempty"`
+	Limits  map[string]TileLimit `json:"limits,omitempty"`
 }
+
+// TileLimit is a number widget's limit and the unit its number was in
+// when the limit was set (trackerdash.ValueUnit): tickets, days, points or
+// seconds. A limit applies only while the number is in that unit, so a
+// project that changes what it counts in keeps the limit, not applied,
+// until it counts that way again.
+type TileLimit struct {
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit"`
+}
+
+// limitUnits are the units a limit is set in.
+var limitUnits = []string{"tickets", "days", "points", "seconds"}
 
 type boardTilesV1 struct {
 	Version int          `json:"version"`
@@ -77,12 +93,15 @@ func validateBoardTiles(boards []BoardTiles) ([]BoardTiles, error) {
 				return nil, invalidSetup("%s pins widget %s to board %s twice", sectionBoardTiles, id, truncateID(b.Board))
 			}
 		}
-		for id, v := range b.Limits {
+		for id, l := range b.Limits {
 			if err := checkWidgetID(id); err != nil {
 				return nil, err
 			}
-			if math.IsNaN(v) || math.IsInf(v, 0) {
+			if math.IsNaN(l.Value) || math.IsInf(l.Value, 0) {
 				return nil, invalidSetup("%s gives widget %s a limit that is not a number", sectionBoardTiles, id)
+			}
+			if !slices.Contains(limitUnits, l.Unit) {
+				return nil, invalidSetup("%s gives widget %s a limit in %q, which is not one of %s", sectionBoardTiles, id, truncateID(l.Unit), strings.Join(limitUnits, ", "))
 			}
 		}
 		if len(b.Limits) == 0 {
@@ -136,44 +155,141 @@ func cloneTiles(t BoardTiles) BoardTiles {
 	return t
 }
 
-// boardPins is the widgets key's project pins to board, in the row's
-// order; nil for none.
-func (s *Service) boardPins(key setupKey, board string) ([]string, error) {
+// tileWidget is a widget a board's tile may name: its form and metric.
+type tileWidget struct {
+	form   trackerdash.Form
+	metric trackerdash.Metric
+}
+
+// tileWidgets is every widget a tile of a board of kind k may name, by
+// ID: its built-in dashboard's and those of kept, its project's
+// dashboards for it. The one rule for which widgets a board has, which
+// every write and read of its tiles applies.
+func tileWidgets(k trackerdash.Kind, kept []KeptDashboard) map[string]tileWidget {
+	d, metrics := trackerdash.Builtin(k)
+	out := make(map[string]tileWidget, len(d.Widgets))
+	for _, w := range d.Widgets {
+		out[w.ID] = tileWidget{form: w.Form, metric: metrics[w.Metric]}
+	}
+	for _, kd := range kept {
+		for _, w := range kd.Widgets {
+			out[w.ID] = tileWidget{form: w.Form, metric: w.Metric}
+		}
+	}
+	return out
+}
+
+// pruneTiles drops from t a pin of a widget ws does not hold, and a limit
+// of one it does not hold as a number. A limit set in another unit stays.
+func pruneTiles(t *BoardTiles, ws map[string]tileWidget) {
+	t.Pins = slices.DeleteFunc(t.Pins, func(id string) bool {
+		_, ok := ws[id]
+		return !ok
+	})
+	maps.DeleteFunc(t.Limits, func(id string, _ TileLimit) bool {
+		return ws[id].form != trackerdash.FormNumber
+	})
+}
+
+// livePins is t's pins of widgets ws holds, in the row's order; nil for
+// none.
+func livePins(t BoardTiles, ws map[string]tileWidget) []string {
+	var out []string
+	for _, id := range t.Pins {
+		if _, ok := ws[id]; ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// shownLimits is t's limits that apply on a board whose estimates are
+// estimateUnit: of a number widget ws holds, set in the unit its number
+// is in now.
+func shownLimits(t BoardTiles, ws map[string]tileWidget, estimateUnit int) map[string]float64 {
+	out := map[string]float64{}
+	for id, l := range t.Limits {
+		if w, ok := ws[id]; ok && w.form == trackerdash.FormNumber && trackerdash.ValueUnit(w.metric, estimateUnit) == l.Unit {
+			out[id] = l.Value
+		}
+	}
+	return out
+}
+
+// admitPin pins id to the end of t's row when the row has room: the one
+// rule for a row's room, which a Pin and a Keep apply.
+func admitPin(t *BoardTiles, id string) error {
+	switch {
+	case slices.Contains(t.Pins, id):
+		return errNoEdit
+	case len(t.Pins) >= maxPins:
+		return rowFull()
+	}
+	t.Pins = append(t.Pins, id)
+	return nil
+}
+
+// tileBoard is what a board's tiles read of the board as the mirror holds
+// it: its kind, which picks its built-in dashboard, and the unit its
+// project counts it in (store.MirrorEstimate*).
+type tileBoard struct {
+	kind         trackerdash.Kind
+	estimateUnit int
+}
+
+// tileBoardOf reads board scope of key's project as its tiles read it.
+func (s *Service) tileBoardOf(scope Scope, key setupKey) (tileBoard, error) {
+	groups, err := s.boardStatusGroups(key)
+	if err != nil {
+		return tileBoard{}, err
+	}
+	root, err := s.readRoot(scope.Connection)
+	if err != nil {
+		return tileBoard{}, err
+	}
+	defer s.leave()
+	st, ok, err := s.store.GetMirrorBoard(root, string(scope.Board))
+	switch {
+	case err != nil:
+		return tileBoard{}, fmt.Errorf("trackerapp: read board %s from the mirror: %w", scope.Board, err)
+	case !ok:
+		return tileBoard{}, fmt.Errorf("%w: board %s", ErrNotMirrored, scope.Board)
+	}
+	return tileBoard{
+		kind:         trackerdash.Kind{PlansSprints: st.Board.PlansSprints, Epics: hasEpics(key.site.tracker)},
+		estimateUnit: int(groups.unit(tracker.EstimateUnit(st.Board.EstimateUnit))),
+	}, nil
+}
+
+// boardPins is the widgets key's project pins to board, a board of kind
+// k, in the row's order; nil for none.
+func (s *Service) boardPins(key setupKey, board string, k trackerdash.Kind) ([]string, error) {
 	s.setupMu.Lock()
 	defer s.setupMu.Unlock()
 	held, err := s.heldSetupLocked(key.slug)
 	if err != nil {
 		return nil, err
 	}
-	return slices.Clone(tilesOf(held.kept.tiles, key.site, board).Pins), nil
+	ws := tileWidgets(k, dashboardsOf(held.kept.dashboards, key.site, board))
+	return livePins(tilesOf(held.kept.tiles, key.site, board), ws), nil
 }
 
 // BoardTilesView is a board's summary row as its Dashboards screen reads
-// it: the widgets pinned, in the row's order, each number widget's limit
-// by widget ID, a proposed one's included, and the proposals Keep pins
-// (Proposed); none of them nil, so a client tells a computer that keeps
-// tiles from an older one, whose answer has none.
+// it, beside the pins its board subscription carries (BoardView.Pins):
+// each number widget's limit that applies now by widget ID, a proposed
+// one's included, the proposals Keep pins (Proposed), and how many tiles
+// the row shows (Max); the maps and lists not nil.
 type BoardTilesView struct {
-	Pins     []string           `json:"pins"`
 	Limits   map[string]float64 `json:"limits"`
 	Proposed []string           `json:"proposed"`
+	Max      int                `json:"max"`
 }
 
-// tilesView is t and the marks of proposed as the listing l answers them:
-// only the widgets l lists, and a limit only on a number widget.
-func tilesView(t BoardTiles, proposed []heldProposal, l trackerdash.Listing) BoardTilesView {
-	listed := listedWidgets(l)
-	out := BoardTilesView{Pins: []string{}, Limits: map[string]float64{}, Proposed: []string{}}
-	for _, id := range t.Pins {
-		if _, ok := listed[id]; ok {
-			out.Pins = append(out.Pins, id)
-		}
-	}
-	for id, v := range t.Limits {
-		if w, ok := listed[id]; ok && w.Form == trackerdash.FormNumber {
-			out.Limits[id] = v
-		}
-	}
+// tilesView is t and the marks of proposed as a listing answers them: the
+// limits that apply on a board whose estimates are estimateUnit among the
+// widgets ws, and those proposed that l lists.
+func tilesView(t BoardTiles, ws map[string]tileWidget, estimateUnit int, proposed []heldProposal, l trackerdash.Listing) BoardTilesView {
+	out := BoardTilesView{Limits: shownLimits(t, ws, estimateUnit), Proposed: []string{}, Max: maxPins}
 	for _, p := range proposed {
 		if !slices.ContainsFunc(l.Proposals, func(v trackerdash.ProposalView) bool { return v.View.ID == p.widget.ID }) {
 			continue
@@ -183,17 +299,6 @@ func tilesView(t BoardTiles, proposed []heldProposal, l trackerdash.Listing) Boa
 		}
 		if p.marks.Pin {
 			out.Proposed = append(out.Proposed, p.widget.ID)
-		}
-	}
-	return out
-}
-
-// listedWidgets is every widget of l's dashboards, by ID.
-func listedWidgets(l trackerdash.Listing) map[string]trackerdash.WidgetView {
-	out := map[string]trackerdash.WidgetView{}
-	for _, d := range l.Dashboards {
-		for _, w := range d.Widgets {
-			out[w.ID] = w
 		}
 	}
 	return out
@@ -220,52 +325,60 @@ func checkLimit(v float64) error {
 }
 
 // SetWidgetLimit sets the limit of widget, a number widget of the board
-// subscription's dashboards, or clears it for nil; the board's tile and
-// the widget are marked when its number passes it.
+// subscription's dashboards, in the unit its number is in now, or clears
+// it for nil; the board's tile and the widget are marked when its number
+// passes it. The clients are told the board's dashboards changed, and
+// that nothing they count did.
 func (s *Service) SetWidgetLimit(ctx context.Context, subscription, widget string, limit *float64) error {
 	if limit != nil {
 		if err := checkLimit(*limit); err != nil {
 			return err
 		}
 	}
-	return s.editTiles(ctx, subscription, widget, func(w trackerdash.WidgetView, t *BoardTiles) error {
-		if w.Form != trackerdash.FormNumber {
-			return dashRefusal("dashboard_limit_not_number", fmt.Sprintf("%q is not a number tile; only a number carries a limit", w.Title))
+	scope, project, changed, err := s.editTiles(subscription, widget, func(w tileWidget, tb tileBoard, t *BoardTiles) error {
+		if w.form != trackerdash.FormNumber {
+			return dashRefusal("dashboard_limit_not_number", "only a number tile carries a limit")
 		}
 		old, had := t.Limits[widget]
-		switch {
-		case limit == nil && !had, limit != nil && had && old == *limit:
-			return errNoEdit
-		case limit == nil:
-			delete(t.Limits, widget)
-		default:
-			if t.Limits == nil {
-				t.Limits = map[string]float64{}
+		if limit == nil {
+			if !had {
+				return errNoEdit
 			}
-			t.Limits[widget] = *limit
+			delete(t.Limits, widget)
+			return nil
 		}
+		next := TileLimit{Value: *limit, Unit: trackerdash.ValueUnit(w.metric, tb.estimateUnit)}
+		if had && old == next {
+			return errNoEdit
+		}
+		if t.Limits == nil {
+			t.Limits = map[string]TileLimit{}
+		}
+		t.Limits[widget] = next
 		return nil
 	})
+	if changed {
+		s.dashboardsChanged(DashboardsChange{Project: project, Board: string(scope.Board)})
+	}
+	return err
 }
 
 // PinWidget pins widget, one of the board subscription's dashboards', to
 // the end of the board's summary row, or takes it off; a full row
-// (maxPins) refuses another.
+// (maxPins) refuses another. The pins reach the clients on the board's
+// subscriptions (setupMoved), so nothing else is told.
 func (s *Service) PinWidget(ctx context.Context, subscription, widget string, pinned bool) error {
-	return s.editTiles(ctx, subscription, widget, func(w trackerdash.WidgetView, t *BoardTiles) error {
-		has := slices.Contains(t.Pins, widget)
-		switch {
-		case has == pinned:
-			return errNoEdit
-		case !pinned:
-			t.Pins = slices.DeleteFunc(t.Pins, func(id string) bool { return id == widget })
-		case len(t.Pins) >= maxPins:
-			return rowFull()
-		default:
-			t.Pins = append(t.Pins, widget)
+	_, _, _, err := s.editTiles(subscription, widget, func(_ tileWidget, _ tileBoard, t *BoardTiles) error {
+		if pinned {
+			return admitPin(t, widget)
 		}
+		if !slices.Contains(t.Pins, widget) {
+			return errNoEdit
+		}
+		t.Pins = slices.DeleteFunc(t.Pins, func(id string) bool { return id == widget })
 		return nil
 	})
+	return err
 }
 
 // rowFull is a pin refused because the board's summary row is full.
@@ -274,27 +387,24 @@ func rowFull() error {
 }
 
 // editTiles changes the tiles of the board subscription's board with
-// edit, given widget as the board's dashboards list it now, and tells the
-// clients when it changed. A widget the board's dashboards do not list is
-// refused.
-func (s *Service) editTiles(ctx context.Context, subscription, widget string, edit func(trackerdash.WidgetView, *BoardTiles) error) error {
-	scope, key, err := s.boardHandle(subscription)
+// edit, given widget as the board has it when the edit is written
+// (editBoard), and answers the board, its project and whether the tiles
+// changed. A widget the board does not have then is refused.
+func (s *Service) editTiles(subscription, widget string, edit func(tileWidget, tileBoard, *BoardTiles) error) (Scope, string, bool, error) {
+	scope, key, project, err := s.boardHandleProject(subscription)
 	if err != nil {
-		return err
+		return Scope{}, "", false, err
 	}
-	list, _, err := s.Dashboards(ctx, subscription)
+	tb, err := s.tileBoardOf(scope, key)
 	if err != nil {
-		return err
+		return Scope{}, "", false, err
 	}
-	w, ok := listedWidgets(list)[widget]
-	if !ok {
-		return dashRefusal("dashboard_widget_gone", "that widget is no longer on this board's dashboards")
-	}
-	changed, err := s.editBoard(key.slug, key.site, string(scope.Board), func(b *boardKept) error {
-		return edit(w, &b.tiles)
+	changed, err := s.editBoard(key.slug, key.site, string(scope.Board), tb.kind, func(b *boardKept, ws map[string]tileWidget) error {
+		w, ok := ws[widget]
+		if !ok {
+			return dashRefusal("dashboard_widget_gone", "that widget is no longer on this board's dashboards")
+		}
+		return edit(w, tb, &b.tiles)
 	})
-	if changed {
-		s.dashboardsChanged()
-	}
-	return err
+	return scope, project, changed, err
 }

@@ -10884,9 +10884,10 @@ export class TrackerConnection {
  * lays out: the dashboards it offers, the built-in first, each with its
  * ranges and its widgets' layout and How this is counted, and the widgets
  * agents proposed on the board with their threads (trackerdash.Listing),
- * and the board's summary row: its pins, the number widgets' limits and
- * the proposals Keep pins (trackerapp.BoardTilesView), which an older
- * computer's answer lacks. Ask is why Ask your agent cannot start a thread
+ * and the board's summary row: the number widgets' limits that apply, the
+ * proposals Keep pins and how many tiles the row shows
+ * (trackerapp.BoardTilesView); its pins are the board subscription's
+ * (BoardView.Pins). Ask is why Ask your agent cannot start a thread
  * on this computer, "" when it can (trackerToolsProvider).
  */
 export class TrackerDashboardsView {
