@@ -2,14 +2,17 @@
 // dashboards after a list landed shows beside that list, and Refresh
 // reads the list again; a dashboard's widgets, the proposals and their
 // controls are the list's, so a count that fails leaves every one of them
-// to press.
+// to press. A ticket list's moves go to the board's connection, and what
+// the tracker refused shows under the row while the dashboard is shown
+// and in a toast while it is not.
 
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, within } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TrackerDashboardsView } from '../../../../bindings/agent-overflow/internal/app/models';
 import type { Answer, DashboardView, ProposalView, WidgetView } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { getToasts } from '../../stores/toast.svelte';
 import { trackerDashboardsUpdated } from '../../stores/trackerBoardEvents';
 import { setCarriedSessionScopes } from '../../transport/scopes';
 import DashboardScreen from './DashboardScreen.svelte';
@@ -134,5 +137,114 @@ describe('a count that fails', () => {
     await fireEvent.click(remove);
     await flush();
     expect(removed).toEqual([['sub-1', 'd_1', 'w_1']]);
+  });
+});
+
+describe('a ticket list', () => {
+  const LAPTOP = { ...SOURCE, backend: 'laptop', board: { ...SOURCE.board, backend: 'laptop' } };
+  const LIST = { ...VIEW, id: 'd_2', widgets: [{ ...widget('w_list', 'Stuck'), form: 'list', width: 6 }] } as unknown as DashboardView;
+  const ROWS = [
+    { row: 1, id: '10101', key: 'WEB-1', title: 'First', status: 'To Do', counted: true },
+    { row: 2, id: '10102', key: 'WEB-2', title: 'Second', status: 'To Do', counted: true },
+  ];
+
+  function mount(scopes: string[]) {
+    setCarriedSessionScopes('laptop', scopes);
+    setBindingMock('TrackerDashboards', async () => listed([LIST]));
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1, widgets: [{ id: 'w_list', tickets: ROWS }] } as unknown as Answer));
+    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    unmount = screen.unmount;
+    return screen;
+  }
+
+  async function moveBoth(screen: ReturnType<typeof mount>): Promise<void> {
+    for (const key of ['WEB-1', 'WEB-2']) await fireEvent.click(screen.getByRole('checkbox', { name: `Select ${key}` }));
+    await fireEvent.click(screen.getByTestId('ticket-list-move'));
+    await vi.waitFor(() => expect(within(document.body).getByTestId('ticket-list-move-status')).toBeTruthy());
+    await fireEvent.click(within(document.body).getByTestId('ticket-list-move-status'));
+    await vi.waitFor(() => expect(screen.getByTestId('ticket-list-note').dataset.done).toBe('true'));
+    await flush();
+  }
+
+  it('writes the board\'s connection and says what was refused under the row while shown, else in a toast', async () => {
+    setBindingMock('TrackerMoves', async () => [{ id: '31', name: 'Finish', to: { id: 's3', name: 'Done' } }]);
+    const moved: string[] = [];
+    setBindingMock('MoveTrackerIssue', async (connection: string, input: { issue: string }) => {
+      moved.push(`${connection} ${input.issue}`);
+      return { parts: [{ step: 'move', state: input.issue === '10102' ? 'refused' : 'applied', refusal: { reason: 'tracker', message: 'Needs a reviewer' } }] };
+    });
+    const screen = mount(['tracker:read', 'tracker:operate', 'threads:operate']);
+    await flush();
+    await moveBoth(screen);
+    expect(moved.sort()).toEqual(['conn-1 10101', 'conn-1 10102']);
+    expect(screen.getAllByTestId('ticket-write-outcome').map((n) => n.textContent?.trim())).toEqual(['Needs a reviewer']);
+    expect(getToasts()).toHaveLength(0);
+
+    await fireEvent.click(screen.getByTestId('ticket-write-dismiss'));
+    await screen.rerender({ shown: false });
+    await moveBoth(screen);
+    expect(screen.queryAllByTestId('ticket-write-outcome')).toHaveLength(0);
+    expect(getToasts().map((t) => t.message)).toEqual(['The tracker refused the change to WEB-2: Needs a reviewer']);
+  });
+
+  it('closes the drill a thread was started from, so the thread opens with nothing over it', async () => {
+    setCarriedSessionScopes('laptop', ['tracker:read', 'tracker:operate', 'threads:operate']);
+    const NUM = { ...VIEW, id: 'd_3', widgets: [{ ...widget('w_num', 'Stuck'), now: true }] } as unknown as DashboardView;
+    setBindingMock('TrackerDashboards', async () => listed([NUM]));
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1, widgets: [{ id: 'w_num', value: { v: 2 } }] } as unknown as Answer));
+    setBindingMock('TrackerDashboardDrill', async () => ({ title: 'Stuck', value: { v: 2 }, unit: 'tickets', estimates: 'points', count: 2, tickets: 2, counted: 2, page: 0, pages: 1, rows: ROWS, at: 1 }));
+    setBindingMock('StartTicketsThread', async () => ({ id: 't-drill', projectId: 'p1' }));
+    setBindingMock('SwitchThread', async (id: string) => ({ id, projectId: 'p1' }));
+    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    unmount = screen.unmount;
+    await flush();
+    await fireEvent.click(screen.getByTestId('dashboard-number'));
+    const page = within(document.body);
+    await vi.waitFor(() => expect(page.getAllByTestId('dashboard-drill-row')).toHaveLength(2));
+    for (const key of ['WEB-1', 'WEB-2']) await fireEvent.click(page.getByRole('checkbox', { name: `Select ${key}` }));
+    await fireEvent.click(page.getByTestId('ticket-list-thread'));
+    await fireEvent.click(page.getByTestId('ticket-list-thread-start'));
+    await vi.waitFor(() => expect(page.queryByTestId('dashboard-drill')).toBeNull());
+  });
+
+  it('leaves a drill opened after a start alone when that start ends', async () => {
+    setCarriedSessionScopes('laptop', ['tracker:read', 'tracker:operate', 'threads:operate']);
+    const NUM = { ...VIEW, id: 'd_3', widgets: [{ ...widget('w_num', 'Stuck'), now: true }] } as unknown as DashboardView;
+    setBindingMock('TrackerDashboards', async () => listed([NUM]));
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1, widgets: [{ id: 'w_num', value: { v: 2 } }] } as unknown as Answer));
+    setBindingMock('TrackerDashboardDrill', async () => ({ title: 'Stuck', value: { v: 2 }, unit: 'tickets', estimates: 'points', count: 2, tickets: 2, counted: 2, page: 0, pages: 1, rows: ROWS, at: 1 }));
+    let made: () => void = () => {};
+    setBindingMock('StartTicketsThread', () => new Promise((resolve) => { made = () => resolve({ id: 't-drill', projectId: 'p1' }); }));
+    setBindingMock('SwitchThread', async (id: string) => ({ id, projectId: 'p1' }));
+    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    unmount = screen.unmount;
+    await flush();
+    const page = within(document.body);
+    const openDrill = async () => {
+      await fireEvent.click(screen.getByTestId('dashboard-number'));
+      await vi.waitFor(() => expect(page.getAllByTestId('dashboard-drill-row')).toHaveLength(2));
+      await fireEvent.click(page.getByRole('checkbox', { name: 'Select WEB-1' }));
+      await fireEvent.click(page.getByTestId('ticket-list-thread'));
+    };
+    await openDrill();
+    await fireEvent.click(page.getByTestId('ticket-list-thread-start'));
+    await fireEvent.keyDown(document, { key: 'Escape' });
+    await vi.waitFor(() => expect(page.queryByTestId('dashboard-drill')).toBeNull());
+    await openDrill();
+    await fireEvent.input(page.getByTestId('ticket-list-thread-text'), { target: { value: 'the second question' } });
+    made();
+    await flush();
+    await flush();
+    expect(page.getByTestId('dashboard-drill')).toBeTruthy();
+    expect((page.getByTestId('ticket-list-thread-text') as HTMLInputElement).value).toBe('the second question');
+  });
+
+  it('offers no move or assignment where this device may not change tickets', async () => {
+    const screen = mount(['tracker:read', 'threads:operate']);
+    await flush();
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Select WEB-1' }));
+    expect((screen.getByTestId('ticket-list-move') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('ticket-list-assign') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('ticket-list-thread') as HTMLButtonElement).disabled).toBe(false);
   });
 });

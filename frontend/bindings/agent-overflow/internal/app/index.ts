@@ -178,6 +178,7 @@ export {
     StandingAgentWakes,
     StartTerminalOptions,
     StartTicketThreadRequest,
+    StartTicketsThreadRequest,
     SubmitPRReviewDrafts,
     SubmitPRReviewRequest,
     SubmitPRReviewResult,

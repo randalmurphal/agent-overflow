@@ -4,7 +4,8 @@
   // its change against the range before and its trend, bars, a line, a
   // table or a list of tickets. Every number opens its rows (the drill); a
   // person or an epic's label narrows the page to it; a ticket opens. A
-  // widget whose metric failed says why in its place. How this is counted
+  // widget whose metric failed says why in its place. A list's rows can be
+  // selected and acted on together (TicketListActions). How this is counted
   // replaces the widget's body while it is on, so it reads without hover.
   // The screen may put actions in a row of their own under the title (a
   // proposal's Keep and Dismiss, edit mode's Remove), which wraps inside
@@ -39,6 +40,7 @@
   import LineChart from './charts/LineChart.svelte';
   import Sparkline from './charts/Sparkline.svelte';
   import DashboardHow from './DashboardHow.svelte';
+  import TicketListActions, { type TicketListSource } from './TicketListActions.svelte';
 
   interface Props {
     view: WidgetView;
@@ -54,10 +56,12 @@
     onPerson: (person: Name) => void;
     onEpic: (epic: Name) => void;
     onTicket: (row: TicketRow) => void;
+    /** Where a ticket list's selection is written. */
+    tickets: TicketListSource;
     actions?: Snippet;
   }
 
-  let { view, value, counting = false, range, estimates, stale = false, onDrill, onPerson, onEpic, onTicket, actions }: Props = $props();
+  let { view, value, counting = false, range, estimates, stale = false, onDrill, onPerson, onEpic, onTicket, tickets, actions }: Props = $props();
 
   let showHow = $state(false);
   const unit = $derived(view.unit as DashboardUnit);
@@ -209,21 +213,17 @@
         {#if (value.tickets ?? []).length === 0 && !value.not_counted}
           <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">No tickets.</p>
         {:else}
-          <ul class="flex flex-col" data-testid="dashboard-list">
-            {#each value.tickets ?? [] as row (row.row)}
-              <li class="border-t border-border-subtle first:border-t-0">
-                <button type="button" class="flex w-full min-w-0 items-baseline gap-2 py-1 text-left text-[0.75rem] hover:bg-surface-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" data-testid="dashboard-list-row" onclick={() => onTicket(row)}>
-                  <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{row.key}</span>
-                  <!-- Under compact the note goes under the title, which keeps its width. -->
-                  <span class="flex min-w-0 flex-1 items-baseline gap-2 compact:flex-col compact:items-start compact:gap-0">
-                    <span class="w-full min-w-0 flex-1 truncate text-fg">{row.title}</span>
-                    {#if row.note}<span class="max-w-[50%] shrink-0 truncate text-[0.6875rem] text-fg-muted compact:max-w-full" data-testid="dashboard-list-note">{row.note}</span>{/if}
-                  </span>
-                  {#if row.assignee}<span class="max-w-[8rem] shrink-0 truncate text-[0.6875rem] text-fg-muted">{row.assignee}</span>{/if}
-                </button>
-              </li>
-            {/each}
-          </ul>
+          <TicketListActions rows={value.tickets ?? []} source={tickets} variant="widget" listTestId="dashboard-list" rowTestId="dashboard-list-row" {onTicket}>
+            {#snippet row(r)}
+              <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{r.key}</span>
+              <!-- Under compact the note goes under the title, which keeps its width. -->
+              <span class="flex min-w-0 flex-1 items-baseline gap-2 compact:flex-col compact:items-start compact:gap-0">
+                <span class="w-full min-w-0 flex-1 truncate text-fg">{r.title}</span>
+                {#if r.note}<span class="max-w-[50%] shrink-0 truncate text-[0.6875rem] text-fg-muted compact:max-w-full" data-testid="dashboard-list-note">{r.note}</span>{/if}
+              </span>
+              {#if r.assignee}<span class="max-w-[8rem] shrink-0 truncate text-[0.6875rem] text-fg-muted">{r.assignee}</span>{/if}
+            {/snippet}
+          </TicketListActions>
         {/if}
       {/if}
 

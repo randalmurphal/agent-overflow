@@ -32,6 +32,7 @@ import (
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessrpc"
+	"agent-overflow/internal/olderrelease"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
 )
@@ -405,45 +406,20 @@ type isolationOptions struct {
 }
 
 // olderComputerSurface is how v0.0.19 answers this build's window: the
-// App methods added since are absent, so a call answers method_not_found;
+// App methods this build binds and the release does not
+// (olderrelease.Frozen) are absent, so a call answers method_not_found;
 // ArchiveThread and DeleteThread, which returned only an error then,
 // answer a success with null; and a settings snapshot names none of the
-// keys added since. From the generated bindings and internal/settings at
-// the tag and at head. It reproduces the answers, not the release's write
-// path: a save of a key the release lacks is taken here.
+// keys added since (internal/settings at the tag and at head). It
+// reproduces the answers, not the release's write path: a save of a key
+// the release lacks is taken here.
 func olderComputerSurface() (absent map[string]bool, reshape map[string]func(json.RawMessage) (json.RawMessage, error)) {
+	released := olderrelease.Frozen()
 	absent = map[string]bool{}
-	for _, name := range []string{
-		"AgentRosterSeeds", "CancelThreadWake", "CheckAgentProfiles", "CreateAssistant", "DeleteThreads",
-		"FinishProviderAccountReset", "GetDeleteDependents", "GetGitBlobImage", "GetNativeMemoryStatus", "GetStandingAgent",
-		"GetThreadAgentRows", "GetThreadRequestStates", "GetThreadWakeDetail",
-		"GetThreadWorkerSummary", "ListAssistantPastThreads", "ListStandingAgentWakes",
-		"ListThreadAgentRows", "ListThreadPastAgentRows", "ListThreadRecurringJobs",
-		"ListThreadWakes", "ListThreadWorkerSummaries", "MarkThreadsRead", "ResolveForgeFacts",
-		"SaveGitBlobImage", "SendExternalThreadMessage", "SetAssistantProjects", "SetThreadPlacement",
-		"SpendProviderAccountReset", "StartNextAssistantThread", "StopThreadAgentIncoming", "StopThreadAgentRows",
-		"StopThreadAgentRow", "ThreadToolWatch", "WakeThreadWakeNow", "WorkflowPauseItemAndEndSessions",
-		"TrackerConnections", "AddTrackerConnection", "RenameTrackerConnection", "SetTrackerConnectionEnabled",
-		"SetTrackerConnectionTokenExpiry", "RemoveTrackerConnection", "VerifyTrackerConnection",
-		"EditTrackerKeyFile", "OpenTrackerTokenPage", "TrackerProjects", "TrackerBoards",
-		"ProjectTrackerBoards", "SetProjectTrackerBoards", "TrackerBoardChoices", "ProjectTrackerSetup", "ProjectTrackerStatuses", "ProjectTrackerPace", "SetProjectTrackerSetup",
-		"SubscribeTrackerBoard", "TrackerBoard", "TrackerSectionRows", "TrackerBoardPatch",
-		"SetTrackerSubscriptionVisible", "RefreshTrackerSubscription", "ReleaseTrackerSubscription",
-		"SubscribeTrackerTicket", "TrackerTicket", "TrackerComments", "TrackerAssignableUsers", "TrackerChoices",
-		"EditTrackerIssue", "MoveTrackerIssue", "SetTrackerEstimate", "AddTrackerComment", "EditTrackerComment",
-		"DeleteTrackerComment", "TrackerMoves", "RankTrackerIssues", "MoveTrackerIssuesToSprint",
-		"CreateTrackerIssue", "TrackerBoardProjects", "TrackerIssueTypes", "TrackerCreateFields", "CreateTrackerSprint", "StartTrackerSprint", "CompleteTrackerSprint",
-		"EditTrackerSprint", "EditTrackerWorklog", "DeleteTrackerWorklog", "TrackerWorklogs", "RefreshTrackerWorklogs",
-		"MintTrackerAttachmentUploadTicket", "MintTrackerAttachmentDownloadTicket",
-		"SaveTrackerAttachment", "TrackerLinkTypes", "LinkTrackerIssues", "UnlinkTrackerIssues", "TrackerPokerSupport",
-		"FollowTrackerPoker", "TrackerPoker", "VoteTrackerPoker", "RevealTrackerPoker", "ClearTrackerPokerVotes",
-		"SetThreadTicket", "ClearThreadTicket", "ThreadsForTicket", "GetTicketWork", "StartTicketThread",
-		"TrackerDashboards", "EvaluateTrackerDashboard", "TrackerDashboardDrill", "StartTrackerDashboardThread",
-		"KeepTrackerWidget", "DismissTrackerWidget", "RemoveTrackerWidget",
-		"ProjectTrackerSiteFields", "SearchTicketWork", "RecordActivity", "GetActivityRecording",
-		"ThreadTimeEntries", "EditTrackerTimeEntry", "RemoveTrackerTimeEntries", "PostTrackerTimeEntries",
-	} {
-		absent[name] = true
+	for _, m := range transport.GeneratedMethods {
+		if !released.Has(m.Name) {
+			absent[m.Name] = true
+		}
 	}
 	answerNull := func(json.RawMessage) (json.RawMessage, error) { return json.RawMessage(`null`), nil }
 	reshape = map[string]func(json.RawMessage) (json.RawMessage, error){
