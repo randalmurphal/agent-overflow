@@ -1789,7 +1789,8 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: trackerParentsMigrationVersion, Name: "tracker_parents", SQL: trackerParentsV172SQL},
 	{Version: timeEntriesMigrationVersion, Name: "time_entries", SQL: timeEntriesV173SQL},
 	{Version: activityMigrationVersion, Name: "activity", SQL: activityV174SQL},
-	{Version: trackerLabelsMigrationVersion, Name: "tracker_labels", SQL: trackerLabelsV175SQL},
+	{Version: issueUpdatesMigrationVersion, Name: "issue_updates", SQL: issueUpdatesV175SQL},
+	{Version: trackerLabelsMigrationVersion, Name: "tracker_labels", SQL: trackerLabelsV176SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

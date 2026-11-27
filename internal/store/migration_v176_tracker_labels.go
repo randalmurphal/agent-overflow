@@ -1,6 +1,6 @@
 package store
 
-// Migration v175 adds tracker_cache_issues.labels: the names of a card's
+// Migration v176 adds tracker_cache_issues.labels: the names of a card's
 // labels, a JSON array in the card's order (MirrorCard.Labels), which the
 // card writer stores with the card and a support rule's label arm reads
 // (mirrorSupportSQL) without decoding the card's data.
@@ -16,7 +16,7 @@ package store
 // revision of every board with a row of an issue whose type or labels
 // changed, as the status trigger does for its status: support moves no
 // row between sections, so the revision stays.
-const trackerLabelsV175SQL = `
+const trackerLabelsV176SQL = `
 ALTER TABLE tracker_cache_issues ADD COLUMN labels TEXT NOT NULL DEFAULT '[]';
 
 UPDATE tracker_cache_issues SET labels = (
@@ -33,4 +33,4 @@ CREATE TRIGGER trg_tracker_cache_totals_support AFTER UPDATE OF type_id, labels 
 END;
 `
 
-const trackerLabelsMigrationVersion = 175
+const trackerLabelsMigrationVersion = 176

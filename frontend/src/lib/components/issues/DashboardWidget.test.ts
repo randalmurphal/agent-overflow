@@ -199,3 +199,53 @@ it('opens a listed ticket, and the rest and the uncounted in the drill', async (
   await fireEvent.click(getByTestId('dashboard-more'));
   expect(onDrill).toHaveBeenCalledWith({ widget: 'stuck_list' });
 });
+
+describe('a chart of the sprint\'s days', () => {
+  const day = (key: string, label: string, v: object, over: object = {}) => ({ key, label, cells: [v], total: v, ...over });
+  const burn = view({ id: 'burndown', title: 'Burndown', form: 'line', bucket: 'day', unit: 'estimate', good: 'down', width: 6, pace: true });
+  const buckets = [
+    day('day:start', 'Start', { v: 12 }),
+    day('day:2026-11-23', 'Nov 23', { v: 10, nc: 1 }),
+    day('day:2026-11-24', 'Nov 24', { v: 7 }, { partial: true }),
+    day('day:2026-11-25', 'Nov 25', {}, { last: true }),
+  ];
+
+  it('names the sprint it counted in How this is counted, and says why it has no days', async () => {
+    const counted = draw(burn, { id: 'burndown', series: [''], buckets, range_words: 'It counts WEB Sprint 9 at its start and at the end of each working day; the range does not change it.' } as unknown as WidgetValue);
+    await fireEvent.click(counted.getByTestId('dashboard-how-toggle'));
+    expect(counted.getByTestId('dashboard-how').textContent).toContain('It counts WEB Sprint 9 at its start');
+    counted.unmount();
+    const none = draw(burn, { id: 'burndown', note: 'No sprint is active on this board.' } as unknown as WidgetValue);
+    expect(none.getByTestId('dashboard-widget-note').textContent).toBe('No sprint is active on this board.');
+    expect(none.queryByTestId('dashboard-line')).toBeNull();
+  });
+
+  it('draws an even pace for the burndown alone, not for any line of days', () => {
+    const value = { id: 'burndown', series: [''], buckets } as unknown as WidgetValue;
+    const paced = draw(burn, value);
+    expect(paced.getByTestId('dashboard-legend').textContent).toContain('On pace');
+    paced.unmount();
+    const made = draw(view({ id: 'w_1', title: 'Made per day', form: 'line', bucket: 'day', unit: 'tickets', width: 6 }), { ...value, id: 'w_1' } as WidgetValue);
+    expect(made.queryByTestId('dashboard-legend')).toBeNull();
+  });
+});
+
+it('adds no total to a table whose series overlap', () => {
+  const value = {
+    id: 'sprint_scope',
+    series: ['Committed', 'Added', 'Removed', 'Completed'],
+    buckets: [{ key: 'sprint:1', label: 'WEB Sprint 1', cells: [{ v: 6 }, { v: 7 }, { v: 3 }, { v: 3 }], total: { v: 19 } }],
+  } as unknown as WidgetValue;
+  const v = { id: 'sprint_scope', title: 'Committed, added, removed and completed', form: 'table', bucket: 'sprint', series: value.series };
+  const overlapping = draw(view({ ...v, overlap: true }), value);
+  expect(overlapping.queryByTestId('dashboard-cell-total')).toBeNull();
+  expect(overlapping.getByTestId('dashboard-table').textContent).not.toContain('Total');
+  overlapping.unmount();
+  expect(draw(view(v), value).getByTestId('dashboard-cell-total')).toBeTruthy();
+});
+
+it('compares a state with what held when the range began, not with the range before', () => {
+  const { getByTestId } = draw(view({ id: 'stuck', state: true, good: 'down', unit: 'tickets' }), { id: 'stuck', value: { v: 4 }, previous: { v: 2, nc: 1 } } as WidgetValue);
+  expect(getByTestId('dashboard-change').textContent?.trim()).toBe('Up 2 tickets from 2, when the range began, 1 not counted then');
+  expect(getByTestId('dashboard-change').dataset.tone).toBe('bad');
+});

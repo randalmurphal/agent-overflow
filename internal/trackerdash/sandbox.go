@@ -375,15 +375,14 @@ func hostParams(now, since int64) []any {
 }
 
 // wrapped is the statement a count of p runs: p's own between
-// parentheses, its rows capped, each one with whether its ticket is on
-// the board, into the session's sink through bounded_rows.
+// parentheses, each row with whether its ticket is on the board, into
+// the session's sink through bounded_rows, which keeps and caps them
+// (rowSink.add).
 func (s *session) wrapped(p prepared) string {
 	var b strings.Builder
-	b.WriteString("WITH q AS (\n")
+	b.WriteString("WITH r AS (\n")
 	b.WriteString(p.sql)
-	b.WriteString("\n), r AS (SELECT * FROM q LIMIT ")
-	fmt.Fprint(&b, maxRows+1)
-	b.WriteString(") SELECT bounded_rows('" + s.key + "', EXISTS (SELECT 1 FROM main.tickets WHERE id = r.\"ticket\")")
+	b.WriteString("\n) SELECT bounded_rows('" + s.key + "', EXISTS (SELECT 1 FROM main.tickets WHERE id = r.\"ticket\")")
 	for _, name := range p.names {
 		b.WriteString(`, r."` + name + `"`)
 	}
@@ -397,12 +396,12 @@ func (s *session) wrapped(p prepared) string {
 // to the sink, and answers its rows. The host binds :now, the
 // evaluation's instant, and :since, where the range's periods begin
 // (span.since), so a metric of the range reads only the rows it can
-// place.
-func (s *session) run(ctx context.Context, p prepared, now, since int64) ([]contribution, error) {
+// place. A state metric's rows are those that hold at one of at.
+func (s *session) run(ctx context.Context, p prepared, now, since int64, at heldAt) ([]contribution, error) {
 	ctx, cancel := context.WithTimeout(ctx, metricDeadline-p.took)
 	defer cancel()
-	s.sink.reset(p.cols, p.series)
-	defer s.sink.reset(columns{}, nil)
+	s.sink.reset(p.cols, p.series, at)
+	defer s.sink.reset(columns{}, nil, heldAt{})
 	s.take()
 	s.setWrapping(true)
 	var n int64
@@ -416,8 +415,6 @@ func (s *session) run(ctx context.Context, p prepared, now, since int64) ([]cont
 		return nil, &MetricError{Sentence: fmt.Sprintf("This widget's query ran past its limit of %v and was stopped. Pick a shorter range, or try again when this computer is less busy.", metricDeadline), Limit: true}
 	case err != nil:
 		return nil, sqlError(err, denied)
-	case n > maxRows:
-		return nil, &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows, its limit. Pick a shorter range.", maxRows), Limit: true}
 	}
 	return s.sink.take(), nil
 }

@@ -643,15 +643,39 @@ widgets and removes the dashboard with its last one (there is no
 Delete), and the widget an agent proposes, which the person keeps or
 dismisses; a number, bar or cell's tickets, a number's change and trend, narrowing to a person or
 an epic, and selecting rows in a ticket list or a drill to move, assign
-or start a thread on them. A query reads the board's tickets only: pull
-requests, threads and logged time are not built, nor the credit rules in
-How this is counted, or a number tile's limit.
+or start a thread on them; a sprint board's burndown and its table of
+what each finished sprint committed, added, removed and completed; and
+Stuck's value where the range began. A query reads the board's tickets
+only: pull requests, threads and logged time are not built, nor the
+credit rules in How this is counted, or a number tile's limit.
 
 - Every board has a built-in dashboard, Overview: its usual pace, days
   from start to done, the tickets stuck now, what was finished per sprint
-  or week, who is carrying what, what was created and finished, and on
-  Jira open work by epic, counted from the computer's copy of the board,
-  which keeps syncing while the dashboard shows.
+  or week, who is carrying what, on a sprint board the burndown and what
+  each sprint committed, added, removed and completed, what was created
+  and finished, and on Jira open work by epic, counted from the
+  computer's copy of the board, which keeps syncing while the dashboard
+  shows.
+- The burndown draws the active sprint's work not yet done or canceled,
+  in the board's estimate (tickets when it has none), at the sprint's
+  start and at the end of each working day, against a dashed even pace
+  from the start's value to zero on its last day. Today's point is so
+  far, and later days have none. A point says what is left and what the
+  pace would leave, and opens its tickets; the pace opens nothing. A
+  board with no active sprint, or whose active sprint has no start or
+  end date, says so in the chart's place; a board without sprints has
+  no burndown.
+- The sprint table gives each sprint of the range its estimate committed
+  at its start, added after it and removed before its end, each at its
+  value then, and completed by the pace's rule. A ticket added and then
+  removed counts in both, and each ticket once per column, so the table
+  has no Total. Each cell opens its tickets.
+- The burndown and the sprint table count a ticket from its history.
+  After any change to a ticket, until its history is read again (about a
+  minute on Jira and three on Linear while the board shows), it is
+  listed and not counted, saying "its latest change is not read yet",
+  and one that left the sprint is missing from the burndown's past days
+  and from the sprint table.
 - A dashboard is a twelve-column grid of widgets with a toolbar: dashboard
   picker, Team or Mine, the range, Ask your agent, and an edit mode that
   removes widgets.
@@ -663,7 +687,10 @@ How this is counted, or a number tile's limit.
   line. The arrow gives the direction and its color says whether that
   direction is good. When the range before left tickets out, the change
   says how many ("Up 0.5 tickets from 0.5, the 2 weeks before, 2 not
-  counted then").
+  counted then"). A number that counts what holds now, such as Stuck,
+  is compared with what held where the range began.
+- A value from before the copy's history reaches is "not counted", never
+  zero, and the number says how many.
 - A number says how many tickets it could not count beside it ("2 not
   counted"), and reads "Not known" with no change mark when it counted
   none. A drill's header gives its number and its rows and tickets ("6
