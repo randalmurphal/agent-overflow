@@ -75,6 +75,12 @@ func scanTurnRow(scanner interface{ Scan(...any) error }) (Turn, error) {
 // does not auto-assign it. A duplicate (thread_id, turn_index) or
 // duplicate turn_id returns a UNIQUE-constraint error — callers should
 // treat it as a bug, not a recoverable collision.
+//
+// In the same transaction it names the thread among the threads that
+// started a turn on the turn's local day (thread_days), while a Jira
+// connection is on: the time draft's record of which tickets a day's
+// threads touched. A day the thread already has changes no page, so a
+// turn start of a thread that ran that day writes only the turn.
 func (s *Store) InsertTurn(turn Turn) error {
 	if turn.TurnID == "" {
 		return fmt.Errorf("store: insert turn: turn id is required")
@@ -82,17 +88,30 @@ func (s *Store) InsertTurn(turn Turn) error {
 	if turn.ThreadID == "" {
 		return fmt.Errorf("store: insert turn: thread id is required")
 	}
-	_, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: insert turn %s: %w", turn.TurnID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.Exec(
 		`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
 		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
 		 VALUES (?, ?, ?, ?, NULL, '', '', '', '', ?)`,
 		turn.TurnID, turn.ThreadID, turn.TurnIndex, turn.StartedAt, turn.ProviderTurnID,
 	)
+	if err == nil {
+		_, err = tx.Exec(insertThreadDaySQL, localDay(turn.StartedAt), turn.ThreadID)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
 	if err != nil {
 		return fmt.Errorf("store: insert turn %s: %w", turn.TurnID, err)
 	}
 	return nil
 }
+
+var insertThreadDaySQL = `INSERT OR IGNORE INTO thread_days(day, thread_id) SELECT ?1, ?2 WHERE ` + jiraOnSQL
 
 // UpdateTurnCompleted flips completed_at + stop_reason +
 // assistant_message_id + token_usage_json + error_message on an existing

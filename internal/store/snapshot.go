@@ -358,7 +358,9 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 // describes, and so are the owner operations owed to a paired computer.
 // The time draft joins them too: an entry posted or sent since the
 // snapshot would be offered again, and approving it would log the time
-// twice. Its entries of a connection the snapshot lacks are deleted after
+// twice. The activity the recorder measured joins them: it is this
+// computer's record of the person's day since the snapshot, which the
+// snapshot cannot hold. Its entries of a connection the snapshot lacks are deleted after
 // the copy (deleteOrphanTimeEntriesSQL), as the connection's cascade
 // would have, since the copy runs with foreign keys off.
 //
@@ -371,7 +373,7 @@ func restoreSkipsTable(table string) bool {
 	switch table {
 	case "thread_transfers", "thread_transfer_sessions", "remote_jobs", "remote_watches",
 		"thread_requests", "thread_request_receipts", "thread_owner_ops", "spawn_revisions",
-		"tracker_time_entries":
+		"tracker_time_entries", "activity_spans", "thread_days":
 		return true
 	}
 	return strings.HasPrefix(table, "thread_search")
