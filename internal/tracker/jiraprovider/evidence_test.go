@@ -136,8 +136,8 @@ func TestEvidenceReadsCommentsAndJirasWorklogs(t *testing.T) {
 	wantEvidence(t, ev, "10101/c: 40001 acc-user2\n"+
 		"10101/w: "+strings.Join(web1, " ")+"\n"+
 		"10102/w: 60002 acc-user1 "+start.Add(11*time.Hour).UTC().Format(time.RFC3339)+" 10m0s\n"+
-		"99999/c ! Jira did not return issue 99999: it was deleted, or this account cannot see it\n"+
-		"99999/w ! Jira did not return issue 99999: it was deleted, or this account cannot see it\n"+
+		"99999/c ! issue 99999: Jira did not return it: it was deleted, or this account cannot see it\n"+
+		"99999/w ! issue 99999: Jira did not return it: it was deleted, or this account cannot see it\n"+
 		"users acc-user2:User 2 acc-user1:User 1")
 	if got := fmt.Sprint(requests()); got != "[POST rest/api/3/issue/bulkfetch GET rest/api/3/issue/{issue}/worklog]" {
 		t.Errorf("requests %s", got)
@@ -230,7 +230,7 @@ func TestEvidenceFailsAnIssueJiraCouldNotRead(t *testing.T) {
 		site.Issues[1].BulkError = "Jira is busy"
 	})
 	ev := readEvidence(t, s, both("10101", time.Time{}), both("10102", time.Time{}))
-	if len(ev.Failed) != 2 || ev.Failed[0].Issue != "10102" || !strings.Contains(ev.Failed[0].Err.Error(), "Jira could not read issue 10102: Jira is busy") ||
+	if len(ev.Failed) != 2 || ev.Failed[0].Issue != "10102" || !strings.Contains(ev.Failed[0].Err.Error(), "issue 10102: Jira could not read it: Jira is busy") ||
 		len(ev.Read) != 2 || ev.Read[0].Issue != "10101" || ev.Read[1].Issue != "10101" {
 		t.Fatalf("evidence %s", evidenceOf(ev))
 	}
@@ -248,7 +248,7 @@ func TestEvidenceFailsASourceWithAnAuthorOfNoAccountType(t *testing.T) {
 	})
 	ev := readEvidence(t, s, both("10101", time.Time{}))
 	if len(ev.Failed) != 1 || ev.Failed[0].Source != tracker.EvidenceComments ||
-		ev.Failed[0].Err.Error() != "Jira named no account type for acc-bot, the author of comment 40009 of issue 10101, so whether a person made it is not known" ||
+		ev.Failed[0].Err.Error() != "issue 10101: Jira named no account type for acc-bot, the author of comment 40009, so whether a person made it is not known" ||
 		len(ev.Read) != 1 || ev.Read[0].Source != tracker.EvidenceWorklogs {
 		t.Fatalf("evidence %s", evidenceOf(ev))
 	}
@@ -271,7 +271,7 @@ func TestEvidenceFailsTheWorklogsOfAnAuthorJiraWithholds(t *testing.T) {
 	}
 	ev := readEvidence(t, s, both("10101", time.Time{}), both("10102", start.Add(72*time.Hour)))
 	got := evidenceOf(ev)
-	if !strings.HasPrefix(got, "10101/c: 40001 acc-user2\n10102/c:\n10102/w:\n10101/w ! Jira did not show who logged Tempo worklog 7001 on issue 10101: "+
+	if !strings.HasPrefix(got, "10101/c: 40001 acc-user2\n10102/c:\n10102/w:\n10101/w ! issue 10101: Jira did not show who logged Tempo worklog 7001: "+
 		"looking up a person needs Jira's Browse users and groups permission: ") || strings.Count(got, " ! ") != 1 {
 		t.Fatalf("evidence %s", got)
 	}
@@ -297,7 +297,7 @@ func TestEvidencePlacesATempoWorklogWithoutAUTCStart(t *testing.T) {
 	ev := readEvidence(t, s, tracker.EvidenceIssue{Issue: "10102", Worklogs: true, WorklogsFrom: day.AddDate(0, 0, 1)},
 		tracker.EvidenceIssue{Issue: "10103", Worklogs: true})
 	wantEvidence(t, ev, "10102/w: 7101 acc-east "+day.Add(26*time.Hour).UTC().Format(time.RFC3339)+" 30m0s\n"+
-		"10103/w ! Tempo gave worklog 7102 on issue 10103 no UTC start, and Jira shows no time zone for acc-hidden to place it by\n"+
+		"10103/w ! issue 10103: Tempo gave worklog 7102 no UTC start, and Jira shows no time zone for acc-hidden to place it by\n"+
 		"users acc-east:User 4")
 }
 

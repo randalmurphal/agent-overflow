@@ -301,7 +301,7 @@ func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTi
 			return err
 		}
 		i := index[issue+"\x00"+strconv.Itoa(source)]
-		admitted[i] = kept && storedAt < times.at && !(refused && source == MirrorActWorklog)
+		admitted[i] = kept && storedAt < times.at && (!refused || source != MirrorActWorklog)
 		return nil
 	})
 	if err != nil {

@@ -51,7 +51,7 @@ func (p *Provider) Evidence(ctx context.Context, q tracker.EvidenceQuery) (track
 		return tracker.Evidence{}, fmt.Errorf("jiraprovider: evidence: %w", err)
 	}
 	for _, f := range failed {
-		e.failAll(f.ID, fmt.Errorf("Jira could not read issue %s: %s", f.ID, f.Message))
+		e.failAll(f.ID, fmt.Errorf("issue %s: Jira could not read it: %s", f.ID, f.Message))
 	}
 	returned := make(map[string]bool, len(read))
 	for _, is := range read {
@@ -59,7 +59,7 @@ func (p *Provider) Evidence(ctx context.Context, q tracker.EvidenceQuery) (track
 	}
 	for _, id := range ids {
 		if !returned[id] {
-			e.failAll(id, fmt.Errorf("Jira did not return issue %s: it was deleted, or this account cannot see it", id))
+			e.failAll(id, fmt.Errorf("issue %s: Jira did not return it: it was deleted, or this account cannot see it", id))
 		}
 	}
 	for _, is := range read {
@@ -169,8 +169,8 @@ func (e *evidence) add(issue string, source tracker.EvidenceSource, updated time
 		case a.At.Before(bound) || a.Author == nil:
 			continue
 		case a.Author.AccountType == "":
-			e.fail(issue, source, fmt.Errorf("Jira named no account type for %s, the author of %s %s of issue %s, so whether a person made it is not known",
-				a.Author.AccountID, sourceNoun(source), a.ID, issue))
+			e.fail(issue, source, fmt.Errorf("issue %s: Jira named no account type for %s, the author of %s %s, so whether a person made it is not known",
+				issue, a.Author.AccountID, sourceNoun(source), a.ID))
 			return
 		case a.Author.AccountType != "atlassian":
 			continue
@@ -240,16 +240,16 @@ func (p *Provider) tempoWorklogs(ctx context.Context, tc *tempo.Client, e *evide
 				if !jira.Withheld(err) {
 					return fmt.Errorf("the author of Tempo worklog %d: %w", w.ID, err)
 				}
-				e.fail(issue, tracker.EvidenceWorklogs, fmt.Errorf("Jira did not show who logged Tempo worklog %d on issue %s: looking up a person needs Jira's Browse users and groups permission: %w",
-					w.ID, issue, err))
+				e.fail(issue, tracker.EvidenceWorklogs, fmt.Errorf("issue %s: Jira did not show who logged Tempo worklog %d: looking up a person needs Jira's Browse users and groups permission: %w",
+					issue, w.ID, err))
 				continue
 			}
 			at := w.StartUTC
 			if at.IsZero() {
 				loc, err := time.LoadLocation(author.TimeZone)
 				if author.TimeZone == "" || err != nil {
-					e.fail(issue, tracker.EvidenceWorklogs, fmt.Errorf("Tempo gave worklog %d on issue %s no UTC start, and Jira shows no time zone for %s to place it by",
-						w.ID, issue, author.AccountID))
+					e.fail(issue, tracker.EvidenceWorklogs, fmt.Errorf("issue %s: Tempo gave worklog %d no UTC start, and Jira shows no time zone for %s to place it by",
+						issue, w.ID, author.AccountID))
 					continue
 				}
 				d := w.Start.Date
