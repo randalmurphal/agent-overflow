@@ -479,7 +479,8 @@ type heldSetup struct {
 	// kept is the sections a replace keeps.
 	kept keptSections
 	// groups is each site's status groups, and plain a site's that the
-	// setup names nowhere: none, with the credit rules.
+	// setup names nowhere: none, with the credit rules, on a tracker that
+	// reads evidence (a site of another is counted with none).
 	groups map[siteKey]StatusGroups
 	plain  StatusGroups
 }
@@ -865,7 +866,7 @@ func (s *Service) boardStatusGroups(key setupKey) (StatusGroups, error) {
 // groups, and on a Jira site whether it counts tickets.
 func (h *heldSetup) counting(site siteKey) StatusGroups {
 	g, ok := h.groups[site]
-	if !ok {
+	if !ok && capabilitiesOf(site.tracker).Evidence {
 		g = h.plain
 	}
 	g.tickets = site.tracker == store.TrackerKindJira && h.view.Setup.Estimates.countsTickets()
@@ -1225,8 +1226,9 @@ func heldOf(setup Setup, kept keptSections, raw map[string]json.RawMessage, newe
 		}
 	}
 	// counted is how a site's boards are counted: its status groups and
-	// support, and the credit rules.
-	countedAs := func(key siteKey, site counted) (StatusGroups, error) {
+	// support, and the credit rules where credit counts: on a tracker that
+	// reads who worked on a ticket (tracker.Capabilities.Evidence).
+	countedAs := func(key siteKey, site counted, rules []CreditRules, mirrorRules []store.MirrorCreditRule) (StatusGroups, error) {
 		groups := make(map[string]int, len(site.statuses))
 		for id, name := range site.statuses {
 			groups[id], _ = setupGroup(name)
@@ -1258,16 +1260,21 @@ func heldOf(setup Setup, kept keptSections, raw map[string]json.RawMessage, newe
 		return StatusGroups{regroup: regroup, version: hex.EncodeToString(sum[:8]), statuses: site.statuses, credit: rules != nil}, nil
 	}
 	for key, site := range sites {
-		g, err := countedAs(key, site)
+		credited, mirrorCredited := rules, mirrorRules
+		if !capabilitiesOf(key.tracker).Evidence {
+			credited, mirrorCredited = nil, nil
+		}
+		g, err := countedAs(key, site, credited, mirrorCredited)
 		if err != nil {
 			return nil, err
 		}
 		held.groups[key] = g
 	}
 	// A site the setup names nowhere counts as the tracker groups it, and
-	// with the credit rules while the project counts credit.
+	// with the credit rules while the project counts credit, on a tracker
+	// that reads evidence (counting).
 	if rules != nil {
-		g, err := countedAs(siteKey{}, counted{})
+		g, err := countedAs(siteKey{}, counted{}, rules, mirrorRules)
 		if err != nil {
 			return nil, err
 		}

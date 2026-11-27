@@ -106,14 +106,18 @@ func IssueURLPrefix(site string) string {
 	return strings.TrimSuffix(site, "/") + "/browse/"
 }
 
-// Capabilities are Jira's: every capability the neutral model names.
+// Capabilities are Jira's: every capability the neutral model names,
+// the same for every connection, so a caller with no client reads them.
 // DetailMovesUpdated is measured: a comment, a link, an attachment and a
 // worklog each move an issue's `updated`
 // (docs/references/tracker-api-measurements.md, Jira Cloud).
-func (p *Provider) Capabilities() tracker.Capabilities {
+func Capabilities() tracker.Capabilities {
 	return tracker.Capabilities{IssueTypes: true, CustomFields: true, MoveFields: true, SprintWrites: true, MaxAttachmentBytes: jira.MaxAttachmentBytes,
 		DetailMovesUpdated: true, HistorySettle: historySettle, Evidence: true}
 }
+
+// Capabilities are Jira's (Capabilities).
+func (p *Provider) Capabilities() tracker.Capabilities { return Capabilities() }
 
 // Time is Tempo's worklogs when the Provider was built with a Tempo
 // client, and Jira's own otherwise.

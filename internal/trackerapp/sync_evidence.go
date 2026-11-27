@@ -153,7 +153,7 @@ func mirrorActs(acts []tracker.Act) []store.MirrorAct {
 }
 
 // creditBoards are the boards of connection row that a project counting
-// credit lists (heldSetup.credit), each with the regrouping that
+// credit on row's site lists (StatusGroups.credit), each with the regrouping that
 // project counts row's site by; a board two such projects list is named
 // once for each. It reads the connection's listings alone, and each
 // project's setup once. A project's setup that cannot be read fails it.
@@ -174,8 +174,9 @@ func (s *Service) creditBoards(row store.TrackerConnection) ([]store.MirrorActsB
 		if !ok {
 			s.setupMu.Lock()
 			held, err := s.heldSetupLocked(b.ProjectSlug)
-			if err == nil && held.credit() != nil {
-				c = counting{counts: true, groups: held.counting(site)}
+			if err == nil {
+				g := held.counting(site)
+				c = counting{counts: g.credit, groups: g}
 			}
 			s.setupMu.Unlock()
 			if err != nil {

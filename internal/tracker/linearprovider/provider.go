@@ -44,10 +44,14 @@ func New(c *linear.Client) (*Provider, error) {
 // no custom fields, no move screens, generates its cycles and holds links
 // rather than files. Nor DetailMovesUpdated: a comment does not move an
 // issue's `updatedAt` (docs/references/tracker-api-measurements.md,
-// Linear).
-func (p *Provider) Capabilities() tracker.Capabilities {
+// Linear). They are the same for every connection, so a caller with no
+// client reads them.
+func Capabilities() tracker.Capabilities {
 	return tracker.Capabilities{HistorySettle: settleMargin}
 }
+
+// Capabilities are Linear's (Capabilities).
+func (p *Provider) Capabilities() tracker.Capabilities { return Capabilities() }
 
 // Time is nil: Linear has no time tracking.
 func (p *Provider) Time() tracker.TimeTracker { return nil }
