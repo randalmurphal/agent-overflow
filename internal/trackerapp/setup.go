@@ -1043,7 +1043,7 @@ func encodeSetup(setup Setup, dashboards []BoardDashboards, raw map[string]json.
 			return nil, err
 		}
 	}
-	if setup.Credit != nil {
+	if setup.Credit.stored() {
 		if err := add(sectionCredit, creditV1{Version: setupSectionVersion, On: setup.Credit.On, Rules: setup.Credit.Rules, Support: setup.Credit.Support}); err != nil {
 			return nil, err
 		}
@@ -1427,8 +1427,7 @@ func checkEstimates(e Estimates) (*Estimates, error) {
 // checkCredit checks a credit section and returns it normalized: each
 // snapshot's actions in creditActions' order, each support entry's site
 // as its connection names it and its lists never null, the entries in
-// site order without one that names nothing; nil for a section that says
-// no more than no section does (defaultCredit). Every snapshot names its
+// site order without one that names nothing. Every snapshot names its
 // From (stampCredit stamps a replace's newest one), the first 0 and each
 // later one after the one before it.
 func checkCredit(c Credit) (*Credit, error) {
@@ -1498,10 +1497,13 @@ func checkCredit(c Credit) (*Credit, error) {
 		}
 	}
 	slices.SortFunc(out.Support, func(a, b SiteSupport) int { return compareSites(a.Tracker, a.Site, b.Tracker, b.Site) })
-	if !out.On && len(out.Support) == 0 && reflect.DeepEqual(out.Rules, defaultCredit().Rules) {
-		return nil, nil
-	}
 	return out, nil
+}
+
+// stored is whether c says more than no section does (defaultCredit),
+// which is the one case encodeSetup writes a credit section.
+func (c *Credit) stored() bool {
+	return c != nil && (c.On || len(c.Support) > 0 || !reflect.DeepEqual(c.Rules, defaultCredit().Rules))
 }
 
 // isTicketProject is whether project is a ticket key's project, as
