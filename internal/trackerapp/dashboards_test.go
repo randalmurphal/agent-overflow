@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
 	"agent-overflow/internal/trackerdash"
 )
 
@@ -552,5 +553,62 @@ func TestAnEvaluationOfAProjectCountingTicketsCountsTickets(t *testing.T) {
 	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
 	if got, want := reads(), `tried {"v":2,"nc":1} tickets; dashboard {"v":2,"nc":1} none, no estimate {"v":1}; drill {"v":2,"nc":1} none`; got != want {
 		t.Fatalf("counting tickets:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A project that turns credit on, with no status groups or support named
+// for the site, has its boards' dashboards listed again with the pace
+// read from credit. While the evidence read fails, a finished ticket's
+// review is not counted and the answer says why; once a read stores the
+// evidence, its reviews count and the sentence is gone.
+func TestAProjectCountingCreditCountsItsPaceFromCredit(t *testing.T) {
+	m, _, _ := evidenceFixture(t, 1)
+	sub := m.subscribeShown(t, m.project()).ID
+	paceReads := func() []string { return m.list(t, sub).Dashboards[0].Widgets[0].How.Reads }
+	if slices.Contains(paceReads(), "credit") {
+		t.Fatalf("the pace without credit reads %v", paceReads())
+	}
+	var read func(tracker.EvidenceQuery) (tracker.Evidence, error)
+	m.p.set(func(p *scripted) {
+		read = p.evidence
+		p.evidence = func(tracker.EvidenceQuery) (tracker.Evidence, error) {
+			return tracker.Evidence{}, &trackerapi.TransientError{Err: errors.New("reset")}
+		}
+	})
+	m.saveSetup(t, m.project(), Setup{Credit: &Credit{On: true, Rules: defaultCredit().Rules}})
+	if !slices.Contains(paceReads(), "credit") {
+		t.Fatalf("the pace with credit reads %v", paceReads())
+	}
+	// pace is the board's review credit as a widget sums it, and the
+	// sentence the built-in dashboard's answer gives.
+	credit := openTickets()
+	credit.Metric.Title, credit.Metric.SQL = "Review credit", `SELECT ticket, value, share FROM credit WHERE kind = 'review'`
+	credit.Metric.Reduce, credit.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
+	pace := func() (string, string) {
+		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), credit, "thread-1", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := m.evaluate(t, sub, "")
+		for _, w := range a.Widgets {
+			if w.Error != "" {
+				t.Fatalf("widget %s failed: %s", w.ID, w.Error)
+			}
+		}
+		return numText(t, tried.Value.Value), a.Evidence
+	}
+	out := must[Outcome](t)(m.svc.SyncLinked(t.Context(), m.conn.ID, LinkedDue{Evidence: true}, Background))
+	if out.Failure == nil {
+		t.Fatal("the failing evidence read did not fail its tick")
+	}
+	got, evidence := pace()
+	if got != `{"nc":1}` || !strings.HasPrefix(evidence, "Some tickets' credit is not counted: the last read of who worked on them failed. ") ||
+		!strings.Contains(evidence, out.Failure.Message) {
+		t.Fatalf("while the read fails: credit %s, evidence %q; want the ticket's review not counted and the failure %q", got, evidence, out.Failure.Message)
+	}
+	m.p.set(func(p *scripted) { p.evidence = read })
+	m.evidenceTick(t)
+	if got, evidence := pace(); got != `{"v":0}` || evidence != "" {
+		t.Fatalf("once read: credit %s, evidence %q; want every row counted, no sentence", got, evidence)
 	}
 }

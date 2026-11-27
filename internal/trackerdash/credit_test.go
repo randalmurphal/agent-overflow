@@ -149,3 +149,34 @@ func TestAPersonsPageKeepsARowThatCouldBeAnyones(t *testing.T) {
 		t.Fatalf("User 1's number = %s; want WEB-1 alone, not counted", got)
 	}
 }
+
+// On a board without sprints the pace with credit counts each row in the
+// week of its at: a review in the week its ticket finished, support in
+// the week worked, and a ticket whose finish is not known in none, not
+// counted; How this is counted says a review counts whenever it was left.
+func TestTheWeeksPaceCountsCreditByWeek(t *testing.T) {
+	t.Parallel()
+	f := newFixture(false, "points").person("u1", "User 1").person("u2", "User 2").status("5", "Done", "done").status("1", "To Do", "todo")
+	f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", assignee: "u1", points: "5", created: ago(20), updated: ago(1)})
+	f.ticket(ticket{id: "t2", key: "WEB-2", status: "5", group: "done", assignee: "u1", points: "3", created: ago(20), updated: ago(1)})
+	f.ticket(ticket{id: "t3", key: "WEB-3", status: "1", group: "todo", created: ago(20), updated: ago(1)})
+	row := func(at, ticket, kind, person, value, share, note string) {
+		f.exec(`INSERT INTO credit(sprint, at, ticket, kind, person, value, share, review_share, did, qualified, hours, hours_per_point, note)
+			VALUES (NULL, %s, '%s', '%s', %s, %s, %s, 10, 'commented, logged time', 1, 2, 4, %s)`, at, ticket, kind, quote(person), value, share, quote(note))
+	}
+	row(fmt.Sprint(ago(1)), "t1", "finished", "u1", "5", "1", "")
+	row(fmt.Sprint(ago(1)), "t1", "review", "u2", "0.5", "0.1", "")
+	row(fmt.Sprint(ago(8)), "t3", "support", "u2", "0.5", "0.5", "")
+	row("NULL", "t2", "finished", "u1", "NULL", "NULL", "when it finished is not known")
+	a := mustEvaluate(t, evaluator(), creditOn(f), Request{Dashboard: builtinWeeksID, Range: RangeWeeks2, TimeZone: "UTC"})
+	if got := num(widgetOf(t, a, "pace").Value); got != "3, 1 not counted" {
+		t.Fatalf("pace = %s; want (5.5 this week + 0.5 last week) / 2, WEB-2 not counted", got)
+	}
+	list, err := evaluator().Dashboards(context.Background(), Kind{Credit: true}, 1, Own{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if words := strings.Join(list.Dashboards[0].Widgets[0].How.Words, " "); !strings.Contains(words, "A review counts in the week its ticket finished, whenever it was left") {
+		t.Fatalf("How this is counted: %s", words)
+	}
+}
