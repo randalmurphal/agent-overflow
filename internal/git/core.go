@@ -871,11 +871,7 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 		return result, errors.Join(&commandStoppedError{fmt.Sprintf("%s cancelled", formatCommand(spec.binary, spec.args...))}, stopErr)
 	}
 	if stdoutBuf.Truncated() || stderrBuf.Truncated() {
-		return result, fmt.Errorf(
-			"%s output exceeded %d bytes",
-			formatCommand(spec.binary, spec.args...),
-			maxBytes,
-		)
+		return result, &outputLimitError{command: formatCommand(spec.binary, spec.args...), limit: maxBytes}
 	}
 	if err == nil {
 		if remoteRefsRepo != "" {
@@ -921,6 +917,17 @@ type limitedBuffer struct {
 	buf       bytes.Buffer
 	maxBytes  int64
 	truncated bool
+}
+
+// outputLimitError is a command whose stdout or stderr passed its byte
+// cap, so its answer was not read whole.
+type outputLimitError struct {
+	command string
+	limit   int64
+}
+
+func (e *outputLimitError) Error() string {
+	return fmt.Sprintf("%s output exceeded %d bytes", e.command, e.limit)
 }
 
 func newLimitedBuffer(maxBytes int64) *limitedBuffer {

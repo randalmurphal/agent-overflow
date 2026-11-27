@@ -197,6 +197,10 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
     if (!impl) throw unansweredBinding('GetTicketWork');
     return { forgeProblems: [], searchFull: [], ...((await impl(...args)) as object) };
   },
+  // The screen's activity report, made on input while the app is mounted
+  // (stores/activityRecorder.ts): the computer takes it and answers
+  // nothing (app_activity.go RecordActivity).
+  RecordActivity: async () => undefined,
   // A thread the pane opens, as the backend holds an idle thread with no
   // history: resuming it does nothing (app_session_bindings.go), and its
   // ticks, plans, turns, tray tasks, wakes and pending requests are empty
@@ -405,6 +409,8 @@ export const ClearThreadTicket = dispatch('ClearThreadTicket');
 export const ThreadsForTicket = dispatch('ThreadsForTicket');
 export const GetTicketWork = dispatch('GetTicketWork');
 export const SearchTicketWork = dispatch('SearchTicketWork');
+export const RecordActivity = dispatch('RecordActivity');
+export const GetActivityRecording = dispatch('GetActivityRecording');
 export const StartTicketThread = dispatch('StartTicketThread');
 export const SwitchThread = dispatch('SwitchThread');
 

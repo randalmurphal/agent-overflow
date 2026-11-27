@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/accountswitch"
+	"agent-overflow/internal/activity"
 	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/appupdate"
@@ -1133,6 +1134,13 @@ type App struct {
 	// trackers owns the tracker connections; built by initTrackers during
 	// Start and stopped by Shutdown before the store closes.
 	trackers *trackerapp.Service
+	// activity records when the person was active and on which thread;
+	// built by initActivity during Start, its flushes started with the
+	// boot's unattended work and closed by Shutdown before the store.
+	activity *activity.Recorder
+	// activityTiming replaces the recorder's Window and FlushEvery; the
+	// zero value is the product's. Only a harness boot sets it.
+	activityTiming activity.Config
 	// threadLinkAnnounces announces the rows of the threads whose ticket
 	// link the tracker service moved (trackerapp Deps.LinksChanged), one
 	// job per call, in order; Shutdown drains it after the service stops.

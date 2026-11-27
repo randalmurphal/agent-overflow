@@ -146,6 +146,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3977213964: 'thread', // ForkThreadFromMessage
 	1669373286: 'workspace', // GenerateCommitMessage
 	1559710962: 'home', // GetAccessOverview
+	3840999293: 'selected', // GetActivityRecording
 	3414107538: 'thread', // GetAttachmentThumbnail
 	1573335127: 'selected', // GetClaudeSkills
 	2854892544: 'selected', // GetClaudeSlashCommands
@@ -386,6 +387,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	227978482: 'home', // RecheckCodexAccount
 	878560845: 'thread', // ReconnectMcpServer
 	1420075138: 'thread', // ReconnectSession
+	259818617: 'all', // RecordActivity
 	2215279661: 'selected', // RefreshMcpServerStatus
 	3232577070: 'home', // RefreshPRCI
 	2738680414: 'home', // RefreshPRList

@@ -286,6 +286,8 @@ func (a *App) reconcileProviderHome() error {
 func (a *App) startUnattendedWork() []bootStep {
 	return []bootStep{
 		infallibleBootStep(a.startOwnDeviceConnections),
+		// The activity recorder's flushes write and prune its tables.
+		infallibleBootStep(a.startActivity),
 		infallibleBootStep(a.startRemoteMCPRefresh),
 		infallibleBootStep(a.startThreadSearchIndex),
 		infallibleBootStep(a.startPendingThreadDeletes),
@@ -847,6 +849,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	if err := a.initTrackers(); err != nil {
 		return err
 	}
+	a.initActivity()
 	// The request ledger: settle what the last run left open, then watch
 	// every thread's turn ends for the receipts bound to them. Both need the
 	// store and the data directory, and neither may run before the flush

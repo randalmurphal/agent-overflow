@@ -198,6 +198,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ForkThreadFromMessage", ID: 3977213964, Scope: "threads:operate", Route: "thread", Budget: 2 * time.Minute},                      // main.App.ForkThreadFromMessage
 	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "git:operate", Route: "workspace", Budget: 7 * time.Minute},                       // main.App.GenerateCommitMessage
 	{Name: "GetAccessOverview", ID: 1559710962, Scope: "access:admin", Route: "home"},                                                        // main.App.GetAccessOverview
+	{Name: "GetActivityRecording", ID: 3840999293, Scope: "tracker:read", Route: "selected"},                                                 // main.App.GetActivityRecording
 	{Name: "GetAttachmentThumbnail", ID: 3414107538, Scope: "threads:read", Route: "thread"},                                                 // main.App.GetAttachmentThumbnail
 	{Name: "GetClaudeSkills", ID: 1573335127, Scope: "threads:operate", Route: "selected"},                                                   // main.App.GetClaudeSkills
 	{Name: "GetClaudeSlashCommands", ID: 2854892544, Scope: "threads:read", Route: "selected"},                                               // main.App.GetClaudeSlashCommands
@@ -438,6 +439,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RecheckCodexAccount", ID: 227978482, Scope: "access:admin", Route: "home"},                                                       // main.App.RecheckCodexAccount
 	{Name: "ReconnectMcpServer", ID: 878560845, Scope: "settings:write", Route: "thread"},                                                    // main.App.ReconnectMcpServer
 	{Name: "ReconnectSession", ID: 1420075138, Scope: "threads:operate", Route: "thread"},                                                    // main.App.ReconnectSession
+	{Name: "RecordActivity", ID: 259818617, Scope: "threads:read", Route: "all"},                                                             // main.App.RecordActivity
 	{Name: "RefreshMcpServerStatus", ID: 2215279661, Scope: "settings:write", Route: "selected"},                                             // main.App.RefreshMcpServerStatus
 	{Name: "RefreshPRCI", ID: 3232577070, Scope: "git:operate", Route: "home"},                                                               // main.App.RefreshPRCI
 	{Name: "RefreshPRList", ID: 2738680414, Scope: "git:operate", Route: "home"},                                                             // main.App.RefreshPRList
