@@ -97,13 +97,12 @@ CREATE TABLE main.statuses(id TEXT PRIMARY KEY, name TEXT NOT NULL, status_group
 -- started_known 1: the history shows when it started, started_at its first move into in_progress.
 -- done_at: its last move into done, for a ticket done now. open 1: the board counts it not done.
 -- counts 0: its status is left out of counts.
--- type: its issue type's name, such as Bug; NULL on Linear, which has no types (its teams mark bugs with labels).
--- priority: its priority's name, such as High; NULL for none. The copy holds no order of priorities.
+-- type: the issue type's name (Bug); NULL on Linear, which has none: use labels. priority: its name (High), NULL for none; no order.
 CREATE TABLE main.tickets(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL, type_level INTEGER NOT NULL,
   status TEXT, status_group TEXT, assignee TEXT, parent TEXT, epic TEXT, created_at INTEGER, updated_at INTEGER, resolved_at INTEGER,
   status_since INTEGER, points REAL, history_from INTEGER, started_known INTEGER NOT NULL, started_at INTEGER, done_at INTEGER,
   open INTEGER NOT NULL, counts INTEGER NOT NULL, type TEXT, priority TEXT) WITHOUT ROWID;
--- One row per label of a ticket, by name; a ticket with no labels has none.
+-- A ticket's labels by name; a ticket with none has no row.
 CREATE TABLE main.labels(ticket TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (ticket, name)) WITHOUT ROWID;
 CREATE TABLE main.epics(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL) WITHOUT ROWID;
 -- state: future, active or closed. position: the board's order.

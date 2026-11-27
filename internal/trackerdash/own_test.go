@@ -91,9 +91,9 @@ func TestTryCountsOneWidgetOrRefusesIt(t *testing.T) {
 		t.Fatalf("a line by person: %v", err)
 	}
 	bad := inProgress
-	bad.SQL = "SELECT id AS ticket FROM tickets WHERE priority = 'High'"
+	bad.SQL = "SELECT id AS ticket FROM tickets WHERE severity = 'High'"
 	_, err = e.Try(context.Background(), b, Widget{Form: FormNumber, Width: 3}, bad, "UTC")
-	if r, ok := err.(*Refusal); !ok || r.Code != "dashboard_widget_refused" || !strings.Contains(r.Sentence, "priority") {
+	if r, ok := err.(*Refusal); !ok || r.Code != "dashboard_widget_refused" || !strings.Contains(r.Sentence, "severity") {
 		t.Fatalf("a query on a column the copy lacks: %v", err)
 	}
 }
@@ -122,6 +122,60 @@ func TestProposalsPastTheDeadlineFailInTheirOwnPlace(t *testing.T) {
 		if !strings.Contains(w.Error, "ran out before this widget was counted") {
 			t.Errorf("proposal %s: %+v", w.ID, w)
 		}
+	}
+}
+
+// A count asks the copy for a ticket's type or priority only when a
+// query it runs reads that column, so a count that reads neither decodes
+// neither; How this is counted names the relations read, not the
+// columns.
+func TestACountAsksForTypesAndPrioritiesOnlyWhenItReadsThem(t *testing.T) {
+	t.Parallel()
+	board := newFixture(false, "none").status("3", "In progress", "in_progress").
+		ticket(ticket{id: "t1", key: "WEB-1", status: "3", group: "in_progress", created: ago(3)}).board()
+	var asked [][]string
+	fill := board.Fill
+	board.Fill = func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+		asked = append(asked, relations)
+		return fill(ctx, conn, relations)
+	}
+	m := Metric{Name: "w_1", Title: "Bugs", Words: []string{"Bugs open now."}, Reduce: ReduceCount, Unit: UnitTickets}
+	for _, c := range []struct {
+		sql       string
+		asks, not []string
+	}{
+		{"SELECT id AS ticket FROM tickets WHERE type = 'Bug'", []string{"tickets.type"}, []string{"tickets.priority", "labels"}},
+		{"SELECT t.id AS ticket FROM tickets t JOIN labels l ON l.ticket = t.id WHERE l.name = 'bug'", []string{"labels"}, []string{"tickets.type", "tickets.priority"}},
+		{"SELECT id AS ticket FROM tickets WHERE type = 'Bug' OR priority = 'High'", []string{"tickets.type", "tickets.priority"}, []string{"labels"}},
+		{"SELECT id AS ticket FROM tickets WHERE open = 1", nil, []string{"tickets.type", "tickets.priority", "labels"}},
+	} {
+		asked = nil
+		m.SQL = c.sql
+		got, err := evaluator().Try(context.Background(), board, Widget{Form: FormNumber, Width: 3}, m, "UTC")
+		if err != nil {
+			t.Fatalf("%s: %v", c.sql, err)
+		}
+		if len(asked) != 1 {
+			t.Fatalf("%s: %d fills", c.sql, len(asked))
+		}
+		for _, want := range c.asks {
+			if !slices.Contains(asked[0], want) {
+				t.Errorf("%s: asked %v; want %s", c.sql, asked[0], want)
+			}
+		}
+		for _, not := range c.not {
+			if slices.Contains(asked[0], not) {
+				t.Errorf("%s: asked %v; want no %s", c.sql, asked[0], not)
+			}
+		}
+		if slices.ContainsFunc(got.View.How.Reads, func(r string) bool { return strings.Contains(r, ".") }) {
+			t.Errorf("%s: How this is counted reads %v; want relations alone", c.sql, got.View.How.Reads)
+		}
+	}
+	asked = nil
+	mustEvaluate(t, evaluator(), board, Request{Dashboard: builtinWeeksID, TimeZone: "UTC"})
+	if slices.ContainsFunc(asked[0], func(r string) bool { return slices.Contains(store.MirrorExportColumns, r) || r == "labels" }) {
+		t.Errorf("the built-in dashboard asked %v; want no type, priority or labels", asked[0])
 	}
 }
 
@@ -222,8 +276,8 @@ func TestRulesNameTheFieldsAndTheRelations(t *testing.T) {
 	t.Parallel()
 	rules := Rules()
 	for _, want := range []string{"title;", "words", "sql;", "reduce:", "unit:", "good:", "bucket:", "series:", "form:", "width:",
-		"ticket (required", "CREATE TABLE main.tickets(", "-- status_group:", "Ticket types, priorities and labels are not in the copy.",
-		"A count stops at 1s", "time estimates in seconds"} {
+		"ticket (required", "CREATE TABLE main.tickets(", "-- status_group:", "-- type:", "use labels", "no order",
+		"CREATE TABLE main.labels(", "A count stops at 1s", "time estimates in seconds"} {
 		if !strings.Contains(rules, want) {
 			t.Errorf("the rules lack %q", want)
 		}

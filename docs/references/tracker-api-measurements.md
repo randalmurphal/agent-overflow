@@ -898,6 +898,23 @@ done-at-completion rule the Board's sprint sections share. A Stuck drill
 copies the tickets and their statuses, so the tickets fill is most of
 its 146 ms.
 
+A ticket's type and priority names and its labels are in its card blob,
+which the copy decodes only for a query that reads them
+(`TestMirrorExportFillsAtScale` in `internal/store`, the same fixture
+with a version 2 blob of about 160 bytes and two labels a ticket; the
+best of 5 runs, two runs each, and the VM steps, which do not vary):
+
+| Tickets fill | 2,000 issues | 20,000 issues |
+|---|---|---|
+| Before the columns existed | 621,287 steps; 14.6 and 15.0 ms | 6,208,487 steps; 195.8 and 126.9 ms |
+| A query that reads neither column | 633,299 steps; 17.5 and 13.9 ms | 6,328,499 steps; 138.2 and 137.0 ms |
+| A query that reads `type` or `priority` | 673,299 steps; 21.4 and 15.9 ms | 6,728,499 steps; 174.7 and 181.5 ms |
+| `labels`, filled beside it when a query names it | 134,026 steps; 6.8 and 5.7 ms | 1,340,026 steps; 63.6 and 59.9 ms |
+
+A count whose query reads neither column pays 6 VM steps a ticket for
+the two switched-off decodes, which these runs cannot tell from their
+spread; decoding the names costs 26 a ticket.
+
 The fill is still most of an evaluation and grows with the board; the
 metrics and the reduction take about 10 ms at 2,000 issues and 55 ms at
 20,000. An open dashboard counts again at most once every 5 s while its

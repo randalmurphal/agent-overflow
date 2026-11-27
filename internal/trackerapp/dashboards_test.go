@@ -2,6 +2,7 @@ package trackerapp
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"runtime"
 	"slices"
@@ -29,6 +30,34 @@ func dashboardFixture(t *testing.T) (*mirrorFixture, string) {
 	m := newMirrorFixture(t)
 	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a"), row("10002", 1_799_000_000_000, "b"), row("10003", 1_799_000_000_000, "c")})
 	return m, m.subscribeShown(t, m.project()).ID
+}
+
+// A widget reads a ticket's type, priority and labels as the board's read
+// gave them: the copy decodes the blob mirrorCard wrote, by its shape
+// (cardShape), and a label the read could not name counts by its ID.
+func TestAWidgetReadsTypesPrioritiesAndLabelsAsTheReadGaveThem(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	bug := row("10001", 1_799_000_000_000, "a")
+	bug.Card.Type = tracker.IssueType{ID: "10004", Name: "Bug"}
+	bug.Card.Priority = tracker.Choice{ID: "2", Name: "High"}
+	bug.Card.Labels = []tracker.Choice{{ID: "frontend", Name: "frontend"}, {ID: "lbl-9"}}
+	m.tracks([]tracker.Row{bug, row("10002", 1_799_000_000_000, "b")})
+	m.subscribeShown(t, m.project())
+	w := openTickets()
+	w.Metric.SQL = `SELECT t.id AS ticket, coalesce(t.type, '-') || '|' || coalesce(t.priority, '-') || '|' ||
+	  coalesce((SELECT group_concat(name, ',') FROM (SELECT name FROM labels WHERE ticket = t.id ORDER BY name)), '-') AS note FROM tickets t`
+	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, "thread-1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, r := range tried.Rows {
+		got[r.ID] = r.Note
+	}
+	if want := map[string]string{"10001": "Bug|High|frontend,lbl-9", "10002": "-|-|-"}; !maps.Equal(got, want) {
+		t.Fatalf("type|priority|labels by ticket = %v; want %v", got, want)
+	}
 }
 
 // propose shows w on the fixture's board for thread-1 and answers its

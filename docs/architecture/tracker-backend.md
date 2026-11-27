@@ -2303,8 +2303,13 @@ finish from its stored changes, whether its history shows its start,
 whether it is open and whether it counts, by the project's status
 groups), the statuses its columns, tickets and copied changes name,
 people (the assignees, and the people the changes name when those are
-copied), epics, sprints and their members, the tickets' changes and what
-each sprint finished. A count names the relations it reads, and each
+copied), epics, sprints and their members, the tickets' changes, what
+each sprint finished and the tickets' labels. A ticket's type and
+priority names (`MirrorExportColumns`) and its labels come from its card
+blob, whose shape trackerapp passes (`MirrorCardShape`, from `cardBlob`);
+each name is decoded only when a count asks for its column, and a blob of
+another version gives none. Linear has no issue types, so its type is
+NULL. A count names the relations it reads, and each
 fill names the relations it reads from the copy, so a fill's needs are
 filled first; `board` and `sprints` are always filled, since the range
 reads them, and an unknown relation is an error. It attaches the app
@@ -2319,7 +2324,8 @@ drill carry `reading`, and the range before is not compared. A board
 unlisted and listed again starts over.
 
 The relations a count reads are its metrics': each metric's prepare
-records the relations it reads (`How.Reads`), once per dashboard kind
+records the relations it reads (`How.Reads`) and the columns of
+`MirrorExportColumns` among its reads, once per dashboard kind
 on an empty sealed session, and a count asks for those of the widgets it
 counts and the tickets, statuses, people and epics its answer names. No
 built-in metric reads `changes`, so none copies them.
@@ -2591,7 +2597,7 @@ tickets each number could not count, how many rows its query returned
 and the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 4,316 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 4,590 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a
