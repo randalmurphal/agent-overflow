@@ -136,15 +136,21 @@ this is its shape.
   Linear fails as unsupported before any request.
 - Evidence: who commented on and logged time on up to 100 issues
   (`Evidence`, for credit): each act's ID, author, time and, for a
-  worklog, time spent, with the issue's update time the read was for.
-  `Capabilities.Evidence` names the kinds a provider reads. Jira reads
-  the comments and update times in one bulk fetch, and its own worklogs
-  only while they are the connection's time: while Tempo is the time, it
-  reads no worklog. An issue holding
-  more comments or worklogs than the bulk fetch embeds is read again
-  whole through its comment or worklog list, its worklogs from the
-  issue's `WorklogsFrom`. An app's, a customer's and an authorless act
-  are left out. Linear fails as unsupported.
+  worklog, time spent, with the issue's update time the read was for
+  (`Capabilities.Evidence`). Jira reads the comments and update times in
+  one bulk fetch, and the worklogs from the connection's time source:
+  its own worklogs in the same fetch, an issue holding more comments or
+  worklogs than the fetch embeds read again whole through its comment
+  or worklog list; while Tempo is the time, every author's Tempo
+  worklogs through Tempo's worklog search by issue ID
+  (`POST /4/worklogs/search`), one search for the issues of each
+  `WorklogsFrom`, from the day before it, since Tempo dates a worklog on
+  its author's clock, each author named by a Jira user lookup. Worklogs
+  are kept from the issue's `WorklogsFrom`. An app's, a customer's and
+  an authorless act are left out. Linear fails as unsupported. No live
+  call has confirmed that the Tempo search answers another person's
+  worklogs with one person's token, nor the largest page it answers: its
+  spec states no maximum, and the client asks for 1,000 a page.
 - Finding: issues by key, and a page of cards matching text.
 - Writes: create, edit fields, move to a status (with the fields the move
   takes), set an estimate on a board, rank between neighbors, move to a
@@ -1125,7 +1131,7 @@ and writes share:
   connection's in its linked tick, after the history unit. With no such
   project, or a provider that reads no evidence, the unit lists and reads
   nothing. A ticket is due until a read for its card's update stored a
-  receipt of each kind the provider reads (`ListMirrorActsDue`): the
+  receipt of its comments and of its worklogs (`ListMirrorActsDue`): the
   members of the boards' active sprints done now, then the members of
   each sprint closed in the history window (180 days), newest first,
   done at its completion, then the board's support tickets, whose

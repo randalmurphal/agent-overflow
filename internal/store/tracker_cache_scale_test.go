@@ -519,7 +519,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		}
 		listed := 0
 		list := func(int) error {
-			due, _, err := s.ListMirrorActsDue(root, boards, true, 0)
+			due, _, err := s.ListMirrorActsDue(root, boards, 0)
 			listed = len(due)
 			return err
 		}

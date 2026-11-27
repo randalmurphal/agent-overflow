@@ -91,6 +91,42 @@ func tempoUserWorklogs(c *tempoCall) answer {
 	return c.page(values, offset, limit)
 }
 
+// tempoSearchWorklogs answers a worklog search by issue IDs and an
+// optional first start date, every author's worklogs in the account, by
+// start and ID: the spec's default order. That a token sees other
+// authors' worklogs here is the fake's model, not a measurement.
+func tempoSearchWorklogs(c *tempoCall) answer {
+	var in struct {
+		IssueIDs []int64 `json:"issueIds"`
+		From     string  `json:"from"`
+	}
+	if err := decodeStrict(c.x.body, &in, false); err != nil {
+		return unhandledf("%v", err)
+	}
+	if in.From != "" && !isDate(in.From) {
+		return tempoErrors(http.StatusBadRequest, "from must be a date (YYYY-MM-DD)")
+	}
+	offset, limit, err := c.window()
+	if err != nil {
+		return unhandledf("%v", err)
+	}
+	var found []*TempoWorklog
+	for i := range c.t.Worklogs {
+		w := &c.t.Worklogs[i]
+		if slices.Contains(in.IssueIDs, idNumber(w.Issue)) && in.From <= w.StartDate {
+			found = append(found, w)
+		}
+	}
+	slices.SortStableFunc(found, func(a, b *TempoWorklog) int {
+		return strings.Compare(a.StartDate+a.StartTime+fmt.Sprintf("%020d", a.ID), b.StartDate+b.StartTime+fmt.Sprintf("%020d", b.ID))
+	})
+	values := make([]any, len(found))
+	for i, w := range found {
+		values[i] = c.worklogJSON(w)
+	}
+	return c.page(values, offset, limit)
+}
+
 func tempoGetWorklog(c *tempoCall) answer {
 	w := c.t.worklog(c.params["id"])
 	if w == nil {

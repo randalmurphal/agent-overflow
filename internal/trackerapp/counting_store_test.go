@@ -243,9 +243,9 @@ func (c *countingStore) ListProjectTrackerBoards(projectID string) ([]store.Proj
 	return c.Store.ListProjectTrackerBoards(projectID)
 }
 
-func (c *countingStore) ListMirrorActsDue(root int64, boards []store.MirrorActsBoard, worklogs bool, from int64) ([]store.MirrorActsDue, bool, error) {
+func (c *countingStore) ListMirrorActsDue(root int64, boards []store.MirrorActsBoard, from int64) ([]store.MirrorActsDue, bool, error) {
 	c.count("ListMirrorActsDue")
-	return c.Store.ListMirrorActsDue(root, boards, worklogs, from)
+	return c.Store.ListMirrorActsDue(root, boards, from)
 }
 
 func (c *countingStore) ReplaceMirrorActs(root, sourceGen int64, read store.MirrorRead, issues []store.MirrorIssueActs, catalog store.MirrorCatalog) ([]store.MirrorActsResult, store.MirrorCatalogWrite, error) {

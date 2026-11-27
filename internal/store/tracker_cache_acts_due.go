@@ -28,8 +28,8 @@ type MirrorActsDue struct {
 }
 
 // mirrorActsDueWhere holds for an issue i whose acts are due: no receipt
-// of its comments, or one read for an update before the card's, and the
-// same of its worklogs when ?6 is 1. A receipt's read_for is the update
+// of its comments or of its worklogs, or one read for an update before
+// the card's. A receipt's read_for is the update
 // time the read returned, so a read that found a later update than the
 // card's leaves the issue not due.
 func mirrorActsDueWhere(i string) string {
@@ -37,13 +37,13 @@ func mirrorActsDueWhere(i string) string {
 		return `NOT EXISTS (SELECT 1 FROM tracker_cache_issue_act_reads ar WHERE ar.root_id = ` + i + `.root_id AND ar.issue_id = ` + i + `.issue_id
 		    AND ar.source = ` + strconv.Itoa(source) + ` AND ar.read_for >= ` + i + `.updated_at)`
 	}
-	return `(` + receipt(MirrorActComment) + ` OR CAST(?6 AS INTEGER) = 1 AND ` + receipt(MirrorActWorklog) + `)`
+	return `(` + receipt(MirrorActComment) + ` OR ` + receipt(MirrorActWorklog) + `)`
 }
 
 // The acts due statements of board ?2 of root ?1, under the regrouping ?3
-// (a JSON object), the support rule ?4 (mirrorSupportSQL, NULL for none),
-// the board's estimate reset ?5 and ?6 (worklogs are read), each at most a
-// page and one of issue IDs with whether the support rule names the row.
+// (a JSON object), the support rule ?4 (mirrorSupportSQL, NULL for none)
+// and the board's estimate reset ?5, each at most a page and one of issue
+// IDs with whether the support rule names the row.
 // None sorts: a listing's order is the caller's walk of the arms and of
 // the closed sprints by completion, and the due rule, a probe of a
 // receipt by key, is tested before the rest, so a listing in the steady
@@ -51,9 +51,9 @@ func mirrorActsDueWhere(i string) string {
 // no history.
 //   - active: members of the board's active sprints whose status counts
 //     as done now;
-//   - sprints: the board's closed sprints completed at or after ?7, with
+//   - sprints: the board's closed sprints completed at or after ?6, with
 //     their completion;
-//   - closed: members of closed sprint ?7 whose status at the completion
+//   - closed: members of closed sprint ?6 whose status at the completion
 //     counted as done (mirrorStatusAtCompletionSQL: one whose history is
 //     unread and was carried on is not done yet);
 //   - support: the board's rows the support rule names, the rule tested
@@ -71,9 +71,9 @@ var mirrorActsDueSQL = func() (out struct{ active, sprints, closed, support stri
 		 WHERE sp.root_id = CAST(?1 AS INTEGER) AND sp.board_id = ?2 AND sp.state = ` + strconv.Itoa(MirrorSprintActive) + `
 		   AND ` + due + ` AND i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `)` + limit
 	out.sprints = `SELECT sprint_id, completed_at FROM tracker_cache_sprints
-		 WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND state = ` + strconv.Itoa(MirrorSprintClosed) + ` AND completed_at >= ?7`
+		 WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND state = ` + strconv.Itoa(MirrorSprintClosed) + ` AND completed_at >= ?6`
 	out.closed = `SELECT i.issue_id, ` + support + ` FROM tracker_cache_sprints l` + members("l") + `
-		 WHERE l.root_id = CAST(?1 AS INTEGER) AND l.board_id = ?2 AND l.sprint_id = ?7
+		 WHERE l.root_id = CAST(?1 AS INTEGER) AND l.board_id = ?2 AND l.sprint_id = ?6
 		   AND ` + due + ` AND coalesce(` + mirrorStatusAtCompletionSQL + ` IN (` + mirrorDoneStatusesSQL("?3") + `), 0)` + limit
 	out.support = `SELECT i.issue_id, 1 FROM tracker_cache_board_issues b
 		  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
@@ -84,7 +84,7 @@ var mirrorActsDueSQL = func() (out struct{ active, sprints, closed, support stri
 // ListMirrorActsDue lists up to mirrorActsDuePage issues of rootID whose
 // acts credit counts and are due a read (mirrorActsDueSQL), on boards, each
 // listed by the regrouping its project counts it by; from is the start of
-// the window (Unix ms) and worklogs reports that worklogs are read. They
+// the window (Unix ms). They
 // are listed by arm, the active sprints' members first, then the closed
 // sprints' by newest completion, then support tickets, each issue once at
 // its first place, Support set when any board names it a support ticket;
@@ -92,7 +92,7 @@ var mirrorActsDueSQL = func() (out struct{ active, sprints, closed, support stri
 // A board the mirror does not show lists nothing. more reports that more
 // are due. A read of an issue writes its receipt, which takes it off the
 // list, so the next listing reaches the issues behind it.
-func (s *Store) ListMirrorActsDue(rootID int64, boards []MirrorActsBoard, worklogs bool, from int64) (due []MirrorActsDue, more bool, err error) {
+func (s *Store) ListMirrorActsDue(rootID int64, boards []MirrorActsBoard, from int64) (due []MirrorActsDue, more bool, err error) {
 	label := fmt.Sprintf("list tracker mirror %d acts due", rootID)
 	type shown struct {
 		MirrorActsBoard
@@ -118,7 +118,7 @@ func (s *Store) ListMirrorActsDue(rootID int64, boards []MirrorActsBoard, worklo
 		// add lists the rows of one arm's statement; full reports that
 		// the listing holds more than a page.
 		add := func(b shown, query string, args ...any) (full bool, err error) {
-			args = append([]any{rootID, b.BoardID, b.groups, b.Regroup.supportArg(), b.reset, worklogs}, args...)
+			args = append([]any{rootID, b.BoardID, b.groups, b.Regroup.supportArg(), b.reset}, args...)
 			n := 0
 			err = scanMirrorRows(tx, query, args, func(r rowScanner) error {
 				var d MirrorActsDue
@@ -152,7 +152,7 @@ func (s *Store) ListMirrorActsDue(rootID int64, boards []MirrorActsBoard, worklo
 		}
 		var sprints []closed
 		for _, b := range listed {
-			err := scanMirrorRows(tx, mirrorActsDueSQL.sprints, []any{rootID, b.BoardID, nil, nil, nil, nil, from}, func(r rowScanner) error {
+			err := scanMirrorRows(tx, mirrorActsDueSQL.sprints, []any{rootID, b.BoardID, nil, nil, nil, from}, func(r rowScanner) error {
 				c := closed{board: b}
 				err := r.Scan(&c.sprint, &c.completedAt)
 				sprints = append(sprints, c)

@@ -21,19 +21,18 @@ const evidenceBatch = 50
 // the connection that counts credit (creditBoards), read in batches of
 // evidenceBatch, one listing's page a tick (More). Which tickets are due, and
 // in what order, is the store's rule (store ListMirrorActsDue): a ticket is
-// due until a read for its card's update stored a receipt of each kind the
-// provider reads (tracker.Capabilities.Evidence). A support ticket's
-// worklogs are read from the window's start, every other ticket's whole.
-// A ticket the tracker does not return stores nothing and stays due. With
-// no project counting credit, or a tracker credit does not count, it lists
-// and reads nothing.
+// due until a read for its card's update stored a receipt of its comments
+// and of its worklogs. A support ticket's worklogs are read from the
+// window's start, every other ticket's whole. A ticket the tracker does
+// not return stores nothing and stays due. With no project counting
+// credit, or a tracker credit does not count (tracker.Capabilities.Evidence),
+// it lists and reads nothing.
 //
 // A read whose worklogs the store refuses because the connection's time
 // source changed during it stores nothing and reports More: the next tick
 // reads under the new source with a provider built for it.
 func (r *run) evidence() (UnitResult, error) {
-	kinds := r.p.Capabilities().Evidence
-	if !kinds.Comments {
+	if !r.p.Capabilities().Evidence {
 		return UnitResult{}, nil
 	}
 	boards, err := r.s.creditBoards(r.row)
@@ -41,13 +40,13 @@ func (r *run) evidence() (UnitResult, error) {
 		return UnitResult{}, err
 	}
 	window := r.window()
-	due, more, err := r.s.store.ListMirrorActsDue(r.root, boards, kinds.Worklogs, millis(window))
+	due, more, err := r.s.store.ListMirrorActsDue(r.root, boards, millis(window))
 	if err != nil {
 		return UnitResult{}, fmt.Errorf("trackerapp: list the tickets whose evidence is due: %w", err)
 	}
 	var log changeLog
 	for batch := range slices.Chunk(due, evidenceBatch) {
-		changed, err := r.evidenceOf(batch, kinds, window.UnixMilli())
+		changed, err := r.evidenceOf(batch, window.UnixMilli())
 		log.add(Changes{Catalog: changed})
 		switch {
 		case errors.Is(err, store.ErrTrackerCacheSourceChanged):
@@ -62,7 +61,7 @@ func (r *run) evidence() (UnitResult, error) {
 // evidenceOf reads and stores the evidence of the tickets of due, a
 // support ticket's worklogs from windowMs, and reports whether the catalog
 // changed.
-func (r *run) evidenceOf(due []store.MirrorActsDue, kinds tracker.EvidenceKinds, windowMs int64) (bool, error) {
+func (r *run) evidenceOf(due []store.MirrorActsDue, windowMs int64) (bool, error) {
 	q := tracker.EvidenceQuery{Issues: make([]tracker.EvidenceIssue, len(due))}
 	for i, d := range due {
 		q.Issues[i] = tracker.EvidenceIssue{Issue: tracker.IssueID(d.IssueID)}
@@ -86,10 +85,8 @@ func (r *run) evidenceOf(due []store.MirrorActsDue, kinds tracker.EvidenceKinds,
 	var acts []store.MirrorIssueActs
 	for _, ie := range ev.Issues {
 		readFor := millis(ie.Updated)
-		acts = append(acts, store.MirrorIssueActs{IssueID: string(ie.Issue), Source: store.MirrorActComment, ReadFor: readFor, Acts: mirrorActs(ie.Comments)})
-		if kinds.Worklogs {
-			acts = append(acts, store.MirrorIssueActs{IssueID: string(ie.Issue), Source: store.MirrorActWorklog, ReadFor: readFor, Acts: mirrorActs(ie.Worklogs)})
-		}
+		acts = append(acts, store.MirrorIssueActs{IssueID: string(ie.Issue), Source: store.MirrorActComment, ReadFor: readFor, Acts: mirrorActs(ie.Comments)},
+			store.MirrorIssueActs{IssueID: string(ie.Issue), Source: store.MirrorActWorklog, ReadFor: readFor, Acts: mirrorActs(ie.Worklogs)})
 	}
 	_, catalogWrite, err := r.s.store.ReplaceMirrorActs(r.root, r.row.TimeSourceGen, read, acts, catalog)
 	r.told("", written{Changes: Changes{Catalog: catalogWrite.Changed}, links: catalogWrite.Threads})

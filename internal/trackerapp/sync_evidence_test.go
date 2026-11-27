@@ -3,7 +3,6 @@ package trackerapp
 import (
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -25,7 +24,7 @@ func evidenceFixture(t *testing.T, rows int) (m *mirrorFixture, cs *countingStor
 		page = append(page, r)
 	}
 	m.p.set(func(p *scripted) {
-		p.caps = tracker.Capabilities{Evidence: tracker.EvidenceKinds{Comments: true, Worklogs: true}}
+		p.caps = tracker.Capabilities{Evidence: true}
 		p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {
 			return tracker.RowPage{Rows: page, Next: cursorAfter("end")}, nil
 		}
@@ -99,7 +98,7 @@ func TestEvidenceCountsOnlyTheConnectionsOwnBoards(t *testing.T) {
 // made, whether or not credit counts.
 func TestEvidenceOfATrackerWithoutEvidenceReadsNothing(t *testing.T) {
 	m, cs, asked := evidenceFixture(t, 1)
-	m.p.set(func(p *scripted) { p.caps.Evidence = tracker.EvidenceKinds{} })
+	m.p.set(func(p *scripted) { p.caps.Evidence = false })
 	m.countCredit(t, m.conn.ID, true)
 	m.evidenceTick(t)
 	if calls := cs.take(); calls["ListMirrorActsDue"] != 0 || len(asked()) != 0 {
@@ -121,7 +120,7 @@ func TestEvidenceIsReadOncePerUpdate(t *testing.T) {
 		t.Fatalf("reads %v", asked())
 	}
 	root := m.root()
-	got, _, err := m.st.ListMirrorActsDue(root, []store.MirrorActsBoard{{BoardID: string(testBoard)}}, true, 0)
+	got, _, err := m.st.ListMirrorActsDue(root, []store.MirrorActsBoard{{BoardID: string(testBoard)}}, 0)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("due after the read: %v, %v", got, err)
 	}
@@ -158,30 +157,6 @@ func TestEvidenceReadsABoundedPageATick(t *testing.T) {
 	}
 }
 
-// While the tracker reads no worklogs (Tempo is the time), only comments
-// are read and due: a ticket with a comment receipt is not due again.
-func TestEvidenceWithoutWorklogsStoresComments(t *testing.T) {
-	m, _, asked := evidenceFixture(t, 1)
-	m.p.set(func(p *scripted) { p.caps.Evidence.Worklogs = false })
-	m.countCredit(t, m.conn.ID, true)
-	m.evidenceTick(t)
-	m.evidenceTick(t)
-	if len(asked()) != 1 {
-		t.Fatalf("%d reads", len(asked()))
-	}
-	var sources []string
-	rows, _, err := m.st.ListMirrorActsDue(m.root(), []store.MirrorActsBoard{{BoardID: string(testBoard)}}, true, 0)
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("due with worklogs read: %v, %v", rows, err)
-	}
-	for _, r := range rows {
-		sources = append(sources, r.IssueID)
-	}
-	if strings.Join(sources, ",") != "20001" {
-		t.Fatalf("due %v", sources)
-	}
-}
-
 // A read during which the connection's time source changed stores
 // nothing, and the unit reports More so the next tick reads under the new
 // source.
@@ -203,7 +178,7 @@ func TestEvidenceReadAcrossATimeSourceChangeIsReadAgain(t *testing.T) {
 	if out := m.evidenceTick(t); !out.More() {
 		t.Fatalf("outcome %+v", out)
 	}
-	rows, _, err := m.st.ListMirrorActsDue(m.root(), []store.MirrorActsBoard{{BoardID: string(testBoard)}}, true, 0)
+	rows, _, err := m.st.ListMirrorActsDue(m.root(), []store.MirrorActsBoard{{BoardID: string(testBoard)}}, 0)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("due after the refused read: %v, %v", rows, err)
 	}

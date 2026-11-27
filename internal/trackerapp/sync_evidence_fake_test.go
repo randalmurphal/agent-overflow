@@ -129,7 +129,7 @@ func TestFakeEvidenceReadsEachFinishedTicketOnce(t *testing.T) {
 		t.Fatalf("%d act receipts stored", n)
 	}
 	root := must[int64](t)(rootOf(s, conn))
-	if due, more, err := s.st.ListMirrorActsDue(root, []store.MirrorActsBoard{{BoardID: string(scope.Board)}}, true, 0); err != nil || len(due) != 0 || more {
+	if due, more, err := s.st.ListMirrorActsDue(root, []store.MirrorActsBoard{{BoardID: string(scope.Board)}}, 0); err != nil || len(due) != 0 || more {
 		t.Fatalf("due after the first use: %v, %v, %v", due, more, err)
 	}
 

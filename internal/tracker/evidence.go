@@ -2,15 +2,6 @@ package tracker
 
 import "time"
 
-// EvidenceKinds are the kinds of work Provider.Evidence reads of an
-// issue: who commented on it, and who logged time on it. A tracker that
-// reads evidence reads comments, and Worklogs adds the logged time; the
-// zero value reads none, a tracker whose work credit does not count
-// (Linear).
-type EvidenceKinds struct {
-	Comments, Worklogs bool
-}
-
 // MaxEvidenceIssues is the most issues one Evidence read names.
 const MaxEvidenceIssues = 100
 

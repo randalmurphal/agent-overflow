@@ -197,9 +197,9 @@ func TestMirrorActsSplitAcrossTransactions(t *testing.T) {
 
 // actsDue lists root's acts due on board 10 by its plain groups, from
 // window start from, and returns the issues with support marked.
-func actsDue(t *testing.T, s *Store, root int64, worklogs bool, from int64) (string, bool) {
+func actsDue(t *testing.T, s *Store, root int64, from int64) (string, bool) {
 	t.Helper()
-	due, more, err := s.ListMirrorActsDue(root, []MirrorActsBoard{{BoardID: "10"}, {BoardID: "10"}, {BoardID: "11"}}, worklogs, from)
+	due, more, err := s.ListMirrorActsDue(root, []MirrorActsBoard{{BoardID: "10"}, {BoardID: "10"}, {BoardID: "11"}}, from)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func actsDue(t *testing.T, s *Store, root int64, worklogs bool, from int64) (str
 // The acts due on a board: its active sprints' members done now, first,
 // then its closed sprints' members done at the completion, newest
 // completion first, whose sprint completed in the window, each once, until a read for their update
-// stored a receipt of each source read. A member carried on from a closed
+// stored a receipt of its comments and of its worklogs. A member carried on from a closed
 // sprint whose history is unread is not done there yet, and a board the
 // mirror does not show (11) lists nothing.
 func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
@@ -241,15 +241,15 @@ func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
 		MirrorWrite{Changed: true})
 	mustReplaceHistory(t, s, root, MirrorHistory{IssueID: "10005", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 960, From: "1", To: "10001"}}},
 		MirrorWrite{Changed: true})
-	check := func(worklogs bool, from int64, want string) {
+	check := func(from int64, want string) {
 		t.Helper()
-		if got, more := actsDue(t, s, root, worklogs, from); got != want || more {
-			t.Fatalf("due (worklogs %v, from %d) = %q, more %v; want %q", worklogs, from, got, more, want)
+		if got, more := actsDue(t, s, root, from); got != want || more {
+			t.Fatalf("due (from %d) = %q, more %v; want %q", from, got, more, want)
 		}
 	}
-	check(false, 0, "10001,10003,10006")
-	check(false, 501, "10001,10003")
-	check(false, 951, "10001")
+	check(0, "10001,10003,10006")
+	check(501, "10001,10003")
+	check(951, "10001")
 	replace := func(at int64, in ...MirrorIssueActs) {
 		t.Helper()
 		if _, _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, at), in, MirrorCatalog{}); err != nil {
@@ -258,13 +258,13 @@ func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
 	}
 	replace(9, commentsOf("10006", 5, 2), MirrorIssueActs{IssueID: "10006", Source: MirrorActWorklog, ReadFor: 5})
 	replace(10, commentsOf("10001", 5, 2), commentsOf("10003", 4, 2))
-	check(false, 0, "10003")
-	check(true, 0, "10001,10003")
+	check(0, "10001,10003")
 	replace(11, commentsOf("10003", 5, 2), MirrorIssueActs{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 6})
-	check(false, 0, "")
-	check(true, 0, "10003")
+	check(0, "10003")
+	replace(12, MirrorIssueActs{IssueID: "10003", Source: MirrorActWorklog, ReadFor: 5})
+	check(0, "")
 	mustWriteRowPage(t, s, root, webPage("10", done(webRow("10001", 7, "a", "21"))), []byte("c2"))
-	check(false, 0, "10001")
+	check(0, "10001")
 }
 
 // A listing holds at most a page, and says when more are due.
@@ -279,7 +279,7 @@ func TestMirrorActsDueArePaged(t *testing.T) {
 		rows = append(rows, r)
 	}
 	mustWriteRowPage(t, s, root, webPage("10", rows...), []byte("c1"))
-	due, more, err := s.ListMirrorActsDue(root, []MirrorActsBoard{{BoardID: "10"}}, false, 0)
+	due, more, err := s.ListMirrorActsDue(root, []MirrorActsBoard{{BoardID: "10"}}, 0)
 	if err != nil || len(due) != mirrorActsDuePage || !more {
 		t.Fatalf("%d due, more %v, %v; want a page and more", len(due), more, err)
 	}

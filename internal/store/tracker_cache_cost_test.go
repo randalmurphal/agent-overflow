@@ -200,7 +200,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, _, err := s.GetMirrorSync(root, "", testNow); return err },
 		func() error { _, _, err := s.ListMirrorHistoryDue(root, testNow); return err },
 		func() error {
-			_, _, err := s.ListMirrorActsDue(root, []MirrorActsBoard{{BoardID: "10"}, {BoardID: "11"}}, true, 0)
+			_, _, err := s.ListMirrorActsDue(root, []MirrorActsBoard{{BoardID: "10"}, {BoardID: "11"}}, 0)
 			return err
 		},
 		func() error { _, err := s.ListMirrorBodies(root, []string{"10001"}); return err },
