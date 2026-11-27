@@ -37,7 +37,7 @@
 // `tracker:time_entries_updated`, which they read again on.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { TimeEntryEdit, TimeEntryView, WorklogView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { PostTimeView, TimeEntryEdit, TimeEntryView, WorklogView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { AddTrackerWorklog, DeleteTrackerWorklog, EditTrackerTimeEntry, EditTrackerWorklog, PostTrackerTimeEntries, RemoveTrackerTimeEntries } from './bindings';
 import { addErrorToast, addToast } from './toast.svelte';
 import { dayInSentence } from './trackerTimeModel';
@@ -351,9 +351,17 @@ function refs(entries: readonly TimeEntryView[]): { id: number; revision: number
   return entries.map((e) => ({ id: e.id, revision: e.revision }));
 }
 
+/** What a change of the draft did: its outcome, and the computer's answer
+ * when it was made. */
+export interface DraftWriteResult<T> {
+  readonly outcome: WriteOutcome;
+  readonly value: T | null;
+}
+
 // One change of the draft: sent once, its outcome held under its target
 // while a surface holds it, else a toast. An answer that says nothing the
-// surface does not show (`done` answers null) leaves nothing held.
+// surface does not show (`done` answers null) leaves nothing held. A
+// second press while one is out sends nothing and answers null.
 async function draftWrite<T>(
   ctx: DraftWriteContext,
   target: string,
@@ -361,24 +369,25 @@ async function draftWrite<T>(
   toast: string,
   send: () => Promise<T>,
   done: (value: T) => string | null,
-): Promise<WriteOutcome | null> {
+): Promise<DraftWriteResult<T> | null> {
   const k = writeKey(ctx, target);
   if (writes.get(k)?.pending) return null;
   writes.set(k, { kind, pending: true, outcome: null, reread: null, saveAnyway: null });
   const sent = await sendCall(ctx.backend, ctx.computer, DRAFT_SUBJECT, send);
   const outcome: WriteOutcome = sent.ok ? { kind: 'applied', note: done(sent.value) } : sent.outcome;
+  const value = sent.ok ? sent.value : null;
   if (outcome.kind === 'applied' && outcome.note === null) {
     writes.delete(k);
-    return outcome;
+    return { outcome, value };
   }
   if (!holds.has(k)) {
     writes.delete(k);
     if (outcome.kind === 'applied') addToast('info', `${toast}: ${outcome.note}`);
     else toastUnheld(toast, outcome);
-    return outcome;
+    return { outcome, value };
   }
   writes.set(k, { kind, pending: false, outcome, reread: null, saveAnyway: null });
-  return outcome;
+  return { outcome, value };
 }
 
 function entryName(e: TimeEntryView): string {
@@ -386,8 +395,10 @@ function entryName(e: TimeEntryView): string {
 }
 
 /** Changes a draft entry as read: its ticket, hours or reason, or leaves
- * a question out (EditTrackerTimeEntry). Nothing is sent to the tracker. */
-export function changeDraftEntry(ctx: DraftWriteContext, entry: TimeEntryView, edit: TimeEntryEdit): Promise<WriteOutcome | null> {
+ * a question out (EditTrackerTimeEntry), and answers the entry as stored:
+ * a question answered with a ticket that has a drafted entry that day is
+ * that entry, the question's time added. Nothing is sent to the tracker. */
+export function changeDraftEntry(ctx: DraftWriteContext, entry: TimeEntryView, edit: TimeEntryEdit): Promise<DraftWriteResult<TimeEntryView> | null> {
   return draftWrite(ctx, entryTarget(entry.id), 'change', `The change of ${entryName(entry)}`,
     () => EditTrackerTimeEntry(ctx.connection, { id: entry.id, revision: entry.revision }, edit), () => null);
 }
@@ -395,7 +406,7 @@ export function changeDraftEntry(ctx: DraftWriteContext, entry: TimeEntryView, e
 /** Removes draft entries as read, under `target` (RemoveTrackerTimeEntries):
  * one entry, or a discard. Nothing is sent to the tracker. An entry that
  * changed or was posted since it was read stays, and the outcome says so. */
-export function removeDraftEntries(ctx: DraftWriteContext, target: string, entries: readonly TimeEntryView[]): Promise<WriteOutcome | null> {
+export function removeDraftEntries(ctx: DraftWriteContext, target: string, entries: readonly TimeEntryView[]): Promise<DraftWriteResult<TimeEntryView[]> | null> {
   return draftWrite(ctx, target, 'remove', entries.length === 1 ? `The removal of ${entryName(entries[0])}` : 'The discard of the draft',
     () => RemoveTrackerTimeEntries(ctx.connection, refs(entries)),
     (gone) => gone.length < entries.length
@@ -406,10 +417,24 @@ export function removeDraftEntries(ctx: DraftWriteContext, target: string, entri
 /** Approves draft entries as read, under `target` (PostTrackerTimeEntries):
  * a day, the week shown, a call's card, or one entry `alone`, which posts
  * it though time was logged on its ticket that day since. Its outcome is
- * the computer's sentence of what was posted and what was not, and why. */
-export function postDraftEntries(ctx: DraftWriteContext, target: string, entries: readonly TimeEntryView[], alone = false): Promise<WriteOutcome | null> {
+ * the computer's sentence of what was posted and what was not, and why
+ * (`PostTimeView.sentence`). Days whose read after the post failed
+ * (`stale`) are a receipt on the weeks that show them, and the outcome
+ * says so. */
+export function postDraftEntries(ctx: DraftWriteContext, target: string, entries: readonly TimeEntryView[], alone = false): Promise<DraftWriteResult<PostTimeView> | null> {
   return draftWrite(ctx, target, 'post', alone ? `Logging ${entryName(entries[0])}` : 'The approval of the draft',
-    () => PostTrackerTimeEntries(ctx.connection, { entries: refs(entries), alone: alone || undefined }), (view) => view.sentence);
+    () => PostTrackerTimeEntries(ctx.connection, { entries: refs(entries), alone: alone || undefined }),
+    (view) => {
+      const stale = view.stale?.find((st) => st.resources.some(DRAFT_SUBJECT.reads));
+      if (!stale) return view.sentence;
+      const unread = `The week shows it after its next read: ${stale.failure.message}`;
+      const days = new Map<string, string[]>();
+      for (const r of stale.resources) {
+        if (r.kind === 'worklogs' && r.author && r.day) days.set(r.author, [...(days.get(r.author) ?? []), r.day]);
+      }
+      for (const [author, of] of days) weeks?.receipt({ ...ctx, author }, of, `${view.sentence} ${unread}`);
+      return `${view.sentence} ${unread}`;
+    });
 }
 
 export function resetTrackerTimeWritesForTest(): void {

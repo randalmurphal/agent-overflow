@@ -59,6 +59,10 @@ func TestAnEntryARunLeftSentIsUnknownToTheNext(t *testing.T) {
 		if len(shown) != 1 || shown[0].State != store.TimeEntryUnknown {
 			t.Fatalf("the next run shows the thread's entries as %+v; want WEB-2 unknown", shown)
 		}
+		// A screen shows the app's own sentence of the entry as it is.
+		if shown[0].Refusal != mayHaveBeenLogged {
+			t.Fatalf("the unknown entry says %q; want %q", shown[0].Refusal, mayHaveBeenLogged)
+		}
 		got, posts := d.post(t, false, entryRefs(shown...)...)
 		d.posted(t, "the day approved on the next run", got, posts, "Posted 0 of 1 entries for "+d.label+". WEB-2, 1h, "+mayHave, 0)
 		got, posts = d.post(t, true, entryRefs(shown...)...)

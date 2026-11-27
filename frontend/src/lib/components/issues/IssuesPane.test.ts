@@ -27,7 +27,7 @@ import IssuesPane from './IssuesPane.svelte';
 import { trackerBoardUpdated as applyTrackerBoardEvent, trackerIssueUpdated } from '../../stores/trackerBoardEvents';
 import { registerIssuesCommands } from '../../stores/issuesCommands';
 import { clearCommandRegistry, runCommand, type CommandContext } from '../../stores/commandRegistry.svelte';
-import { hiddenCardFields, requestTicketOpen, setTicketPlacement, takeTicketOpenRequest } from '../../stores/issuesPane.svelte';
+import { hiddenCardFields, requestTicketOpen, setTicketPlacement, takePaneOpenRequest } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
@@ -1665,7 +1665,7 @@ describe('the ticket in the pane', () => {
       await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('77'));
       expect(ticket.subscribe).toHaveBeenCalledWith('c1', '77', true);
       expect(mocks.subscribe).toHaveBeenCalledTimes(1);
-      expect(takeTicketOpenRequest()).toBeNull();
+      expect(takePaneOpenRequest()).toBeNull();
     });
 
     it("switches to its connection's board, the asking project's first, without saving it as a pick", async () => {

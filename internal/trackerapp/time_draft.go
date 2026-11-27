@@ -51,7 +51,9 @@ type TimeOfferView struct {
 
 // TimeEntryView is one entry of the draft. By is agent or person, who
 // last wrote it; State is drafted, sent, posted, unknown or left_out;
-// Refusal is why its last post did not log it.
+// Refusal is why its last post did not log it, and for an unknown entry
+// what the app says of it (mayHaveBeenLogged), which a screen shows as it
+// is.
 type TimeEntryView struct {
 	ID         int64           `json:"id"`
 	Revision   int64           `json:"revision"`
@@ -75,6 +77,9 @@ func timeEntryView(e store.TimeEntry) TimeEntryView {
 	v := TimeEntryView{ID: e.ID, Revision: e.Revision, Connection: e.Connection, Day: e.Day, Issue: e.IssueID, Key: e.IssueKey,
 		Title: e.IssueTitle, Minutes: e.Seconds / 60, Reason: e.Reason, By: e.Source, Thread: e.ThreadID, Call: e.CallID,
 		State: e.State, Refusal: e.Refusal, Worklog: e.WorklogID}
+	if e.State == store.TimeEntryUnknown {
+		v.Refusal = mayHaveBeenLogged
+	}
 	for _, o := range e.Offers {
 		v.Offers = append(v.Offers, TimeOfferView{Issue: o.Issue, Key: o.Key, Title: o.Title})
 	}

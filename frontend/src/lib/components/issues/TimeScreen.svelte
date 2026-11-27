@@ -13,12 +13,21 @@
   // control, and changes the entry as the week shows it now. A write the
   // week has not caught up with is a receipt above the week until a
   // refresh reads it. Today moves at midnight; the week shown stays
-  // until the person moves it.
+  // until the person moves it, or another surface asks for a week
+  // (`askedWeek`, a thread card's Review in Time).
+  //
+  // The agents' draft of the week shows with it (the week's read holds
+  // it): a banner to approve or discard the week's, each day's approval
+  // and its entries and questions in By day, its entries in their
+  // tickets' cells and its questions in the Not placed row in By ticket.
+  // An entry's hours open its form (TimeDraftForm); an entry of unknown
+  // outcome offers the log form filled from it, and once that time was
+  // logged the entry is removed.
   import { untrack } from 'svelte';
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import X from '@lucide/svelte/icons/x';
-  import type { WorklogView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import type { TimeEntryView, WorklogView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import ContextMenu from '../primitives/ContextMenu.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
@@ -30,6 +39,10 @@
   import TimeByDay from './TimeByDay.svelte';
   import TimeByTicket from './TimeByTicket.svelte';
   import TimeDayStrip from './TimeDayStrip.svelte';
+  import TimeDraftBanner from './TimeDraftBanner.svelte';
+  import TimeDraftEntry from './TimeDraftEntry.svelte';
+  import TimeDraftForm from './TimeDraftForm.svelte';
+  import TimeDraftQuestion from './TimeDraftQuestion.svelte';
   import WorklogForm from './WorklogForm.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import { saveTimeLayout, savedTimeLayout, type TimeLayout } from '../../stores/issuesPane.svelte';
@@ -43,12 +56,13 @@
     mondayOf,
     timeOfflineText,
     weekLabel,
+    weekQuestions,
     weekShape,
     weekTickets,
     type WeekTicket,
     type WorklogTicket,
   } from '../../stores/trackerTimeModel';
-  import type { TimeWriteContext } from '../../stores/trackerTimeWrites.svelte';
+  import { entryTarget, removeDraftEntries, type TimeWriteContext } from '../../stores/trackerTimeWrites.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
   import { formatTimeSpent } from '../../utils/timeSpent';
 
@@ -73,6 +87,9 @@
     onOpenTicket: (ticket: WorklogTicket) => void;
     /** A refresh of the week is out; for the pane's Refresh. */
     refreshing?: boolean;
+    /** A week another surface asked for; each new ask moves the screen
+     * to its week. */
+    askedWeek?: { readonly monday: string } | null;
   }
 
   let {
@@ -88,6 +105,7 @@
     openIssue,
     onOpenTicket,
     refreshing = $bindable(false),
+    askedWeek = null,
   }: Props = $props();
 
   // Today, moved at each midnight while the screen lives.
@@ -107,6 +125,11 @@
   let monday = $state(mondayOf(today));
   let layout = $state<TimeLayout>(savedTimeLayout());
   let compactDay = $state<string | null>(null);
+  // A week asked for moves the screen to it.
+  $effect(() => {
+    const asked = askedWeek;
+    if (asked) untrack(() => moveWeek(asked.monday));
+  });
 
   const readable = $derived(!offline && connectionKind !== 'linear' && connectionOn && !!author);
   const ctx: TimeWriteContext | null = $derived(author ? { backend, connection, author, computer: computerName } : null);
@@ -133,6 +156,7 @@
   const shape = $derived(weekState?.days ? weekShape(monday, weekState.days) : null);
   // Read by By ticket and the log form only, so By day builds none.
   const tickets = $derived(shape ? weekTickets(shape) : []);
+  const questions = $derived(shape ? weekQuestions(shape) : []);
   $effect(() => { refreshing = weekState?.refreshing ?? false; });
 
   /** Refresh: reads the week from the tracker now. */
@@ -183,6 +207,9 @@
     readonly day: string | null;
     readonly worklog?: WorklogView;
     readonly confirmDelete?: boolean;
+    /** An agent's entry of unknown outcome the form logs by hand: it
+     * fills the form, and is removed once the time was logged. */
+    readonly unknown?: TimeEntryView;
   }
   let form = $state.raw<FormOpen | null>(null);
   function openForm(open: FormOpen): void {
@@ -200,6 +227,53 @@
     return opened;
   });
 
+  // An entry of the draft's form or card, or a day's questions, open at
+  // the control they were opened from; each shows as the week shows it
+  // now.
+  type DraftOpen =
+    | { readonly kind: 'entry'; readonly anchor: HTMLElement; readonly entry: TimeEntryView }
+    | { readonly kind: 'questions'; readonly anchor: HTMLElement; readonly day: string };
+  let draft = $state.raw<DraftOpen | null>(null);
+  const draftEntry = $derived.by(() => {
+    if (draft?.kind !== 'entry') return null;
+    const opened = draft.entry;
+    for (const d of shape?.days ?? []) {
+      const found = d.drafted.find((e) => e.id === opened.id);
+      if (found) return found;
+    }
+    return opened;
+  });
+  const draftQuestions = $derived.by(() => {
+    const open = draft;
+    if (open?.kind !== 'questions') return [];
+    return shape?.days.find((d) => d.day === open.day)?.questions ?? [];
+  });
+  // A day's questions close once each was answered.
+  $effect(() => {
+    if (draft?.kind === 'questions' && draftQuestions.length === 0) draft = null;
+  });
+
+  function openDraft(entry: TimeEntryView, anchor: HTMLElement): void {
+    draft = { kind: 'entry', anchor, entry };
+  }
+
+  function logByHand(entry: TimeEntryView, anchor: HTMLElement): void {
+    openForm({
+      anchor,
+      ticket: { issue: entry.issue ?? '', key: entry.key ?? '', title: entry.title ?? '' },
+      day: entry.day,
+      unknown: entry,
+    });
+  }
+
+  // The hand-logged time of an entry of unknown outcome was logged: the
+  // entry goes, under its own target, so a failed removal shows on it.
+  function savedFrom(open: FormOpen, day: string): void {
+    onSaved(day);
+    const e = open.unknown;
+    if (e && ctx) void removeDraftEntries(ctx, entryTarget(e.id), [e]);
+  }
+
   function ticketOf(w: WorklogView): WorklogTicket {
     return { issue: w.issue, key: w.key ?? '', title: w.title ?? '' };
   }
@@ -216,7 +290,7 @@
   // on what it was opened on, then closes.
   type MenuOpen =
     | { readonly kind: 'entry'; readonly x: number; readonly y: number; readonly anchor: HTMLElement; readonly worklog: WorklogView }
-    | { readonly kind: 'cell'; readonly x: number; readonly y: number; readonly anchor: HTMLElement; readonly ticket: WeekTicket; readonly day: string; readonly entries: readonly WorklogView[] }
+    | { readonly kind: 'cell'; readonly x: number; readonly y: number; readonly anchor: HTMLElement; readonly ticket: WeekTicket; readonly day: string; readonly entries: readonly WorklogView[]; readonly drafted: readonly TimeEntryView[] }
     | { readonly kind: 'day'; readonly x: number; readonly y: number; readonly anchor: HTMLElement; readonly day: string };
   let menu = $state.raw<MenuOpen | null>(null);
   function fromMenu(action: () => void): void {
@@ -241,7 +315,7 @@
   }
 
   function cellMenu(t: WeekTicket, i: number, anchor: HTMLElement, x: number, y: number): MenuOpen {
-    return { kind: 'cell', x, y, anchor, ticket: t, day: shape!.days[i].day, entries: t.cells[i] };
+    return { kind: 'cell', x, y, anchor, ticket: t, day: shape!.days[i].day, entries: t.cells[i], drafted: t.drafted[i] };
   }
 
   function onCellMenu(t: WeekTicket, i: number, event: MouseEvent): void {
@@ -249,17 +323,22 @@
     menu = cellMenu(t, i, anchorOf(event), event.clientX, event.clientY);
   }
 
-  // A cell: empty logs on its ticket and day, one entry opens it, several
-  // open the menu of them at the cell.
+  // A cell: empty logs on its ticket and day, one entry (logged or
+  // drafted) opens it, several open the menu of them at the cell.
   function onCell(t: WeekTicket, i: number, anchor: HTMLElement): void {
     const entries = t.cells[i];
+    const drafted = t.drafted[i];
     const day = shape!.days[i].day;
-    if (entries.length === 0) {
+    if (entries.length === 0 && drafted.length === 0) {
       openForm({ anchor, ticket: t, day });
       return;
     }
-    if (entries.length === 1) {
+    if (entries.length === 1 && drafted.length === 0) {
       openForm({ anchor, ticket: t, day, worklog: entries[0] });
+      return;
+    }
+    if (entries.length === 0 && drafted.length === 1) {
+      openDraft(drafted[0], anchor);
       return;
     }
     const r = anchor.getBoundingClientRect();
@@ -321,6 +400,9 @@
         testId="time-read-error"
       />
     {/if}
+    {#if shape}
+      <TimeDraftBanner ctx={writeCtx} {monday} {shape} />
+    {/if}
     {#if savedNote}
       <div class="flex items-center gap-2 border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" role="status" data-testid="time-saved-elsewhere">
         <span class="min-w-0 flex-1">{savedNote}</span>
@@ -349,6 +431,9 @@
           {onEntryMenu}
           onLogDay={(day, anchor) => openForm({ anchor, ticket: null, day })}
           {onDayMenu}
+          onOpenDraftTicket={(e) => openTicket({ issue: e.issue ?? '', key: e.key ?? '', title: e.title ?? '' })}
+          onEditDraft={openDraft}
+          onLogByHand={logByHand}
         />
       {:else}
         <TimeByTicket
@@ -361,6 +446,8 @@
           {onCell}
           {onCellMenu}
           onLogOther={(anchor) => openForm({ anchor, ticket: null, day: null })}
+          {questions}
+          onQuestions={(i, anchor) => { draft = { kind: 'questions', anchor, day: shape.days[i].day }; }}
         />
       {/if}
     </div>
@@ -374,10 +461,30 @@
           day={open.day}
           worklog={formWorklog}
           confirmDelete={open.confirmDelete}
+          fill={open.unknown ? { time: formatTimeSpent(open.unknown.minutes * 60), description: open.unknown.reason } : undefined}
           candidates={tickets}
-          {onSaved}
+          onSaved={(day) => savedFrom(open, day)}
           onDone={() => { if (form === open) form = null; }}
         />
+      </Popover>
+    {/if}
+
+    {#if draft}
+      {@const d = draft}
+      <Popover anchor={d.anchor} open={true} role="dialog" ariaLabel={d.kind === 'questions' ? 'Questions of the draft' : 'Drafted time'} onClose={() => { draft = null; }}>
+        {#if d.kind === 'questions'}
+          <div class="flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2 p-3" data-testid="time-draft-questions">
+            {#each draftQuestions as q (q.id)}
+              <TimeDraftQuestion ctx={writeCtx} entry={q} />
+            {/each}
+          </div>
+        {:else if draftEntry && draftEntry.state === 'drafted'}
+          <TimeDraftForm ctx={writeCtx} entry={draftEntry} onDone={() => { if (draft === d) draft = null; }} />
+        {:else if draftEntry}
+          <div class="w-[min(20rem,calc(100vw-2rem))] p-3">
+            <TimeDraftEntry ctx={writeCtx} entry={draftEntry} onEdit={() => {}} onLogByHand={(e) => { draft = null; logByHand(e, d.anchor); }} />
+          </div>
+        {/if}
       </Popover>
     {/if}
 
@@ -395,6 +502,12 @@
           {/if}
         {:else if m.kind === 'cell'}
           <MenuItem label={m.entries.length ? 'Log more here' : 'Log time here'} testId="time-menu-log-here" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: m.ticket, day: m.day }))} />
+          {#if m.drafted.length}
+            <MenuDivider />
+            {#each m.drafted as e (e.id)}
+              <MenuItem label="Drafted {formatTimeSpent(e.minutes * 60)}: {e.reason}" testId="time-menu-draft" onSelect={() => fromMenu(() => openDraft(e, m.anchor))} />
+            {/each}
+          {/if}
           {#if m.entries.length}
             <MenuDivider />
             {#each m.entries as w (w.id)}
