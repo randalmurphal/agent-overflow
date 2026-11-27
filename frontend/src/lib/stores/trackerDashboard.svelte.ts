@@ -392,16 +392,6 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       const timer = setInterval(() => scheduler.request(), DASHBOARD_REFRESH_MS);
       return () => clearInterval(timer);
     });
-
-    // A hidden screen reads none of your logged time; it reads again from
-    // its next answer when it shows.
-    $effect(() => {
-      if (opts.shown()) return;
-      untrack(() => {
-        clearRereadTimer();
-        worklogReading = false;
-      });
-    });
   });
 
   // The widgets of the dashboard shown, its proposals among them, that

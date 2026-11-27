@@ -757,7 +757,7 @@ describe('your logged time', () => {
     expect(evaluate.calls).toHaveLength(4);
   });
 
-  it('drops the wait to read the newest days again when the screen hides', async () => {
+  it('reads nothing when the wait to read the newest days again ends while the screen is hidden', async () => {
     const { evaluate, reads } = await openedLogged(loggedAnswer());
     reads.answer({ rereadIn: 60_000 });
     await flush();
