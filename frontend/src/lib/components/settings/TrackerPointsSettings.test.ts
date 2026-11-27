@@ -210,7 +210,11 @@ describe('the Credit group', () => {
 
   function answerTypes(): void {
     setBindingMock('TrackerBoardProjects', async () => [{ id: '10000', key: 'WEB', name: 'Web' }]);
-    setBindingMock('TrackerProjectIssueTypes', async () => [{ id: '10001', name: 'Story', level: 0 }, { id: '10004', name: 'Support', level: 0 }]);
+    const types = [{ id: '10001', name: 'Story', level: 0 }, { id: '10004', name: 'Support', level: 0 }];
+    setBindingMock('TrackerProjectIssueTypes', async () => types);
+    // The types the account may create: the same here, and never what the
+    // group lists.
+    setBindingMock('TrackerIssueTypes', async () => types);
   }
 
   it('turns credit on, saying its rules, and off keeping them', async () => {
