@@ -106,8 +106,8 @@
     setCardFieldShown,
     setTicketPlacement,
     showsBoard,
-    takeTicketOpenRequest,
-    ticketOpenRequested,
+    takePaneOpenRequest,
+    paneOpenRequested,
     type IssuesScreen,
   } from '../../stores/issuesPane.svelte';
   import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
@@ -161,8 +161,8 @@
   let dashboardCounting = $state(false);
   // A ticket another surface asked for (a thread's link) opens here.
   $effect(() => {
-    if (!ticketOpenRequested()) return;
-    const request = untrack(takeTicketOpenRequest);
+    if (!paneOpenRequested()) return;
+    const request = untrack(takePaneOpenRequest);
     if (request) selection.openRequested(request);
   });
   const ticket = $derived(selection.ticket);
@@ -553,6 +553,8 @@
               offline={boardOffline}
               {compact}
               shown={selection.timeShown}
+              askedWeek={selection.askedWeek}
+              onAskedWeekTaken={selection.takeAskedWeek}
               openIssue={ticket?.ref.issue ?? null}
               onOpenTicket={(t) => selection.openTicket(t.issue, { key: t.key, title: t.title, card: null }, 'list')}
             />

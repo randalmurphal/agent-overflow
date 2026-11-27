@@ -1,3 +1,10 @@
+<script lang="ts" module>
+  import { retryingLoad } from '../../utils/retryingLoad';
+  // The time draft card loads on the first row that shows one; one stable
+  // import for every row, tried again after a failed load.
+  const loadTimeDraftCard = retryingLoad(() => import('../issues/TimeDraftCard.svelte'));
+</script>
+
 <script lang="ts">
   import Bell from '@lucide/svelte/icons/bell';
   import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
@@ -8,11 +15,13 @@
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import AlarmClock from '@lucide/svelte/icons/alarm-clock';
   import TicketCheck from '@lucide/svelte/icons/ticket-check';
+  import Clock from '@lucide/svelte/icons/clock';
   import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { getThreadById } from '../../stores/threads.svelte';
   import { openWrittenTicket, type WrittenTicket } from '../../stores/threadTicketLinks.svelte';
+  import { verifiedThreadMachine } from '../../stores/attachedBackends.svelte';
 
   let { item }: { item: Item } = $props();
 
@@ -53,6 +62,8 @@
     if (kind === 'background_wake') return AlarmClock;
     // The agent created or changed tickets through the tracker tools.
     if (kind === 'tracker_write') return TicketCheck;
+    // The agent drafted time: its card shows the call's entries.
+    if (kind === 'time_draft') return Clock;
     return Bell;
   });
   let isWarning = $derived(
@@ -128,6 +139,16 @@
       const ticket = { connection: text('connection'), issue: text('issue'), key: text('key'), title: text('title'), applied };
       return ticket.key && ticket.issue && ticket.connection ? [ticket] : [];
     });
+  });
+
+  // A time draft row (trackertools.TimeRow): the call that names its
+  // entries, their connection and days; the card reads the entries live.
+  let timeDraft = $derived.by<{ call: string; connection: string; days: string[] } | null>(() => {
+    if (kind !== 'time_draft') return null;
+    const call = typeof meta?.call === 'string' ? meta.call : '';
+    const connection = typeof meta?.connection === 'string' ? meta.connection : '';
+    const days = Array.isArray(meta?.days) ? meta.days.filter((d): d is string => typeof d === 'string') : [];
+    return call && connection ? { call, connection, days } : null;
   });
 
   function openTicket(ticket: WrittenTicket): void {
@@ -247,6 +268,16 @@
         </div>
       {/each}
     </div>
+  {/if}
+  {#if timeDraft}
+    {@const row = timeDraft}
+    {#await loadTimeDraftCard()}
+      <div class="ml-5 mt-1 not-italic text-fg-subtle" data-testid="time-draft-card-loading">Opening the drafted time…</div>
+    {:then mod}
+      <mod.default backend={verifiedThreadMachine(item.threadId)} thread={item.threadId} call={row.call} connection={row.connection} days={row.days} />
+    {:catch err}
+      <div class="ml-5 mt-1 not-italic text-error" role="alert" data-testid="time-draft-card-load-error">The drafted time could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</div>
+    {/await}
   {/if}
   {#if plan.length > 0}
     <div class="ml-5 mt-1 space-y-0.5 not-italic">

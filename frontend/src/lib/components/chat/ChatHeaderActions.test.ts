@@ -8,7 +8,7 @@ import { makeSettings } from '../../../test/helpers/settings';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 import { getPaneLayoutItems, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
-import { takeTicketOpenRequest } from '../../stores/issuesPane.svelte';
+import { takePaneOpenRequest } from '../../stores/issuesPane.svelte';
 import { closeThreadTicketFinder, threadTicketFinding } from '../../stores/threadTicketLinks.svelte';
 import type { ThreadTicketLink } from '../../../../bindings/agent-overflow/internal/store/models';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
@@ -664,7 +664,7 @@ describe('<ChatHeaderActions> the linked ticket', () => {
   });
 
   afterEach(() => {
-    takeTicketOpenRequest();
+    takePaneOpenRequest();
     setCompactLayoutForTest(false);
     resetToLocalPage();
   });
@@ -698,7 +698,7 @@ describe('<ChatHeaderActions> the linked ticket', () => {
     await flush();
     await fireEvent.click(view.getByTestId('chat-header-ticket'));
     await vi.waitFor(() => expect(getPaneLayoutItems().map((item) => item.kind)).toEqual(['thread', 'issues']));
-    expect(takeTicketOpenRequest()?.ref).toMatchObject({ connection: 'conn-1', issue: '10001' });
+    expect(takePaneOpenRequest()).toMatchObject({ ref: { connection: 'conn-1', issue: '10001' } });
   });
 
   it('says in its title that a link was not read here yet, and dims its mark', async () => {
@@ -770,6 +770,6 @@ describe('<ChatHeaderActions> the linked ticket', () => {
     expect(rows).toContain('Remove ticket link');
     expect(within(document.body).getByTestId('chat-header-menu-ticket').textContent).toContain('Retry cursor returns no rows');
     await fireEvent.click(within(document.body).getByTestId('chat-header-menu-ticket'));
-    await vi.waitFor(() => expect(takeTicketOpenRequest()?.ref).toMatchObject({ connection: 'conn-1', issue: '10001' }));
+    await vi.waitFor(() => expect(takePaneOpenRequest()).toMatchObject({ ref: { connection: 'conn-1', issue: '10001' } }));
   });
 });

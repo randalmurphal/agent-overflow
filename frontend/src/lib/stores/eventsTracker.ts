@@ -1,6 +1,6 @@
 import type { EventOrigin } from '../transport/handle';
 import { backendKeyForOrigin } from '../transport/backends';
-import { trackerBoardUpdated, trackerDashboardsUpdated, trackerIssueUpdated, trackerSetupUpdated, type TrackerBoardEvent, type TrackerIssueEvent } from './trackerBoardEvents';
+import { trackerBoardUpdated, trackerDashboardsUpdated, trackerIssueUpdated, trackerSetupUpdated, trackerTimeEntriesUpdated, type TrackerBoardEvent, type TrackerIssueEvent, type TrackerTimeEntriesEvent } from './trackerBoardEvents';
 
 // Routed by the board's scope on the computer that sent it: the channel
 // reaches every client holding tracker:read, and the board store applies a
@@ -15,6 +15,13 @@ export function applyTrackerBoardUpdated(event: TrackerBoardEvent | null | undef
 export function applyTrackerIssueUpdated(event: TrackerIssueEvent | null | undefined, origin?: EventOrigin): void {
   if (!event) return;
   trackerIssueUpdated(event, backendKeyForOrigin(origin?.backendId ?? ''));
+}
+
+// A time draft's entries changed on the computer that sent it: the weeks
+// and the draft cards of its days and threads read again.
+export function applyTrackerTimeEntriesUpdated(event: TrackerTimeEntriesEvent | null | undefined, origin?: EventOrigin): void {
+  if (!event) return;
+  trackerTimeEntriesUpdated(event, backendKeyForOrigin(origin?.backendId ?? ''));
 }
 
 // Payload-less: some project's tracker setup on the computer that sent it

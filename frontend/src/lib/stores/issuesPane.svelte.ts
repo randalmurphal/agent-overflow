@@ -31,6 +31,7 @@ import { closeTicketPane, sameTicketRef, setTicketPanePullRequest, setTicketPane
 import { createOpenFocusRequest, type OpenFocusRequest } from '../utils/openFocusRequest.svelte';
 import { holdTicketDrafts } from './trackerTicketWrites.svelte';
 import type { CommentOrder } from './trackerTicketModel';
+import { mondayOf } from './trackerTimeModel';
 import {
   acquireTrackerBoardChoices,
   isBoardChoiceOpenable,
@@ -384,27 +385,45 @@ export interface TicketOpenRequest {
   readonly unplaced: (failure: CapturedError | null) => void;
 }
 
-// The one ticket asked for and not yet taken by a pane; a later ask
-// replaces it.
-let ticketOpenRequest = $state.raw<TicketOpenRequest | null>(null);
+/** The Time screen a surface outside the pane asked for (a thread's
+ * draft card): the week of `day` on a board of the connection, which
+ * `unplaced` says has none, as a ticket's ask does. */
+export interface TimeOpenRequest {
+  readonly time: { readonly backend: string; readonly connection: string; readonly day: string };
+  readonly project: string | null;
+  readonly unplaced: (failure: CapturedError | null) => void;
+}
+
+/** What a surface outside the pane asked it to open. */
+export type PaneOpenRequest = TicketOpenRequest | TimeOpenRequest;
+
+// The one open asked for and not yet taken by a pane, a ticket or a
+// week; a later ask replaces it.
+let openRequest = $state.raw<PaneOpenRequest | null>(null);
 
 /** Asks the Issues pane to open a ticket, which the pane takes when it
  * mounts or at once when it is open. */
 export function requestTicketOpen(request: TicketOpenRequest): void {
-  ticketOpenRequest = request;
+  openRequest = request;
 }
 
-/** The ticket asked for, taken: the next call answers null. Reactive
- * until taken. */
-export function takeTicketOpenRequest(): TicketOpenRequest | null {
-  const request = ticketOpenRequest;
-  if (request) ticketOpenRequest = null;
+/** Asks the Issues pane to show a week on the Time screen, taken as a
+ * ticket's ask is. */
+export function requestTimeOpen(request: TimeOpenRequest): void {
+  openRequest = request;
+}
+
+/** The open asked for, taken: the next call answers null. Reactive until
+ * taken. */
+export function takePaneOpenRequest(): PaneOpenRequest | null {
+  const request = openRequest;
+  if (request) openRequest = null;
   return request;
 }
 
-/** Whether a ticket is asked for and not yet taken; reactive. */
-export function ticketOpenRequested(): boolean {
-  return ticketOpenRequest !== null;
+/** Whether an open is asked for and not yet taken; reactive. */
+export function paneOpenRequested(): boolean {
+  return openRequest !== null;
 }
 
 /**
@@ -509,6 +528,12 @@ export interface BoardSelection {
    * screen's list, or from the ticket open now, which Back then returns
    * to. */
   openTicket(issue: string, seed: TicketSeed, from: 'list' | 'ticket'): void;
+  /** A week asked for from outside the pane (`TimeOpenRequest`), which the
+   * Time screen moves to and then takes (`takeAskedWeek`), so a Time
+   * screen shown again later opens on this week; null while none waits. */
+  readonly askedWeek: { readonly monday: string } | null;
+  /** The Time screen moved to the week asked for. */
+  takeAskedWeek(): void;
   /** Opens a ticket asked for from outside the pane, on the Board or
    * Backlog screen, whichever shows: over the board shown when it is of the ticket's computer and
    * connection, else over the board `boardForTicket` picks once that
@@ -517,7 +542,7 @@ export interface BoardSelection {
    * that either. No such board runs the request's `unplaced`. The ticket
    * already open stays open, and the project the request names becomes
    * its project unless the person picked one (`TicketTrail.project`). */
-  openRequested(request: TicketOpenRequest): void;
+  openRequested(request: PaneOpenRequest): void;
   /** Back: the ticket this one was opened from, else closes it. */
   stepBack(): void;
   destroy(): void;
@@ -871,9 +896,11 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   const computer = $derived(board ? trackerComputer(board.backend) : 'waiting');
   const tickets = createTicketTrail({ state: localTicketTrailState(), shown: opts.shown, defaultProject: () => board?.projectId ?? null });
   const ticket = $derived(tickets.ticket);
-  // A ticket asked for from outside the pane, while it waits on its
-  // computer's boards (openRequested).
-  let requested = $state.raw<TicketOpenRequest | null>(null);
+  // A ticket or a week asked for from outside the pane, while it waits on
+  // its computer's boards (openRequested).
+  let requested = $state.raw<PaneOpenRequest | null>(null);
+  // The week asked for last; a new object on each ask.
+  let askedWeek = $state.raw<{ readonly monday: string } | null>(null);
   // The asked-for ticket the board switched to for it opens, in place of
   // the none a board change leaves.
   let arriving: OpenTicket | null = null;
@@ -978,27 +1005,36 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     // when that board is of its computer and connection; otherwise, once
     // that computer's boards are known, the board switches to
     // boardForTicket's and the ticket opens with it (`arriving`, which the
-    // board change installs). The switch from Time is not saved: the next
-    // pane opens on the screen the person picked.
+    // board change installs). A requested week opens the Time screen over
+    // the same board, with the ticket open closed. The switch of screen is
+    // not saved: the next pane opens on the screen the person picked.
     $effect(() => {
       const request = requested;
       if (!request) return;
-      const { ref } = request;
-      const open: OpenTicket = { ref, seed: request.seed, project: request.project };
+      const at = 'time' in request ? request.time : request.ref;
+      const land = (): void => {
+        if ('time' in request) {
+          screen = 'time';
+          tickets.close();
+          askedWeek = { monday: mondayOf(request.time.day) };
+          return;
+        }
+        if (!showsBoard(screen)) screen = 'board';
+      };
       const shown = board;
-      if (shown && shown.backend === ref.backend && shown.connection === ref.connection) {
+      if (shown && shown.backend === at.backend && shown.connection === at.connection) {
         untrack(() => {
           requested = null;
-          if (!showsBoard(screen)) screen = 'board';
-          tickets.show(open);
+          land();
+          if (!('time' in request)) tickets.show({ ref: request.ref, seed: request.seed, project: request.project });
         });
         return;
       }
-      // A computer not connected opens the ticket when it connects, as a
-      // board picked last does.
-      const state = trackerBoardChoicesOf(ref.backend);
+      // A computer not connected opens it when it connects, as a board
+      // picked last does.
+      const state = trackerBoardChoicesOf(at.backend);
       if (state?.kind === 'reading' || state?.kind === 'offline') return;
-      const next = boardForTicket(state?.rows ?? [], ref.backend, ref.connection, request.project);
+      const next = boardForTicket(state?.rows ?? [], at.backend, at.connection, request.project);
       untrack(() => {
         requested = null;
         if (!next) {
@@ -1006,8 +1042,8 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
           return;
         }
         unconfirmed = false;
-        if (!showsBoard(screen)) screen = 'board';
-        arriving = open;
+        land();
+        if (!('time' in request)) arriving = { ref: request.ref, seed: request.seed, project: request.project };
         board = next;
       });
     });
@@ -1041,6 +1077,8 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     get boardShown() { return boardShown; },
     get timeShown() { return timeShown; },
     get dashboardsShown() { return dashboardsShown; },
+    get askedWeek() { return askedWeek; },
+    takeAskedWeek() { askedWeek = null; },
     setScreen(next) {
       writeFrontendValue(SCREEN_KEY, next);
       if (next === screen) return;
@@ -1087,5 +1125,5 @@ export function resetIssuesPaneForTest(): void {
   backlogFolds = new Map();
   createChoices.clear();
   commentOrder = 'oldest';
-  ticketOpenRequest = null;
+  openRequest = null;
 }
