@@ -93,9 +93,12 @@
   const editBlocked = $derived(grantBlockedTitle(scopeGrant('tracker:operate', source.backend)));
   const askBlocked = $derived(workGate(source.backend, source.board.projectId).ask || store.ask || undefined);
 
-  /** Whether a tile stands for a set of tickets, so it filters the board. */
+  /** Whether a tile stands for a set of tickets, so it filters the board:
+   * a number or a list of what holds now, which a widget that counts now
+   * is, and a state's number with no bucket (its value is what holds now,
+   * which its drill lists). */
   function filters(v: WidgetView): boolean {
-    return !!v.now && (v.form === 'number' || v.form === 'list');
+    return (v.form === 'number' || v.form === 'list') && (!!v.now || (!!v.state && !v.bucket));
   }
   function press(w: { view: WidgetView; dashboard: DashboardView }): void {
     const builtin = store.dashboard;

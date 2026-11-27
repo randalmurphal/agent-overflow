@@ -4644,7 +4644,8 @@ describe("the board's summary row", () => {
   const OVERVIEW = {
     id: 'overview_weeks', title: 'Overview', default_range: 'weeks_4', ranges: [{ id: 'weeks_4', label: 'Last 4 weeks' }],
     widgets: [
-      { id: 'stuck', title: 'Stuck right now', form: 'number', width: 4, unit: 'tickets', good: 'down', now: true, how },
+      // A state's number: what holds now, compared with where the range began.
+      { id: 'stuck', title: 'Stuck right now', form: 'number', width: 4, unit: 'tickets', good: 'down', state: true, how },
       { id: 'finished', title: 'Finished per week', form: 'bars', width: 8, unit: 'estimate', bucket: 'period', how },
     ],
   };
