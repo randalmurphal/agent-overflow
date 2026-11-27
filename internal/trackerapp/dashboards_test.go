@@ -3,6 +3,7 @@ package trackerapp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"runtime"
@@ -496,5 +497,52 @@ func TestADashboardOfAProjectCountingTicketsIsLaidOutInTickets(t *testing.T) {
 	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
 	if after := counts(); slices.ContainsFunc(after, func(c string) bool { return strings.Contains(c, "points") }) {
 		t.Fatalf("the dashboard of a project counting tickets: %q", after)
+	}
+}
+
+// A dashboard of a project counting tickets counts a ticket where it
+// counted its points, on every read of the export: the agent's try, the
+// dashboard and its drill. Before, the board's points count.
+func TestAnEvaluationOfAProjectCountingTicketsCountsTickets(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	three, five := 3.0, 5.0
+	m.tracks([]tracker.Row{
+		{Card: card("10001", 1_799_000_000_000), Order: "a", Estimate: &three},
+		{Card: card("10002", 1_799_000_000_000), Order: "b", Estimate: &five},
+		row("10003", 1_799_000_000_000, "c"),
+	})
+	sub := m.subscribeShown(t, m.project()).ID
+	w := openTickets()
+	w.Metric.Title = "Estimate on the board"
+	w.Metric.SQL = `SELECT t.id AS ticket, iif((SELECT estimates FROM board) = 'none', 1, coalesce(t.points, 0)) AS value FROM tickets t`
+	w.Metric.Reduce, w.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
+	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, "thread-1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dashboard, err := m.svc.KeepProposal(sub, tried.View.ID, KeepTarget{Title: "Estimates"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := func() string {
+		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, "thread-1", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := m.evaluate(t, sub, dashboard)
+		d, err := m.svc.DashboardDrill(t.Context(), sub, trackerdash.DrillRequest{Request: trackerdash.Request{Dashboard: dashboard, TimeZone: "UTC"}, Widget: a.Widgets[0].ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("tried %s %s; dashboard %s %s; drill %s %s",
+			numText(t, tried.Value.Value), tried.Unit, numText(t, a.Widgets[0].Value), a.Estimates, numText(t, &d.Value), d.Estimates)
+	}
+	if got, want := reads(), `tried {"v":8} points; dashboard {"v":8} points; drill {"v":8} points`; got != want {
+		t.Fatalf("counting estimates: %s; want %s", got, want)
+	}
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
+	if got, want := reads(), `tried {"v":3} tickets; dashboard {"v":3} none; drill {"v":3} none`; got != want {
+		t.Fatalf("counting tickets: %s; want %s", got, want)
 	}
 }

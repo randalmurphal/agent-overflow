@@ -237,14 +237,14 @@ func (f mirrorExportFill) text(relations map[string]bool) string {
 
 // mirrorExportFills are the fill statements in order: ?1 root, ?2 board,
 // ?3 the regrouping (a JSON object, '{}' for none), ?4 the board's
-// estimate reset, ?5 whether the board has an estimate (0 or 1), and from
+// estimate reset, ?5 the unit the board is counted in (MirrorEstimate*), and from
 // ?6 the card blob's shape (MirrorCardShape.args). Each
 // names the snapshot's tables by main and the file's unqualified: the
 // snapshot names none of the file's tables. An export runs those of the
 // relations asked for and the relations they need (mirrorExportRelations).
 var mirrorExportFills = []mirrorExportFill{
 	{relation: "board", name: "board", sql: `INSERT INTO main.board(name, plans_sprints, estimates)
-	  SELECT b.name, b.plans_sprints, CASE b.estimate_unit WHEN ` + strconv.Itoa(MirrorEstimatePoints) + ` THEN 'points' WHEN ` +
+	  SELECT b.name, b.plans_sprints, CASE CAST(?5 AS INTEGER) WHEN ` + strconv.Itoa(MirrorEstimatePoints) + ` THEN 'points' WHEN ` +
 		strconv.Itoa(MirrorEstimateTime) + ` THEN 'time' ELSE 'none' END
 	  FROM tracker_cache_boards b WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`},
 	{relation: "tickets", name: "tickets", sql: `INSERT INTO main.tickets(id, key, title, type_level, status, status_group, assignee, parent, epic,
@@ -255,7 +255,7 @@ var mirrorExportFills = []mirrorExportFill{
 	    nullif(i.assignee_id, ''), nullif(i.parent_id, ''),
 	    CASE WHEN n.type_level = 1 THEN i.parent_id WHEN gn.type_level = 1 THEN p.parent_id END,
 	    nullif(i.created_at, 0), i.updated_at, nullif(i.resolved_at, 0), nullif(i.status_since, 0),
-	    iif(CAST(?5 AS INTEGER) = 1, ` + mirrorRowEstimate("CAST(?4 AS INTEGER)") + `, NULL),
+	    iif(CAST(?5 AS INTEGER) <> ` + strconv.Itoa(MirrorEstimateNone) + `, ` + mirrorRowEstimate("CAST(?4 AS INTEGER)") + `, NULL),
 	    iif(i.history_for > 0, iif(i.history_from > 0, i.history_from, i.created_at), NULL),
 	    iif(` + mirrorExportStartKnownSQL + `, 1, 0),
 	    iif(` + mirrorExportStartKnownSQL + `, ` + mirrorExportStatusChangeSQL("min", mirrorGroupStatusesSQL("?3", MirrorGroupInProgress)) + `, NULL),
@@ -367,8 +367,9 @@ func mirrorExportRelations(relations []string) (map[string]bool, error) {
 
 // MirrorExport is what ExportMirrorBoard says of the board it exported.
 type MirrorExport struct {
-	// Name is the board's name, EstimateUnit its estimate's (MirrorEstimate*)
-	// and PlansSprints whether it plans sprints.
+	// Name is the board's name, EstimateUnit the unit it was counted in
+	// (MirrorEstimate*, ExportMirrorBoard's counts) and PlansSprints whether
+	// it plans sprints.
 	Name         string
 	EstimateUnit int
 	PlansSprints bool
@@ -386,12 +387,15 @@ var ErrMirrorExportUnsupported = errors.New("store: this store has no database f
 // (MirrorExportTables): relations, what their fills need and the ones
 // every export fills (mirrorExportRelations), the others left empty, and
 // the columns of MirrorExportColumns relations names, decoded from card
-// blobs of shape card. It reads with regroup in one read transaction of this
+// blobs of shape card. counts is the unit the board is counted in given
+// its estimate's (MirrorEstimate* both): a ticket's points and the board's
+// estimates are those of that unit, none leaving every ticket unestimated.
+// It reads with regroup in one read transaction of this
 // store's file, attached to conn read-only for the fill and detached
 // before it returns. ok is false, with nothing filled, for a board the
 // mirror does not show. It takes a history read slot, as every read that
 // walks a board does; ctx bounds the wait for it and every statement.
-func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations []string, card MirrorCardShape) (export MirrorExport, ok bool, err error) {
+func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, counts func(estimateUnit int) int, relations []string, card MirrorCardShape) (export MirrorExport, ok bool, err error) {
 	if s.path == "" || s.path == ":memory:" || strings.Contains(s.path, "mode=memory") {
 		return MirrorExport{}, false, ErrMirrorExportUnsupported
 	}
@@ -423,13 +427,13 @@ func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID in
 			ok = false
 		}
 	}()
-	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup, set, card)
+	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup, counts, set, card)
 	return export, ok, err
 }
 
 // exportMirrorBoardTx runs the fill in one transaction on conn, the file
 // attached.
-func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations map[string]bool, card MirrorCardShape) (MirrorExport, bool, error) {
+func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, counts func(int) int, relations map[string]bool, card MirrorCardShape) (MirrorExport, bool, error) {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: begin the export of board %s: %w", boardID, err)
@@ -449,7 +453,8 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	if err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: read board %s to export it: %w", boardID, err)
 	}
-	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, card)
+	export.EstimateUnit = counts(export.EstimateUnit)
+	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit, card)
 	for _, fill := range mirrorExportFills {
 		if !relations[fill.relation] {
 			continue
@@ -466,16 +471,12 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 }
 
 // mirrorExportArgs is what the fills bind (mirrorExportFills).
-func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, card MirrorCardShape) []any {
+func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, unit int, card MirrorCardShape) []any {
 	groups := regroup.statuses
 	if groups == "" {
 		groups = "{}"
 	}
-	hasEstimate := 0
-	if estimated {
-		hasEstimate = 1
-	}
-	return append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...)
+	return append([]any{rootID, boardID, groups, resetAt, unit}, card.args()...)
 }
 
 // mirrorExportURI is the read-only URI of the database file at path.

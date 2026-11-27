@@ -146,7 +146,8 @@ func (s *Service) subscribedBoard(subscription string) (trackerdash.Board, error
 }
 
 // dashboardBoard is board scope as an evaluation reads it: the store's
-// export of its rows with the project's status groups, whether its
+// export of its rows with the project's status groups, counted in the
+// project's unit (StatusGroups.unit), whether its
 // tracker has epics, and the connection's verified account for Mine. The
 // caller leaves the service when the evaluation returns.
 func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.Board, error) {
@@ -162,8 +163,9 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 		s.leave()
 		return trackerdash.Board{}, fmt.Errorf("trackerapp: read connection %s: %w", scope.Connection, err)
 	}
+	counts := func(estimateUnit int) int { return int(groups.unit(tracker.EstimateUnit(estimateUnit))) }
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-		return s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, relations, cardShape)
+		return s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, counts, relations, cardShape)
 	}
 	return trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), Viewer: row.VerifiedAccountID}, nil
 }
