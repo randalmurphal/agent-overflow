@@ -72,10 +72,11 @@
   const BUILT_IN: Record<string, string> = { description: 'Description', links: 'Linked tickets', attachments: 'Attachments' };
 
   function catalogOf(fields: readonly PinField[]): Catalog {
+    // A built-in section shares its name with a field of that name too.
+    const all = [...Object.entries(BUILT_IN).map(([id, name]) => ({ id, name })), ...fields];
     const named = new Map<string, number>();
-    for (const f of fields) named.set(f.name, (named.get(f.name) ?? 0) + 1);
-    const items = new Map<string, Item>(Object.entries(BUILT_IN).map(([id, n]) => [id, { id, name: n, shared: false }]));
-    for (const f of fields) items.set(f.id, { id: f.id, name: f.name, shared: (named.get(f.name) ?? 0) > 1 });
+    for (const f of all) named.set(f.name, (named.get(f.name) ?? 0) + 1);
+    const items = new Map<string, Item>(all.map((f) => [f.id, { id: f.id, name: f.name, shared: (named.get(f.name) ?? 0) > 1 }]));
     return { items, rail: fields.filter((f) => !isSection(f)), sections: fields.filter(isSection) };
   }
 

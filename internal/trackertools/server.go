@@ -151,6 +151,12 @@ type Host interface {
 	// before its store write; its post, which always waits for the person,
 	// at admission and once they approved, before it sends.
 	WritePolicy(threadID string) (WritePolicy, error)
+	// TimeSettings are where the thread's project puts its time (the
+	// meetings and time-off tickets, the epic rule), with no tracker
+	// request; a project that lists no Jira board has the built-in ones
+	// (trackerapp.Service.ProjectTimeSettings). A public error says
+	// settings this build cannot read.
+	TimeSettings(threadID string) (trackerapp.TimeSettings, error)
 	// Approve asks the person to approve a change and returns when they
 	// answer: nil when they approve, a public error when they deny or do
 	// not answer in time, and ctx's error when the call ends first.

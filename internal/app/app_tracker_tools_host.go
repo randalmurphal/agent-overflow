@@ -134,6 +134,34 @@ func (h trackerToolsHost) WritePolicy(threadID string) (trackertools.WritePolicy
 	return trackertools.WritePolicy{AskSeveral: rules.Asks()}, nil
 }
 
+// TimeSettings are where thread's project puts its time; a thread of no
+// project, or of one that lists no Jira board, has the built-in ones. Settings this build cannot read fail the
+// call: the tickets and the epic rule the person set are not known.
+func (h trackerToolsHost) TimeSettings(threadID string) (trackerapp.TimeSettings, error) {
+	thread, err := h.a.store.GetThread(threadID)
+	if err != nil {
+		return trackerapp.TimeSettings{}, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
+	}
+	if thread.ProjectID == "" {
+		return trackerapp.TimeSettings{}, nil
+	}
+	svc, err := h.a.trackerService()
+	if err != nil {
+		return trackerapp.TimeSettings{}, err
+	}
+	settings, err := svc.ProjectTimeSettings(thread.ProjectID)
+	var unreadable *trackerapp.SetupFileError
+	switch {
+	case err == nil:
+		return settings, nil
+	case errors.As(err, &unreadable):
+		return trackerapp.TimeSettings{}, errorsx.Public("tracker_setup_unreadable", "This project's tracker setup cannot be read from "+unreadable.Path+" ("+unreadable.Reason+"), so where its time goes is not known; ask the user to fix or remove the file.", err)
+	case errors.Is(err, trackerapp.ErrSetupNewer):
+		return trackerapp.TimeSettings{}, errorsx.Public("tracker_setup_newer", "A newer version of Agent Overflow saved this project's Time settings, so this version cannot tell where its time goes; ask the user to update the app.", err)
+	}
+	return trackerapp.TimeSettings{}, fmt.Errorf("tracker tools: the Time settings of project %s: %w", thread.ProjectID, err)
+}
+
 // agentRules are the Agents settings of thread's project; a thread of no
 // project has the built-in ones. Rules this build cannot read refuse the
 // write: applying the built-in ones could send what the person turned off.

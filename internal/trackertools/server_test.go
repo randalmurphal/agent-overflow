@@ -238,6 +238,9 @@ type fakeHost struct {
 	boards  []ListedBoard
 	// ended are the sessions the host no longer holds.
 	ended map[string]bool
+	// time and timeErr answer TimeSettings.
+	time    trackerapp.TimeSettings
+	timeErr error
 }
 
 func (h *fakeHost) WritePolicy(string) (WritePolicy, error) {
@@ -249,6 +252,10 @@ func (h *fakeHost) WritePolicy(string) (WritePolicy, error) {
 		return WritePolicy{}, errorsx.Public("tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.", nil)
 	}
 	return WritePolicy{AskSeveral: !h.noAsk}, nil
+}
+
+func (h *fakeHost) TimeSettings(string) (trackerapp.TimeSettings, error) {
+	return h.time, h.timeErr
 }
 
 func (h *fakeHost) Approve(_ context.Context, _ string, a Approval) error {

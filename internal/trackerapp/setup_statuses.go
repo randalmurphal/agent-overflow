@@ -56,9 +56,10 @@ type UnreadBoard struct {
 }
 
 // StartPlace is a tracker project of a site that Starting work sets
-// defaults for: the IDs of the statuses Move the ticket offers it, in
-// the site's order (SiteStatuses.Statuses), and the listed boards not
-// read yet whose statuses it would also offer.
+// defaults for: the IDs of the statuses Move the ticket offers it, its
+// own boards' first, each part in the site's order
+// (SiteStatuses.Statuses), and the listed boards not read yet whose
+// statuses it would also offer.
 type StartPlace struct {
 	Tracker  string        `json:"tracker"`
 	Site     string        `json:"site"`
@@ -208,8 +209,10 @@ func (s *Service) ProjectStatuses(projectID string) (ProjectStatuses, error) {
 // addPlace is places with tracker project project of site key, once: the
 // statuses Move the ticket offers it and the boards not read yet that
 // would add to them. A Linear team offers its own boards'; a Jira project
-// every board's of the site. A site the project lists no board on and
-// regroups nothing of (nil) offers nothing.
+// every board's of the site, its own boards' first, so the first one in
+// progress (Starting work's Move turned on) is of its own workflow when
+// its boards show one. A site the project lists no board on and regroups
+// nothing of (nil) offers nothing.
 func addPlace(places []StartPlace, key siteKey, site *statusSite, project string) []StartPlace {
 	if slices.ContainsFunc(places, func(p StartPlace) bool { return p.Tracker == key.tracker && p.Site == key.site && p.Project == project }) {
 		return places
@@ -218,7 +221,7 @@ func addPlace(places []StartPlace, key siteKey, site *statusSite, project string
 	if site == nil {
 		return append(places, place)
 	}
-	seen := map[string]bool{}
+	own, other := map[string]bool{}, map[string]bool{}
 	for _, b := range site.boards {
 		if key.tracker == store.TrackerKindLinear && b.project != project {
 			continue
@@ -229,12 +232,21 @@ func addPlace(places []StartPlace, key siteKey, site *statusSite, project string
 			}
 			continue
 		}
+		seen := other
+		if b.project == project {
+			seen = own
+		}
 		for _, id := range b.statuses {
 			seen[id] = true
 		}
 	}
 	for _, id := range site.ids {
-		if seen[id] {
+		if own[id] {
+			place.Statuses = append(place.Statuses, id)
+		}
+	}
+	for _, id := range site.ids {
+		if other[id] && !own[id] {
 			place.Statuses = append(place.Statuses, id)
 		}
 	}
