@@ -233,13 +233,14 @@ const (
 // week, which its note says.
 func creditMetric(plansSprints bool) Metric {
 	// note is a row's note: why it is not counted, how a review or support
-	// time was counted, and what the count leaves out.
+	// time was counted, in the base the evaluator counts it from
+	// (:estimates), and what the count leaves out.
 	const note = `CASE WHEN c.value IS NULL THEN c.note
-       WHEN c.kind = 'review' AND c.qualified = 1 THEN printf('%d%% of %s for %s', c.review_share, CASE (SELECT estimates FROM board)
+       WHEN c.kind = 'review' AND c.qualified = 1 THEN printf('%d%% of %s for %s', c.review_share, CASE :estimates
            WHEN 'points' THEN printf('%g points', coalesce(c.points, 0)) WHEN 'time' THEN printf('%gh', round(coalesce(c.points, 0) / 3600.0, 2))
            ELSE 'a ticket' END, c.did) || coalesce(' · ' || c.note, '')
        WHEN c.kind = 'review' THEN printf('no credit: %s; needs %d of %s', c.did, c.review_need, c.review_kinds) || coalesce(' · ' || c.note, '')
-       WHEN c.kind = 'support' AND (SELECT estimates FROM board) = 'time' THEN printf('%gh logged', round(c.hours, 2))
+       WHEN c.kind = 'support' AND :estimates = 'time' THEN printf('%gh logged', round(c.hours, 2))
        WHEN c.kind = 'support' THEN printf('%gh ÷ %d = %g', round(c.hours, 2), c.hours_per_point, round(c.share, 2))
        ELSE c.note END`
 	series := `CASE c.kind WHEN 'finished' THEN '` + seriesFinished + `' WHEN 'review' THEN '` + seriesReview + `' ELSE '` + seriesSupport + `' END`

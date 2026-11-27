@@ -2811,7 +2811,11 @@ answers why in `Note` and its drill is refused with the same sentence;
 `RangeWords` names the sprint for How this is counted. The host binds `:now` and `:since` (where the
 range's periods, the previous range's included, begin), so a metric of
 the range reads only the rows it can place; a done ticket whose finish
-is not known is read when it changed since `:since`.
+is not known is read when it changed since `:since`. It also binds
+`:estimates`, what the counts of unit estimate count (`points`, `time`,
+or `none` where the board has no estimates or its project counts
+tickets), the one answer the evaluator counts by, so a note states the
+base its number was counted from.
 
 A drill names its widget and one of three targets
 (`trackerdash.DrillRequest`), and any other is refused: the whole widget
@@ -3059,7 +3063,7 @@ tickets each number could not count, how many rows its query returned
 and the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 7,637 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 7,710 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a

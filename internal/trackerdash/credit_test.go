@@ -183,29 +183,35 @@ func TestTheWeeksPaceCountsCreditByWeek(t *testing.T) {
 	}
 }
 
-// A review row's note gives its arithmetic: the share of the ticket's
-// estimate in the board's estimates, or of a ticket on a board without
-// them, and what the reviewer did; one that did not qualify, the kinds
-// the rule counts and how many it needs. On a board without sprints a
-// review whose ticket's finish is not known keeps why it is not read.
+// A review row's note gives its arithmetic in the base its number was
+// counted from: the share of the ticket's estimate where the board counts
+// its estimates, of a ticket where it counts tickets (no estimates, or a
+// project that counts tickets), and what the reviewer did; one that did
+// not qualify, the kinds the rule counts and how many it needs. A support
+// row says its hours, and on a board counting time no more. On a board
+// without sprints a review whose ticket's finish is not known keeps why
+// it is not read.
 func TestACreditRowsNoteGivesItsArithmetic(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
 		name, estimates string
+		tickets         bool
 		sprints         bool
 		at, points      string
 		value, did      string
 		qualified, note string
 		want            string
 	}{
-		{"points", "points", true, "%d", "5", "0.5", "commented, logged time", "1", "NULL", "10% of 5 points for commented, logged time"},
-		{"time", "time", true, "%d", "7200", "720", "commented", "1", "NULL", "10% of 2h for commented"},
-		{"none", "none", true, "%d", "NULL", "0.1", "logged time", "1", "'approvals are not read yet'", "10% of a ticket for logged time · approvals are not read yet"},
-		{"not qualified", "points", true, "%d", "5", "0", "commented", "0", "NULL", "no credit: commented; needs 2 of commented, logged time"},
-		{"weeks, finish and evidence unknown", "points", false, "NULL", "5", "NULL", "", "NULL", "'who worked on it is not read yet'",
+		{"points", "points", false, true, "%d", "5", "0.5", "commented, logged time", "1", "NULL", "10% of 5 points for commented, logged time"},
+		{"time", "time", false, true, "%d", "7200", "720", "commented", "1", "NULL", "10% of 2h for commented"},
+		{"none", "none", false, true, "%d", "NULL", "0.1", "logged time", "1", "'approvals are not read yet'", "10% of a ticket for logged time · approvals are not read yet"},
+		{"a project counting tickets", "points", true, true, "%d", "5", "0.5", "commented, logged time", "1", "NULL", "10% of a ticket for commented, logged time"},
+		{"not qualified", "points", false, true, "%d", "5", "0", "commented", "0", "NULL", "no credit: commented; needs 2 of commented, logged time"},
+		{"weeks, finish and evidence unknown", "points", false, false, "NULL", "5", "NULL", "", "NULL", "'who worked on it is not read yet'",
 			"when it finished is not known · who worked on it is not read yet"},
 	} {
 		f := newFixture(c.sprints, c.estimates).person("u1", "User 1").person("u2", "User 2").status("5", "Done", "done")
+		f.countsTickets = c.tickets
 		f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", assignee: "u1", created: ago(20), updated: ago(1)})
 		sprint, r := "NULL", Request{Dashboard: builtinWeeksID, Range: RangeWeeks2, TimeZone: "UTC"}
 		if c.sprints {
@@ -233,6 +239,29 @@ func TestACreditRowsNoteGivesItsArithmetic(t *testing.T) {
 		}
 		if len(notes) != 1 || notes[0] != c.want {
 			t.Errorf("%s: notes %q; want %q", c.name, notes, c.want)
+		}
+	}
+	for _, c := range []struct {
+		name, estimates string
+		tickets         bool
+		want            string
+	}{
+		{"support, points", "points", false, "2h ÷ 4 = 0.5"},
+		{"support, time", "time", false, "2h logged"},
+		{"support, a project counting tickets on a time board", "time", true, "2h ÷ 4 = 0.5"},
+	} {
+		f := newFixture(true, c.estimates).person("u1", "User 1").person("u2", "User 2").status("1", "To Do", "todo")
+		f.countsTickets = c.tickets
+		f.ticket(ticket{id: "t1", key: "WEB-1", status: "1", group: "todo", created: ago(20), updated: ago(1)})
+		f.sprint("s1", "WEB Sprint 1", "closed", ago(10), ago(2), 1)
+		f.exec(`INSERT INTO credit(sprint, at, ticket, kind, person, value, share, hours, hours_per_point)
+			VALUES ('s1', NULL, 't1', 'support', 'u2', 0.5, 0.5, 2, 4)`)
+		d, err := evaluator().Drill(context.Background(), creditOn(f), DrillRequest{Request: utcSprints5, Widget: "pace"})
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if len(d.Rows) != 1 || d.Rows[0].Note != c.want {
+			t.Errorf("%s: rows %+v; want one noted %q", c.name, d.Rows, c.want)
 		}
 	}
 }

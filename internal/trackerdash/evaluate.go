@@ -781,7 +781,7 @@ type counted struct {
 // metric's rows those that hold at one of at. A failure of the metric is
 // the widget's; one of the evaluation is returned.
 func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing, now, since int64, at heldAt) (counted, error) {
-	rows, err := ev.s.run(ctx, p, now, since, at)
+	rows, err := ev.s.run(ctx, p, now, since, ev.estimates, at)
 	if ctx.Err() != nil {
 		return counted{}, tooSlow(ctx, ctx.Err())
 	}

@@ -31,6 +31,9 @@ type fixture struct {
 	groups map[string]string
 	// reading is a board whose first read has not finished.
 	reading bool
+	// countsTickets is a board of a project that counts tickets: the
+	// export's unit is none, whatever the board estimates.
+	countsTickets bool
 }
 
 func newFixture(plansSprints bool, estimates string) *fixture {
@@ -154,6 +157,9 @@ func (f *fixture) fill() Fill {
 			return store.MirrorExport{}, false, err
 		}
 		unit := map[string]int{"points": store.MirrorEstimatePoints, "time": store.MirrorEstimateTime, "none": store.MirrorEstimateNone}[f.estimates]
+		if f.countsTickets {
+			unit = store.MirrorEstimateNone
+		}
 		stmts := append([]string{fmt.Sprintf(`INSERT INTO board VALUES ('WEB board', %d, '%s')`, map[bool]int{true: 1}[f.plansSprints], f.estimates)}, f.stmts...)
 		for _, s := range stmts {
 			if _, err := conn.ExecContext(ctx, s); err != nil {
