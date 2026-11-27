@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -404,5 +406,40 @@ func TestForgeHistoryReadsOneSourceOnceAtATime(t *testing.T) {
 	}
 	if ops, _ := f.historyOps(0); ops["gh graphql PullHistory"] != 1 {
 		t.Fatalf("two reads of one source asked %v; want one request", ops)
+	}
+}
+
+// A read its context ends stores nothing: the source keeps its last read
+// and no failure.
+func TestAForgeHistoryReadCutShortStoresNothing(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}}})
+	if _, _, err := f.a.syncForgeHistorySources(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	ref := f.sources(t)[0].ForgeHistoryRef
+	if err := f.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql PullHistory", Status: 502, Hold: true, Body: json.RawMessage(`{"message":"held"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.engine.ReleaseRefusal(forgefake.Release{Route: "gh graphql PullHistory"}) })
+	ctx, cancel := context.WithCancel(f.ctx)
+	done := make(chan error, 1)
+	go func() { done <- f.a.readForgeHistorySource(ctx, ref, forgeHistoryCatchUp) }()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if ops, _ := f.historyOps(0); ops["gh graphql PullHistory"] == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the read never asked")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("a read cut short = %v", err)
+	}
+	if src := f.sources(t)[0]; src.ReadAt != 0 || src.Failure != "" {
+		t.Fatalf("a read cut short stored %+v", src)
 	}
 }
