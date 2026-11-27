@@ -50,6 +50,14 @@ func TestLegacyFullSessionCannotJoinOrIntroduceOwnDevices(t *testing.T) {
 	if e != nil || list.Enabled || len(list.Members) > 0 || list.CanEnroll {
 		t.Fatal(list, e)
 	}
+	// Another's paired browser is not the person's screen; the host's
+	// window is, on a computer that never turned own devices on.
+	if own, e := b.app.ownScreen(ctx); own || e != nil {
+		t.Fatalf("a paired browser that is no own device is the person's screen: %v, %v", own, e)
+	}
+	if own, e := b.app.ownScreen(context.Background()); !own || e != nil {
+		t.Fatalf("the host's window is not the person's screen: %v, %v", own, e)
+	}
 	// The host's own window may enroll before any membership exists; that
 	// verdict is what lets the modal offer "My device" there and withhold
 	// it from the legacy session above (settings/AGENTS.md).
@@ -111,6 +119,9 @@ func TestPersonalPhoneEnrollmentReadsOwnCatalogOverRealTLS(t *testing.T) {
 	if e != nil || !list.Enabled || len(list.Members) != 2 {
 		t.Fatal(list, e)
 	}
+	if own, e := b.app.ownScreen(ctx); !own || e != nil {
+		t.Fatalf("an own device is not the person's screen: %v, %v", own, e)
+	}
 	var self OwnDeviceMember
 	for _, m := range list.Members {
 		if m.KeyThumbprint == list.SelfKeyThumbprint {
@@ -130,6 +141,10 @@ func TestPersonalPhoneEnrollmentReadsOwnCatalogOverRealTLS(t *testing.T) {
 	}
 	if _, e = b.app.ListOwnDevices(ctx); e == nil {
 		t.Fatal("revoked device read membership")
+	}
+	// Its removal ends its session, which is refused before membership.
+	if own, e := b.app.ownScreen(ctx); own {
+		t.Fatalf("a removed own device is the person's screen: %v, %v", own, e)
 	}
 }
 func clientKey(t *testing.T, a *App, sessionID string) string {

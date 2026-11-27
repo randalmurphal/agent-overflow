@@ -45,6 +45,7 @@
     installScreenPresence,
     refreshScreenPresence,
   } from './lib/stores/screenPresence';
+  import { installActivityRecorder, noteActivityFocus } from './lib/stores/activityRecorder';
   import { installDictationSourcesRefresh } from './lib/stores/dictation.svelte';
   import { installReadAloudSourceRefresh } from './lib/stores/readAloudSource.svelte';
   import { installLongPressContextMenu } from './lib/utils/longPressContextMenu';
@@ -426,6 +427,12 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     refreshScreenPresence();
   });
 
+  // A thread the screen moved to after input is reported at once, so the
+  // press that opened it counts on it (stores/activityRecorder.ts).
+  $effect(() => {
+    noteActivityFocus();
+  });
+
   // A sidebar row keeps its fold and list limit through its key moving,
   // whether or not the sidebar is mounted to see it move
   // (stores/sidebarEntryContinuity.svelte.ts).
@@ -584,6 +591,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     const cleanupCompactHistoryBack = installCompactHistoryBack();
     const cleanupZoomKeys = installZoomKeybindings();
     const cleanupScreenPresence = installScreenPresence();
+    const cleanupActivityRecorder = installActivityRecorder();
     const cleanupDictationSources = installDictationSourcesRefresh();
     const cleanupReadAloudSources = installReadAloudSourceRefresh();
     const cleanupWorkingSprites = installWorkingSpriteReadiness();
@@ -658,6 +666,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       cleanupCompactHistoryBack();
       cleanupZoomKeys();
       cleanupScreenPresence();
+      cleanupActivityRecorder();
       cleanupDictationSources();
       cleanupReadAloudSources();
       cleanupWorkingSprites();

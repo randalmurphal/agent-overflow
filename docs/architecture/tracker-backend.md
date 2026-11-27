@@ -2984,6 +2984,8 @@ read from the setup with no request (`Host.TimeSettings`). Time
 settings that cannot be read, or that a newer version saved, fail
 `time_read` and a draft of entries with their sentence; a post reads no
 Time setting.
+Each day also answers what this computer measured of it, and the answer
+says while that measure is incomplete ([Activity](#activity)).
 
 **`time_draft`** takes `entries` to draft or `post` to log the draft of
 days (below), and refuses a call with neither or both. `entries` are each a `day`, `hours` (whole minutes),
@@ -3148,6 +3150,141 @@ Tue Nov 24`, of the entries the prompt offered to log, and `; 1 may have
 been logged` for those whose answer was lost), naming the call, the
 connections and the days; a denied or unanswered post, or one refused on
 every connection before it sent, adds none.
+
+### Activity
+
+**What is recorded.** Each screen of the person reports its input to
+every computer it is attached to through `RecordActivity(focused, phone,
+sinceInputMs)` (`stores/activityRecorder.ts`): a key, a press, a wheel
+turn or a touch, seen by passive capture-phase listeners whose handler
+compares a timestamp; pointer movement is never listened to. A screen
+reports two facts, the thread and layout it shows now and how long ago
+its last input was (`sinceInputMs`, measured as the call is made), and
+the recorder owns every rule about time. A screen reports its first
+input a minute after its last report at once; input within the minute
+when the minute is up, once, so a burst's last input counts; and every
+change of the thread or layout it shows at once, whenever its last input
+was, once it has had input since it loaded, so the press that opens a
+thread counts on it and so does a change another screen made (an
+archive). Steady input is 60 reports an hour per screen and computer,
+plus one per change of what the screen shows; on an idle screen such a
+report is a call the recorder drops.
+`focused` is the thread of the pane the screen shows (`paneCommandTarget`):
+on the compact thread screen the pane it shows, an agent thread opened
+from the Agents rail included, none on the compact list, and on the
+desktop the focused pane or the promoted one over it. `phone` is the
+compact layout (a viewport at most 640 pixels wide with a coarse pointer:
+the phone shell, or a browser on a narrow touch screen). Like presence,
+the report goes to every attached computer, which judges on receipt
+whether the screen is its person's.
+A computer records only its own person's screens (`ownScreen`): its own
+window, a local-channel client, or a member of its own devices; another
+person's paired browser is answered and records nothing. A computer that
+predates the method takes nothing (`stores/bindings.ts`). Each turn start
+is recorded from the emit funnel (`tapActivity`).
+
+**The recorder** (`internal/activity`) records only while a Jira
+connection is on (`store.JiraConnectionOn`), which it reads at start and
+after each change of the tracker connections (`Recorder.Follow`, from
+`tapActivity`), the read and its application under one lock, so a read
+taken before a change is never applied after the read of it. Turning the
+last one off or removing it ends every open span then and writes what
+came before; turning one on records from then, never what came while
+none was: an input or a turn start from before that moment, reported
+after it, records nothing. It keeps one open span per connection in memory.
+Input on the same thread and layout within 3 minutes of the last extends
+it, at the input's time (the report's time less `sinceInputMs`, or the
+report's time when that is negative); an input more than 3 minutes old
+covers nothing and records nothing, so a page suspended with a report
+pending adds nothing when it resumes. A report of another thread or
+layout ends the span at the report, or at its last input plus 3 minutes
+when that is sooner, and opens the next there, or at its input when that
+is later: the time up to the change stays with what was shown before,
+the time after goes to what is shown now until the input plus 3
+minutes, and a change renews nothing. A span's last input never goes
+back. A span also
+ends with its connection (`conn.Bind`), at a flush that finds it idle,
+and at a day's length; each span's end unties it from its connection.
+Nothing is written per report or per turn start: one flush every 5
+minutes writes, in one transaction, the spans that changed and the days
+of the threads that started a turn since (`store.SaveActivity`), and
+shutdown flushes once more before the store closes. A flush
+that fails keeps what it could not write, at most 1,000 closed spans and
+1,000 thread days, and the earliest time not written is the recorder's
+state (`GetActivityRecording`, which asks the selected computer, and
+`activity:recording`) until a flush writes again; a shutdown whose last write fails logs what was lost. Once a day
+the flush deletes spans and thread days older than 92 days, and nothing
+else. A restore keeps both tables ([schema](schema.md)); the harness's
+reset clears them. A day is local: it starts at midnight, or at the first
+hour it has where its zone skips midnight (America/Santiago,
+America/Havana), and the span split, the store read and the git range
+all use that one start (`activity.DayRange`). A read takes the stored
+and the unwritten activity under the flush's lock, so none is missed or
+counted twice, and counts only what reaches its range.
+
+**What `time_read` adds.** A day with any measure answers `active`, its
+minutes with input, each instant counted once, on the span that started
+last where two screens overlap; `phone`, those in the compact layout,
+when there are any; `tickets`, each Jira ticket a focused thread is
+linked to with its `minutes`, and each that a thread with a turn that
+day is linked to without them; and `commits`, at most 30 a day by author
+time as `{at, subject}`, then `commits_more`. Minutes round to the
+nearest. At the top, `activity_gap` (`since 2026-11-25 14:05`) is there
+while the recorder cannot write, and `commits_unread` names each
+repository whose commits could not be read, with git's error, or, past
+the 1 MB one read of `git log` takes, a sentence that says so and that a
+range nearer today reads fewer. The
+commits are read when `time_read` runs: one `git log --branches
+--no-merges` per project of the range's threads, all at once, for the
+repository's `user.email`, filtered by author time so a commit rebased
+later counts on the day it was written (`git.Core.AuthoredCommits`). A
+repository with no `user.email` has none. The tool list and guide do not
+change.
+
+**Measured costs.** A turn start adds a map write under the recorder's
+lock, about 100 ns, to a turn insert of about 28 µs. A simulated working
+day (8.5 hours with lunch and a 6-minute break each hour, a thread
+switch every 12 minutes among 6 threads, 20 minutes on the phone and 15
+threads with turns) is 39 spans and 15 thread days: about 3.0 KB of
+pages for the spans and their index and 0.9 KB for the thread days, 356
+KB over the 92 days kept; a week's read of it takes under a millisecond
+before git. A 5-day week with 3 tickets with minutes, one touched, half
+an hour on the phone and 4 commits a day adds 2,205 bytes to the answer
+(241 to 2,446; `TestTimeReadsWeekOfActivityBytes`).
+
+**Limits.**
+- A crash loses what the recorder held since its last flush: at most 5
+  minutes of spans and of the days of threads that started a turn.
+- A read of whether a Jira connection is on that fails is logged and
+  leaves the recorder as it was until the next change of the connections
+  or a restart.
+- A commit on a checkout with no branch, such as a thread opened at a
+  tag, is not among the day's commits until a branch holds it.
+- Commit rows are not cut to fit the answer: a 7-day week with 30
+  commits a day fails `time_read` from 22 worklogs a day (37 with no
+  commits), measured with short keys and titles; fewer days answer.
+- A thread's minutes go to the ticket it is linked to when `time_read`
+  runs, so relinking a thread moves its past minutes.
+- Days are this computer's local dates: a turn's when the flush wrote it,
+  a span's when it is read.
+- Linear tickets get no minutes; their threads count toward `active` only.
+- A computer counts only the screens attached to it. Time a screen
+  attached only to another computer spent on this computer's threads is
+  not in this computer's answer. A screen attached to several reports to
+  each, so each counts its active time, and only the computer that holds
+  the focused thread links it to a ticket.
+- Input the page does not receive is not counted:
+  - a page in the desktop's browser pane, a native view over the window
+    (WebView2, WKWebView or WebKitGTK), which takes its own keys, presses
+    and scrolls, so reading a page there counts only within 3 minutes of
+    the last input to the app. Its keys already pass through the app on
+    the engine's thread (`browser.Manager.keyChord`), which could report
+    them for the page's thread; presses and scrolls would need each
+    engine's own hook. Neither is built;
+  - the operating system's menus, file dialogs and notifications.
+  The app's terminal is in the page and counts. A connected browser and
+  the phone show no browser pane, and the phone shell in the background
+  takes no input, so they lose nothing.
 
 ## Tests
 

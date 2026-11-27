@@ -1369,6 +1369,19 @@ var channelPolicies = []ChannelPolicy{
 			"are tracker:read.",
 	},
 	{
+		Channel:   eventchan.ActivityRecording,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeTrackerRead,
+		Why: "The activity recorder's whole state (activity.Status): since " +
+			"when its writes fail and why, or zero once they write again. " +
+			"Each frame replaces the last, so a reconnect wants only the " +
+			"newest. Unkeyed. Scope: GetActivityRecording, the pull half, is " +
+			"tracker:read, as the time draft the activity feeds is. " +
+			"Audience: a remote client's Time screen shows this computer's " +
+			"recording.",
+	},
+	{
 		Channel:   eventchan.TrackerBoardUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

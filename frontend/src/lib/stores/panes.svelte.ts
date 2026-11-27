@@ -321,7 +321,16 @@ function resolveThreadPaneId(paneId: string | null): string | null {
  * `getFocusedPaneId()` instead so they act on the companion itself.
  */
 export function getFocusedPaneOrNull(): ThreadPane | null {
-  const threadPaneId = resolveThreadPaneId(focusedPaneId);
+  return getThreadPaneOf(focusedPaneId);
+}
+
+/**
+ * The ThreadPane that owns layout pane `paneId`: itself for a thread pane
+ * or a thread-hosting companion, its source for a panel companion; null
+ * for none. Reactive, as `getFocusedPaneOrNull`.
+ */
+export function getThreadPaneOf(paneId: string | null): ThreadPane | null {
+  const threadPaneId = resolveThreadPaneId(paneId);
   return threadPaneId ? panes.get(threadPaneId) ?? null : null;
 }
 
