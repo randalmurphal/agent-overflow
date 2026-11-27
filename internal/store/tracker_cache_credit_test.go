@@ -315,6 +315,30 @@ func TestMirrorCreditReadsTheRulesAndSaysWhyItIsNotRead(t *testing.T) {
 	}
 }
 
+// A closed sprint counts by the rules in force at its completion, not at
+// its tickets' finish: 10001 finished at 800 under 10% for 2 kinds, the
+// rules changed at 850 to 50% for a comment, and sprint 20 completed at
+// 950, so its reviewers count by the change.
+func TestAClosedSprintCountsByTheRulesAtItsCompletion(t *testing.T) {
+	t.Parallel()
+	s, root := creditFixture(t)
+	rules := append(creditRules(false), MirrorCreditRule{From: 850, ReviewShare: 50, ReviewNeed: 1, Commented: true, HoursPerPoint: 4})
+	rows, _ := creditOf(t, s, root, creditRegroup(t, rules))
+	var reviews []string
+	for _, r := range rows {
+		if strings.HasPrefix(r, "20 800 10001 review") {
+			reviews = append(reviews, r)
+		}
+	}
+	want := []string{
+		"20 800 10001 review acc-user2 2.5 0.5 5.0 50 1 commented 1 - - -",
+		"20 800 10001 review acc-user3 2.5 0.5 5.0 50 1 commented, logged time 1 - - -",
+	}
+	if !reflect.DeepEqual(reviews, want) {
+		t.Fatalf("10001's reviews\n%s\nwant\n%s", strings.Join(reviews, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // Support time counts in the sprint whose dates hold its start, the first
 // to end when two do, else in the next sprint to start: sprint 23 (500 to
 // 700) inside sprint 20 (100 to 950) takes the work done in its dates, 20
