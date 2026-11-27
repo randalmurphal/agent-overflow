@@ -3161,8 +3161,11 @@ compares a timestamp; pointer movement is never listened to. A screen
 reports its first input a minute after its last report at once; input
 within the minute is reported when the minute is up, once, with how long
 ago the last of it was (`sinceInputMs`), so a burst's last input counts;
-and the screen reports at once when the thread it shows changes after
-input, so the press that opens a thread counts on it. Steady input is 60
+and the screen reports at once, aged 0, when the thread it shows changes
+after input, so the press that opens a thread counts on it. That report
+stands for the moment of the change: the time up to it stays with the
+thread shown before, and the time after goes to the thread shown now,
+even when another screen moved it (an archive). Steady input is 60
 reports an hour per screen and computer, plus one per thread change.
 `focused` is the thread of the pane the screen shows (`paneCommandTarget`):
 on the compact thread screen the pane it shows, an agent thread opened
@@ -3179,14 +3182,19 @@ predates the method takes nothing (`stores/bindings.ts`). Each turn start
 is recorded from the emit funnel (`tapActivity`).
 
 **The recorder** (`internal/activity`) records only while a Jira
-connection is on (`store.JiraConnectionOn`), which the app reads at start
-and after each change of the tracker connections (`tapActivity`).
-Turning the last one off or removing it ends every open span then and
-writes what came before; turning one on records from then, never what
-came while none was. It keeps one open span per connection in memory.
+connection is on (`store.JiraConnectionOn`), which it reads at start and
+after each change of the tracker connections (`Recorder.Follow`, from
+`tapActivity`), the read and its application under one lock, so a read
+taken before a change is never applied after the read of it. Turning the
+last one off or removing it ends every open span then and writes what
+came before; turning one on records from then, never what came while
+none was: an input or a turn start from before that moment, reported
+after it, records nothing. It keeps one open span per connection in memory.
 Input on the same thread and layout within 3 minutes of the last extends
-it, at the input's time (the report's time less `sinceInputMs`, clamped
-to 0 to 3 minutes); any other ends it at its last input plus 3 minutes,
+it, at the input's time (the report's time less `sinceInputMs`, or the
+report's time when that is negative); an input more than 3 minutes old
+covers nothing and records nothing, so a page suspended with a report
+pending adds nothing when it resumes. Any other ends it at its last input plus 3 minutes,
 or at the new input when that is sooner, and opens the next. A span also
 ends with its connection (`conn.Bind`), at a flush that finds it idle,
 and at a day's length; each span's end unties it from its connection.
@@ -3240,6 +3248,9 @@ an hour on the phone and 4 commits a day adds 2,205 bytes to the answer
 **Limits.**
 - A crash loses what the recorder held since its last flush: at most 5
   minutes of spans and of the days of threads that started a turn.
+- A read of whether a Jira connection is on that fails is logged and
+  leaves the recorder as it was until the next change of the connections
+  or a restart.
 - A commit on a checkout with no branch, such as a thread opened at a
   tag, is not among the day's commits until a branch holds it.
 - Commit rows are not cut to fit the answer: a 7-day week with 30

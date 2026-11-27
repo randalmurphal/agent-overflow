@@ -72,8 +72,8 @@ func TestRecordActivityIsThePersonsScreensOnly(t *testing.T) {
 	t.Parallel()
 	b := newPairedBackend(t)
 	clock := &activityClock{t: time.Date(2026, 11, 24, 9, 0, 0, 0, time.Local)}
-	b.app.activity = activity.New(b.app.store, activity.Config{Now: clock.now})
-	b.app.activity.SetOn(true)
+	b.app.activity = activity.New(b.app.store, activity.Config{Now: clock.now, On: func() (bool, error) { return true, nil }})
+	b.app.activity.Follow()
 	t.Cleanup(func() { _ = b.app.activity.Close() })
 	grants := []identity.Scope{identity.ScopeThreadsRead}
 	session := pairSessionWithScopes(t, b.app, "another-browser", grants)

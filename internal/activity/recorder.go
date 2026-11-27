@@ -6,16 +6,20 @@
 //   - A minute counts when there was input in the Window before it. A
 //     screen reports its input at most once a minute, with how long ago
 //     its last input was, and at once when the thread it shows changes
-//     (Report); the recorder keeps one open span per connection in memory,
+//     (Report); an input older than Window when it is reported covers
+//     nothing and records nothing; the recorder keeps one open span per connection in memory,
 //     and input on the same thread within Window of the last extends it. A
 //     span ends at its last input plus Window, or sooner: at input on
 //     another thread, at the connection's end (End), or at the flush that
 //     finds it idle. Each open span is tied to its connection, and its end
 //     unties it.
-//   - The recorder records only while it is on (SetOn): while a Jira
-//     connection is on, which the app tells it after each change of the
-//     connections. Turning it off ends every open span then and writes
-//     what came before; while off, input and turn starts record nothing.
+//   - The recorder records only while it is on: while a Jira connection
+//     is on, which it reads (Config.On) at the app's start and after each
+//     change of the connections (Follow), the read and its application
+//     under one lock, so an older read is never applied after a newer
+//     one. Turning it off ends every open span then and writes what came
+//     before; while off, and for input and turn starts from before it
+//     last turned on, nothing is recorded.
 //   - Nothing is written per report or per turn start. One flush every
 //     FlushEvery writes what changed (a span inserted once, its end moved
 //     after) and the days of the threads that started a turn since (Ran),
@@ -75,11 +79,13 @@ type Status struct {
 }
 
 // Config is a recorder's clock and flush interval; zero values are the
-// product's (time.Now, FlushEvery). Changed tells the app each time
-// Status changes.
+// product's (time.Now, FlushEvery). On is whether to record, read by
+// Follow: whether a Jira connection is on. Changed tells the app each
+// time Status changes.
 type Config struct {
 	Now        func() time.Time
 	FlushEvery time.Duration
+	On         func() (bool, error)
 	Changed    func(Status)
 }
 
@@ -100,19 +106,25 @@ type Recorder struct {
 	window     int64
 	flushEvery time.Duration
 	changed    func(Status)
+	readOn     func() (bool, error)
 
-	// flushMu serializes flushes: a flush reads the spans, writes them
-	// without mu, and settles them.
-	flushMu sync.Mutex
-	mu      sync.Mutex
-	open    map[string]*span
-	closed  []*span
+	// The locks, each taken only after those above it: followMu serializes
+	// Follow's read and its application, flushMu flushes (a flush reads
+	// the spans, writes them without mu, and settles them) and Days'
+	// reads, and mu the state below. Report and Ran take mu alone.
+	followMu sync.Mutex
+	flushMu  sync.Mutex
+	mu       sync.Mutex
+	open     map[string]*span
+	closed   []*span
 	// ran is the thread days not yet written, each with its earliest turn
 	// start (Unix ms).
-	ran     map[store.ThreadDay]int64
-	status  Status
-	pruned  string
-	on      bool
+	ran    map[store.ThreadDay]int64
+	status Status
+	pruned string
+	on     bool
+	// onSince is when the recorder last turned on (Unix ms).
+	onSince int64
 	started bool
 	stopped bool
 
@@ -121,9 +133,9 @@ type Recorder struct {
 }
 
 // New is a recorder of st that flushes once Start runs, and records once
-// SetOn turns it on.
+// Follow reads that a Jira connection is on.
 func New(st Store, cfg Config) *Recorder {
-	r := &Recorder{st: st, now: cfg.Now, window: int64(Window / time.Millisecond), flushEvery: cfg.FlushEvery, changed: cfg.Changed,
+	r := &Recorder{st: st, now: cfg.Now, readOn: cfg.On, window: int64(Window / time.Millisecond), flushEvery: cfg.FlushEvery, changed: cfg.Changed,
 		open: map[string]*span{}, ran: map[store.ThreadDay]int64{}, stop: make(chan struct{}), done: make(chan struct{})}
 	if r.now == nil {
 		r.now = time.Now
@@ -185,18 +197,37 @@ func (r *Recorder) Close() error {
 	return nil
 }
 
-// SetOn is whether the recorder records: while a Jira connection is on.
-// Turning it off ends every open span now and writes what came before;
-// while it is off, Report and Ran record nothing.
-func (r *Recorder) SetOn(on bool) {
+// Follow reads whether to record (Config.On) and applies the answer,
+// under followMu from before the read to after its application, so a read
+// is never applied after one that came later. A read that fails leaves
+// the recorder as it was, and is logged.
+func (r *Recorder) Follow() {
+	r.followMu.Lock()
+	defer r.followMu.Unlock()
+	if r.readOn == nil {
+		return
+	}
+	on, err := r.readOn()
+	if err != nil {
+		log.Printf("activity: whether to record: %v; the recorder stays as it was", err)
+		return
+	}
+	r.setOn(on)
+}
+
+// setOn turns the recorder on or off. Turning it on starts recording now;
+// turning it off ends every open span now and writes what came before.
+func (r *Recorder) setOn(on bool) {
 	r.mu.Lock()
 	if r.on == on || r.stopped {
 		r.mu.Unlock()
 		return
 	}
 	r.on = on
-	if !on {
-		now := r.now().UnixMilli()
+	now := r.now().UnixMilli()
+	if on {
+		r.onSince = now
+	} else {
 		for conn := range r.open {
 			r.endLocked(conn, now)
 		}
@@ -207,18 +238,23 @@ func (r *Recorder) SetOn(on bool) {
 	}
 }
 
-// Report is input on connection conn's screen sinceInput ago (clamped to 0
-// to Window), on thread (empty when the screen shows none), in the
-// compact layout when phone. A span it opens is first tied to the
-// connection's end: tie, when set, binds end (End of conn) to run then,
-// inside the recorder's lock, so an end that runs at once finds the span,
-// and answers what unties it; a tie that fails opens nothing and is
-// Report's error.
+// Report is input on connection conn's screen sinceInput ago (0 when
+// negative), on thread (empty when the screen shows none), in the compact
+// layout when phone. An input older than Window covers nothing, and one
+// from before the recorder last turned on is not recorded: either records
+// nothing and leaves the connection's open span as it was. A span it opens
+// is first tied to the connection's end: tie, when set, binds end (End of
+// conn) to run then, inside the recorder's lock, so an end that runs at
+// once finds the span, and answers what unties it; a tie that fails opens
+// nothing and is Report's error.
 func (r *Recorder) Report(conn, thread string, phone bool, sinceInput time.Duration, tie func(end func()) (untie func(), err error)) error {
-	at := r.now().Add(-min(max(sinceInput, 0), Window)).UnixMilli()
+	if sinceInput > Window {
+		return nil
+	}
+	at := r.now().Add(-max(sinceInput, 0)).UnixMilli()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.stopped || !r.on {
+	if r.stopped || !r.on || at < r.onSince {
 		return nil
 	}
 	s := r.open[conn]
@@ -243,13 +279,14 @@ func (r *Recorder) Report(conn, thread string, phone bool, sinceInput time.Durat
 }
 
 // Ran is a turn start of thread at atMs: the thread is among those that
-// started a turn on that local day. The next flush writes it.
+// started a turn on that local day. The next flush writes it; one from
+// before the recorder last turned on is not recorded.
 func (r *Recorder) Ran(thread string, atMs int64) {
 	day := store.ThreadDay{Day: time.UnixMilli(atMs).Format(time.DateOnly), ThreadID: thread}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch at, ok := r.ran[day]; {
-	case r.stopped, !r.on:
+	case r.stopped, !r.on, atMs < r.onSince:
 	case ok:
 		r.ran[day] = min(at, atMs)
 	case len(r.ran) < maxUnwritten:

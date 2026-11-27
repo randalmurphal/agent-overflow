@@ -773,9 +773,12 @@ the worklog's description once posted.
   records nothing after, and turning one on records from then.
 - Input is a key, a press, a scroll or a touch. A minute counts when
   there was input in the 3 minutes before it, the last input of a burst
-  included. Moving the pointer is not input.
+  included. Moving the pointer is not input. A screen asleep or in the
+  background adds nothing when it wakes.
 - The thread is the one the screen shows: on the phone, an agent thread
-  opened from the Agents rail counts on that thread.
+  opened from the Agents rail counts on that thread. When the thread the
+  screen shows changes, the time up to the change stays with the thread
+  shown before it, and the time after goes to the thread shown now.
 - `phone` time is time in the compact layout: the phone shell, or a
   browser on a narrow touch screen.
 - A computer counts the screens attached to it, and only those of its

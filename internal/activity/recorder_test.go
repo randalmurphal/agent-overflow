@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	_ "time/tzdata"
@@ -16,7 +17,9 @@ import (
 // fakeStore holds the spans written, as the store would: an insert takes
 // the next ID.
 type fakeStore struct {
-	mu    sync.Mutex
+	mu sync.Mutex
+	// on is whether a Jira connection is on, as the recorder reads it.
+	on    bool
 	fail  error
 	spans map[int64]store.ActivitySpan
 	days  []store.ThreadDay
@@ -31,7 +34,22 @@ type fakeStore struct {
 	nextID     int64
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{spans: map[int64]store.ActivitySpan{}} }
+func newFakeStore() *fakeStore { return &fakeStore{on: true, spans: map[int64]store.ActivitySpan{}} }
+
+// jiraOn answers the recorder's read of whether to record.
+func (f *fakeStore) jiraOn() (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.on, nil
+}
+
+// turn sets whether a Jira connection is on and has r follow it.
+func turn(r *Recorder, f *fakeStore, on bool) {
+	f.mu.Lock()
+	f.on = on
+	f.mu.Unlock()
+	r.Follow()
+}
 
 func (f *fakeStore) SaveActivity(spans []store.ActivitySpan, days []store.ThreadDay) ([]int64, error) {
 	if f.during != nil {
@@ -133,8 +151,8 @@ func recorder(t *testing.T) (*Recorder, *fakeStore, *clock, *[]Status) {
 	f := newFakeStore()
 	c := &clock{t: nine}
 	var changes []Status
-	r := New(f, Config{Now: c.now, Changed: func(s Status) { changes = append(changes, s) }})
-	r.SetOn(true)
+	r := New(f, Config{Now: c.now, On: f.jiraOn, Changed: func(s Status) { changes = append(changes, s) }})
+	r.Follow()
 	// The cleanup only stops the recorder; a test that fails its store
 	// checks Close's answer itself.
 	t.Cleanup(func() { _ = r.Close() })
@@ -439,7 +457,8 @@ func TestASpanIsTiedToItsConnection(t *testing.T) {
 }
 
 // A report counts the input it names, sinceInput before it: the span's
-// last input is then, clamped to the window, and an age below 0 is now.
+// last input is then, and an age below 0 is now. An input older than the
+// window is dropped, not moved forward (TestAnExpiredInputRecordsNothing).
 func TestAReportCountsItsInputsTime(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
@@ -451,13 +470,14 @@ func TestAReportCountsItsInputsTime(t *testing.T) {
 	if got := f.stored(); len(got) != 1 || got[0].EndMs != ms(nine.Add(50*time.Second+Window)) {
 		t.Fatalf("stored %+v; want the span ended at the input at 09:00:50 plus the window", got)
 	}
-	r.Report("c2", "t2", false, time.Hour, nil) // 09:11, clamped to 09:08
+	r.Report("c2", "t2", false, time.Hour, nil)
 	r.Report("c3", "t3", false, -time.Hour, nil)
 	r.mu.Lock()
-	c2, c3 := r.open["c2"].StartMs, r.open["c3"].StartMs
+	_, c2 := r.open["c2"]
+	c3 := r.open["c3"].StartMs
 	r.mu.Unlock()
-	if c2 != ms(c.now().Add(-Window)) || c3 != ms(c.now()) {
-		t.Fatalf("an hour ago starts at %v and an hour ahead at %v; want the window ago and now", time.UnixMilli(c2), time.UnixMilli(c3))
+	if c2 || c3 != ms(c.now()) {
+		t.Fatalf("an hour ago opened a span %v, and an hour ahead starts at %v; want none and now", c2, time.UnixMilli(c3))
 	}
 }
 
@@ -470,7 +490,7 @@ func TestTheRecorderRecordsWhileOn(t *testing.T) {
 	r.Report("c1", "t1", false, 0, nil)
 	r.Ran("t1", ms(nine))
 	c.add(2 * time.Minute)
-	r.SetOn(false)
+	turn(r, f, false)
 	if got := f.stored(); len(got) != 1 || got[0].EndMs != ms(nine.Add(2*time.Minute)) || len(f.days) != 1 || len(r.open) != 0 {
 		t.Fatalf("turned off, stored %+v and %+v with %d open; want the two minutes before, t1's day and none open", got, f.days, len(r.open))
 	}
@@ -481,7 +501,7 @@ func TestTheRecorderRecordsWhileOn(t *testing.T) {
 	if len(f.stored()) != 1 || len(f.days) != 1 || len(r.open) != 0 || len(r.ran) != 0 {
 		t.Fatalf("while off, recorded %+v, %+v", f.stored(), f.days)
 	}
-	r.SetOn(true)
+	turn(r, f, true)
 	r.Report("c1", "t1", false, 0, nil)
 	c.add(time.Minute)
 	r.Flush()
@@ -627,5 +647,80 @@ func TestAReadBesideAFlushMissesNothing(t *testing.T) {
 	days, err := r.Days("2026-11-24", "2026-11-24")
 	if err != nil || len(days) != 1 || days[0].Threads["t1"] != 2*time.Minute {
 		t.Fatalf("the read beside a flush is %+v, %v; want t1's two minutes", days, err)
+	}
+}
+
+// An input older than the window at its report covers nothing: the report
+// records nothing, and does not move an expired input forward. The
+// connection's open span is left as it was.
+func TestAnExpiredInputRecordsNothing(t *testing.T) {
+	t.Parallel()
+	r, f, c, _ := recorder(t)
+	r.Report("c1", "t1", false, 0, nil)
+	c.add(10 * time.Minute)
+	// A page suspended since 09:00:30 sends its trailing report at 09:10.
+	r.Report("c1", "t1", false, 9*time.Minute+30*time.Second, nil)
+	r.Flush()
+	if got := f.stored(); len(got) != 1 || got[0].EndMs != ms(nine.Add(Window)) {
+		t.Fatalf("stored %+v; want the 09:00 span alone, ended by the window", got)
+	}
+}
+
+// Recording starts when it turns on: an input from before, reported after,
+// records nothing.
+func TestAnInputFromBeforeRecordingTurnedOnRecordsNothing(t *testing.T) {
+	t.Parallel()
+	r, f, c, _ := recorder(t)
+	turn(r, f, false)
+	c.add(55 * time.Second)
+	turn(r, f, true) // 09:00:55
+	c.add(5 * time.Second)
+	r.Report("c1", "t1", false, 50*time.Second, nil) // the input at 09:00:10
+	r.Ran("t1", ms(nine.Add(10*time.Second)))
+	r.Flush()
+	if got := f.stored(); len(got) != 0 || len(f.days) != 0 {
+		t.Fatalf("stored %+v and %+v; want nothing from before recording turned on", got, f.days)
+	}
+}
+
+// Follow applies the latest read: a read taken before a change and held
+// past a later read of the change is never applied after it, so the
+// recorder ends off when the last read says off.
+func TestFollowNeverAppliesAnOlderRead(t *testing.T) {
+	t.Parallel()
+	f := newFakeStore()
+	c := &clock{t: nine}
+	var reads atomic.Int32
+	firstRead := make(chan struct{})
+	secondRead := make(chan struct{}, 1)
+	r := New(f, Config{Now: c.now, On: func() (bool, error) {
+		if reads.Add(1) == 1 {
+			// The first read answers on, as before the last Jira connection
+			// is turned off, and is held until the second read has run, or
+			// for 200ms when the second cannot run until this one is applied.
+			close(firstRead)
+			select {
+			case <-secondRead:
+			case <-time.After(200 * time.Millisecond):
+			}
+			return true, nil
+		}
+		secondRead <- struct{}{}
+		return false, nil
+	}})
+	t.Cleanup(func() { _ = r.Close() })
+	done := make(chan struct{})
+	go func() {
+		r.Follow()
+		close(done)
+	}()
+	<-firstRead
+	r.Follow()
+	<-done
+	r.Report("c1", "t1", false, 0, nil)
+	r.Ran("t1", ms(nine))
+	r.Flush()
+	if got := f.stored(); len(got) != 0 || len(f.days) != 0 {
+		t.Fatalf("after the read of off, recorded %+v and %+v; want nothing", got, f.days)
 	}
 }

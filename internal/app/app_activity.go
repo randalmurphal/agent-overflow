@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"maps"
 	"slices"
 	"strings"
@@ -23,7 +22,7 @@ import (
 // reports of input, tied to their connections; the recorder's status
 // and its change event, for the Time screen; and its start and close.
 // Only this computer's person is recorded (ownScreen), and only while a
-// Jira connection is on (followJira).
+// Jira connection is on (activity.Recorder.Follow).
 
 // maxFocusedThreadBytes bounds a report's thread id: ids are UUIDs.
 const maxFocusedThreadBytes = 128
@@ -33,8 +32,9 @@ const maxFocusedThreadBytes = 128
 func (a *App) initActivity() {
 	cfg := a.activityTiming
 	cfg.Changed = func(s activity.Status) { a.emit(eventchan.ActivityRecording, s) }
+	cfg.On = a.store.JiraConnectionOn
 	a.activity = activity.New(a.store, cfg)
-	a.followJira()
+	a.activity.Follow()
 }
 
 // tapActivity tells the recorder what it follows from the emit funnel:
@@ -52,19 +52,8 @@ func (a *App) tapActivity(name eventchan.Channel, data any) {
 			a.activity.Ran(event.ThreadID, event.StartedAt)
 		}
 	case eventchan.TrackerConnectionsUpdated:
-		a.followJira()
+		a.activity.Follow()
 	}
-}
-
-// followJira turns the recorder on while a Jira connection is on and off
-// while none is. A failed read leaves it as it was and is logged.
-func (a *App) followJira() {
-	on, err := a.store.JiraConnectionOn()
-	if err != nil {
-		log.Printf("activity: %v; the recorder stays as it was", err)
-		return
-	}
-	a.activity.SetOn(on)
 }
 
 // startActivity starts the recorder's flushes.
@@ -73,8 +62,9 @@ func (a *App) startActivity() { a.activity.Start() }
 // RecordActivity is input on the calling screen sinceInputMs ago, with
 // the thread the screen shows (focused, "" for none) and whether it is in
 // the compact layout (phone). A screen calls it at most once a minute,
-// for its last input since its last call, and at once when the thread it
-// shows changes, on every computer it is attached to. Only a screen of
+// for its last input since its last call, and at once, aged 0, when the
+// thread it shows changes, on every computer it is attached to. An input
+// older than the recorder's window records nothing. Only a screen of
 // this computer's person is recorded (ownScreen): another's call records
 // nothing. The span it opens ends with the call's connection.
 //

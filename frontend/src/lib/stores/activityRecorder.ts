@@ -8,9 +8,14 @@
 // mouse movement. A report goes out on the first input REPORT_EVERY_MS
 // after the last one; input within the interval is reported once it is
 // up, with how long ago the last of it was, so a burst's last input
-// counts; and a report goes out at once when the thread the screen shows
-// changes after input (noteActivityFocus), so a click that opens a thread
-// is counted on that thread. The computer extends a span while reports on
+// counts (the computer drops an input older than its window, so a page
+// suspended past it adds nothing); and a report goes out at once, aged 0,
+// when the thread the screen shows changes after input
+// (noteActivityFocus), so a click that opens a thread is counted on that
+// thread. Aged 0, it stands for the moment of the change: the time up to
+// it stays with the thread shown before, and the time after goes to the
+// thread shown now, even when nothing on this screen moved it (another
+// screen archived the thread). The computer extends a span while reports on
 // one thread keep coming within its window, so a report a minute is the
 // whole cost of a working hour: 60 calls, none of them on a turn's path.
 //
@@ -53,23 +58,25 @@ function shown(): { thread: string; phone: boolean } {
 function onInput(): void {
   const now = Date.now();
   lastInput = now;
-  if (pending === null) schedule(Math.max(0, lastReport + REPORT_EVERY_MS - now));
+  if (pending === null) schedule(Math.max(0, lastReport + REPORT_EVERY_MS - now), false);
 }
 
 // A report at once runs after the input's own handlers, so a press that
-// moves focus reports the thread it moved to.
-function schedule(delayMs: number): void {
-  pending = setTimeout(send, delayMs);
+// moves focus reports the thread it moved to. A report of a change of
+// the shown thread stands for the change (age 0); any other, for the last
+// input.
+function schedule(delayMs: number, change: boolean): void {
+  pending = setTimeout(() => send(change), delayMs);
 }
 
-function send(): void {
+function send(change: boolean): void {
   pending = null;
   const { thread, phone } = shown();
   const now = Date.now();
   lastReport = now;
   reportedThread = thread;
   reportedPhone = phone;
-  RecordActivity(thread, phone, now - lastInput).catch((err: unknown) => {
+  RecordActivity(thread, phone, change ? 0 : now - lastInput).catch((err: unknown) => {
     // A connection that dropped ended its span on the computer, and the
     // next input reports again once it is back. Anything else is a
     // diagnostic, recorded once per distinct failure; the computer's own
@@ -90,7 +97,7 @@ export function noteActivityFocus(): void {
   if (reportedThread === null || (thread === reportedThread && phone === reportedPhone)) return;
   if (Date.now() - lastInput >= REPORT_EVERY_MS) return;
   if (pending !== null) clearTimeout(pending);
-  schedule(0);
+  schedule(0, true);
 }
 
 /** Attach the input listeners; installed once, from App.svelte, which owns

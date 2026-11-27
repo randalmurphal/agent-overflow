@@ -152,6 +152,17 @@ describe('activity recorder', () => {
     expect(record).toHaveBeenCalledTimes(2);
   });
 
+  it('reports a thread the screen moved to with no input of its own as of the move', async () => {
+    input();
+    await settle();
+    await vi.advanceTimersByTimeAsync(50_000);
+    // Another screen archives t-a: this one shows t-b, with no input here.
+    show('t-b');
+    noteActivityFocus();
+    await settle();
+    expect(record.mock.calls).toEqual([['t-a', false, 0], ['t-b', false, 0]]);
+  });
+
   it('reports the compact layout as the phone, and its list as no thread', async () => {
     layout.compact = true;
     layout.screen = 'thread';
