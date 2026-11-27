@@ -328,3 +328,31 @@ func countActs(prs []PRHistoryPR) int {
 	}
 	return n
 }
+
+// More pull requests sharing the newest update time than one read holds
+// stop the read with a failure that says so, rather than reads that never
+// move.
+func TestGitHubHistoryRefusesMoreThanAReadOfOneUpdateTime(t *testing.T) {
+	t.Parallel()
+	pulls := historyPulls(10)
+	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}}
+	f := newFactsForge(t, fixture)
+	first := readHistory(t, f, githubHistoryRepo, nil, nil)
+	same := newerPulls(1000, 501)
+	for i := range same {
+		same[i].UpdatedAt = historyAt(-1)
+	}
+	fixture.Repos[0].Pulls = append(pulls, same...)
+	if _, err := f.engine.Seed(fixture); err != nil {
+		t.Fatal(err)
+	}
+	second := readHistory(t, f, githubHistoryRepo, first.Walk, nil)
+	if !second.Behind {
+		t.Fatal("a read of 501 changes is not behind")
+	}
+	_, err := f.core.ReadPRHistory(t.Context(), githubHistoryRepo, PRHistoryInput{Walk: second.Walk, WindowStart: historyNow.AddDate(0, 0, -180),
+		Known: func([]int64) (map[int64]bool, error) { return nil, nil }})
+	if err == nil || !strings.Contains(err.Error(), "share the update time") {
+		t.Fatalf("err = %v", err)
+	}
+}

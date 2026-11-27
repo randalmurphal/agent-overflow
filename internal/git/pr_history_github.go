@@ -161,6 +161,10 @@ func (f *githubForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 				}
 				cursor = page.cursor
 			}
+			if !reached && newest <= w.Top {
+				return fmt.Errorf("GitHub history of %s: more than %d pull requests share the update time %s, so the read cannot move past it",
+					repo.Key(), PRHistoryPages*githubHistoryPageSize, fromUnixMilli(w.Top).Format(time.RFC3339))
+			}
 			if !reached {
 				behind = true
 				lo := w.Top

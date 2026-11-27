@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/forgefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/trackerapp"
@@ -453,5 +454,34 @@ func TestAForgeHistoryReadCutShortStoresNothing(t *testing.T) {
 	}
 	if src := f.sources(t)[0]; src.ReadAt != 0 || src.Failure != "" {
 		t.Fatalf("a read cut short stored %+v", src)
+	}
+}
+
+// A round whose read of a repository finds more changed than one read
+// holds reads it again at once, so the round leaves it caught up.
+func TestARoundReadsOnUntilARepositoryIsCaughtUp(t *testing.T) {
+	t.Parallel()
+	pulls := []forgefake.Pull{historyPull(1, "WEB-1 Fix the login", "fix-login", "merged", 2)}
+	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}}
+	f := newWorkSearchFixture(t, fixture)
+	if err := f.a.readForgeHistory(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 600 {
+		at := time.Now().UTC().Add(-time.Hour + time.Duration(i)*time.Second).Format(time.RFC3339)
+		pulls = append(pulls, forgefake.Pull{Number: 100 + i, Title: fmt.Sprintf("Change %d", i), HeadRef: fmt.Sprintf("change-%d", i), CreatedAt: at, UpdatedAt: at})
+	}
+	fixture.Repos[0].Pulls = pulls
+	if _, err := f.engine.Seed(fixture); err != nil {
+		t.Fatal(err)
+	}
+	_, from := f.historyOps(0)
+	f.at(16 * time.Minute)
+	if err := f.a.readForgeHistory(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	ops, _ := f.historyOps(from)
+	if src := f.sources(t)[0]; !src.HasReach || src.Reach != 0 || ops["gh graphql PullHistory"] <= gitops.PRHistoryPages {
+		t.Fatalf("after the round: %+v, %v", src, ops)
 	}
 }
