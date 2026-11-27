@@ -5063,7 +5063,8 @@ describe("the board's summary row", () => {
     setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
     const range = { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' };
     let unread = ['2026-11-25'];
-    setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [{ id: 'w_5', unread }, { id: 'w_6', unread }], logged: {} }));
+    let old = false;
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [{ id: 'w_5', unread, old }, { id: 'w_6', unread, old }], logged: {} }));
     const view = mount();
     await view.findAllByTestId('board-row-chip');
     await fireEvent.click(view.getByTestId('board-row-toggle'));
@@ -5079,6 +5080,13 @@ describe("the board's summary row", () => {
     await waitFor(() => expect(read.getByTestId('board-row-tiles').textContent).toContain('Nothing to count.'));
     expect(read.getByTestId('board-row-tiles').textContent).toContain('No tickets.');
     read.unmount();
+    // Older than the logged time kept, every day read.
+    old = true;
+    const kept_ = mount();
+    await waitFor(() => expect(kept_.getAllByTestId('dashboard-widget-unread')).toHaveLength(2));
+    expect(kept_.getByTestId('board-row-tiles').textContent).not.toContain('Nothing to count.');
+    expect(kept_.getByTestId('board-row-tiles').textContent).not.toContain('No tickets.');
+    kept_.unmount();
   });
 
   it('takes a tile off, adds one from a dashboard, says a full row is full, and asks the agent for a new one', async () => {

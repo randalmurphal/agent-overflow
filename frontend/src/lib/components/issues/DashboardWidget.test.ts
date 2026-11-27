@@ -325,6 +325,10 @@ describe('your logged time', () => {
       expect(cold.queryByTestId('dashboard-widget-empty')).toBeNull();
       expect(cold.getByTestId('dashboard-widget-unread').textContent).toContain('Not known: 2 days not read of your logged time.');
       cold.unmount();
+      const old = draw(v, { id: 'logged', old: true } as WidgetValue, RANGE, { logged: r });
+      expect(old.queryByTestId('dashboard-widget-empty')).toBeNull();
+      expect(old.getByTestId('dashboard-widget-unread').textContent?.trim()).toBe('Not known: it counts days older than the logged time kept.');
+      old.unmount();
       const read_ = draw(v, { id: 'logged' } as WidgetValue, RANGE, { logged: r });
       expect(read_.getByTestId('dashboard-widget-empty').textContent).toBe(empty);
       expect(read_.queryByTestId('dashboard-widget-unread')).toBeNull();
