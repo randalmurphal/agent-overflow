@@ -2,13 +2,15 @@
 // burndown): drawn to its box's width, an even pace from its Start's
 // value to zero on the sprint's last day, each point saying what is left
 // and, on hover, what the pace would leave; a day still to come has no
-// point. A chart of periods draws no pace.
+// point. A chart of periods draws no pace. Both charts label their value
+// axis in the unit their numbers read in.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import '../../../../app.css';
 import type { BucketValue } from '../../../../../bindings/agent-overflow/internal/trackerdash/models';
 import { waitFor } from '../../../../test/helpers/browserFrames';
+import BarChart from './BarChart.svelte';
 import LineChart from './LineChart.svelte';
 
 const mounted: { app: object; host: HTMLElement }[] = [];
@@ -78,5 +80,26 @@ describe('a burndown', () => {
     const periods = await draw(BUCKETS, false);
     expect(periods.host.querySelector('[data-testid="dashboard-pace"]')).toBeNull();
     expect([...periods.host.querySelectorAll('[data-testid="dashboard-point"]')].map((p) => p.getAttribute('aria-label'))[0]).toBe('Start, 12 points');
+  });
+});
+
+describe('the value axis', () => {
+  const HOURS = [day('week:2026-11-16', 'Nov 16', { v: 3600 }), day('week:2026-11-23', 'Nov 23', { v: 7200 })];
+
+  async function ticks(chart: typeof LineChart | typeof BarChart): Promise<string[]> {
+    const host = document.createElement('div');
+    host.style.width = '480px';
+    document.body.append(host);
+    const props = { title: 'Your hours', buckets: HOURS, series: [''], unit: 'time' as const, estimates: 'points', onPick: vi.fn() };
+    const app = mount(chart as typeof LineChart, { target: host, props: chart === BarChart ? { ...props, horizontal: false } : props });
+    mounted.push({ app, host });
+    flushSync();
+    await waitFor(() => host.querySelectorAll('[data-testid="dashboard-axis-tick"]').length > 0, 'the chart drew its axis');
+    return [...host.querySelectorAll('[data-testid="dashboard-axis-tick"]')].map((t) => t.textContent ?? '');
+  }
+
+  it('reads logged time in hours on a line chart and on bars', async () => {
+    expect(await ticks(LineChart)).toEqual(['0m', '30m', '1h', '1.5h', '2h']);
+    expect(await ticks(BarChart)).toEqual(['0m', '30m', '1h', '1.5h', '2h']);
   });
 });

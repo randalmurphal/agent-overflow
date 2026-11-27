@@ -103,7 +103,9 @@ export interface RangeBefore {
 /**
  * The change mark of a number: none for a widget that counts now (no
  * previous value) or one without a value; a gap with the range's
- * sentence when the range before has no data; else the difference,
+ * sentence when the range before has no data, or with its days of your
+ * logged time not read (those before the copy's 180 days never are); else
+ * the difference,
  * colored by the metric's good direction, with the range before's label
  * and the tickets it did not count, which could turn the direction.
  */
@@ -119,6 +121,7 @@ export function changeMark(
   const v = numValue(value);
   if (v === null) return null;
   if (previous.gap) return { kind: 'gap', text: before?.previous_gap ?? '' };
+  if (previous.ur) return { kind: 'gap', text: `${previous.ur} ${previous.ur === 1 ? 'day' : 'days'} of the range before ${previous.ur === 1 ? 'is' : 'are'} not read.` };
   const p = numValue(previous);
   if (p === null) return null;
   const then = [before?.previous ?? '', previous.nc ? `${notCountedWords(previous.nc)} then` : ''].filter(Boolean).map((part) => `, ${part}`).join('');

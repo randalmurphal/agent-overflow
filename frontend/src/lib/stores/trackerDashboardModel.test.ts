@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { changeMark, drillCountWords, formatNum, GAP_TEXT, numValue, numWords } from './trackerDashboardModel';
-import { band, labelEvery, valueScale } from '../components/issues/charts/chartScale';
+import { band, labelEvery, unitScale, valueScale } from '../components/issues/charts/chartScale';
 
 describe('a number', () => {
   it('reads in its unit, as none, or as a gap', () => {
@@ -56,6 +56,11 @@ describe('the change mark', () => {
     expect(changeMark({}, { v: 2 }, 'up', 'tickets', 'points', null)).toBeNull();
   });
 
+  it('says how many days of the range before are not read when only those keep it from comparing', () => {
+    expect(changeMark({ v: 3600 }, { ur: 10 }, 'up', 'time', 'points', null)).toEqual({ kind: 'gap', text: '10 days of the range before are not read.' });
+    expect(changeMark({ v: 3600 }, { ur: 1 }, 'up', 'time', 'points', null)).toEqual({ kind: 'gap', text: '1 day of the range before is not read.' });
+  });
+
   it('is none when either range is not known, and stands beside what was not counted', () => {
     expect(changeMark({ nc: 2 }, { v: 2 }, 'up', 'tickets', 'points', null)).toBeNull();
     expect(changeMark({ v: 3 }, { nc: 1 }, 'up', 'tickets', 'points', null)).toBeNull();
@@ -89,6 +94,14 @@ describe('the charts\' geometry', () => {
     expect(valueScale(17)).toEqual({ max: 20, ticks: [0, 5, 10, 15, 20] });
     expect(valueScale(3)).toEqual({ max: 3, ticks: [0, 1, 2, 3] });
     expect(valueScale(0.7).max).toBeCloseTo(0.8);
+  });
+
+  it('reads the axis in the numbers\' unit: time in whole hours, labeled as the numbers are', () => {
+    const hours = unitScale(7200, 'time', 'points');
+    expect(hours.max).toBe(7200);
+    expect(hours.ticks.map((t) => t.label)).toEqual(['0m', '30m', '1h', '1.5h', '2h']);
+    expect(unitScale(30 * 3600, 'estimate', 'time').ticks.map((t) => t.label)).toEqual(['0m', '10h', '20h', '30h']);
+    expect(unitScale(17, 'tickets', 'points').ticks.map((t) => [t.value, t.label])).toEqual([[0, '0'], [5, '5'], [10, '10'], [15, '15'], [20, '20']]);
   });
 
   it('counts its ticks whatever the top, the largest number included', () => {
