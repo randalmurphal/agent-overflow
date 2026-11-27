@@ -34,6 +34,7 @@ import TrackerBoardsSettings from './TrackerBoardsSettings.svelte';
 import TrackerStatusesSettings from './TrackerStatusesSettings.svelte';
 import TrackerFieldsSettings from './TrackerFieldsSettings.svelte';
 import TrackerStartWorkSettings from './TrackerStartWorkSettings.svelte';
+import TrackerPointsSettings from './TrackerPointsSettings.svelte';
 import TrackerTimeSettings from './TrackerTimeSettings.svelte';
 import TrackerAgentsSettings from './TrackerAgentsSettings.svelte';
 import RemoteAccessSettings from './RemoteAccessSettings.svelte';
@@ -72,6 +73,7 @@ export const SETTINGS_PAGES: Record<SettingsSection, Component> = {
   'tracker-statuses': TrackerStatusesSettings,
   'tracker-fields': TrackerFieldsSettings,
   'tracker-start-work': TrackerStartWorkSettings,
+  'tracker-points': TrackerPointsSettings,
   'tracker-time': TrackerTimeSettings,
   'tracker-agents': TrackerAgentsSettings,
   remote: RemoteAccessSettings,

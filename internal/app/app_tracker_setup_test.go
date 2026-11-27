@@ -25,6 +25,7 @@ func TestTrackerSetupMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	for name, scope := range map[string]transport.Scope{
 		"ProjectTrackerSetup":      transport.ScopeTrackerRead,
 		"ProjectTrackerStatuses":   transport.ScopeTrackerRead,
+		"ProjectTrackerPace":       transport.ScopeTrackerRead,
 		"ProjectTrackerSiteFields": transport.ScopeTrackerRead,
 		"SetProjectTrackerSetup":   transport.ScopeTrackerOperate,
 	} {
@@ -130,6 +131,9 @@ func TestTrackerSetupRefusalsSayWhatToDo(t *testing.T) {
 	if _, err := f.a.ProjectTrackerStatuses(ctx, "no-such-project"); !hasCode(err, "tracker_project_missing") {
 		t.Fatalf("the statuses of no project = %v", err)
 	}
+	if _, err := f.a.ProjectTrackerPace(ctx, "no-such-project"); !hasCode(err, "tracker_project_missing") {
+		t.Fatalf("the pace of no project = %v", err)
+	}
 	path := f.setupPath(t)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -146,6 +150,9 @@ func TestTrackerSetupRefusalsSayWhatToDo(t *testing.T) {
 	}
 	if _, err := f.a.ProjectTrackerStatuses(ctx, f.project); !hasCode(err, "tracker_setup_unreadable") {
 		t.Fatalf("the statuses of a project with an unreadable setup = %v", err)
+	}
+	if _, err := f.a.ProjectTrackerPace(ctx, f.project); !hasCode(err, "tracker_setup_unreadable") {
+		t.Fatalf("the pace of a project with an unreadable setup = %v", err)
 	}
 	if _, err := f.a.SubscribeTrackerBoard(ctx, f.project, f.conn.ID, "1", nil, true); !hasCode(err, "tracker_setup_unreadable") {
 		t.Fatalf("a subscribe of a project with an unreadable setup = %v", err)

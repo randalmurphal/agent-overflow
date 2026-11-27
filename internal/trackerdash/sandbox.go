@@ -18,8 +18,10 @@ import (
 
 // Fill fills the empty main database of conn with a board's export
 // (store.ExportMirrorBoard bound to the board) of relations, the ones the
-// count reads: ok is false for a board the mirror does not show. The fill
-// must leave conn holding its main database alone; the gate checks it.
+// count reads: ok is false for a board the mirror does not show. The
+// export's EstimateUnit is the unit the board is counted in, none where
+// its project counts tickets. The fill must leave conn holding its main
+// database alone; the gate checks it.
 type Fill func(ctx context.Context, conn *sql.Conn, relations []string) (export store.MirrorExport, ok bool, err error)
 
 // snapshotDSN is the export's database: private and in memory, a sort or

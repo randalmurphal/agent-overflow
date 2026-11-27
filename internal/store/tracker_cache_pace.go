@@ -156,3 +156,37 @@ func readMirrorPaceTx(tx sqlQueryer, rootID int64, boardID string, board mirrorS
 	})
 	return out, err
 }
+
+// MirrorBoardPace is a shown board's pace as its section totals carry it
+// (MirrorSectionCounts.Pace): its estimate unit (MirrorEstimate*), whether
+// it plans sprints, and what each of its last finished sprints finished,
+// none for a board that plans none.
+type MirrorBoardPace struct {
+	Unit         int
+	PlansSprints bool
+	Finished     []MirrorSprintFinished
+}
+
+// GetMirrorBoardPace reads a board's pace by the regrouping, in one
+// snapshot, as CountMirrorSections reads it; ok is false for a board the
+// mirror does not show.
+func (s *Store) GetMirrorBoardPace(rootID int64, boardID string, regroup MirrorRegroup) (MirrorBoardPace, bool, error) {
+	label := fmt.Sprintf("read tracker mirror %d board %s pace", rootID, boardID)
+	pace, err := mirrorReadSnapshot(s, label, func(tx sqlQueryer) (*MirrorBoardPace, error) {
+		board, shown, err := readMirrorShownBoardTx(tx, rootID, boardID)
+		if err != nil || !shown {
+			return nil, err
+		}
+		out := &MirrorBoardPace{Unit: board.unit, PlansSprints: board.plansSprints}
+		if board.plansSprints {
+			if out.Finished, err = readMirrorPaceTx(tx, rootID, boardID, board, regroup); err != nil {
+				return nil, fmt.Errorf("pace: %w", err)
+			}
+		}
+		return out, nil
+	})
+	if err != nil || pace == nil {
+		return MirrorBoardPace{}, false, err
+	}
+	return *pace, true, nil
+}

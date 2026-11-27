@@ -59,7 +59,7 @@ function view(
 ): BoardView {
   const revision = opts.revision ?? 1;
   return {
-    id: '1', lifetime: 1, revision, totals_revision: revision, name: 'WEB board', plans_sprints: !opts.kanban, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision, totals_revision: revision, name: 'WEB board', plans_sprints: !opts.kanban, estimate: { unit: 'points' }, counts: 'points',
     columns: Array.from({ length: opts.columns ?? 1 }, (_, i) => ({ name: i === 0 ? 'To Do' : `Column ${i}`, statuses: i === 0 ? [{ id: 's1', group: 'todo' }] : [], total: { rows: 0, estimate: 0 } })),
     sprints: [{ id: opts.sprint ?? '8', name: 'Sprint', state: 'active', total: { rows: 1, estimate: 1 } }],
     all: { rows: 1, estimate: 1 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 100 },

@@ -322,6 +322,38 @@ describe('the drill', () => {
     expect(drill.calls[0][1]).toMatchObject({ widget: 'carrying', cell: null, rest: true });
   });
 
+  it('reads its first page again when a count of its dashboard answers in another unit, and only then', async () => {
+    const { s, evaluate } = await opened();
+    const drill = held<DrillAnswer>('TrackerDashboardDrill');
+    s.openDrill({ widget: 'pace' });
+    drill.answer(drillAnswer(0, 250));
+    await flush();
+    s.drillPage(1);
+    expect(drill.calls).toHaveLength(2);
+    // The project's count changed on another computer: the dashboards are
+    // told, and the count answers in tickets.
+    trackerDashboardsUpdated('peer-1');
+    await flush();
+    evaluate.answer({ ...answerFor('sprints_5', 2), estimates: 'none' } as Answer);
+    await flush();
+    expect(drill.calls).toHaveLength(3);
+    expect(drill.calls[2][1]).toMatchObject({ widget: 'pace', page: 0, count: 0, range: 'sprints_5' });
+    // The page asked in the old unit lands after, and is not shown.
+    drill.answer(drillAnswer(1, 250));
+    await flush();
+    expect(s.drill?.loading).toBe(true);
+    drill.answer({ ...drillAnswer(0, 3), estimates: 'none' });
+    await flush();
+    expect(s.drill?.answer?.estimates).toBe('none');
+    expect(s.drill?.page).toBe(0);
+    // A count in the same unit leaves the drill as it is.
+    trackerDashboardsUpdated('peer-1');
+    await flush();
+    evaluate.answer({ ...answerFor('sprints_5', 3), estimates: 'none' } as Answer);
+    await flush();
+    expect(drill.calls).toHaveLength(3);
+  });
+
   it('closes when what is counted changes', async () => {
     const { s } = await opened();
     const drill = held<DrillAnswer>('TrackerDashboardDrill');
