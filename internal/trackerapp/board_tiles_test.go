@@ -196,7 +196,7 @@ func TestBoardTilesRefuseWhatTheRowCannotHold(t *testing.T) {
 	if got := m.pinsOf(t, sub); !slices.Equal(got, row) {
 		t.Fatalf("the row = %v", got)
 	}
-	request := trackerdash.Request{Dashboard: m.list(t, sub).Dashboards[0].ID, Widgets: append(slices.Clone(row), "stuck_list")}
+	request := trackerdash.Request{Dashboard: m.list(t, sub).Dashboards[0].ID, TimeZone: "UTC", Widgets: append(slices.Clone(row), "stuck_list")}
 	if _, err := m.svc.EvaluateDashboard(t.Context(), sub, request); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("a row request of six widgets: %v", err)
 	}
@@ -549,5 +549,23 @@ func TestTheLastPinsEventCarriesThePinsStored(t *testing.T) {
 	want := []string{"stuck", "finished"}
 	if last == nil || !slices.Equal(last.Pins.Pins, want) || !slices.Equal(m.pinsOf(t, sub), want) {
 		t.Fatalf("the last pins event = %+v, the board's read %v; want %v", last, m.pinsOf(t, sub), want)
+	}
+}
+
+// A board that pins nothing reads its pins with no work: no widget index
+// is built under the setup lock on its reads. Not parallel, as
+// AllocsPerRun counts the whole process's allocations.
+func TestABoardWithNoPinsReadsThemWithNoWork(t *testing.T) {
+	m, sub := dashboardFixture(t)
+	scope, key, err := m.svc.boardHandle(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind := trackerdash.Kind{PlansSprints: true, Epics: true}
+	if pins, err := m.svc.boardPins(key, string(scope.Board), kind); err != nil || pins != nil {
+		t.Fatalf("the pins = %v, %v", pins, err)
+	}
+	if n := testing.AllocsPerRun(10, func() { _, _ = m.svc.boardPins(key, string(scope.Board), kind) }); n != 0 {
+		t.Fatalf("a read of no pins allocates %v times; want none", n)
 	}
 }
