@@ -1,7 +1,7 @@
 <script lang="ts">
-  // The body of Settings > Issues > Time, for a project that lists a Jira
-  // board, whose Time settings apply (trackerapp's ProjectTimeSettings);
-  // another says it has none, and its setup keeps what it holds. The
+  // The body of Settings > Issues > Time, shown for a project that lists
+  // a Jira board, whose Time settings apply (trackerapp's
+  // ProjectTimeSettings; TrackerTimeSettings says another has none). The
   // ticket meetings go on and the ticket time off goes on, each found by
   // key or title on the connections of the project's Jira boards
   // (TicketFinder) and saved at once by its site and key, and Never log
@@ -128,86 +128,76 @@
   }
 </script>
 
-{#if !boards.some((b) => b.connection_kind === 'jira')}
-  <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-time-none">
-    {#if boards.length === 0}
-      This project lists no boards. Add a Jira board in Boards to choose where its time goes.
-    {:else}
-      A Linear project has no time settings: time is logged on Jira.
-    {/if}
-  </p>
-{:else}
-  <ul class="flex flex-col gap-3">
-    {#each ROWS as row (row.role)}
-      {@const ticket = ticketOf(page.setup, row.role)}
-      {@const shown = ticket ? shownOf(ticket) : null}
-      <li class="flex min-w-0 flex-col gap-1" data-testid="tracker-time-ticket" data-role={row.role}>
-        <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 {compact ? 'min-h-9' : ''}">
-          <div class="flex min-w-0 flex-1 flex-col">
-            <span class="text-[0.8125rem] text-fg">{row.title}</span>
-            {#if row.text}<span class="text-[0.71875rem] text-fg-hint">{row.text}</span>{/if}
-          </div>
+<ul class="flex flex-col gap-3">
+  {#each ROWS as row (row.role)}
+    {@const ticket = ticketOf(page.setup, row.role)}
+    {@const shown = ticket ? shownOf(ticket) : null}
+    <li class="flex min-w-0 flex-col gap-1" data-testid="tracker-time-ticket" data-role={row.role}>
+      <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 {compact ? 'min-h-9' : ''}">
+        <div class="flex min-w-0 flex-1 flex-col">
+          <span class="text-[0.8125rem] text-fg">{row.title}</span>
+          {#if row.text}<span class="text-[0.71875rem] text-fg-hint">{row.text}</span>{/if}
+        </div>
+        {#if ticket}
+          <span class="flex min-w-0 items-baseline gap-1.5 text-[0.75rem]" data-testid="tracker-time-ticket-value">
+            <span class="shrink-0 font-medium text-fg">{ticket.key}</span>
+            {#if shown?.kind === 'found'}<span class="min-w-0 truncate text-fg-muted">{shown.title}</span>{/if}
+          </span>
+        {/if}
+        <div class="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            class={GHOST_BUTTON_CLASS}
+            bind:this={anchors[row.role]}
+            disabled={page.lockReason !== '' || sources.length === 0}
+            title={page.lockReason || (sources.length === 0 ? 'No Jira board of this project has a connection turned on.' : undefined)}
+            onclick={() => { finding = row.role; }}
+            data-testid="tracker-time-ticket-find"
+          >{ticket ? 'Change' : 'Choose a ticket'}</button>
           {#if ticket}
-            <span class="flex min-w-0 items-baseline gap-1.5 text-[0.75rem]" data-testid="tracker-time-ticket-value">
-              <span class="shrink-0 font-medium text-fg">{ticket.key}</span>
-              {#if shown?.kind === 'found'}<span class="min-w-0 truncate text-fg-muted">{shown.title}</span>{/if}
-            </span>
-          {/if}
-          <div class="flex shrink-0 items-center gap-1">
             <button
               type="button"
               class={GHOST_BUTTON_CLASS}
-              bind:this={anchors[row.role]}
-              disabled={page.lockReason !== '' || sources.length === 0}
-              title={page.lockReason || (sources.length === 0 ? 'No Jira board of this project has a connection turned on.' : undefined)}
-              onclick={() => { finding = row.role; }}
-              data-testid="tracker-time-ticket-find"
-            >{ticket ? 'Change' : 'Choose a ticket'}</button>
-            {#if ticket}
-              <button
-                type="button"
-                class={GHOST_BUTTON_CLASS}
-                disabled={page.lockReason !== ''}
-                title={page.lockReason || undefined}
-                onclick={() => void page.save((held) => withTimeTicket(held, row.role, null))}
-                data-testid="tracker-time-ticket-clear"
-              >Clear</button>
-            {/if}
-          </div>
-        </div>
-        {#if ticket && shown}
-          {#if shown.kind === 'unreachable'}
-            <p class="text-[0.71875rem] text-warning" data-testid="tracker-time-ticket-note">No Jira connection turned on reaches {siteName(ticket.site)}. Turn one on in Connections, or choose another ticket.</p>
-          {:else if shown.kind === 'missing'}
-            <p class="text-[0.71875rem] text-warning" data-testid="tracker-time-ticket-note">{ticket.key} cannot be found on {siteName(ticket.site)}, or this connection cannot see it. Choose another ticket.</p>
-          {:else if shown.kind === 'failed'}
-            <div class="flex flex-wrap items-center gap-2">
-              <p class="text-[0.71875rem] text-error" data-testid="tracker-time-ticket-note">{ticket.key} could not be checked: {userFacingError(shown.error)}</p>
-              <button type="button" class={GHOST_BUTTON_CLASS} onclick={shown.retry} data-testid="tracker-time-ticket-retry">Try again</button>
-            </div>
+              disabled={page.lockReason !== ''}
+              title={page.lockReason || undefined}
+              onclick={() => void page.save((held) => withTimeTicket(held, row.role, null))}
+              data-testid="tracker-time-ticket-clear"
+            >Clear</button>
           {/if}
-        {/if}
-      </li>
-    {/each}
-    <li class="flex min-w-0 items-center gap-3 {compact ? 'min-h-9' : ''}" data-testid="tracker-time-epics">
-      <div class="flex min-w-0 flex-1 flex-col">
-        <span class="text-[0.8125rem] text-fg">Never log to an epic</span>
-        <span class="text-[0.71875rem] text-fg-hint">Your agent's time draft puts no hours on an epic, only on a ticket under it.</span>
+        </div>
       </div>
-      <ToggleSwitch
-        checked={neverEpicsOn(page.setup)}
-        ariaLabel="Never log to an epic"
-        disabled={page.lockReason !== ''}
-        title={page.lockReason || undefined}
-        onToggle={(next) => void page.save((held) => withNeverEpics(held, next))}
-      />
+      {#if ticket && shown}
+        {#if shown.kind === 'unreachable'}
+          <p class="text-[0.71875rem] text-warning" data-testid="tracker-time-ticket-note">No Jira connection turned on reaches {siteName(ticket.site)}. Turn one on in Connections, or choose another ticket.</p>
+        {:else if shown.kind === 'missing'}
+          <p class="text-[0.71875rem] text-warning" data-testid="tracker-time-ticket-note">{ticket.key} cannot be found on {siteName(ticket.site)}, or this connection cannot see it. Choose another ticket.</p>
+        {:else if shown.kind === 'failed'}
+          <div class="flex flex-wrap items-center gap-2">
+            <p class="text-[0.71875rem] text-error" data-testid="tracker-time-ticket-note">{ticket.key} could not be checked: {userFacingError(shown.error)}</p>
+            <button type="button" class={GHOST_BUTTON_CLASS} onclick={shown.retry} data-testid="tracker-time-ticket-retry">Try again</button>
+          </div>
+        {/if}
+      {/if}
     </li>
-  </ul>
-  <TicketFinder
-    anchor={finding ? anchors[finding] : undefined}
-    open={finding !== null}
-    {sources}
-    onPick={(found) => { if (finding) pick(finding, found); }}
-    onClose={() => { finding = null; }}
-  />
-{/if}
+  {/each}
+  <li class="flex min-w-0 items-center gap-3 {compact ? 'min-h-9' : ''}" data-testid="tracker-time-epics">
+    <div class="flex min-w-0 flex-1 flex-col">
+      <span class="text-[0.8125rem] text-fg">Never log to an epic</span>
+      <span class="text-[0.71875rem] text-fg-hint">Your agent's time draft puts no hours on an epic, only on a ticket under it.</span>
+    </div>
+    <ToggleSwitch
+      checked={neverEpicsOn(page.setup)}
+      ariaLabel="Never log to an epic"
+      disabled={page.lockReason !== ''}
+      title={page.lockReason || undefined}
+      onToggle={(next) => void page.save((held) => withNeverEpics(held, next))}
+    />
+  </li>
+</ul>
+<TicketFinder
+  anchor={finding ? anchors[finding] : undefined}
+  open={finding !== null}
+  {sources}
+  onPick={(found) => { if (finding) pick(finding, found); }}
+  onClose={() => { finding = null; }}
+/>

@@ -14,6 +14,16 @@
 
   const { backend } = settingsComputer();
 
+  /** Why `project` has no Time settings: they apply only while it lists
+   * a Jira board, and its setup keeps what it holds. */
+  function none(project: string): string | null {
+    const boards = trackerProjectBoardsOf(backend, project).list;
+    if (boards.some((b) => b.connection_kind === 'jira')) return null;
+    return boards.length === 0
+      ? 'This project lists no boards. Add a Jira board in Boards to choose where its time goes.'
+      : 'A Linear project has no time settings: time is logged on Jira.';
+  }
+
   function readError(project: string): string | null {
     const boards = trackerProjectBoardsOf(backend, project).error;
     return boards !== null ? `The project's boards could not be read: ${userFacingError(boards)}` : null;
@@ -31,6 +41,7 @@
   hold={(project) => acquireTrackerProjectBoards(backend, project)}
   {readError}
   ready={(project) => trackerProjectBoardsOf(backend, project).loaded}
+  {none}
   retry={(project) => void refreshTrackerProjectBoards(backend, project)}
   reading="Reading the project's time settings…"
 >

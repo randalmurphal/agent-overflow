@@ -27,7 +27,7 @@ const TICKETS: Record<string, string> = { 'OPS-1': 'Meetings', 'OPS-2': 'Time of
 let stored: SetupView;
 let saves: Setup[];
 /** The checks the page made: the lookups it asked with no finder open. */
-let lookups: { connection: string; keys: string[]; pinned: string | null }[];
+let lookups: { connection: string; keys: string[]; pinned: string | null; whileNone: boolean }[];
 let lookupFails: Error | null;
 
 function setupWith(time: TimeSettings | undefined): SetupView {
@@ -52,7 +52,9 @@ beforeEach(async () => {
     return { saved: true, stored };
   });
   setBindingMock('TrackerLookup', async (connection: string, keys: string[]): Promise<LookupView> => {
-    if (!document.querySelector('[data-testid="ticket-picker-find"]')) lookups.push({ connection, keys, pinned: getPinnedBackend() });
+    if (!document.querySelector('[data-testid="ticket-picker-find"]')) {
+      lookups.push({ connection, keys, pinned: getPinnedBackend(), whileNone: document.querySelector('[data-testid="settings-tracker-time-none"]') !== null });
+    }
     if (lookupFails) throw lookupFails;
     const found = keys.filter((k) => TICKETS[k]).map((k) => ({ key: k, card: { id: `id-${k}`, key: k, title: TICKETS[k] } as CardView }));
     return { found, unmatched: keys.filter((k) => !TICKETS[k]) } as LookupView;
@@ -97,8 +99,8 @@ describe('<TrackerTimeSettings>', () => {
     expect(saves[1].time).toEqual({ meetings: { tracker: 'jira', site: SITE, key: 'OPS-1' }, time_off: { tracker: 'jira', site: SITE, key: 'OPS-2' } });
     await waitFor(() => expect(text(within(row('time_off')).getByTestId('tracker-time-ticket-value'))).toBe('OPS-2 Time off'));
     expect(lookups).toEqual([
-      { connection: 'jira-1', keys: ['OPS-1'], pinned: HOME_BACKEND },
-      { connection: 'jira-1', keys: ['OPS-1', 'OPS-2'], pinned: HOME_BACKEND },
+      { connection: 'jira-1', keys: ['OPS-1'], pinned: HOME_BACKEND, whileNone: false },
+      { connection: 'jira-1', keys: ['OPS-1', 'OPS-2'], pinned: HOME_BACKEND, whileNone: false },
     ]);
   });
 
@@ -180,6 +182,16 @@ describe('<TrackerTimeSettings>', () => {
     await refreshTrackerProjectBoards(HOME_BACKEND, 'p1');
     await waitFor(() => expect(text(within(row('meetings')).getByTestId('tracker-time-ticket-value'))).toBe('OPS-1 Meetings'));
     expect(screen.queryByTestId('settings-tracker-time-none')).toBeNull();
+    // The one check is the listed board's: none was asked while the line showed.
+    expect(lookups).toEqual([{ connection: 'jira-1', keys: ['OPS-1'], pinned: HOME_BACKEND, whileNone: false }]);
+  });
+
+  it('shows the Linear line, not the update prompt, for a time section a newer version saved on a project with no Jira board', async () => {
+    stored = { ...setupWith(undefined), newer: ['time'] } as SetupView;
+    setBindingMock('ProjectTrackerBoards', async () => [trackerBoardChoice({ connection: 'lin-1', connection_kind: 'linear' })]);
+    render(TrackerTimeSettings);
+    expect((await screen.findByTestId('settings-tracker-time-none')).textContent?.trim()).toBe('A Linear project has no time settings: time is logged on Jira.');
+    expect(screen.queryByTestId('settings-tracker-time-newer')).toBeNull();
   });
 
   it('shows no control for a time section a newer version saved', async () => {
