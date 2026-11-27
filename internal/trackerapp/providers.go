@@ -108,6 +108,19 @@ func buildProvider(row store.TrackerConnection, c *clients, tempo *clients, wind
 	return tracker.OneCredential(p), nil
 }
 
+// capabilitiesOf is what the tracker of a connection of kind can do, read
+// with no client (tracker.Capabilities): none for a kind no provider
+// serves (Tempo).
+func capabilitiesOf(kind string) tracker.Capabilities {
+	switch kind {
+	case store.TrackerKindJira:
+		return jiraprovider.Capabilities()
+	case store.TrackerKindLinear:
+		return linearprovider.Capabilities()
+	}
+	return tracker.Capabilities{}
+}
+
 // tempoOf reads the Tempo connection that belongs to Jira connection id.
 func (s *Service) tempoOf(id string) (store.TrackerConnection, bool, error) {
 	rows, err := s.store.ListTrackerConnections()

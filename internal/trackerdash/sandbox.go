@@ -39,7 +39,7 @@ const (
 )
 
 // maxParams is the parameters one statement on a sealed session binds: a
-// metric binds :now and :since, and the app's reads of a page's titles
+// metric binds :now, :since and :estimates, and the app's reads of a page's titles
 // bind as many IDs a statement.
 const maxParams = 8
 
@@ -371,9 +371,11 @@ func (s *session) asksOf(m Metric, p prepared) (asks, error) {
 }
 
 // hostParams is what the host binds to the wrapped statement: :now, the
-// evaluation's instant, and :since, where the range's periods begin.
-func hostParams(now, since int64) []any {
-	return []any{sql.Named("now", now), sql.Named("since", since)}
+// evaluation's instant, :since, where the range's periods begin, and
+// :estimates, what the board's counts of unit estimate count (points,
+// time or none: tickets; evaluation.estimates).
+func hostParams(now, since int64, estimates string) []any {
+	return []any{sql.Named("now", now), sql.Named("since", since), sql.Named("estimates", estimates)}
 }
 
 // wrapped is the statement a count of p runs: p's own between
@@ -396,18 +398,18 @@ func (s *session) wrapped(p prepared) string {
 // prepare did, wrapped so SQLite
 // produces the whole result in its first step and the rows go straight
 // to the sink, and answers its rows. The host binds :now, the
-// evaluation's instant, and :since, where the range's periods begin
+// evaluation's instant, :since, where the range's periods begin
 // (span.since), so a metric of the range reads only the rows it can
-// place. A state metric's rows are those that hold at one of at.
-func (s *session) run(ctx context.Context, p prepared, now, since int64, at heldAt) ([]contribution, error) {
+// place, and :estimates (hostParams). It answers the rows k keeps.
+func (s *session) run(ctx context.Context, p prepared, now, since int64, estimates string, k kept) ([]contribution, error) {
 	ctx, cancel := context.WithTimeout(ctx, metricDeadline-p.took)
 	defer cancel()
-	s.sink.reset(p.cols, p.series, at)
-	defer s.sink.reset(columns{}, nil, heldAt{})
+	s.sink.reset(p.cols, p.series, k)
+	defer s.sink.reset(columns{}, nil, kept{})
 	s.take()
 	s.setWrapping(true)
 	var n int64
-	err := s.conn.QueryRowContext(ctx, s.wrapped(p), hostParams(now, since)...).Scan(&n)
+	err := s.conn.QueryRowContext(ctx, s.wrapped(p), hostParams(now, since, estimates)...).Scan(&n)
 	s.setWrapping(false)
 	denied := s.take()
 	switch {

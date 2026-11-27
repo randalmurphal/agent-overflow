@@ -164,10 +164,20 @@ func (src mirrorExportChangeSource) latestBy(on, kind, upTo string) string {
 // time, but for one made between the card's read and its history's,
 // which the card's next read moves the update time past; until then the
 // export follows the card's version, as the board does.
-// The earliest instant is never below zero; the condition states an
-// update time above zero too, the index's, so the planner can take it.
 func mirrorExportUpdatedSince(alias string) string {
-	return alias + `.root_id = CAST(?1 AS INTEGER) AND ` + alias + `.updated_at > 0 AND ` + alias + `.updated_at > ` + mirrorExportIntervalsFrom()
+	return mirrorUpdatedSinceSQL(alias, ">", mirrorExportIntervalsFrom())
+}
+
+// mirrorUpdatedSinceSQL is the condition that issue alias of root ?1 was
+// updated cmp (">" or ">=") from, an SQL expression never below zero,
+// which walks the issues by their update time
+// (idx_tracker_cache_issues_updated) from from on. It states the index's
+// own condition, an update time above zero, so the planner can take the
+// index, after the bound: of two lower bounds on the column, the planner
+// starts the walk at the first, and from 0 it reads every issue of the
+// root (TestAnUpdateWalkStartsAtItsBound).
+func mirrorUpdatedSinceSQL(alias, cmp, from string) string {
+	return alias + `.root_id = CAST(?1 AS INTEGER) AND ` + alias + `.updated_at ` + cmp + ` ` + from + ` AND ` + alias + `.updated_at > 0`
 }
 
 // mirrorExportBoardIssues reads the board's issues as b and i, by key.

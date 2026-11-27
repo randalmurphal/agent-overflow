@@ -60,7 +60,7 @@ func runSQL(s *session, m Metric) ([]contribution, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.run(context.Background(), p, ms(testNow), 0, heldAt{})
+	return s.run(context.Background(), p, ms(testNow), 0, "points", kept{})
 }
 
 // A metric's SQL reads the board's relations and calls the allowed
@@ -100,7 +100,7 @@ func TestHostileQueriesAreRefused(t *testing.T) {
 		{`SELECT id AS ticket, key AS value FROM tickets`, "column value holds text"},
 		{`SELECT a.ticket AS ticket FROM changes a, changes b LIMIT 30000`, "more than 20000 rows, its limit"},
 		{`SELECT a.ticket AS ticket, printf('%.*c', 60000, 'x') AS person FROM changes a`, "passed 4 MiB"},
-		{`SELECT ?3 AS ticket`, "failed"},
+		{`SELECT ?4 AS ticket`, "failed"},
 		{`SELECT 'WEB-999' AS ticket`, `returned ticket "WEB-999", which is not one of this board's tickets`},
 		{`SELECT id AS ticket, 'Doing' AS series FROM tickets`, "names no series, so its query returns no series column"},
 		{`SELECT id AS ticket, 1e308 * 10 AS value FROM tickets`, `ticket "t1"'s value is +Inf, past 1e+12 either way`},
@@ -167,11 +167,11 @@ func TestTheDeadlineCountsThePrepare(t *testing.T) {
 	if p.took <= 0 || p.took > call {
 		t.Fatalf("the prepare recorded %v of a call of %v; want the time it took", p.took, call)
 	}
-	if rows, err := s.run(context.Background(), p, ms(testNow), 0, heldAt{}); err != nil || len(rows) != 10 {
+	if rows, err := s.run(context.Background(), p, ms(testNow), 0, "points", kept{}); err != nil || len(rows) != 10 {
 		t.Fatalf("the query after its own prepare: %d rows, %v", len(rows), err)
 	}
 	p.took = metricDeadline
-	_, err = s.run(context.Background(), p, ms(testNow), 0, heldAt{})
+	_, err = s.run(context.Background(), p, ms(testNow), 0, "points", kept{})
 	var me *MetricError
 	if !errors.As(err, &me) || !me.Limit {
 		t.Fatalf("the query after a prepare that took the whole deadline: %v; want the limit's sentence", err)

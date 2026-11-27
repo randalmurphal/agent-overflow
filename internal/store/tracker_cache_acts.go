@@ -2,7 +2,9 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 )
@@ -74,10 +76,12 @@ type mirrorActRow struct {
 // an issue's rows by the primary key's prefix.
 var (
 	// mirrorActsStateSQL reads, for each listed issue and source, whether
-	// the mirror keeps the issue and the read order of its receipt (0 for
-	// none) and how many acts it holds.
+	// the mirror keeps the issue, the read order of its receipt (0 for
+	// none), the card update and the worklogs' start it is for, why a read
+	// failed since ("" for none), and how many acts it holds.
 	mirrorActsStateSQL = `SELECT e.value ->> 'i', e.value ->> 's',
-	    iif(i.issue_id IS NULL, 0, ` + mirrorIssueKept("i.root_id", "i.issue_id") + `), coalesce(r.read_at, 0),
+	    iif(i.issue_id IS NULL, 0, ` + mirrorIssueKept("i.root_id", "i.issue_id") + `), coalesce(r.read_at, 0), coalesce(r.read_for, 0), coalesce(r.read_from, 0),
+	    coalesce(r.tried_reason, ''),
 	    (SELECT count(*) FROM tracker_cache_issue_acts a WHERE a.root_id = CAST(?1 AS INTEGER) AND a.issue_id = e.value ->> 'i' AND a.source = e.value ->> 's')
 	  FROM json_each(?3) e
 	  LEFT JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = e.value ->> 'i'
@@ -92,7 +96,16 @@ var (
 	mirrorActsUpsertSQL = `INSERT INTO tracker_cache_issue_acts(root_id, issue_id, source, act_id, person, at, seconds)
 	  SELECT ?1, a.value ->> 'i', a.value ->> 's', a.value ->> 'a', a.value ->> 'p', a.value ->> 't', a.value ->> 'x' FROM json_each(?4) a WHERE true
 	  ON CONFLICT(root_id, issue_id, source, act_id) DO UPDATE SET person = excluded.person, at = excluded.at, seconds = excluded.seconds
-	  WHERE person IS NOT excluded.person OR at IS NOT excluded.at OR seconds IS NOT excluded.seconds`
+	  WHERE person IS NOT excluded.person OR at IS NOT excluded.at OR seconds IS NOT excluded.seconds
+	  RETURNING issue_id`
+	// mirrorActsCreditSQL advances the totals revision of each board of
+	// root ?1 that holds a row of an issue of the JSON list ?2, each row
+	// found by key, once a board: credit, which the Backlog's pace counts
+	// (readMirrorPaceTx), read the issues' evidence.
+	mirrorActsCreditSQL = `UPDATE tracker_cache_boards SET totals_revision = totals_revision + 1
+	  WHERE root_id = CAST(?1 AS INTEGER) AND board_id IN (
+	    SELECT b.board_id FROM json_each(?2) l
+	    CROSS JOIN tracker_cache_board_issues b ON b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = l.value)`
 	// mirrorActReadsSQL records each listed read's receipt and clears an
 	// attempt that failed before it.
 	mirrorActReadsSQL = `INSERT INTO tracker_cache_issue_act_reads(root_id, issue_id, source, read_for, read_at, read_wall, read_from)
@@ -124,19 +137,19 @@ var (
 // mirrorMaxBatchChanges acts, counting those stored and those read, an
 // issue's acts of a source never split, the catalog in the first; a call
 // that fails after a transaction committed has stored those before it.
-func (s *Store) ReplaceMirrorActs(rootID, sourceGen int64, read MirrorRead, issues []MirrorIssueActs, tried []MirrorActsAttempt, catalog MirrorCatalog) (catalogWrite MirrorCatalogWrite, err error) {
+func (s *Store) ReplaceMirrorActs(rootID, sourceGen int64, read MirrorRead, issues []MirrorIssueActs, tried []MirrorActsAttempt, catalog MirrorCatalog) (out MirrorActsWrite, err error) {
 	times, err := read.in(rootID)
 	if err != nil {
-		return MirrorCatalogWrite{}, err
+		return MirrorActsWrite{}, err
 	}
 	if times.at <= 0 || len(issues)+len(tried) > 2*mirrorHistoryBatch {
-		return MirrorCatalogWrite{}, fmt.Errorf("%w: %d issues' acts and attempts, over %d, or no read", ErrInvalidTrackerCache, len(issues)+len(tried), 2*mirrorHistoryBatch)
+		return MirrorActsWrite{}, fmt.Errorf("%w: %d issues' acts and attempts, over %d, or no read", ErrInvalidTrackerCache, len(issues)+len(tried), 2*mirrorHistoryBatch)
 	}
 	if err := catalog.check(); err != nil {
-		return MirrorCatalogWrite{}, err
+		return MirrorActsWrite{}, err
 	}
 	if err := checkMirrorIssueActs(issues, tried); err != nil {
-		return MirrorCatalogWrite{}, err
+		return MirrorActsWrite{}, err
 	}
 	keys := make([]mirrorActsKeyRow, 0, len(issues)+len(tried))
 	for _, in := range issues {
@@ -147,7 +160,7 @@ func (s *Store) ReplaceMirrorActs(rootID, sourceGen int64, read MirrorRead, issu
 	}
 	stored, err := s.storedMirrorActs(rootID, keys)
 	if err != nil {
-		return MirrorCatalogWrite{}, err
+		return MirrorActsWrite{}, err
 	}
 	action := fmt.Sprintf("store: replace tracker mirror %d issue acts", rootID)
 	changedSource := false
@@ -165,8 +178,10 @@ func (s *Store) ReplaceMirrorActs(rootID, sourceGen int64, read MirrorRead, issu
 			end++
 		}
 		var changed MirrorCatalogWrite
+		var credited []string
 		err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
 			var err error
+			changed, credited = MirrorCatalogWrite{}, nil
 			if first && len(catalog.Users)+len(catalog.Statuses) > 0 {
 				if changed, err = upsertMirrorCatalogTx(tx, rootID, catalog, times.at); err != nil {
 					return err
@@ -174,21 +189,31 @@ func (s *Store) ReplaceMirrorActs(rootID, sourceGen int64, read MirrorRead, issu
 			}
 			var refused bool
 			acts := issues[min(start, len(issues)):min(end, len(issues))]
-			refused, err = replaceMirrorActsTx(tx, rootID, sourceGen, times, keys[start:end], acts)
+			refused, credited, err = replaceMirrorActsTx(tx, rootID, sourceGen, times, keys[start:end], acts)
 			changedSource = changedSource || refused
 			return err
 		})
 		if err != nil {
-			return catalogWrite, err
+			return out, err
 		}
-		catalogWrite.Changed = catalogWrite.Changed || changed.Changed
-		catalogWrite.Threads = unionSorted(catalogWrite.Threads, changed.Threads)
+		out.Catalog.Changed = out.Catalog.Changed || changed.Changed
+		out.Catalog.Threads = unionSorted(out.Catalog.Threads, changed.Threads)
+		out.Credited = unionSorted(out.Credited, credited)
 		start = end
 	}
 	if changedSource {
-		return catalogWrite, fmt.Errorf("worklogs read under time source generation %d: %w", sourceGen, ErrTrackerCacheSourceChanged)
+		return out, fmt.Errorf("worklogs read under time source generation %d: %w", sourceGen, ErrTrackerCacheSourceChanged)
 	}
-	return catalogWrite, nil
+	return out, nil
+}
+
+// MirrorActsWrite is what a ReplaceMirrorActs call committed: its
+// catalog's change, and Credited, the issues whose evidence credit reads
+// changed (sorted), whose boards' totals it moved (mirrorActsCreditSQL),
+// so their subscribers count credit again.
+type MirrorActsWrite struct {
+	Catalog  MirrorCatalogWrite
+	Credited []string
 }
 
 // storedMirrorActs is how many acts the mirror holds of each of keys'
@@ -208,8 +233,9 @@ func (s *Store) storedMirrorActs(rootID int64, keys []mirrorActsKeyRow) ([]int, 
 			var issue string
 			var source, n int
 			var kept bool
-			var readAt int64
-			if err := r.Scan(&issue, &source, &kept, &readAt, &n); err != nil {
+			var readAt, readFor, readFrom int64
+			var reason string
+			if err := r.Scan(&issue, &source, &kept, &readAt, &readFor, &readFrom, &reason, &n); err != nil {
 				return err
 			}
 			out[at[issue+"\x00"+strconv.Itoa(source)]] = n
@@ -271,41 +297,58 @@ func checkMirrorIssueActs(issues []MirrorIssueActs, tried []MirrorActsAttempt) e
 // replaceMirrorActsTx writes the admitted of keys in tx: the first
 // len(issues) are issues' reads, the rest attempts. Under another time
 // source generation than sourceGen it writes no worklog and reports
-// refused.
-func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTimes, keys []mirrorActsKeyRow, issues []MirrorIssueActs) (refused bool, _ error) {
+// refused. It advances the totals revision of each board holding an
+// issue whose evidence it changed, once (mirrorActsCreditSQL), and
+// returns those issues (credited, sorted): a read that stores changes it
+// when it is the first, for another card update or worklogs' start, or
+// after a failed attempt, or when an act was added, changed or removed;
+// an attempt when it fails for another reason than the last since the
+// source's read, or is the first (mirrorActsCurrentSQL counts a source a
+// read failed for since as not read, and credit says why).
+func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTimes, keys []mirrorActsKeyRow, issues []MirrorIssueActs) (refused bool, credited []string, _ error) {
 	if len(keys) == 0 {
-		return false, nil
+		return false, nil, nil
 	}
 	if slices.ContainsFunc(keys, func(k mirrorActsKeyRow) bool { return k.Source == MirrorActWorklog }) {
 		var current int64
 		if err := tx.QueryRow(mirrorWorklogSourceGenSQL, rootID).Scan(&current); err != nil {
-			return false, fmt.Errorf("read the time source generation: %w", err)
+			return false, nil, fmt.Errorf("read the time source generation: %w", err)
 		}
 		refused = current != sourceGen
 	}
 	listed, err := encodeMirrorJSON(keys)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	index := make(map[string]int, len(keys))
 	for i, k := range keys {
 		index[k.Issue+"\x00"+strconv.Itoa(k.Source)] = i
 	}
 	admitted := make([]bool, len(keys))
+	// moved holds the issues whose evidence credit reads changed.
+	moved := map[string]bool{}
 	err = scanMirrorRows(tx, mirrorActsStateSQL, []any{rootID, nil, listed}, func(r rowScanner) error {
 		var issue string
 		var source, n int
 		var kept bool
-		var storedAt int64
-		if err := r.Scan(&issue, &source, &kept, &storedAt, &n); err != nil {
+		var storedAt, storedFor, storedFrom int64
+		var reason string
+		if err := r.Scan(&issue, &source, &kept, &storedAt, &storedFor, &storedFrom, &reason, &n); err != nil {
 			return err
 		}
 		i := index[issue+"\x00"+strconv.Itoa(source)]
 		admitted[i] = kept && storedAt < times.at && (!refused || source != MirrorActWorklog)
+		switch {
+		case !admitted[i]:
+		case i < len(issues) && (storedAt == 0 || reason != "" || storedFor != keys[i].ReadFor || storedFrom != keys[i].From):
+			moved[issue] = true
+		case i >= len(issues) && reason != keys[i].Reason:
+			moved[issue] = true
+		}
 		return nil
 	})
 	if err != nil {
-		return refused, fmt.Errorf("read the issues' acts state: %w", err)
+		return refused, nil, fmt.Errorf("read the issues' acts state: %w", err)
 	}
 	var reads, attempts []mirrorActsKeyRow
 	acts := []mirrorActRow{}
@@ -324,11 +367,11 @@ func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTi
 	if len(reads) > 0 {
 		listedReads, err := encodeMirrorJSON(reads)
 		if err != nil {
-			return refused, err
+			return refused, nil, err
 		}
 		encodedActs, err := encodeMirrorJSON(acts)
 		if err != nil {
-			return refused, err
+			return refused, nil, err
 		}
 		for i, k := range keys {
 			if !admitted[i] || i >= len(issues) {
@@ -340,33 +383,88 @@ func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTi
 			}
 			found, err := encodeMirrorIDs(ids)
 			if err != nil {
-				return refused, err
+				return refused, nil, err
 			}
-			if _, err := tx.Exec(mirrorActsRemoveSQL, rootID, k.Issue, k.Source, found); err != nil {
-				return refused, fmt.Errorf("remove the acts of issue %s source %d: %w", k.Issue, k.Source, err)
+			res, err := tx.Exec(mirrorActsRemoveSQL, rootID, k.Issue, k.Source, found)
+			if err != nil {
+				return refused, nil, fmt.Errorf("remove the acts of issue %s source %d: %w", k.Issue, k.Source, err)
+			}
+			removed, err := res.RowsAffected()
+			if err != nil {
+				return refused, nil, fmt.Errorf("count the acts removed of issue %s source %d: %w", k.Issue, k.Source, err)
+			}
+			if removed > 0 {
+				moved[k.Issue] = true
 			}
 		}
 		args := []any{rootID, times.at, listedReads, encodedActs, times.wall}
-		for _, step := range []struct {
-			what, query string
-			args        []any
-		}{
-			{"write acts", mirrorActsUpsertSQL, args[:4]},
-			{"record the reads", mirrorActReadsSQL, args},
-		} {
-			if _, err := tx.Exec(step.query, step.args...); err != nil {
-				return refused, fmt.Errorf("%s: %w", step.what, err)
-			}
+		err = scanMirrorRows(tx, mirrorActsUpsertSQL, args[:4], func(r rowScanner) error {
+			var issue string
+			err := r.Scan(&issue)
+			moved[issue] = true
+			return err
+		})
+		if err != nil {
+			return refused, nil, fmt.Errorf("write acts: %w", err)
+		}
+		if _, err := tx.Exec(mirrorActReadsSQL, args...); err != nil {
+			return refused, nil, fmt.Errorf("record the reads: %w", err)
+		}
+	}
+	credited = slices.Sorted(maps.Keys(moved))
+	if len(credited) > 0 {
+		listedMoved, err := encodeMirrorIDs(credited)
+		if err != nil {
+			return refused, nil, err
+		}
+		if _, err := tx.Exec(mirrorActsCreditSQL, rootID, listedMoved); err != nil {
+			return refused, nil, fmt.Errorf("advance the totals of the boards whose credit the evidence moved: %w", err)
 		}
 	}
 	if len(attempts) > 0 {
 		listedAttempts, err := encodeMirrorJSON(attempts)
 		if err != nil {
-			return refused, err
+			return refused, nil, err
 		}
 		if _, err := tx.Exec(mirrorActAttemptsSQL, rootID, times.at, listedAttempts, nil, times.wall); err != nil {
-			return refused, fmt.Errorf("record the attempts: %w", err)
+			return refused, nil, fmt.Errorf("record the attempts: %w", err)
 		}
 	}
-	return refused, nil
+	return refused, credited, nil
+}
+
+// RecordMirrorEvidenceOutcome records how the evidence unit's last read
+// of root rootID's connection ended: failure, why it failed as a whole,
+// or "" for a read that did not, which clears it. A failure of one ticket's source alone is its attempt
+// (MirrorActsAttempt), not this. changed reports that the outcome the root
+// holds changed: a failure that started, changed or cleared. A detached
+// root fails with ErrTrackerCacheGone. Its one writer is the evidence
+// unit, and its one reader the credit sentence (GetMirrorEvidenceFailure).
+func (s *Store) RecordMirrorEvidenceOutcome(rootID int64, failure string) (changed bool, err error) {
+	err = s.mirrorWrite(rootID, fmt.Sprintf("store: record tracker mirror %d evidence outcome", rootID), func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE tracker_cache_roots SET evidence_failure = ?2 WHERE id = ?1 AND evidence_failure IS NOT ?2`, rootID, failure)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		changed = n > 0
+		return err
+	})
+	return changed, err
+}
+
+// GetMirrorEvidenceFailure is why the evidence unit's last read of root
+// rootID's connection failed as a whole, "" while it did not
+// (RecordMirrorEvidenceOutcome). A root gone or detached fails with
+// ErrTrackerCacheGone.
+func (s *Store) GetMirrorEvidenceFailure(rootID int64) (string, error) {
+	var failure sql.NullString
+	err := s.db.QueryRow(`SELECT evidence_failure FROM tracker_cache_roots WHERE id = ? AND connection_id IS NOT NULL`, rootID).Scan(&failure)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", fmt.Errorf("store: read tracker mirror %d evidence outcome: %w", rootID, ErrTrackerCacheGone)
+	case err != nil:
+		return "", fmt.Errorf("store: read tracker mirror %d evidence outcome: %w", rootID, err)
+	}
+	return failure.String, nil
 }

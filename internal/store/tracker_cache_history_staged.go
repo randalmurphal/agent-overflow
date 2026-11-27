@@ -278,8 +278,9 @@ func (s *Store) finishMirrorHistoryInPlace(rootID int64, in mirrorHistoryInput, 
 	}
 	err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
 		now := st
-		if err := tx.QueryRow(`SELECT history_receipt, updated_at, status_since, status_final_for FROM tracker_cache_issues
-			WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2`, rootID, in.h.IssueID).Scan(&now.receipt, &now.updatedAt, &now.since, &now.finalFor); err != nil {
+		if err := tx.QueryRow(`SELECT history_receipt, updated_at, status_since, status_final_for, (`+mirrorHistoryReadForCard("i")+`)
+			FROM tracker_cache_issues i WHERE root_id = CAST(?1 AS INTEGER) AND issue_id = ?2`, rootID, in.h.IssueID).Scan(&now.receipt, &now.updatedAt, &now.since,
+			&now.finalFor, &now.readForCard); err != nil {
 			return fmt.Errorf("read the receipt: %w", err)
 		}
 		if now.receipt != st.receipt {

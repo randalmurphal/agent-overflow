@@ -50,7 +50,7 @@ import (
 // MirrorExportTables are the relations the export writes, the only tables
 // of the database it fills.
 var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epics", "sprints", "sprint_tickets", "changes", "sprint_finished", "labels",
-	"status_intervals", "sprint_intervals", "threads", "worklogs", "worklog_days"}
+	"status_intervals", "sprint_intervals", "credit", "threads", "worklogs", "worklog_days"}
 
 // mirrorExportCardColumns are the tickets' columns decoded from the card
 // blob, in the tickets fill's order: each one's name in the export
@@ -94,13 +94,22 @@ const mirrorExportCardArg = 11
 
 // mirrorExportWindowArg is the parameter of the earliest instant a count
 // can ask of the intervals (mirrorExportEarliest), after the card blob's
-// shape.
+// shape; the four after it are credit's (mirrorExportCreditParams).
 var mirrorExportWindowArg = mirrorExportCardArg + len(mirrorExportCardColumns)
 
+// mirrorExportCreditParams are the credit fill's parameters
+// (mirrorCreditSQL): the history window's start, from which a board
+// without sprints reads its weeks, the support rule, the credit rules,
+// and the export's clock, after which no act counts.
+var mirrorExportCreditParams = mirrorCreditParams{groups: "?3", reset: "CAST(?4 AS INTEGER)",
+	from: intParam("?" + strconv.Itoa(mirrorExportWindowArg+1)), support: "?" + strconv.Itoa(mirrorExportWindowArg+2),
+	rules: "?" + strconv.Itoa(mirrorExportWindowArg+3), until: intParam("?" + strconv.Itoa(mirrorExportWindowArg+4))}
+
 // mirrorExportLoggedArg is the parameter of the first day the logged
-// time holds (MirrorLoggedDays.From), after mirrorExportWindowArg, and
-// the one after it its last (MirrorLoggedDays.Through).
-var mirrorExportLoggedArg = mirrorExportWindowArg + 1
+// time holds (MirrorLoggedDays.From), after the credit fill's
+// (mirrorExportCreditParams), and the one after it its last
+// (MirrorLoggedDays.Through).
+var mirrorExportLoggedArg = mirrorExportWindowArg + 5
 
 // args is the shape as the fills bind it, ?6 to ?10 and then a member
 // path for each column of mirrorExportCardColumns (mirrorExportFills).
@@ -165,6 +174,14 @@ CREATE TABLE main.status_intervals(ticket TEXT NOT NULL, status TEXT NOT NULL, f
 -- sprint_intervals: a ticket in a sprint at one estimate (points), likewise; none for a ticket whose history_behind is 1.
 CREATE TABLE main.sprint_intervals(sprint TEXT NOT NULL, ticket TEXT NOT NULL, points REAL, from_at INTEGER NOT NULL, to_at INTEGER,
   PRIMARY KEY (sprint, ticket, from_at)) WITHOUT ROWID;
+-- credit: empty unless the project counts credit. kind finished: a finished ticket, for its assignee when it moved to done (at);
+-- review: each other person who acted on it (did: commented, approved, logged time), counted review_share percent of points when
+-- that is review_need of the kinds of action the rule counts (review_kinds, named as did names them; qualified 1), else 0; support: time logged on a support ticket, hours,
+-- counted a point a hours_per_point. sprint: the sprint it counts in (NULL on a board without sprints, where at places it; support's
+-- at is the worklog's start there). value: in board.estimates (seconds for time); share: the same in tickets (1 a finished ticket).
+-- value NULL: not counted, note says why; a ticket whose evidence is not read has one such review or support row and no person.
+CREATE TABLE main.credit(sprint TEXT, at INTEGER, ticket TEXT NOT NULL, kind TEXT NOT NULL, person TEXT, value REAL, share REAL, points REAL,
+  review_share INTEGER, review_need INTEGER, review_kinds TEXT, did TEXT, qualified INTEGER, hours REAL, hours_per_point INTEGER, note TEXT);
 -- threads: the threads on this board's computer linked to a ticket. origin: start_work, ask, manual or agent. last_turn_at: its newest turn's start.
 CREATE TABLE main.threads(id TEXT PRIMARY KEY, ticket TEXT NOT NULL, origin TEXT NOT NULL, linked_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
   archived INTEGER NOT NULL, last_turn_at INTEGER) WITHOUT ROWID;
@@ -186,11 +203,19 @@ var mirrorExportBoardSQL = `SELECT b.name, b.plans_sprints, b.estimate_unit, b.e
 	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2")
 
 // mirrorExportStatusChangeSQL is the changes into a status of list of
-// issue i's current history generation, by key: agg(c.at) of them.
-func mirrorExportStatusChangeSQL(agg, list string) string {
+// the issue of alias i (its root_id, issue_id and history_gen) of its
+// current history generation, at or before bound (an SQL expression; ""
+// for none), by key: agg(c.at) of them. The tickets' done time and
+// credit's moment a sprint member moved to done (mirrorCreditFinishedSQL)
+// are its max.
+func mirrorExportStatusChangeSQL(i, agg, list, bound string) string {
+	upTo := ""
+	if bound != "" {
+		upTo = ` AND c.at <= ` + bound
+	}
 	return `(SELECT ` + agg + `(c.at) FROM tracker_cache_changes c
-	      WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id AND c.gen = i.history_gen AND c.kind = 1
-	        AND c.to_value IN (` + list + `))`
+	      WHERE c.root_id = ` + i + `.root_id AND c.issue_id = ` + i + `.issue_id AND c.gen = ` + i + `.history_gen AND c.kind = 1
+	        AND c.to_value IN (` + list + `)` + upTo + `)`
 }
 
 // mirrorExportStartKnownSQL holds for issue i when its read history shows
@@ -301,8 +326,8 @@ var mirrorExportFills = append([]mirrorExportFill{
 	    iif(i.history_for > 0, iif(i.history_from > 0, i.history_from, i.created_at), NULL),
 	    iif(i.history_for > 0 AND NOT ` + mirrorExportHistoryCurrent + `, 1, 0),
 	    iif(` + mirrorExportStartKnownSQL + `, 1, 0),
-	    iif(` + mirrorExportStartKnownSQL + `, ` + mirrorExportStatusChangeSQL("min", mirrorGroupStatusesSQL("?3", MirrorGroupInProgress)) + `, NULL),
-	    iif(i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `), ` + mirrorExportStatusChangeSQL("max", mirrorDoneStatusesSQL("?3")) + `, NULL),
+	    iif(` + mirrorExportStartKnownSQL + `, ` + mirrorExportStatusChangeSQL("i", "min", mirrorGroupStatusesSQL("?3", MirrorGroupInProgress), "") + `, NULL),
+	    iif(i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `), ` + mirrorExportStatusChangeSQL("i", "max", mirrorDoneStatusesSQL("?3"), "") + `, NULL),
 	    iif(` + mirrorRegroupedNotDone("?3") + `, 1, 0), iif(` + mirrorLeftOut("?3") + `, 0, 1)`, afterCard: `
 	  FROM tracker_cache_board_issues b
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
@@ -367,6 +392,15 @@ var mirrorExportFills = append([]mirrorExportFill{
 	    SELECT author AS id FROM main.changes WHERE author IS NOT NULL
 	    UNION SELECT from_value FROM main.changes WHERE kind = 'assignee' AND from_value IS NOT NULL
 	    UNION SELECT to_value FROM main.changes WHERE kind = 'assignee' AND to_value IS NOT NULL) x
+	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
+	{relation: "credit", name: "credit", sql: func() string {
+		with, rows := mirrorCreditSQL(mirrorExportCreditParams, "", func(string) string { return "1" }, true)
+		return with + `
+	  INSERT INTO main.credit(` + mirrorCreditColumns + `)
+	  ` + rows
+	}()},
+	{relation: "credit", name: "people credit names", needs: []string{"people"}, sql: `INSERT OR IGNORE INTO main.people(id, name)
+	  SELECT u.user_id, u.name FROM (SELECT DISTINCT person AS id FROM main.credit WHERE person IS NOT NULL) x
 	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
 }, slices.Concat(mirrorExportIntervalFills(), mirrorExportRelationFills())...)
 
@@ -443,13 +477,14 @@ var ErrMirrorExportUnsupported = errors.New("store: this store has no database f
 // every export fills (mirrorExportRelations), the others left empty, and
 // the columns of MirrorExportColumns relations names, decoded from card
 // blobs of shape card, the intervals from window, the start of the
-// mirror's history window in milliseconds (mirrorExportIntervalsFrom), and
-// the logged time of the days logged. It reads with regroup in one read transaction of this
+// mirror's history window in milliseconds (mirrorExportIntervalsFrom),
+// the logged time of the days logged, and credit by now, the
+// evaluation's clock, after which no act counts. It reads with regroup in one read transaction of this
 // store's file, attached to conn read-only for the fill and detached
 // before it returns. ok is false, with nothing filled, for a board the
 // mirror does not show. It takes a history read slot, as every read that
 // walks a board does; ctx bounds the wait for it and every statement.
-func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations []string, window int64, logged MirrorLoggedDays, card MirrorCardShape) (export MirrorExport, ok bool, err error) {
+func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations []string, window, now int64, logged MirrorLoggedDays, card MirrorCardShape) (export MirrorExport, ok bool, err error) {
 	if s.path == "" || s.path == ":memory:" || strings.Contains(s.path, "mode=memory") {
 		return MirrorExport{}, false, ErrMirrorExportUnsupported
 	}
@@ -481,13 +516,13 @@ func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID in
 			ok = false
 		}
 	}()
-	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup, set, window, logged, card)
+	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup, set, window, now, logged, card)
 	return export, ok, err
 }
 
 // exportMirrorBoardTx runs the fill in one transaction on conn, the file
 // attached.
-func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations map[string]bool, window int64, logged MirrorLoggedDays, card MirrorCardShape) (MirrorExport, bool, error) {
+func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations map[string]bool, window, now int64, logged MirrorLoggedDays, card MirrorCardShape) (MirrorExport, bool, error) {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: begin the export of board %s: %w", boardID, err)
@@ -516,7 +551,7 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	if err := tx.QueryRowContext(ctx, `SELECT coalesce(`+mirrorExportViewerSQL+`, '')`, rootID).Scan(&export.Viewer); err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: read board %s's viewer to export it: %w", boardID, err)
 	}
-	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, export.Earliest, logged, card)
+	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, export.Earliest, window, now, logged, card)
 	for _, fill := range mirrorExportFills {
 		if !fill.runs(relations) {
 			continue
@@ -534,8 +569,9 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 
 // mirrorExportArgs is what the fills bind (mirrorExportFills).
 // from is the earliest instant a count can ask of the intervals
-// (mirrorExportEarliest), logged the days of the logged time.
-func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, from int64, logged MirrorLoggedDays, card MirrorCardShape) []any {
+// (mirrorExportEarliest), window the history window's start, now the
+// export's clock and logged the days of the logged time.
+func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, from, window, now int64, logged MirrorLoggedDays, card MirrorCardShape) []any {
 	groups := regroup.statuses
 	if groups == "" {
 		groups = "{}"
@@ -544,7 +580,8 @@ func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, reset
 	if estimated {
 		hasEstimate = 1
 	}
-	return append(append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...), from, logged.From, logged.Through)
+	return append(append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...), from, window, regroup.supportArg(), regroup.creditArg(), now,
+		logged.From, logged.Through)
 }
 
 // mirrorExportURI is the read-only URI of the database file at path.

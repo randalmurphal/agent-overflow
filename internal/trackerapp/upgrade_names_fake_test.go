@@ -75,7 +75,7 @@ func (f *fixture) reopen(t *testing.T, between func()) {
 
 // upgradedFrom171 makes the store's file the v171 database its mirror
 // would have been, v172's table, column and record and the later
-// migrations' tables, triggers, index and records taken out, and opens it
+// migrations' tables, columns, triggers, index and records taken out, and opens it
 // again, so v172 runs on it as it runs on an upgrade.
 func (s *fakeScenario) upgradedFrom171(t *testing.T) {
 	t.Helper()
@@ -93,6 +93,8 @@ func (s *fakeScenario) upgradedFrom171(t *testing.T) {
 			s.sqlOnStore(t, `DROP TRIGGER `+name)
 			s.sqlOnStore(t, `CREATE TRIGGER `+trigger+` ON tracker_connections BEGIN SELECT 1; END`)
 		}
+		s.sqlOnStore(t, `DROP TRIGGER trg_tracker_cache_credit_card_moved`)
+		s.sqlOnStore(t, `ALTER TABLE tracker_cache_roots DROP COLUMN evidence_failure`)
 		s.sqlOnStore(t, `DROP TABLE tracker_cache_issue_acts`)
 		s.sqlOnStore(t, `DROP TABLE tracker_cache_issue_act_reads`)
 		s.sqlOnStore(t, `DELETE FROM migration_versions WHERE version = 177`)

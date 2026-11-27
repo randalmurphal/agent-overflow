@@ -239,6 +239,10 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, err := s.DropMirrorBodies(root, []string{"10001"})
 			return err
 		},
+		"RecordMirrorEvidenceOutcome": func(root int64) error {
+			_, err := s.RecordMirrorEvidenceOutcome(root, "Jira answered 503")
+			return err
+		},
 		"ReplaceMirrorActs": func(root int64) error {
 			_, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 9), []MirrorIssueActs{commentsOf("10001", 5, 2, "c1"),
 				{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 5, Acts: []MirrorAct{{ID: "w1", Person: "acc-user2", At: 3, Seconds: 60}}}},
@@ -252,7 +256,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 // the cleanup and the reads.
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
-	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorActsDue", "ListMirrorBodies", "ListMirrorIssueWorklogs",
+	"GetMirrorSync", "GetMirrorEvidenceFailure", "ListMirrorHistoryDue", "ListMirrorActsDue", "ListMirrorBodies", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorBoardStatuses", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorParents", "ListMirrorUnnamedParents", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections", "GetMirrorBoardPace", "ListMirrorSupport",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards", "ListMirrorSprintNames", "LastMirrorPlanRow",
 	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays",

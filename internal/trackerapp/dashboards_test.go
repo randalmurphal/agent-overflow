@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
 	"agent-overflow/internal/trackerdash"
 )
 
@@ -573,6 +574,75 @@ func TestAnEvaluationOfAProjectCountingTicketsCountsTickets(t *testing.T) {
 	}
 }
 
+// A project that turns credit on, with no status groups or support named
+// for the site, has its boards' dashboards listed again with the pace
+// read from credit. While the evidence read fails, a finished ticket's
+// review is not counted and every answer of the credit dashboard says
+// why, whatever its range holds; once a read stores the evidence, its
+// reviews count and the sentence is gone.
+func TestAProjectCountingCreditCountsItsPaceFromCredit(t *testing.T) {
+	m, _, _ := evidenceFixture(t, 1)
+	sub := m.subscribeShown(t, m.project()).ID
+	paceReads := func() []string { return m.list(t, sub).Dashboards[0].Widgets[0].How.Reads }
+	if slices.Contains(paceReads(), "credit") {
+		t.Fatalf("the pace without credit reads %v", paceReads())
+	}
+	var read func(tracker.EvidenceQuery) (tracker.Evidence, error)
+	m.p.set(func(p *scripted) {
+		read = p.evidence
+		p.evidence = func(tracker.EvidenceQuery) (tracker.Evidence, error) {
+			return tracker.Evidence{}, &trackerapi.TransientError{Err: errors.New("reset")}
+		}
+	})
+	m.saveSetup(t, m.project(), Setup{Credit: &Credit{On: true, Rules: defaultCredit().Rules}})
+	if !slices.Contains(paceReads(), "credit") {
+		t.Fatalf("the pace with credit reads %v", paceReads())
+	}
+	// pace is the board's review credit as a tried widget sums it, and
+	// the sentence beside it, which the built-in dashboard's pace says too.
+	credit := openTickets()
+	credit.Metric.Title, credit.Metric.SQL = "Review credit", `SELECT ticket, value, share FROM credit WHERE kind = 'review'`
+	credit.Metric.Reduce, credit.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
+	pace := func() (string, string) {
+		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), credit, TileMarks{}, "thread-1", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dashboard := m.list(t, sub).Dashboards[0].ID
+		a := must[trackerdash.Answer](t)(m.svc.EvaluateDashboard(t.Context(), sub, trackerdash.Request{Dashboard: dashboard, Range: trackerdash.RangeThisSprint,
+			TimeZone: "UTC"}))
+		for _, w := range a.Widgets {
+			if w.Error != "" {
+				t.Fatalf("widget %s failed: %s", w.ID, w.Error)
+			}
+		}
+		if said := paceSays(t, a); said != tried.Value.Evidence {
+			t.Fatalf("the built-in pace says %q, the tried widget %q", said, tried.Value.Evidence)
+		}
+		return numText(t, tried.Value.Value), tried.Value.Evidence
+	}
+	out := must[Outcome](t)(m.svc.SyncLinked(t.Context(), m.conn.ID, LinkedDue{Evidence: true}, Background))
+	if out.Failure == nil {
+		t.Fatal("the failing evidence read did not fail its tick")
+	}
+	got, evidence := pace()
+	if got != `{"nc":1}` || !strings.HasPrefix(evidence, "Credit may not count everything: the last read of who worked on the tickets failed. ") ||
+		!strings.Contains(evidence, out.Failure.Message) {
+		t.Fatalf("while the read fails: credit %s, evidence %q; want the ticket's review not counted and the failure %q", got, evidence, out.Failure.Message)
+	}
+	// The ticket is the active sprint's; the last five finished sprints,
+	// the range a dashboard opens on, count credit too, which the failed
+	// read may have left out.
+	if said := paceSays(t, m.evaluate(t, sub, "")); said != evidence {
+		t.Fatalf("the last five sprints say %q; want %q", said, evidence)
+	}
+	m.p.set(func(p *scripted) { p.evidence = read })
+	m.evidenceTick(t)
+	if got, evidence := pace(); got != `{"v":0}` || evidence != "" {
+		t.Fatalf("once read: credit %s, evidence %q; want every row counted, no sentence", got, evidence)
+	}
+}
+
 // A change of a board's dashboards that no person's press makes reaches
 // every open dashboard of the project's board, on the board's event, and
 // no other: an agent's proposal, which names the project and the board,
@@ -626,4 +696,16 @@ func TestADashboardsChangeReachesEveryOpenDashboardOfItsBoardAndNoOther(t *testi
 	if got := told(n); len(got) != 3 || !slices.Equal(got[m.scope()], counts) || !slices.Equal(got[second], counts) || !slices.Equal(got[there], counts) {
 		t.Fatalf("a change of the unit was told %+v; want once on each of the project's boards, counting again", got)
 	}
+}
+
+// paceSays is the sentence beside the built-in dashboard's pace in a.
+func paceSays(t *testing.T, a trackerdash.Answer) string {
+	t.Helper()
+	for _, w := range a.Widgets {
+		if w.ID == "pace" {
+			return w.Evidence
+		}
+	}
+	t.Fatal("the answer has no pace")
+	return ""
 }

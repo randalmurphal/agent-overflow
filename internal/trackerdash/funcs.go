@@ -261,12 +261,15 @@ type contribution struct {
 	ticket  string
 	value   float64
 	counted bool
-	bucket  string
-	series  string
-	person  string
-	epic    string
-	at      int64
-	hasAt   bool
+	// share is the part of a ticket the row counts where the board counts
+	// tickets (ColumnShare).
+	share  float64
+	bucket string
+	series string
+	person string
+	epic   string
+	at     int64
+	hasAt  bool
 	// until is when a state row stops holding (ColumnUntil); hasUntil is
 	// false for one that still holds.
 	until    int64
@@ -278,49 +281,44 @@ type contribution struct {
 
 // rowSink gathers the rows of the metric that runs, charged against the
 // row limit and the byte budget. One metric runs at a time on a session.
-// A state metric's row is kept only when it holds at one of the instants
-// its widgets read (at); the limit and the budget count the rows kept.
+// It keeps only the rows the evaluation's widgets take (kept): the limit
+// and the budget count the rows kept, and no other row is held.
 type rowSink struct {
 	cols columns
 	// series is the metric's declared series, which a row's series is one of.
 	series []string
-	at     heldAt
+	kept   kept
 	rows   []contribution
 	bytes  int
 	err    error
 }
 
-func (s *rowSink) reset(cols columns, series []string, at heldAt) {
-	s.cols, s.series, s.at, s.rows, s.bytes, s.err = cols, series, at, nil, 0, nil
+func (s *rowSink) reset(cols columns, series []string, k kept) {
+	s.cols, s.series, s.kept, s.rows, s.bytes, s.err = cols, series, k, nil, 0, nil
 }
 
-// heldAt is the instants a state metric's widgets read, sorted, with
-// where they are in words for the row limit's sentence (reads.instants).
-type heldAt struct {
-	at    []int64
-	where string
-}
-
-// holdAny is whether state row c holds at one of the instants (holdsAt).
-func (in heldAt) holdAny(c contribution) bool {
-	i := 0
-	if c.hasAt {
-		i, _ = slices.BinarySearch(in.at, c.at)
-	}
-	return i < len(in.at) && c.holdsAt(in.at[i])
+// kept is which rows of a metric the sink keeps: keep is whether the
+// evaluation takes row c (reads.kept, by the reduction's own rules, and
+// evaluation.keeps for a narrowed page), nil for every row. where says
+// where a state metric's kept rows hold, for the row limit's sentence,
+// and shorter whether a shorter range holds fewer of them.
+type kept struct {
+	keep    func(c contribution) bool
+	where   string
+	shorter bool
 }
 
 // errRows is the row limit's failure: of a state metric, the rows that
 // hold where its widgets read it, which the sentence says.
-func (in heldAt) errRows(state bool) *MetricError {
+func (k kept) errRows(state bool) *MetricError {
 	if !state {
 		return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows, its limit. Pick a shorter range.", maxRows), Limit: true}
 	}
 	advice := " Pick a shorter range."
-	if len(in.at) == 1 {
+	if !k.shorter {
 		advice = ""
 	}
-	return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows that hold %s, its limit.%s", maxRows, in.where, advice), Limit: true}
+	return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows that hold %s, its limit.%s", maxRows, k.where, advice), Limit: true}
 }
 
 func (s *rowSink) take() []contribution {
@@ -358,13 +356,11 @@ func (s *rowSink) add(onBoard driver.Value, args []driver.Value) error {
 		return s.err
 	}
 
-	if s.cols.state() {
-		if !s.at.holdAny(c) {
-			return nil
-		}
+	if s.kept.keep != nil && !s.kept.keep(c) {
+		return nil
 	}
 	if len(s.rows) == maxRows {
-		s.err = s.at.errRows(s.cols.state())
+		s.err = s.kept.errRows(s.cols.state())
 		return s.err
 	}
 	if len(c.note) > maxNote {
@@ -391,11 +387,23 @@ func (s *rowSink) read(args []driver.Value) (contribution, error) {
 	if c.ticket, err = text(ColumnTicket, at(ColumnTicket)); err == nil && c.ticket == "" {
 		err = errors.New("a row's ticket is empty or NULL; each row names the ticket it counts")
 	}
-	c.value, c.counted = 1, true
+	c.value, c.counted, c.share = 1, true, 1
 	if err == nil && s.cols.has(ColumnValue) {
 		c.value, c.counted, err = number(ColumnValue, at(ColumnValue))
 		if err == nil && c.counted && (math.IsNaN(c.value) || math.Abs(c.value) > maxValue) {
 			err = fmt.Errorf("ticket %q's value is %g, past %g either way, the most a metric counts", truncate(c.ticket, 64), c.value, maxValue)
+		}
+	}
+	if err == nil && s.cols.has(ColumnShare) {
+		var share float64
+		var ok bool
+		share, ok, err = number(ColumnShare, at(ColumnShare))
+		switch {
+		case err != nil || !ok:
+		case math.IsNaN(share) || math.Abs(share) > maxValue:
+			err = fmt.Errorf("ticket %q's share is %g, past %g either way, the most a metric counts", truncate(c.ticket, 64), share, maxValue)
+		default:
+			c.share = share
 		}
 	}
 	for _, f := range []struct {

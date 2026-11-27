@@ -378,3 +378,22 @@ func TestDashboardWidgetSaysTheDaysNotReadAndItsNote(t *testing.T) {
 		t.Errorf("answer %s lacks the 24 days not read of a chart with no rows", answer)
 	}
 }
+
+// A widget of credit counted while the read of who worked on the tickets
+// failed tells the agent so, with the evaluator's sentence, even when
+// every row it shows counted.
+func TestDashboardWidgetSaysTheEvidenceReadFailed(t *testing.T) {
+	t.Parallel()
+	const sentence = "Credit may not count everything: the last read of who worked on the tickets failed. Jira refused the request: 401 Unauthorized."
+	one := 1.0
+	f := &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
+		return trackerdash.Tried{Unit: "points", Value: trackerdash.WidgetValue{Value: &trackerdash.Num{V: &one}, Evidence: sentence}}, nil
+	}}
+	answer, err := widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": openWidget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"evidence":"` + sentence + `"`; !strings.Contains(answer, want) {
+		t.Fatalf("answer %s lacks %s", answer, want)
+	}
+}

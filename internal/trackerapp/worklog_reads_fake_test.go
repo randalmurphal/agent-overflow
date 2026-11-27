@@ -117,7 +117,7 @@ func (s *timeScenario) told(t *testing.T, n int) {
 func loggedEnds(boards []BoardEvent) int {
 	n := 0
 	for _, e := range boards {
-		if e.Logged {
+		if e.Recount {
 			n++
 		}
 	}

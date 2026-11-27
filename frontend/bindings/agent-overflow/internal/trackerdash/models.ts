@@ -692,7 +692,9 @@ export class Request {
  * TicketRow is one row of a metric in a ticket list or a drill: a ticket
  * as one row counts it. Row is the row's place among the answer's rows,
  * unique within it, since a ticket can count more than once (done in two
- * sprints). Period is the sprint or week a row of the range falls in.
+ * sprints). Assignee is the person the row counts for: the metric's
+ * person column, else the ticket's assignee. Period is the sprint or week
+ * a row of the range falls in, Series the metric's series it is in.
  * Value is the row's number in the metric's unit, absent for a metric
  * that counts tickets, whose rows' values are not what it counts.
  */
@@ -707,6 +709,7 @@ export class TicketRow {
     "value"?: number | null;
     "counted": boolean;
     "period"?: string;
+    "series"?: string;
     "note"?: string;
 
     /** Creates a new TicketRow instance. */
@@ -820,6 +823,13 @@ export class WidgetValue {
      * whole, even with no rows (worklogs.go); a number says so in its Num.
      */
     "old"?: boolean;
+
+    /**
+     * Evidence says, beside a widget whose metric reads the credit
+     * relation while the last read of who worked on the tickets failed as
+     * a whole, that it failed and why (EvidenceSentence); "" otherwise.
+     */
+    "evidence"?: string;
 
     /** Creates a new WidgetValue instance. */
     constructor($$source: Partial<WidgetValue> = {}) {

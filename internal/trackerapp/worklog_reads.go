@@ -36,7 +36,7 @@ import (
 //     it and nothing said.
 //   - One run reads what is queued, newest first, worklogSpan days a read,
 //     back to back, and tells the connection's boards once when it ends
-//     (BoardEvent.Logged), so their dashboards count again. A screen that
+//     (tellRecount), so their dashboards count again. A screen that
 //     stops showing does not stop it: the reads are stored for the next.
 //     Turning the connection off, the service's Stop, and a change of the
 //     account or time source do.
@@ -294,7 +294,7 @@ func (s *Service) runWorklogs(id string, c *worklogConn, run *worklogRun, author
 	}
 	s.worklogs.mu.Unlock()
 	if mine {
-		s.tellLogged(id)
+		s.tellRecount(id)
 	}
 }
 
@@ -375,10 +375,11 @@ func (s *Service) handOut(c *worklogConn, run *worklogRun) (first, last tracker.
 	return first, last, nil
 }
 
-// tellLogged tells every board pump of connection id, on the board's
-// event, that the logged time its dashboards count was read
-// (BoardEvent.Logged).
-func (s *Service) tellLogged(id string) {
+// tellRecount tells every board pump of connection id, on the board's
+// event, that what its dashboards count changed with no row of it
+// (BoardEvent.Recount): the logged time they count was read, or the
+// evidence read's outcome they say changed.
+func (s *Service) tellRecount(id string) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	told := map[*boardPump]bool{}
@@ -388,7 +389,7 @@ func (s *Service) tellLogged(id string) {
 			continue
 		}
 		told[p] = true
-		p.pending.logged = true
+		p.pending.recount = true
 		p.pending.due = true
 		s.flushBoardLocked(p)
 	}

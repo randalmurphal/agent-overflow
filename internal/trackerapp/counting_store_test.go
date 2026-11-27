@@ -248,7 +248,7 @@ func (c *countingStore) ListMirrorActsDue(root int64, boards []store.MirrorActsB
 	return c.Store.ListMirrorActsDue(root, boards, from, now)
 }
 
-func (c *countingStore) ReplaceMirrorActs(root, sourceGen int64, read store.MirrorRead, issues []store.MirrorIssueActs, tried []store.MirrorActsAttempt, catalog store.MirrorCatalog) (store.MirrorCatalogWrite, error) {
+func (c *countingStore) ReplaceMirrorActs(root, sourceGen int64, read store.MirrorRead, issues []store.MirrorIssueActs, tried []store.MirrorActsAttempt, catalog store.MirrorCatalog) (store.MirrorActsWrite, error) {
 	c.count("ReplaceMirrorActs")
 	return c.Store.ReplaceMirrorActs(root, sourceGen, read, issues, tried, catalog)
 }

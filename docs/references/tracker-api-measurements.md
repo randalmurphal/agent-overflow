@@ -1059,6 +1059,105 @@ runs' spread. On the release upgrade corpus (a v0.0.16 database at scale
 empties it: migrating from schema 139 and booting took 1,325 ms through
 v175 and 1,158 ms through v174, one run each.
 
+A walk of the issues updated since an instant
+(`store.mirrorUpdatedSinceSQL`) started at the index's own bound, an
+update time above zero, until the bound was written first, so it visited
+every issue of the root. With it fixed, each intervals fill at 10%
+changed takes 9,648 fewer VM steps at 2,000 and 94,248 fewer at 20,000
+than the table's after column (status_intervals 266,742 and 2,666,142,
+sprint_intervals 121,170 and 1,202,970).
+
+### Credit
+
+`TestMirrorAtScale` measures credit on its fixture with 26 weekly
+sprints inside a 182-day window (25 closed and the active one), every
+member done at its completion and changed inside its sprint, and 520
+tickets with evidence (two comments and two worklogs by three people
+each), every member's history read for its card; at 20,000 the other
+members are read with no evidence. The rules
+are 10% for 2 of commented and logged time, and 4 hours a point. With
+no row estimated, every row is a support ticket, which credit counts by
+its time alone. Credit off is a project that counts none, so it names
+no support tickets either. Same machine and SQLite as above; times are
+the median of 5 runs, VM steps exact. The test fails when the totals
+with credit on take more than twice the VM steps of credit off, or the
+pace more than the steps below.
+
+The export's `credit` fill:
+
+| Board | Rows | Bytes | VM steps | Best time |
+|---|---|---|---|---|
+| 2,000, estimated | 520 finished, 1,560 review | 167,936 | 643,286 | 11.9 ms |
+| 2,000, none estimated | 1,040 support | 73,728 | 390,543 | 9.5 ms |
+| 20,000, estimated | 5,200 finished, 1,560 review | 364,544 | 3,054,566 | 93.4 ms |
+| 20,000, none estimated | 1,040 support | 73,728 | 1,650,543 | 73.8 ms |
+| 20,000, a board without sprints, every done ticket | 8,000 finished, 660 review | 385,024 | 4,489,700 | 111.3 ms |
+
+The tickets fill of the same copy takes 658,634 steps (12.2 ms) at 2,000
+and 6,580,994 (117 ms) at 20,000.
+
+The Backlog's totals (`CountMirrorSections`, the pace's 5 closed sprints
+included), credit off and on:
+
+| Board | Off | On |
+|---|---|---|
+| 2,000, estimated | 207,227 steps, 4.3 ms | 326,527 steps, 6.3 ms |
+| 2,000, none estimated | 193,027 steps, 4.1 ms | 326,603 steps, 7.7 ms |
+| 20,000, estimated | 2,020,727 steps, 74.7 ms | 2,499,127 steps, 80.5 ms |
+| 20,000, none estimated | 1,878,727 steps, 69.2 ms | 2,841,203 steps, 94.6 ms |
+| 5 boards of 4,000, estimated | 408,732 steps, 9.4 ms | 567,933 steps, 13.4 ms |
+| 5 boards of 4,000, none estimated | 380,332 steps, 12.3 ms | 606,009 steps, 17.7 ms |
+
+With none estimated, most of the difference is the support rule telling
+each row of the sections, which a project counting no credit does not
+apply: 820,000 of the 950,000 steps at 20,000.
+
+The pace alone, credit off and on:
+
+| Board | Off | On |
+|---|---|---|
+| 2,000, estimated | 14,290 steps | 133,590 steps, 2.3 ms |
+| 2,000, none estimated | 14,090 steps | 65,652 steps, 1.5 ms |
+| 20,000, estimated | 131,290 steps, 5.7 ms | 609,690 steps, 20.1 ms |
+| 20,000, none estimated | 129,290 steps, 7.6 ms | 271,752 steps, 11.8 ms |
+| 5 boards of 4,000, estimated | 27,291 steps | 186,492 steps, 4.5 ms |
+| 5 boards of 4,000, none estimated | 26,891 steps | 88,554 steps, 3.0 ms |
+
+Reading whether each member's history covers its card and reaches back
+to its finish, which decides whether its finish and its person are
+known, adds 47,694 steps (8.5%) to the pace at 20,000, estimated; the
+reach back to the finish is 22,000 of them.
+
+Of the pace with credit at 20,000, estimated (1,000 finished members in
+its 5 sprints), measured part by part: reading the members takes about
+127,500 steps, when each moved to done 98,000, its rule, owner and
+whether its evidence is read 119,000, its review and support rows
+142,000, and the sums over them the rest.
+
+The evidence listing's arm for a board without sprints walks the root's
+issues updated in the window. With every issue of the root changed in
+it, the upper bound, a listing with every source read takes 1,118,560
+steps (37.5 ms) at 20,000 and 715,362 (24.9 ms) for one board of five
+of 4,000; with none read it stops at its first page, 27,800 steps.
+
+A board read that writes every card of a board again at a later update
+time, in pages of 100, with and without the trigger that moves the
+totals when a card passes its evidence receipt, or its history while it
+is a member of a closed sprint (`trg_tracker_cache_credit_card_moved`):
+
+| Board | Passed | Without the trigger | With it |
+|---|---|---|---|
+| 20,000 | every card's receipts | 139,673,797 steps, 3.66 s | 141,533,796 steps, 3.89 s |
+| 20,000 | every card's history (19,800 in a closed sprint) | 99,634,197 steps, 3.39 s | 102,141,396 steps, 3.19 s |
+| 20,000 | neither | 99,574,197 steps, 3.51 s | 99,954,197 steps, 2.92 s |
+| 2,000 | every card's receipts | 3,167,377 steps, 163 ms | 3,353,376 steps, 168 ms |
+| 2,000 | every card's history (1,980 in a closed sprint) | 2,763,417 steps, 153 ms | 3,014,136 steps, 177 ms |
+| 2,000 | neither | 2,757,417 steps, 157 ms | 2,795,417 steps, 172 ms |
+
+The trigger costs 93 steps a card whose receipt it passes, 127 a closed
+sprint's member whose history it passes, and 19 a card that passes
+neither; the times differ by less than their spread.
+
 ### Thread links and logged time
 
 The fills of `threads`, `worklogs` and `worklog_days`

@@ -36,8 +36,8 @@ func ownOf(scope Scope, ch Changes) []boardChanges {
 //   - the board of the change's own scope gets its changed rows, cards and
 //     removed rows: a board tick's cards are rows of its board;
 //   - every subscribed board of the connection gets its rows of the
-//     changed cards and histories (a history moves a card's status time)
-//     and its rows whose parent's name changed (Changes.Parents: a row
+//     changed cards, histories (a history moves a card's status time) and
+//     evidence (credit the totals count moved) and its rows whose parent's name changed (Changes.Parents: a row
 //     shows its parent's key and title from the parent's name, whether or
 //     not the mirror keeps the parent, so a parent kept or let go moves no
 //     row; a changed order or estimate of a row the board held does not
@@ -69,7 +69,7 @@ func (s *Service) publish(root int64, gen uint64, conn string, ch Changes, own [
 	if ch.Empty() {
 		return
 	}
-	cards := unite(slices.Clone(ch.Cards), ch.History)
+	cards := unite(unite(slices.Clone(ch.Cards), ch.History), ch.Evidence)
 	parents := ch.Parents
 	s.subMu.Lock()
 	var boards []*boardPump

@@ -56,6 +56,29 @@ type period struct {
 
 func (p period) holds(at int64) bool { return at > p.from && at <= p.to }
 
+// places is whether p is row c's period: one of p's sprints is c's for a
+// metric by sprint (bySprint), else p holds c's at. A row of no at and no
+// sprint has no period (place).
+func (p period) places(c contribution, bySprint bool) bool {
+	if bySprint {
+		return slices.Contains(p.sprints, c.bucket)
+	}
+	return c.hasAt && p.holds(c.at)
+}
+
+// holdsState is whether state row c is in p: it holds at p's end
+// (holdsAt), in one of p's sprints for a metric by sprint (bySprint). The
+// widget and the drill place a period's states here (ranged.of), and the
+// row sink keeps those rows by it (reads.kept).
+func (p period) holdsState(c contribution, bySprint bool) bool {
+	return c.holdsAt(p.to) && (!bySprint || slices.Contains(p.sprints, c.bucket))
+}
+
+// meets is whether p meets the span from to to of a row with no instant,
+// its ticket's creation and last update: where it could have happened
+// (place).
+func (p period) meets(from, to int64) bool { return from <= p.to && to > p.from }
+
 // holdsAt is whether state row c holds at instant t: from its at (none:
 // before anything) until its until (none: still), at <= t < until. A
 // period's state is what holds at its end, a number's what holds now and

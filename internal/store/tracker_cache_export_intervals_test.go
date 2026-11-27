@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"testing"
 )
@@ -116,7 +117,7 @@ func TestTheIntervalsHoldWhatTheHistoryShowsInTheWindow(t *testing.T) {
 	}
 	for _, relations := range [][]string{{"status_intervals", "sprint_intervals", "statuses"}, {"status_intervals", "sprint_intervals", "statuses", "changes"}} {
 		conn := exportConn(t)
-		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, relations, intervalsWindow, MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok {
+		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, relations, intervalsWindow, math.MaxInt64, MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok {
 			t.Fatalf("export %v: %v, %v", relations, ok, err)
 		}
 		got := exportRows(t, conn, `SELECT ticket || '|' || status || '|' || from_at || '|' || coalesce(to_at, '-') FROM status_intervals ORDER BY ticket, from_at`)
@@ -148,7 +149,7 @@ func TestTheIntervalsFollowTheWindowAndTheEstimate(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn := exportConn(t)
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"status_intervals", "sprint_intervals"}, 16_000, MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"status_intervals", "sprint_intervals"}, 16_000, math.MaxInt64, MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok {
 		t.Fatalf("export: %v, %v", ok, err)
 	}
 	got := exportRows(t, conn, `SELECT ticket || '|' || status || '|' || from_at || '|' || coalesce(to_at, '-') FROM status_intervals ORDER BY ticket, from_at`)

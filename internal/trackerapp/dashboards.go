@@ -165,8 +165,10 @@ func (s *Service) subscribedBoard(subscription string, r trackerdash.Request) (t
 // while the copy holds the board's own estimates, whether its
 // tracker has epics and its tracker logs time, with its logged time from
 // loggedFrom to the evaluation's last day and the reads of it
-// (worklog_reads.go). The
-// caller leaves the service when the evaluation returns.
+// (worklog_reads.go), and while the project counts credit, why the
+// evidence unit's last read of who worked on the tickets failed as a
+// whole (UnitEvidence). The caller leaves the service when the
+// evaluation returns.
 func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.Board, error) {
 	if err := scope.boardOnly(); err != nil {
 		return trackerdash.Board{}, err
@@ -187,11 +189,18 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 	}
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string, loggedThrough string) (store.MirrorExport, bool, error) {
 		days := store.MirrorLoggedDays{From: logged.String(), Through: loggedThrough}
-		export, ok, err := s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, relations, s.window().UnixMilli(), days, cardShape)
+		export, ok, err := s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, relations, s.window().UnixMilli(), millis(s.now()), days, cardShape)
 		export.EstimateUnit = int(groups.unit(tracker.EstimateUnit(export.EstimateUnit)))
 		return export, ok, err
 	}
-	return trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), TimeTracking: hasTimeTracking(row.Kind), Worklogs: s.worklogsOf(row)}, nil
+	b := trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), Credit: groups.credit, TimeTracking: hasTimeTracking(row.Kind), Worklogs: s.worklogsOf(row)}
+	if groups.credit {
+		if b.EvidenceFailure, err = s.store.GetMirrorEvidenceFailure(root); err != nil {
+			s.leave()
+			return trackerdash.Board{}, fmt.Errorf("trackerapp: read the evidence read's outcome of %s: %w", scope.Connection, err)
+		}
+	}
+	return b, nil
 }
 
 // boardOwn is what a project keeps for a board as an evaluation reads it

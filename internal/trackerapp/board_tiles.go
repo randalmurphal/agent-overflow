@@ -280,9 +280,17 @@ func (s *Service) tileBoardOf(scope Scope, key setupKey) (tileBoard, error) {
 		return tileBoard{}, fmt.Errorf("%w: board %s", ErrNotMirrored, scope.Board)
 	}
 	return tileBoard{
-		kind:         trackerdash.Kind{PlansSprints: st.Board.PlansSprints, Epics: hasEpics(key.site.tracker)},
+		kind:         boardKind(key, groups, st.Board.PlansSprints),
 		estimateUnit: int(groups.unit(tracker.EstimateUnit(st.Board.EstimateUnit))),
 	}, nil
+}
+
+// boardKind is the kind of a board of key's site that plans sprints or
+// not, as its project counts it with groups: it picks the board's
+// built-in dashboard, which counts the pace with credit while the project
+// counts credit.
+func boardKind(key setupKey, groups StatusGroups, plansSprints bool) trackerdash.Kind {
+	return trackerdash.Kind{PlansSprints: plansSprints, Epics: hasEpics(key.site.tracker), Credit: groups.credit}
 }
 
 // boardPins is the widgets key's project pins to board, a board of kind

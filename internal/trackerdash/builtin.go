@@ -219,6 +219,59 @@ WHERE s.start_at IS NULL OR t.history_from IS NULL OR t.history_behind = 1 OR (t
 	Overlap: true,
 }
 
+// The series of the pace with credit (creditMetric).
+const (
+	seriesFinished = "Finished tickets"
+	seriesReview   = "Review credit"
+	seriesSupport  = "Support credit"
+)
+
+// creditMetric is the pace of a board whose project counts credit, by
+// sprint or by week: each credit row (the export's credit relation) in
+// its series, for its person, with a note of how it was counted. On a
+// board without sprints a row whose ticket's finish is not known is in no
+// week, which its note says.
+func creditMetric(plansSprints bool) Metric {
+	// note is a row's note: why it is not counted, how a review or support
+	// time was counted, in the base the evaluator counts it from
+	// (:estimates), and what the count leaves out.
+	const note = `CASE WHEN c.value IS NULL THEN c.note
+       WHEN c.kind = 'review' AND c.qualified = 1 THEN printf('%d%% of %s for %s', c.review_share, CASE :estimates
+           WHEN 'points' THEN printf('%g points', coalesce(c.points, 0)) WHEN 'time' THEN printf('%gh', round(coalesce(c.points, 0) / 3600.0, 2))
+           ELSE 'a ticket' END, c.did) || coalesce(' · ' || c.note, '')
+       WHEN c.kind = 'review' THEN printf('no credit: %s; needs %d of %s', c.did, c.review_need, c.review_kinds) || coalesce(' · ' || c.note, '')
+       WHEN c.kind = 'support' AND :estimates = 'time' THEN printf('%gh logged', round(c.hours, 2)) || coalesce(' · ' || c.note, '')
+       WHEN c.kind = 'support' THEN printf('%gh ÷ %d = %g', round(c.hours, 2), c.hours_per_point, round(c.share, 2)) || coalesce(' · ' || c.note, '')
+       ELSE c.note END`
+	series := `CASE c.kind WHEN 'finished' THEN '` + seriesFinished + `' WHEN 'review' THEN '` + seriesReview + `' ELSE '` + seriesSupport + `' END`
+	m := Metric{
+		Title:  "Usual pace",
+		Reduce: ReduceAverageOfPeriodSums, Unit: UnitEstimate, Good: GoodUp, Series: []string{seriesFinished, seriesReview, seriesSupport},
+	}
+	if plansSprints {
+		m.Name, m.Bucket = "credit_by_sprint", BucketSprint
+		m.Words = []string{
+			"Each sprint's finished tickets, by the board's estimates now, for their assignee when they moved to done; review credit, a share of a finished ticket for each other person who worked on it by the sprint's end; and support credit for time logged on support tickets.",
+			"A ticket whose status when the sprint ended, or whose comments and worklogs, are not read is listed and not counted.",
+			"A board without estimates, or of a project that counts tickets, counts a finished ticket as one and credit as its part of one.",
+		}
+		m.SQL = `SELECT c.ticket AS ticket, c.value AS value, c.share AS share, c.sprint AS bucket, c.person AS person, ` + series + ` AS series,
+  ` + note + ` AS note
+FROM credit c WHERE c.sprint IS NOT NULL`
+		return m
+	}
+	m.Name, m.Bucket = "credit_by_week", BucketPeriod
+	m.Words = []string{
+		"Each week's finished tickets, by the board's estimates now, for their assignee when they moved to done; review credit, a share of a finished ticket for each other person who worked on it; and support credit for time logged on support tickets, in the week worked.",
+		"A review counts in the week its ticket finished, whenever it was left; a ticket whose finish time, or whose comments and worklogs, are not read is listed and not counted.",
+		"A board without estimates, or of a project that counts tickets, counts a finished ticket as one and credit as its part of one.",
+	}
+	m.SQL = `SELECT c.ticket AS ticket, c.value AS value, c.share AS share, c.at AS at, c.person AS person, ` + series + ` AS series,
+  iif(c.at IS NULL AND c.kind = 'review', ` + finishUnknown + ` || coalesce(' · ' || ` + note + `, ''), ` + note + `) AS note
+FROM credit c WHERE c.sprint IS NULL AND (c.at > :since OR c.at IS NULL)`
+	return m
+}
+
 // builtin is the built-in dashboard of a board of kind k and its metrics
 // by name.
 func builtin(k Kind) (Dashboard, map[string]Metric) {
@@ -285,6 +338,9 @@ FROM tickets t WHERE t.open = 1`,
 FROM tickets t WHERE t.open = 1`,
 			Reduce: ReduceSum, Unit: UnitEstimate, Bucket: BucketEpic,
 		}
+	}
+	if k.Credit {
+		pace = creditMetric(k.PlansSprints)
 	}
 	by := "sprint"
 	if !k.PlansSprints {

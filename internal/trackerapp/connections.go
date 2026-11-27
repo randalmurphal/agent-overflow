@@ -54,9 +54,32 @@ func (s *Service) Add(c NewConnection) (Connection, error) {
 		var exited []<-chan struct{}
 		s.followConnectionsLocked(&exited)
 		s.siteLinksChanged(row)
+		if row.Enabled {
+			s.timeSourceChanged(row)
+		}
 		return true, nil
 	})
 	return out, err
+}
+
+// timeSourceChanged has every board of the Jira connection whose time
+// source row is (a Tempo connection added, turned on or off, or removed
+// while on) read again: the change dropped the connection's worklogs and
+// moved its boards' totals (migration v177), whose credit counts them.
+// Any other connection tells nobody. The caller holds opMu.
+func (s *Service) timeSourceChanged(row store.TrackerConnection) {
+	if row.Kind != store.TrackerKindTempo || row.ParentID == "" {
+		return
+	}
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for scope, p := range s.subs.boards {
+		if scope.Connection != row.ParentID || p.over || p.core.DeadLocked() {
+			continue
+		}
+		p.pending.add(nil, nil, true)
+		s.flushBoardLocked(p)
+	}
 }
 
 // Rename sets connection id's label, trimmed. An unchanged label tells
@@ -120,6 +143,7 @@ func (s *Service) setEnabled(id string, enabled bool) (_ Connection, changed, de
 		// After the detach below: a link shows its copy current while its
 		// root is attached.
 		defer s.siteLinksChanged(row)
+		s.timeSourceChanged(row)
 	}
 	if row.Enabled {
 		s.followConnectionsLocked(&exited)
@@ -224,6 +248,9 @@ func (s *Service) Remove(id string) error {
 		deleted = true
 		s.followConnectionsLocked(&exited)
 		s.siteLinksChanged(row)
+		if row.Enabled {
+			s.timeSourceChanged(row)
+		}
 		return true, nil
 	})
 	if deleted {

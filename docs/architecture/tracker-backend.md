@@ -978,8 +978,12 @@ but answered after the settle margin still decides, since the history
 leaves the issue due nothing more. The service serializes a connection's
 history reads (its history lock); ticket reads run beside them, so the
 order is kept in the record, not by the caller. A history read is told as
-a change only when its changes or the shown status time or its finality
-changed. A card
+a change only when its changes, the shown status time or its finality,
+or what credit reads of it (whether it is final for the card's version,
+and from when it is complete) changed (`writeMirrorHistoryTimesTx`;
+`TestEveryWriteThatChangesATicketsCreditReportsIt` finds each column
+credit reads from its SQL and checks each write of it reports the
+ticket). A card
 read that finds the same status at a newer update keeps the time it
 showed, no longer final, so an issue that left its status and came back
 between two card reads shows the earlier stay's time until a read of the
@@ -1199,6 +1203,8 @@ and writes share:
   - the members of the boards' active sprints done now, their comments
     and every worklog; then the members of each sprint closed in the
     history window (180 days), newest first, done at its completion,
+    the same; then, of each board that plans no sprints, its tickets
+    done now whose card moved in the window, walked by the update index,
     the same; then each project's support tickets (its support rule)
     whose card moved in the window, walked by the update index, their
     worklogs from the window's start. A ticket two arms or two projects
@@ -1217,6 +1223,15 @@ and writes share:
     or removes.
   - A read never narrows a receipt's coverage: its worklogs are read
     from the earlier of the need and the receipt's start.
+  - Every write that changes what credit counts advances the
+    `totals_revision` of each board holding the ticket, once a board per
+    transaction, and tells those boards through the change funnel
+    (`Changes.Evidence`), since the pace counts credit from it: a new
+    receipt, a changed coverage, an act added, changed or removed, the
+    first failed read since a good one, and a card update that passes a
+    receipt (`trg_tracker_cache_credit_card_moved`). A time source turned
+    on, off, added or removed advances them on every board of the parent
+    connection's root, and the parent's boards read again.
 
   A unit reads at most 4 batches of 50 a tick and reports More while the
   listing has more. A source that failed for its ticket alone is stored
@@ -1224,7 +1239,11 @@ and writes share:
   tick reaches the tickets behind it; the tick's attempts reach the
   linked loop's failure report as a count with the first reason. A read
   that fails for every ticket stores what it read before the failure,
-  then fails the tick. Each read is stored with the update it was for,
+  then fails the tick, and the unit records the failure's reason on the
+  root (`RecordMirrorEvidenceOutcome`, `tracker_cache_roots.evidence_failure`)
+  until a run completes; a failure of the whole read marks no ticket's
+  source failed. A ticket's source whose read failed after a good one is
+  not counted from then, with the reason. Each read is stored with the update it was for,
   replaced per ticket and source, its authors in the first transaction;
   a read that began no later than the stored one is superseded. Under a
   time source change the read's comments are stored and its worklogs
@@ -1956,7 +1975,8 @@ Every tick's changes and every open ticket's read pass through one change
 funnel (`trackerapp/funnel.go`):
 
 - The tick's own board gets its changed rows and cards and its removed
-  rows.
+  rows; a row read again as it was is changed when the read is the first
+  after the board's estimate reset, from which its estimate counts.
 - Every subscribed board of the connection gets its rows of the changed
   cards and histories, and its rows whose parent's name changed
   (`Changes.Parents`; a parent's keep, rank or estimate moves no row).
@@ -2492,7 +2512,7 @@ closes a database of its own.
 
 | Rule or state | Owner |
 |---|---|
-| Which rows a board's export holds, the regrouping, the pace's done-at-completion rule | `store` (`tracker_cache_export.go`; the pace's fragment is shared with `tracker_cache_pace.go`) |
+| Which rows a board's export holds, the regrouping, the pace's done-at-completion rule, credit | `store` (`tracker_cache_export.go`; the pace's fragment is shared with `tracker_cache_pace.go`, and credit's, `tracker_cache_credit.go`, with the Backlog's pace) |
 | The sandbox, the metric contract and its validator, the reductions, ranges, narrowing, drills and the built-in dashboard | `trackerdash` (its package comment is the sandbox's contract) |
 | The board, its status groups and the viewer of an evaluation | `trackerapp` |
 | The dashboards a project keeps (the setup file's `dashboards` section) and the widgets agents proposed | `trackerapp` (`dashboard_setup.go`, `dashboards.go`) |
@@ -2792,6 +2812,51 @@ board's Overview counts three widgets from them:
 Their costs at 2,000 and 20,000 issues are in
 [Tracker API measurements](../references/tracker-api-measurements.md#sprint-history).
 
+### Credit
+
+A project that counts credit passes its rules in the board read's
+regrouping (`MirrorRegroup.WithCredit`), and one SQL fragment counts it
+(`store/tracker_cache_credit.go`, whose comment holds the rules): the
+export's `credit` relation and the store's pace both read it, so they
+count alike. Credit applies only on a site whose tracker reads evidence
+(`Capabilities.Evidence`, `trackerapp.capabilitiesOf`). Each row is a
+finished ticket for the person it was assigned to when it finished, a
+review for each other person who acted on it, or support time for its
+author, with the rule values its note needs; a support ticket counts by
+its time alone. Acts after the evaluation's clock count nowhere. A
+ticket whose evidence is not read for its card has one row not counted,
+with no person, so a person's page lists it too (`evaluation.keep`). The
+built-in dashboard's pace and its finished bars then count three
+series: finished tickets, review credit and support credit. Who had a
+finished ticket is read from a history that covers its card and is
+complete from before the finish: until the history unit reads it again
+after an edit (at once, and once more a settle margin later, one minute
+on Jira), the ticket names no person and its reviews are one row not
+counted, and one whose history starts after its finish (a ticket the
+tracker no longer answers for) names no one, its points still counted.
+When it finished is read from that history too, else from its
+resolution. One whose history covers it but names no one for an unknown
+finish (no move into done, no resolution, a reassignment) counts the
+review of each person who never had it, and lists the actions of those
+who did as one review row not counted. Each finished ticket's row and
+review rows read one answer for who had it or why no one is named
+(`cr_f` in `mirrorCreditFinishedSQL`). A closed sprint's member carried
+into a later sprint counts as done at the closed sprint's end from its
+status now only when its history is read for its card
+(`mirrorStatusAtCompletionSQL`), for the pace too. Support time counts in closed
+and active sprints only: work after the last completion while no sprint
+is active counts once the next one starts. While the evidence unit's
+last whole read failed, each value of a widget that reads `credit`
+says why, whatever its rows hold (`WidgetValue.Evidence`,
+`EvidenceSentence`), on the dashboard, its proposals, a tried widget
+and the agent's `dashboard_widget`; a change of that outcome has the open boards count again
+(`BoardEvent.Recount`). A project that
+counts no credit binds no rules, its `credit` relation is empty, and
+its pace runs the statement it ran before credit
+(`TestAPaceWithoutCreditRunsTodaysStatement`). Its costs at 2,000 and
+20,000 issues are in
+[Tracker API measurements](../references/tracker-api-measurements.md#credit).
+
 ### Thread links and logged time
 
 The rules are the comments at the top of
@@ -2868,7 +2933,7 @@ The rules are the comments at the top of
   31 days a read, back to back. It hands a span out and checks the run's
   own account and time source on the connection's row before it reads,
   and stops when either moved. It tells the connection's boards when it
-  ends (`BoardEvent.Logged`), on which the page counts again. Every span
+  ends (`BoardEvent.Recount`), on which the page counts again. Every span
   handed out ends stored, recorded as failed, or forgotten with the
   state: a screen that closes does not stop a run; turning the connection
   off, `Stop`, and a change of account or source do, and clear what was
@@ -2889,8 +2954,8 @@ Their costs at 2,000 and 20,000 issues are in
 ### Metrics
 
 A metric is one SELECT over the export whose rows are contributions:
-a `ticket` and any of `value`, `bucket`, `series`, `person`, `epic`, `at`,
-`until` and `note` (`trackerdash/metric.go`). Each row is checked as it comes
+a `ticket` and any of `value`, `share`, `bucket`, `series`, `person`,
+`epic`, `at`, `until` and `note` (`trackerdash/metric.go`). Each row is checked as it comes
 in: its ticket is in the copy, its series is one the metric names, its
 value is finite and within ±1e12, and its `at` is an instant before the
 year 2286. The app does the rest: it places rows in the range's periods
@@ -2902,7 +2967,8 @@ NULL is not counted: a number says how many tickets it could not count
 and a number that counted nothing is not known (`V` absent) rather than
 zero. Where the board is counted in tickets (it has no estimates, or its
 project counts tickets), each counted row of a metric in the estimate
-unit is one ticket, whatever its value (`evaluation.run`); the copy
+unit is its `share` of a ticket (1 when absent), whatever its value
+(`evaluation.run`); the copy
 keeps each ticket's own estimate. A row of a range metric with no `at` could have happened from its
 ticket's creation to its last update: it belongs to each range that
 span meets, the range before included, is counted in none and in no
@@ -2929,7 +2995,11 @@ answers why in `Note` and its drill is refused with the same sentence;
 `RangeWords` names the sprint for How this is counted. The host binds `:now` and `:since` (where the
 range's periods, the previous range's included, begin), so a metric of
 the range reads only the rows it can place; a done ticket whose finish
-is not known is read when it changed since `:since`.
+is not known is read when it changed since `:since`. It also binds
+`:estimates`, what the counts of unit estimate count (`points`, `time`,
+or `none` where the board has no estimates or its project counts
+tickets), the one answer the evaluator counts by, so a note states the
+base its number was counted from.
 
 A drill names its widget and one of three targets
 (`trackerdash.DrillRequest`), and any other is refused: the whole widget
@@ -2959,11 +3029,19 @@ statement.
   parameters, with LIKE and GLOB patterns of at most 256 bytes. It runs
   inside a wrapper that produces the whole result in SQLite's first
   step, under a 1 s deadline counted from before its prepare, at most
-  20,000 rows and 4 MiB of encoded rows. A state's row counts toward the
-  rows only if it holds at an instant its widgets read (now, where the
-  range begins, or the end of a period they show), so a state's past
-  stays do not fill the limit; past it, the widget's sentence says which
-  of those instants the rows held at. An evaluation has 4 s. A
+  20,000 rows and 4 MiB of encoded rows. A row counts toward them only
+  if a widget or drill of the evaluation takes it (`reads`), by the
+  rules the reduction places it by (`reads.kept`, `period.holdsState`,
+  `period.places`, `period.meets`): a state's if it holds now or where
+  the range begins, or at the end of a period they show, in that
+  period's sprint for a metric by sprint; an event's placed in periods
+  if it falls in a period they show, or in the previous range for a
+  number that compares with it, one with no instant if its ticket's
+  life meets such a period and not for a drill of one period, which
+  holds placed rows alone; on a person's or an epic's page, only the
+  rows the page keeps (`evaluation.keeps`); so rows no widget reduces do
+  not fill the limit; past it, a state widget's sentence says which of those
+  instants the rows held at. An evaluation has 4 s. A
   count of a dashboard is two, one after the other: its own widgets, on
   a copy of what they read, with their titles, then the board's
   proposals, on a copy of their own made after the first is closed, so
@@ -3179,7 +3257,7 @@ the page when it does not (`note`), how many rows its query returned and
 the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 6,998 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 8,874 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a
