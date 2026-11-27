@@ -533,8 +533,13 @@ func goneSetting(settings trackerapp.TimeSettings, err error) error {
 		role   string
 	}{{settings.Meetings, "meetings"}, {settings.TimeOff, "time-off"}} {
 		if t := set.ticket; t != nil && strings.EqualFold(t.Key, gone.key) && slices.Contains(gone.sites, t.SiteName()) {
+			// A question with no key is drafted on a site only when the
+			// call's other keys name it or a Jira connection is the only
+			// one on, so the advice names an offer.
+			site := t.SiteName()
 			return errorsx.Public(CodeNotFound, fmt.Sprintf("%s, this project's %s ticket in Settings > Issues > Time, cannot be found on %s, or this connection cannot see it. "+
-				"Leave out key to ask the user which ticket, and tell them to choose another %s ticket there.", t.Key, set.role, t.SiteName(), set.role), err)
+				"Ask the user which ticket: leave out key, and offer a ticket of %s when no other entry has a key there. Tell them to choose another %s ticket in those settings.",
+				t.Key, set.role, site, site, set.role), err)
 		}
 	}
 	return err

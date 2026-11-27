@@ -382,14 +382,31 @@ func TestTimeDraftSaysASettingsTicketThatIsGone(t *testing.T) {
 	}
 	_, err := timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{entry("WEB-1"), entry("ops-1")}})
 	refused(t, err, CodeNotFound, "OPS-1, this project's meetings ticket in Settings > Issues > Time, cannot be found on example.atlassian.net, or this connection cannot see it. "+
-		"Leave out key to ask the user which ticket, and tell them to choose another meetings ticket there.")
+		"Ask the user which ticket: leave out key, and offer a ticket of example.atlassian.net when no other entry has a key there. Tell them to choose another meetings ticket in those settings.")
 	_, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "hours": 8, "reason": "Holiday", "offer": []string{"OPS-2"}}}})
 	refused(t, err, CodeNotFound, "OPS-2, this project's time-off ticket in Settings > Issues > Time, cannot be found on example.atlassian.net, or this connection cannot see it. "+
-		"Leave out key to ask the user which ticket, and tell them to choose another time-off ticket there.")
+		"Ask the user which ticket: leave out key, and offer a ticket of example.atlassian.net when no other entry has a key there. Tell them to choose another time-off ticket in those settings.")
 	_, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{entry("WEB-99")}})
 	refused(t, err, CodeNotFound, "No ticket WEB-99 on example.atlassian.net.")
 	if len(f.drafts) != 0 {
 		t.Fatalf("a refused draft reached the draft: %v", f.drafts)
+	}
+
+	// With two Jira connections on, a day's only entry on the gone
+	// time-off ticket follows the advice: a question offering a ticket of
+	// the site, which drafts.
+	f.sources = []trackerapp.TicketSource{timeJira, timeJira2}
+	f.draft = func(string, trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) {
+		return trackerapp.TimeDraftView{}, nil
+	}
+	holiday := map[string]any{"day": "2026-11-24", "hours": 8, "reason": "Holiday"}
+	_, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "key": "example.atlassian.net/OPS-2", "hours": 8, "reason": "Holiday"}}})
+	if code, message, _ := errorsx.PublicDetails(err); code != CodeNotFound || !strings.Contains(message, "offer a ticket of example.atlassian.net when no other entry has a key there") {
+		t.Fatalf("the gone time-off ticket with two connections on: %v", err)
+	}
+	holiday["offer"] = []string{"example.atlassian.net/WEB-1"}
+	if _, err := timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{holiday}}); err != nil || len(f.drafts) != 1 {
+		t.Fatalf("the question the advice asks for: %v, drafts %v", err, f.drafts)
 	}
 }
 
@@ -456,5 +473,52 @@ func TestTimeDraftKeepsTimeOffEpics(t *testing.T) {
 		if lookups := slices.DeleteFunc(slices.Clone(f.asked), func(a string) bool { return !strings.HasPrefix(a, "lookup ") }); len(lookups) > 1 {
 			t.Errorf("%s asked %v; want at most the one lookup of its keys", tc.name, lookups)
 		}
+	}
+}
+
+// A key is written bare only when the one connection on is the key's own
+// site: a key of another site, or any key while several are on, carries
+// its site, so it opens that site's ticket again.
+func TestAKeyIsBareOnlyOnTheOneSiteOn(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		sources []trackerapp.TicketSource
+		want    string
+	}{
+		{"one source, the key's site", []trackerapp.TicketSource{timeJira}, "OPS-1"},
+		{"one source, another site", []trackerapp.TicketSource{timeJira2}, "example.atlassian.net/OPS-1"},
+		{"several sources", []trackerapp.TicketSource{timeJira, timeJira2}, "example.atlassian.net/OPS-1"},
+	} {
+		if got := qualifier(tc.sources, timeJira.Site)("OPS-1"); got != tc.want {
+			t.Errorf("%s: %q; want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// With the meetings ticket's site turned off and another site on that has
+// a ticket of the same key, time_read names the meetings ticket with its
+// site, and a draft of that key is refused, drafting nothing on the other
+// site.
+func TestASettingsTicketOfASiteTurnedOffIsNotDraftedOnAnother(t *testing.T) {
+	t.Parallel()
+	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira2}, time: map[string]trackerapp.WorklogDays{timeJira2.ID: {}},
+		lookup: map[string]map[string]string{timeJira2.ID: {"OPS-1": "20101"}}}
+	h := &fakeHost{time: trackerapp.TimeSettings{Meetings: timeTicket("OPS-1")}}
+	s := timeServer(f, h)
+	answer, err := timeCall(t, s, "time_read", map[string]any{"from": "2026-11-24", "to": "2026-11-24"})
+	if err != nil || !strings.HasSuffix(answer, `"meetings_ticket":"example.atlassian.net/OPS-1"}`) {
+		t.Fatalf("time_read = %s, %v", answer, err)
+	}
+	var read struct {
+		Meetings string `json:"meetings_ticket"`
+	}
+	if err := json.Unmarshal([]byte(answer), &read); err != nil {
+		t.Fatal(err)
+	}
+	_, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "key": read.Meetings, "hours": 1, "reason": "Standup"}}})
+	refused(t, err, CodeNotFound, "No connection on this computer reaches example.atlassian.net; the sites on are other.atlassian.net.")
+	if len(f.drafts) != 0 {
+		t.Fatalf("the meetings ticket was drafted on the other site: %v", f.drafts)
 	}
 }
