@@ -734,6 +734,19 @@ const STATIC_FIELDS = [
     conditional: true,
   },
   {
+    id: 'tracker-points.project',
+    section: 'tracker-points',
+    label: 'Project',
+    hint: 'Choose the project whose counting to set.',
+  },
+  {
+    id: 'tracker-points.estimates',
+    section: 'tracker-points',
+    label: 'Estimates',
+    keywords: ['jira', 'points', 'story points', 'estimate', 'estimates', 'count tickets', 'pace', 'velocity', 'sprint planning', 'poker', 'planning poker'],
+    conditional: true,
+  },
+  {
     id: 'tracker-time.project',
     section: 'tracker-time',
     label: 'Project',

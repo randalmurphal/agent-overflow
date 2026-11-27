@@ -379,7 +379,11 @@ no step runs at root creation, restore or start.
   `never_epics`, true when absent and stored only when false; the
   section dropped when it sets nothing; it applies only while the
   project lists a Jira board, and `ProjectTimeSettings` answers the
-  built-in settings otherwise, with the file keeping the section). The writer (`validateSetup`)
+  built-in settings otherwise, with the file keeping the section) and
+  `estimates` (`count`, `tickets` to count tickets in place of the
+  boards' estimates, absent for the estimates; and `poker`, true when
+  absent and stored only when false; the section dropped when it sets
+  nothing; it applies only to the project's Jira boards). The writer (`validateSetup`)
   owns these defaults: a client sends the value it shows. Beside them,
   `dashboards` (by tracker site and board, the dashboards the project
   keeps) is written only by its own edits ([Own dashboards and
@@ -428,6 +432,28 @@ no step runs at root creation, restore or start.
   project's boards read again and the change is told, as for any change
   of what is held (`setupMoved`). A file edited by hand while the app
   runs is read by the next save or the next start.
+- **The unit a project counts a board in** is the board's estimate unit,
+  or none when the project counts tickets and the board is a Jira
+  board's (`StatusGroups.unit`, which carries the count with the site's
+  groups). The board view says it as `counts` beside the board's own
+  `estimate.unit`: every total, the pace and a person's load on the Board
+  and Backlog screens read `counts`, and a card's estimate reads
+  `estimate.unit`. The store's totals carry both rows and estimates, so a
+  change of the count reads the project's open boards again by the path
+  a change of its groups takes (`setupMoved`, `readBoardsAgain`) and
+  tells the dashboards changed, since a board's dashboards are laid out
+  and counted in that unit (`Dashboards`; the copy keeps each ticket's
+  own estimate, and the evaluator counts each counted row of an estimate
+  widget as one ticket). `ProjectTrackerPace` answers every board the
+  project lists with its connection's kind, which is how the Points and
+  credit page knows whether it applies, and each Jira board with its pace
+  read from the mirror by the same rule the section totals use
+  (`GetMirrorBoardPace`), in that unit, with no tracker request: one
+  query of the board's last 5 closed sprints and their members per Jira
+  board. Planning poker off is the ticket screen's
+  rule: it asks no poker support and shows no poker for a ticket of the
+  project, so the votes are not followed, and it asks nothing until the
+  project's setup is read.
 - **Status groups apply to a board read** as a bound argument
   (`store.MirrorRegroup`), resolved from the board handle's project and
   its connection's site, so two projects that list one board each read it
@@ -2385,7 +2411,10 @@ a person or an epic, and lists them in a drill. A row whose value is
 NULL is not counted: a number says how many tickets it could not count
 (`Num.NC`, which leaves out a ticket another row of its series counts),
 and a number that counted nothing is not known (`V` absent) rather than
-zero. A row of a range metric with no `at` could have happened from its
+zero. Where the board is counted in tickets (it has no estimates, or its
+project counts tickets), each counted row of a metric in the estimate
+unit is one ticket, whatever its value (`evaluation.run`); the copy
+keeps each ticket's own estimate. A row of a range metric with no `at` could have happened from its
 ticket's creation to its last update: it belongs to each range that
 span meets, the range before included, is counted in none and in no
 period, and the range lists it in its numbers, their drills and a
@@ -2639,7 +2668,7 @@ tickets each number could not count, how many rows its query returned
 and the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 4,656 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 4,751 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a

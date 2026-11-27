@@ -75,7 +75,7 @@ describe('settings section map', () => {
       ['threads', 'performance', 'keybindings', 'notifications', 'voice', 'updates'],
       ['claude', 'codex', 'agy', 'commit-messages', 'browser', 'thread-tools', 'assistants', 'agent-profiles', 'agent-guide', 'memory'],
       ['projects', 'git', 'editor'],
-      ['tracker-connections', 'tracker-boards', 'tracker-statuses', 'tracker-fields', 'tracker-start-work', 'tracker-time', 'tracker-agents'],
+      ['tracker-connections', 'tracker-boards', 'tracker-statuses', 'tracker-fields', 'tracker-start-work', 'tracker-points', 'tracker-time', 'tracker-agents'],
       ['systems', 'remote', 'agent-access'],
       ['observability', 'storage'],
     ]);

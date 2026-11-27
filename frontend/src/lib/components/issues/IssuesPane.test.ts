@@ -29,6 +29,7 @@ import { registerIssuesCommands } from '../../stores/issuesCommands';
 import { clearCommandRegistry, runCommand, type CommandContext } from '../../stores/commandRegistry.svelte';
 import { hiddenCardFields, requestTicketOpen, requestTimeOpen, setTicketPlacement, takePaneOpenRequest } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
+import { refreshTrackerSetup } from '../../stores/trackerSetup.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { detachBackend } from '../../transport/backends';
@@ -125,7 +126,7 @@ function kanban(todo: ColumnSeed, doing: ColumnSeed, extra: Partial<BoardView> =
   }));
   const total = (seed: ColumnSeed) => ({ rows: seed.total ?? seed.rows.length, estimate: 2 * (seed.total ?? seed.rows.length) });
   return {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'Board 1', plans_sprints: false, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'Board 1', plans_sprints: false, estimate: { unit: 'points' }, counts: 'points',
     columns: [
       { name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: total(todo) },
       { name: 'In Progress', statuses: [{ id: 's2', group: 'in_progress' }], total: total(doing) },
@@ -142,7 +143,7 @@ function sprintBoard(rows: RowView[], leftOut?: string[], more = false): BoardVi
   const section = { kind: 'sprint', sprint: '8' };
   const next = more ? { order: rows.at(-1)!.order, issue: rows.at(-1)!.card.id, lifetime: 1, revision: 1 } : null;
   return {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'Board 1', plans_sprints: true, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'Board 1', plans_sprints: true, estimate: { unit: 'points' }, counts: 'points',
     columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }, { id: 's2', group: 'in_progress' }], total: { rows: 0, estimate: 0 } }],
     sprints: [{ id: '8', name: 'Sprint 8', state: 'active', total: { rows: 0, estimate: 0 } }],
     all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: Date.now() },
@@ -215,6 +216,14 @@ describe('the Issues pane', () => {
     expect(picked()).toBeNull();
     view.unmount();
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('sub-1-1'));
+  });
+
+  it('counts the columns in tickets for a project that counts tickets, each card keeping its points', async () => {
+    install({ view: kanban({ rows: [{ ...row('1', 'a', 's1'), estimate: 3 }] }, { rows: [row('2', 'b', 's2')] }, { counts: 'none' }) });
+    const view = mount();
+    await waitFor(() => expect(view.getAllByTestId('issues-card')).toHaveLength(2));
+    expect(columns(view).map((c) => c.count)).toEqual(['1', '1']);
+    expect(within(view.getAllByTestId('issues-card')[0]).getByTestId('issues-card-estimate')).toHaveTextContent('3');
   });
 
   it('opens the board picked last before the boards are listed, and lets it go when its computer refuses it', async () => {
@@ -3255,6 +3264,81 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('offers no planning poker on a project that turned it off, asking nothing, and on again shows no votes from before', async () => {
+    project('p1', 'alpha', 1);
+    install();
+    installTicket();
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: true }));
+    const voted = { loaded: true, revealed: true, votes: [{ voter: { id: 'u2', name: 'User 2' }, value: 5 }], read_at: 1 } as unknown as PokerView;
+    const answers: Array<(view: PokerView) => void> = [];
+    const follow = setBindingMock('FollowTrackerPoker', (_id: string, on: boolean) => (on ? new Promise<PokerView>((resolve) => { answers.push(resolve); }) : Promise.resolve(voted)));
+    const setup = (poker?: boolean) => ({ revision: `r${String(poker)}`, setup: { status_groups: [], ticket_pins: [], start_work: [], ...(poker === false ? { estimates: { poker: false } } : {}) } });
+    setBindingMock('ProjectTrackerSetup', async () => setup(false));
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(private report: (entries: Array<{ isIntersecting: boolean }>) => void) {}
+      observe(): void {
+        this.report([{ isIntersecting: true }]);
+      }
+      disconnect(): void {}
+    });
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await within(screen).findByTestId('ticket-activity');
+      await tick();
+      expect(within(screen).queryByTestId('ticket-poker-section')).toBeNull();
+      expect(support).not.toHaveBeenCalled();
+
+      // On: the section shows, and its votes follow.
+      setBindingMock('ProjectTrackerSetup', async () => setup());
+      await refreshTrackerSetup('p1');
+      await fireEvent.click(await within(screen).findByTestId('ticket-poker-fold'));
+      await waitFor(() => expect(answers).toHaveLength(1));
+      answers[0]!(voted);
+      expect(await within(screen).findByTestId('ticket-poker-vote')).toBeInTheDocument();
+
+      // Off: the section goes and the votes stop being followed.
+      setBindingMock('ProjectTrackerSetup', async () => setup(false));
+      await refreshTrackerSetup('p1');
+      await waitFor(() => expect(within(screen).queryByTestId('ticket-poker-section')).toBeNull());
+      await waitFor(() => expect(follow).toHaveBeenLastCalledWith('ticket-1-1', false));
+
+      // On again: the section is open as it was left, and shows no vote
+      // until the follow answers.
+      setBindingMock('ProjectTrackerSetup', async () => setup());
+      await refreshTrackerSetup('p1');
+      await waitFor(() => expect(answers).toHaveLength(2));
+      expect(await within(screen).findByTestId('ticket-poker')).toBeInTheDocument();
+      expect(within(screen).queryByTestId('ticket-poker-vote')).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('asks nothing of planning poker while its project\'s setup could not be read, and follows the setup once it reads', async () => {
+    project('p1', 'alpha', 1);
+    install();
+    installTicket();
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: true }));
+    const setup = (poker?: boolean) => ({ revision: `r${String(poker)}`, setup: { status_groups: [], ticket_pins: [], start_work: [], ...(poker === false ? { estimates: { poker: false } } : {}) } });
+    setBindingMock('ProjectTrackerSetup', async () => { throw new Error('the setup file could not be read'); });
+    const view = mount();
+    const screen = await openCard(view, '1');
+    await within(screen).findByTestId('ticket-activity');
+    await tick();
+    expect(within(screen).queryByTestId('ticket-poker-section')).toBeNull();
+    expect(support).not.toHaveBeenCalled();
+    // Read again, the project turned poker off: still nothing is asked.
+    setBindingMock('ProjectTrackerSetup', async () => setup(false));
+    await refreshTrackerSetup('p1');
+    await tick();
+    expect(support).not.toHaveBeenCalled();
+    // On: the site is asked.
+    setBindingMock('ProjectTrackerSetup', async () => setup());
+    await refreshTrackerSetup('p1');
+    await waitFor(() => expect(support).toHaveBeenCalled());
   });
 
   it('sends one poker follow change at a time, ending on the state the section last asked for, and says nothing of votes before a read', async () => {
