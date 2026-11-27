@@ -50,7 +50,7 @@ import (
 // MirrorExportTables are the relations the export writes, the only tables
 // of the database it fills.
 var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epics", "sprints", "sprint_tickets", "changes", "sprint_finished", "labels",
-	"status_intervals", "sprint_intervals"}
+	"status_intervals", "sprint_intervals", "threads", "worklogs", "worklog_days"}
 
 // mirrorExportCardColumns are the tickets' columns decoded from the card
 // blob, in the tickets fill's order: each one's name in the export
@@ -157,6 +157,12 @@ CREATE TABLE main.status_intervals(ticket TEXT NOT NULL, status TEXT NOT NULL, f
 -- sprint_intervals: a ticket in a sprint at one estimate (points), likewise.
 CREATE TABLE main.sprint_intervals(sprint TEXT NOT NULL, ticket TEXT NOT NULL, points REAL, from_at INTEGER NOT NULL, to_at INTEGER,
   PRIMARY KEY (sprint, ticket, from_at)) WITHOUT ROWID;
+-- threads: the threads on this board's computer linked to a ticket. origin: start_work, ask, manual or agent. last_turn_at: its newest turn's start.
+CREATE TABLE main.threads(id TEXT PRIMARY KEY, ticket TEXT NOT NULL, origin TEXT NOT NULL, linked_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
+  archived INTEGER NOT NULL, last_turn_at INTEGER) WITHOUT ROWID;
+-- worklogs: your own logged time on this board's tickets, by day (YYYY-MM-DD). Only the days in worklog_days were read; a widget says how many of its days were not.
+CREATE TABLE main.worklogs(id TEXT PRIMARY KEY, ticket TEXT NOT NULL, day TEXT NOT NULL, seconds INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE main.worklog_days(day TEXT PRIMARY KEY) WITHOUT ROWID;
 `
 
 // mirrorExportSchemaName is the attached file's schema name.
@@ -265,8 +271,9 @@ func (f mirrorExportFill) text(relations map[string]bool) string {
 // estimate reset, ?5 whether the board has an estimate (0 or 1), from
 // ?6 the card blob's shape (MirrorCardShape.args), and then the history
 // window's start (mirrorExportWindowArg). Each
-// names the snapshot's tables by main and the file's unqualified: the
-// snapshot names none of the file's tables. An export runs those of the
+// names the snapshot's tables by main and the file's unqualified, so a
+// file table the snapshot has a relation of the same name as (threads) is
+// read only through a view of the file's (mirrorExportRelationFills). An export runs those of the
 // relations asked for and the relations they need (mirrorExportRelations).
 var mirrorExportFills = append([]mirrorExportFill{
 	{relation: "board", name: "board", sql: `INSERT INTO main.board(name, plans_sprints, estimates)
@@ -351,7 +358,7 @@ var mirrorExportFills = append([]mirrorExportFill{
 	    UNION SELECT from_value FROM main.changes WHERE kind = 'assignee' AND from_value IS NOT NULL
 	    UNION SELECT to_value FROM main.changes WHERE kind = 'assignee' AND to_value IS NOT NULL) x
 	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
-}, mirrorExportIntervalFills()...)
+}, slices.Concat(mirrorExportIntervalFills(), mirrorExportRelationFills())...)
 
 // mirrorExportAlways are the relations every export fills: what a range
 // is resolved against.

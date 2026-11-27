@@ -775,6 +775,17 @@ func catalogThreadClause(alias string) (string, []any) {
 	return hidden + " AND " + alias + ".placement <> '" + PlacementOwned + "'", args
 }
 
+// hiddenThreadModesSQL is hiddenThreadModesClause with the modes written
+// in the text, for a statement whose parameters are positional.
+func hiddenThreadModesSQL(column string) string {
+	modes := threadmode.HiddenModes()
+	literals := make([]string, len(modes))
+	for i, mode := range modes {
+		literals[i] = sqlTextLiteral(mode)
+	}
+	return column + " NOT IN (" + strings.Join(literals, ", ") + ")"
+}
+
 func hiddenThreadModesClause(column string) (string, []any) {
 	modes := threadmode.HiddenModes()
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(modes)), ",")
