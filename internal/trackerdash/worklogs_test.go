@@ -61,10 +61,11 @@ func trendOf(w WidgetValue) []string {
 	return out
 }
 
-// window is the days of the copy's history window up to testNow
-// (2026-05-30 to 2026-11-25), but those of except.
+// window is the days of the copy's logged time up to testNow, from its
+// first day (MirrorExport.LoggedFrom: 2026-05-28 to 2026-11-25), but those
+// of except.
 func window(except ...string) []string {
-	return slices.DeleteFunc(daysOf("2026-05-30", "2026-11-25"), func(d string) bool { return slices.Contains(except, d) })
+	return slices.DeleteFunc(daysOf("2026-05-28", "2026-11-25"), func(d string) bool { return slices.Contains(except, d) })
 }
 
 // A number, a period and a bar of the viewer's logged time count only
@@ -195,16 +196,16 @@ func TestLoggedTimeOverARangeWithNoPeriodReadsNothing(t *testing.T) {
 			t.Errorf("%s over no sprint: unread %d days, value %s", id, len(w.Unread), num(w.Value))
 		}
 	}
-	if w := widgetOf(t, a, "all"); len(w.Unread) != 180 {
-		t.Errorf("the hours that count now list %d days; want the window's 180", len(w.Unread))
+	if w := widgetOf(t, a, "all"); len(w.Unread) != 182 {
+		t.Errorf("the hours that count now list %d days; want the window's 182", len(w.Unread))
 	}
 }
 
 // A number of logged time that counts now, its rows placed at no instant,
-// counts every day the copy can hold: with none read, the 180 days from
-// the copy's earliest to today are not read; with one not read, that one.
+// counts every day the copy can hold: with none read, the 182 days from
+// the copy's first to today are not read; with one not read, that one.
 // A kept sprint that began before them changes nothing: the copy holds
-// the 180 days.
+// the 182 days.
 func TestLoggedTimeCountingNowNeedsEveryDayTheCopyHolds(t *testing.T) {
 	t.Parallel()
 	all := func(f *fixture) Board {
@@ -216,7 +217,7 @@ func TestLoggedTimeCountingNowNeedsEveryDayTheCopyHolds(t *testing.T) {
 	}
 	r := Request{Dashboard: "mine", Range: RangeWeeks2, TimeZone: "UTC"}
 	n := widgetOf(t, mustEvaluate(t, evaluator(), all(worklogBoard()), r), "all")
-	if len(n.Unread) != 180 || n.Unread[0] != "2026-05-30" || n.Unread[179] != "2026-11-25" || num(n.Value) != "not known, 180 days not read" {
+	if len(n.Unread) != 182 || n.Unread[0] != "2026-05-28" || n.Unread[181] != "2026-11-25" || num(n.Value) != "not known, 182 days not read" {
 		t.Fatalf("none read: %s, %d unread from %v", num(n.Value), len(n.Unread), n.Unread[:min(1, len(n.Unread))])
 	}
 	n = widgetOf(t, mustEvaluate(t, evaluator(), all(worklogBoard(window("2026-11-23")...)), r), "all")
@@ -227,12 +228,12 @@ func TestLoggedTimeCountingNowNeedsEveryDayTheCopyHolds(t *testing.T) {
 	if n.Unread != nil || num(n.Value) != "5400" {
 		t.Fatalf("all read: %s, unread %v", num(n.Value), n.Unread)
 	}
-	// A kept sprint that began 10 days before the copy's 180 days: the
-	// number counts the 180 the copy holds, and is known once they are read.
+	// A kept sprint that began 8 days before the copy's 182 days: the
+	// number counts the 182 the copy holds, and is known once they are read.
 	old := worklogBoard()
 	old.earliest = ms(testNow) - 190*day
 	n = widgetOf(t, mustEvaluate(t, evaluator(), all(old), r), "all")
-	if len(n.Unread) != 180 || n.Unread[0] != "2026-05-30" || num(n.Value) != "not known, 180 days not read" {
+	if len(n.Unread) != 182 || n.Unread[0] != "2026-05-28" || num(n.Value) != "not known, 182 days not read" {
 		t.Fatalf("an older sprint kept: %s, %d unread from %v", num(n.Value), len(n.Unread), n.Unread[:min(1, len(n.Unread))])
 	}
 	old = worklogBoard(window()...)
@@ -242,11 +243,10 @@ func TestLoggedTimeCountingNowNeedsEveryDayTheCopyHolds(t *testing.T) {
 	}
 }
 
-// A sprint that began before the copy's 180 days holds days the page
-// never reads: its period stays not known by them, never a part of its
-// time, and the page is told to read only the window's. The sprint ran
-// from 190 days ago to 176 days ago: 14 days, the first 10 before the
-// window.
+// A sprint that began before the copy's first day holds days the copy
+// never holds: its period stays not known by them, never a part of its
+// time, and only the window's are listed to read. The sprint ran from 190
+// days ago to 176 days ago: 14 days, the first 8 before 28 May.
 func TestLoggedTimeOfASprintBeforeTheWindowIsNotKnown(t *testing.T) {
 	t.Parallel()
 	board := func(read ...string) Board {
@@ -263,7 +263,7 @@ func TestLoggedTimeOfASprintBeforeTheWindowIsNotKnown(t *testing.T) {
 		t.Fatalf("none read: %s, unread %d days", num(n.Value), len(n.Unread))
 	}
 	n = widgetOf(t, mustEvaluate(t, evaluator(), board(window()...), r), "n")
-	if num(n.Value) != "not known, 10 days not read" || n.Unread != nil {
+	if num(n.Value) != "not known, 8 days not read" || n.Unread != nil {
 		t.Fatalf("the window's days read: %s, unread %v", num(n.Value), n.Unread)
 	}
 }
@@ -447,5 +447,108 @@ func TestHowSaysLoggedTimeCountsForYou(t *testing.T) {
 	}
 	if said != 2 {
 		t.Fatalf("the list has %d of the two widgets of logged time", said)
+	}
+}
+
+// The copy's logged time and the days it checks begin at one day,
+// MirrorExport.LoggedFrom: a number counted from every row the copy holds
+// is not known while that first day is not read, and counts its hours
+// once it is.
+func TestLoggedTimeChecksEveryDayTheCopyHolds(t *testing.T) {
+	t.Parallel()
+	all := func(read ...string) Board {
+		f := worklogBoard(read...)
+		f.exec(`INSERT INTO worklogs VALUES ('w9', 'T1', '2026-05-29', 7200)`)
+		b := loggedTime(f)
+		b.Own.Metrics["w_3"] = Metric{Name: "w_3", Title: "All your hours", Words: []string{"All your logged time."},
+			SQL: `SELECT ticket, seconds AS value FROM worklogs`, Reduce: ReduceSum, Unit: UnitTime}
+		b.Own.Dashboards[0].Widgets = append(b.Own.Dashboards[0].Widgets, Widget{ID: "all", Metric: "w_3", Form: FormNumber, Width: 3})
+		return b
+	}
+	r := Request{Dashboard: "mine", Range: RangeWeeks2, TimeZone: "UTC"}
+	if n := widgetOf(t, mustEvaluate(t, evaluator(), all(window("2026-05-28", "2026-05-29")...), r), "all"); num(n.Value) != "not known, 2 days not read" {
+		t.Fatalf("its first two days not read: %s, unread %v", num(n.Value), n.Unread)
+	}
+	if n := widgetOf(t, mustEvaluate(t, evaluator(), all(window()...), r), "all"); num(n.Value) != "12600" {
+		t.Fatalf("all read: %s", num(n.Value))
+	}
+}
+
+// A state of logged time over a range with no period still counts the
+// rows that hold now, so it is not known while a day is not read, and its
+// drill too; a chart of its periods counts nothing and lists no day.
+func TestLoggedTimeHeldNowOverARangeWithNoPeriodNeedsTheWindow(t *testing.T) {
+	t.Parallel()
+	board := func(read ...string) Board {
+		f := worklogBoard(read...)
+		f.plansSprints = true
+		f.sprint("s1", "Sprint 1", "closed", ago(20), ago(6), 1)
+		b := loggedTime(f)
+		b.Own.Metrics["w_5"] = Metric{Name: "w_5", Title: "Hours so far", Words: []string{"Your logged time so far."},
+			SQL: `SELECT ticket, seconds AS value, day_start(day) AS at, NULL AS until FROM worklogs`, Reduce: ReduceSum, Unit: UnitTime, Bucket: BucketPeriod}
+		b.Own.Dashboards[0].Widgets = []Widget{{ID: "held", Metric: "w_5", Form: FormNumber, Width: 3}, {ID: "line", Metric: "w_5", Form: FormLine, Width: 6}}
+		return b
+	}
+	r := Request{Dashboard: "mine", Range: RangeThisSprint, TimeZone: "UTC"}
+	a := mustEvaluate(t, evaluator(), board("2026-11-17", "2026-11-23"), r)
+	if n := widgetOf(t, a, "held"); num(n.Value) != "not known, 180 days not read" || len(n.Unread) != 180 {
+		t.Fatalf("held now, two days read: %s, %d unread", num(n.Value), len(n.Unread))
+	}
+	if l := widgetOf(t, a, "line"); l.Unread != nil || len(l.Buckets) != 0 {
+		t.Fatalf("a line of no period: %d unread, %d buckets", len(l.Unread), len(l.Buckets))
+	}
+	if d := mustDrill(t, board("2026-11-17", "2026-11-23"), DrillRequest{Request: r, Widget: "held"}); num(&d.Value) != "not known, 180 days not read" {
+		t.Fatalf("its drill: %s", num(&d.Value))
+	}
+	if n := widgetOf(t, mustEvaluate(t, evaluator(), board(window()...), r), "held"); num(n.Value) != "5400" {
+		t.Fatalf("held now, all read: %s", num(n.Value))
+	}
+}
+
+// An evaluation in which a widget counted the viewer's logged time tells
+// the board's reads once what the window needs and answers their state;
+// one in which none could (narrowed to another person, a range with no
+// period for a metric counted by period) tells them nothing. A proposal
+// that counts it tells them as a widget does, and so does a Try.
+func TestAnEvaluationTellsTheReadsWhatItNeeds(t *testing.T) {
+	t.Parallel()
+	var told []WorklogNeed
+	tell := func(b Board) Board {
+		b.Worklogs = func(n WorklogNeed) WorklogState {
+			told = append(told, n)
+			return WorklogState{Reading: true, Failure: "refused"}
+		}
+		return b
+	}
+	r := Request{Dashboard: "mine", Range: RangeWeeks2, TimeZone: "Pacific/Auckland"}
+	a := mustEvaluate(t, evaluator(), tell(loggedTime(worklogBoard(window("2026-11-20")...))), r)
+	if len(told) != 1 || !reflect.DeepEqual(told[0].Unread, []string{"2026-11-20", "2026-11-26"}) || told[0].Today != "2026-11-26" ||
+		a.Logged == nil || *a.Logged != (WorklogState{Reading: true, Failure: "refused"}) {
+		t.Fatalf("told %+v, answered %+v", told, a.Logged)
+	}
+	told = nil
+	other := r
+	other.Person = "u2"
+	sprints := worklogBoard()
+	sprints.plansSprints = true
+	sprints.sprint("s1", "Sprint 1", "closed", ago(20), ago(6), 1)
+	for _, c := range []struct {
+		name string
+		b    Board
+		r    Request
+	}{{"narrowed", loggedTime(worklogBoard()), other}, {"no sprint", loggedTime(sprints), Request{Dashboard: "mine", Range: RangeThisSprint, TimeZone: "UTC"}}} {
+		if a := mustEvaluate(t, evaluator(), tell(c.b), c.r); len(told) != 0 || a.Logged != nil {
+			t.Errorf("%s: told %+v, answered %+v", c.name, told, a.Logged)
+		}
+	}
+	proposed := loggedTime(worklogBoard())
+	week := proposed.Own.Metrics["w_1"]
+	proposed.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine"}}, Proposals: []Proposal{{Widget: Widget{ID: "p", Metric: "w_1", Form: FormNumber, Width: 3}}}, Metrics: map[string]Metric{"w_1": week}}
+	if a := mustEvaluate(t, evaluator(), tell(proposed), Request{Dashboard: "mine", Range: RangeWeeks2, TimeZone: "UTC"}); len(told) != 1 || a.Logged == nil {
+		t.Fatalf("a proposal: told %d, answered %+v", len(told), a.Logged)
+	}
+	told = nil
+	if _, err := evaluator().Try(context.Background(), tell(loggedTime(worklogBoard())), Widget{Form: FormNumber, Width: 3}, week, "UTC"); err != nil || len(told) != 1 {
+		t.Fatalf("a try: told %d, %v", len(told), err)
 	}
 }

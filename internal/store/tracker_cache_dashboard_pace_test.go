@@ -39,7 +39,7 @@ func TestDashboardPaceIsTheBacklogsPace(t *testing.T) {
 		}
 		backlog /= float64(len(pace))
 		fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-			return s.ExportMirrorBoard(ctx, conn, root, c.board, c.regroup, relations, 0, store.CardShapeForTest)
+			return s.ExportMirrorBoard(ctx, conn, root, c.board, c.regroup, relations, 0, "", store.CardShapeForTest)
 		}
 		a, err := e.Evaluate(context.Background(), trackerdash.Board{Fill: fill, Epics: true},
 			trackerdash.Request{Dashboard: "overview_sprints", Range: trackerdash.RangeSprints5, TimeZone: "UTC"})

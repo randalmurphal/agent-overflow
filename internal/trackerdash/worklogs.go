@@ -7,22 +7,27 @@ import (
 
 // The viewer's logged time (the export's worklogs and worklog_days, the
 // rules in store/tracker_cache_export_relations.go). The copy holds the
-// worklogs of the days the mirror read and says which days those are;
-// a day not read is not zero hours. What must hold:
-//   - A metric that reads worklogs counts only once every day of the
-//     copy's history window (MirrorExport.Window) up to now is read: a
-//     row of logged time can count in a period other than its day's (a
-//     sprint's tickets, a state that holds from its day on), so no number
-//     is known while a day it could hold is not read. Each number counts
-//     the window's days not read, with those of its periods before the
-//     window, which are never read (a sprint that began before it), in
-//     Num.UR, and is not known while it counts any. The widget lists the
-//     window's days not read for the page to read (WidgetValue.Unread,
-//     frontend trackerDashboard): at most 182, read 31 a call. A widget of
-//     a metric counted by period whose range has no period counts nothing
-//     and lists none. A day is in the period that holds its placed
-//     instant, the one day_start places a row of it at. A weekend's day
-//     counts like any other.
+// worklogs of the days the mirror read from its first day
+// (MirrorExport.LoggedFrom), and says which days those are; a day not
+// read is not zero hours. What must hold:
+//   - The days a metric's query can see are the days the copy checks: from
+//     LoggedFrom up to today, the window. A number a reduction took rows
+//     of logged time for (ranged.took) is known only once every day of the
+//     window up to now is read: a row can count in a period other than its
+//     day's (a sprint's tickets, a state that holds from its day on), so no
+//     number is known while a day it could hold is not read. Each counts
+//     the window's days not read, with those of its periods before
+//     LoggedFrom, which the copy never holds (a sprint that began before
+//     it), in Num.UR, and is not known while it counts any. The widget
+//     lists the window's days not read (WidgetValue.Unread). A reduction
+//     that took no rows (a metric counted by period over a range with no
+//     period) marks and lists nothing. A day is in the period that holds
+//     its placed instant, the one day_start places a row of it at. A
+//     weekend's day counts like any other.
+//   - An evaluation in which a widget counted logged time tells the reads
+//     what it needs (Board.Worklogs) and answers their state
+//     (Answer.Logged); the reads are the caller's, so the evaluation does
+//     no I/O for them.
 //   - Its rows are the viewer's: a row's person is the viewer unless the
 //     metric names one, so Mine keeps them all, and a page narrowed to
 //     another person says only the viewer's time is read rather than 0.
@@ -35,6 +40,22 @@ const (
 	viewerUnverified = "Your logged time needs this connection's account, which is not verified yet; check the connection in the Issues settings."
 	onlyYourTime     = "Only your own logged time is read."
 )
+
+// WorklogNeed is what an evaluation whose widgets counted the viewer's
+// logged time needs of it: the window's days not read, in order, and
+// Today, the window's last day in the request's time zone (YYYY-MM-DD).
+type WorklogNeed struct {
+	Unread []string
+	Today  string
+}
+
+// WorklogState is the state of the reads of the viewer's logged time, as
+// Board.Worklogs answers it: whether they are reading, and why the last
+// one failed, "" when none did.
+type WorklogState struct {
+	Reading bool   `json:"reading,omitempty"`
+	Failure string `json:"failure,omitempty"`
+}
 
 // readsWorklogs is whether p reads the viewer's logged time.
 func (p prepared) readsWorklogs() bool { return slices.Contains(p.asks.tables, "worklogs") }
@@ -73,11 +94,11 @@ func (ev *evaluation) unread(from, to, now int64) []string {
 	}
 }
 
-// windowUnread is the days of the copy's history window up to now not
-// read, read once an evaluation.
+// windowUnread is the days of the window up to now not read, read once
+// an evaluation.
 func (ev *evaluation) windowUnread(now int64) []string {
 	if !ev.windowRead {
-		ev.windowDays, ev.windowRead = ev.unread(ev.export.Window, now, now), true
+		ev.windowDays, ev.windowRead = ev.unread(ev.loggedFrom-1, now, now), true
 	}
 	return ev.windowDays
 }
@@ -87,7 +108,7 @@ func (ev *evaluation) windowUnread(now int64) []string {
 func (ev *evaluation) notRead(ps []period, now int64) int {
 	days := slices.Clone(ev.windowUnread(now))
 	for _, p := range ps {
-		days = append(days, ev.unread(p.from, min(p.to, ev.export.Window), now)...)
+		days = append(days, ev.unread(p.from, min(p.to, ev.loggedFrom-1), now)...)
 	}
 	slices.Sort(days)
 	return len(slices.Compact(days))
@@ -100,18 +121,14 @@ func markUnread(n *Num, days int) {
 	}
 }
 
-// counts is whether metric m's widget, its rows sorted into the range as
-// g, counts anything: a metric counted by period counts nothing over a
-// range with no period.
-func (g *ranged) counts() bool { return !g.bound || len(g.periods) > 0 }
-
 // markWidget marks widget value out of metric m, its rows sorted into
 // the range as g, not known while days it needs are not read, and lists
-// the window's days not read for the page to read.
+// the window's days not read, when its reduction took rows.
 func (ev *evaluation) markWidget(out *WidgetValue, w Widget, m Metric, g *ranged, sp span) {
-	if !g.counts() {
+	if !g.took {
 		return
 	}
+	ev.logged = true
 	out.Unread = ev.windowUnread(sp.now)
 	whole := ev.notRead(g.periods, sp.now)
 	markUnread(out.Value, whole)
@@ -132,4 +149,24 @@ func (ev *evaluation) markWidget(out *WidgetValue, w Widget, m Metric, g *ranged
 			markUnread(&b.Cells[j], n)
 		}
 	}
+}
+
+// worklogNeed is what o's evaluation needs of the viewer's logged time,
+// nil when no widget of it counted it.
+func (o *opened) worklogNeed() *WorklogNeed {
+	if !o.ev.logged {
+		return nil
+	}
+	now := o.now.UnixMilli()
+	return &WorklogNeed{Unread: o.ev.windowUnread(now), Today: o.now.In(o.ev.loc).Format(time.DateOnly)}
+}
+
+// tellWorklogs tells b's reads need, and returns their state: nil for no
+// need or a board with no reads.
+func tellWorklogs(b Board, need *WorklogNeed) *WorklogState {
+	if need == nil || b.Worklogs == nil {
+		return nil
+	}
+	st := b.Worklogs(*need)
+	return &st
 }

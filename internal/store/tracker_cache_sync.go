@@ -351,19 +351,6 @@ func (s *Store) ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay str
 	})
 }
 
-// ReadMirrorWorklogReadDays is the days from fromDay to toDay of
-// authorID's logged time that connectionID's mirror has read, sorted: one
-// statement by the read days' key, none for a connection with no mirror.
-func (s *Store) ReadMirrorWorklogReadDays(connectionID, authorID, fromDay, toDay string) ([]string, error) {
-	days, err := queryIDs(s.reader(), `SELECT d.day FROM tracker_cache_roots r
-		CROSS JOIN tracker_cache_worklog_days d ON d.root_id = r.id
-		WHERE r.connection_id = ?1 AND d.author_id = ?2 AND d.day BETWEEN ?3 AND ?4 ORDER BY d.day`, connectionID, authorID, fromDay, toDay)
-	if err != nil {
-		return nil, fmt.Errorf("store: read the days of %s's logged time tracker connection %s read: %w", authorID, connectionID, err)
-	}
-	return days, nil
-}
-
 // ListMirrorIssueWorklogs reads the worklogs of one issue, by day and ID,
 // at most mirrorWorklogLimit; more reports that the issue has more.
 func (s *Store) ListMirrorIssueWorklogs(rootID int64, issueID string) (logs []MirrorWorklog, more bool, err error) {

@@ -34,6 +34,18 @@ const HistoryWindow = 180 * 24 * time.Hour
 // (jiraprovider.Options.SprintsFrom) closed at or after it.
 func (s *Service) window() time.Time { return s.now().Add(-HistoryWindow) }
 
+// loggedFrom is the first day of the logged time the dashboards hold, read
+// and check (store MirrorExport.LoggedFrom, trackerdash worklogs.go): the
+// day before the history window's first, in UTC, so the window's days of
+// every time zone are among them.
+func (s *Service) loggedFrom() (tracker.Date, error) {
+	d, err := tracker.DateOf(s.window().UTC().AddDate(0, 0, -1))
+	if err != nil {
+		return tracker.Date{}, fmt.Errorf("trackerapp: the first day of the logged time: %w", err)
+	}
+	return d, nil
+}
+
 // MirrorStore is the mirror accessors the service uses.
 type MirrorStore interface {
 	GetOrCreateMirrorRoot(connectionID string) (int64, bool, error)
@@ -89,9 +101,8 @@ type MirrorStore interface {
 
 	ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
 	ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay string) (store.MirrorWorklogDays, error)
-	ReadMirrorWorklogReadDays(connectionID, authorID, fromDay, toDay string) ([]string, error)
 
-	ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup store.MirrorRegroup, relations []string, window int64, card store.MirrorCardShape) (store.MirrorExport, bool, error)
+	ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup store.MirrorRegroup, relations []string, window int64, loggedFrom string, card store.MirrorCardShape) (store.MirrorExport, bool, error)
 }
 
 var (

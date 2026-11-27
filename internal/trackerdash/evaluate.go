@@ -1,6 +1,7 @@
 package trackerdash
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -92,12 +93,16 @@ type Kind struct {
 // Own is what its project keeps and its agents proposed beside the
 // built-in dashboard. The viewer, whom Mine narrows to and whose logged
 // time the copy holds, is the export's (store.MirrorExport.Viewer), read
-// in the snapshot its rows are.
+// in the snapshot its rows are. Worklogs is the reads of the viewer's
+// logged time (worklogs.go): an evaluation or a Try in which a widget
+// counted it tells them what it needs, once, and answers the state they
+// return; nil, there are none. It must not wait on I/O.
 type Board struct {
 	Fill         Fill
 	Epics        bool
 	TimeTracking bool
 	Own          Own
+	Worklogs     func(WorklogNeed) WorklogState
 }
 
 // Request is what one evaluation counts: a dashboard, over a range,
@@ -252,6 +257,9 @@ type Answer struct {
 	Epic      *Name         `json:"epic,omitempty"`
 	At        int64         `json:"at"`
 	Widgets   []WidgetValue `json:"widgets"`
+	// Logged is the state of the reads of the viewer's logged time
+	// (Board.Worklogs) when a widget counted it.
+	Logged *WorklogState `json:"logged,omitempty"`
 }
 
 // Listing is what a board offers as the screen lays it out: its
@@ -538,10 +546,15 @@ type evaluation struct {
 	// readDays is the days of the viewer's (export.Viewer) logged time the
 	// copy holds as read, filled when a metric reads worklogs.
 	readDays map[string]bool
-	// windowDays is the days of the history window not read up to the
-	// evaluation's now, once windowRead (windowUnread).
+	// loggedFrom is where the copy's logged time begins: the instant its
+	// first day (export.LoggedFrom) is placed at. windowDays is the days
+	// from it up to the evaluation's now not read, once windowRead
+	// (windowUnread). logged is whether a widget counted the viewer's
+	// logged time (markWidget), so the reads hear of it (Board.Worklogs).
+	loggedFrom int64
 	windowDays []string
 	windowRead bool
+	logged     bool
 	estimates  string
 	sprints    []sprintRow
 	tickets    map[string]ticketRow
@@ -589,6 +602,11 @@ func (ev *evaluation) fill(ctx context.Context, b Board, relations []string) err
 	if err := ev.readBoard(ctx); err != nil || !slices.Contains(relations, "worklog_days") {
 		return tooSlow(ctx, err)
 	}
+	first, err := time.Parse(time.DateOnly, export.LoggedFrom)
+	if err != nil {
+		return fmt.Errorf("the copy's first day of logged time %q is not a date: %w", export.LoggedFrom, err)
+	}
+	ev.loggedFrom = placed(first, ev.loc)
 	ev.readDays = map[string]bool{}
 	return tooSlow(ctx, ev.query(ctx, `SELECT day FROM worklog_days`, func(r *sql.Rows) error {
 		var day string
@@ -1042,23 +1060,29 @@ func (o *opened) count(m Metric, r reads) (counted, error) {
 // (proposals) instead of failing the answer. A request that names its
 // widgets counts only those.
 func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (Answer, error) {
-	a, err := e.dashboard(ctx, b, r)
-	if err != nil || len(b.Own.Proposals) == 0 || r.Widgets != nil {
+	a, need, err := e.dashboard(ctx, b, r)
+	if err == nil && len(b.Own.Proposals) > 0 && r.Widgets == nil {
+		var proposed []WidgetValue
+		var also *WorklogNeed
+		if proposed, also, err = e.proposals(ctx, b, r); err != nil {
+			return Answer{}, err
+		}
+		a.Widgets = append(a.Widgets, proposed...)
+		need = cmp.Or(need, also)
+	}
+	if err != nil {
 		return a, err
 	}
-	proposed, err := e.proposals(ctx, b, r)
-	if err != nil {
-		return Answer{}, err
-	}
-	a.Widgets = append(a.Widgets, proposed...)
+	a.Logged = tellWorklogs(b, need)
 	return a, nil
 }
 
-// dashboard is the evaluation of dashboard r.Dashboard's own widgets.
-func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer, err error) {
+// dashboard is the evaluation of dashboard r.Dashboard's own widgets, and
+// what it needs of the viewer's logged time.
+func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer, _ *WorklogNeed, err error) {
 	o, err := e.begin(ctx, b, r, func(_ Widget, proposed bool) bool { return !proposed })
 	if err != nil {
-		return Answer{}, err
+		return Answer{}, nil, err
 	}
 	defer func() {
 		if closeErr := o.end(); closeErr != nil {
@@ -1078,34 +1102,35 @@ func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer
 		c, ok := runs[m.Name]
 		if !ok {
 			if c, err = o.count(m, read[m.Name]); err != nil {
-				return Answer{}, err
+				return Answer{}, nil, err
 			}
 			runs[m.Name] = c
 		}
 		a.Widgets = append(a.Widgets, o.ev.widget(w, m, c, o.sp))
 	}
 	if err := o.ev.titles(o.ctx, listed(a.Widgets)); err != nil {
-		return Answer{}, err
+		return Answer{}, nil, err
 	}
-	return a, nil
+	return a, o.worklogNeed(), nil
 }
 
 // proposals is the values of b's proposals over r's range and narrowing,
 // from an evaluation of their own, each proposal's rows let go once its
 // value is drawn. A proposal the deadline stops, or leaves no time for,
 // says so (outOfTime), and a failure of the evaluation itself is each
-// proposal's sentence; only the caller's leaving fails the call.
-func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []WidgetValue, err error) {
-	failed := func(err error) ([]WidgetValue, error) {
+// proposal's sentence; only the caller's leaving fails the call. It
+// returns what they need of the viewer's logged time.
+func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []WidgetValue, _ *WorklogNeed, err error) {
+	failed := func(err error) ([]WidgetValue, *WorklogNeed, error) {
 		if ctx.Err() != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		sentence := proposalsFailed(err)
 		out := make([]WidgetValue, 0, len(b.Own.Proposals))
 		for _, p := range b.Own.Proposals {
 			out = append(out, WidgetValue{ID: p.Widget.ID, Error: sentence})
 		}
-		return out, nil
+		return out, nil, nil
 	}
 	o, err := e.begin(ctx, b, r, func(_ Widget, proposed bool) bool { return proposed })
 	if err != nil {
@@ -1141,7 +1166,7 @@ func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []Widg
 			}
 		}
 	}
-	return out, nil
+	return out, o.worklogNeed(), nil
 }
 
 // proposalsFailed is the sentence each proposal shows when their
@@ -1185,13 +1210,19 @@ func rangeView(sp span) RangeView {
 // value), so every widget form and drill reads a period the same way.
 type ranged struct {
 	// periods is what the metric counts by: the range's periods, or the
-	// sprint's days for a metric grouped by day. bound is whether it counts
-	// by them at all; one that is not counts now.
+	// sprint's days for a metric grouped by day; nil for one that counts
+	// now.
 	periods []period
-	bound   bool
 	// rows is the rows in the periods; all of the metric's rows for one
-	// that counts now; those that hold now for a state.
+	// that counts now; those that hold now for a state. It is read through
+	// held. none is an event metric's counted by period over a range with
+	// no period: it has no rows to count, not zero of them.
 	rows []contribution
+	none bool
+	// took is whether a reduction took rows of the range: held, of, or
+	// reduce over at least one period. A number counted from none has
+	// none to read (markWidget).
+	took bool
 	// placed is an event metric's rows of the periods and the previous
 	// range's by period ID; nil for a metric that counts now or a state.
 	placed map[string][]contribution
@@ -1212,11 +1243,25 @@ type ranged struct {
 	buf []contribution
 }
 
+// held is the range's rows (rows) for a reduction to take.
+func (g *ranged) held() []contribution {
+	g.took = g.took || !g.none
+	return g.rows
+}
+
+// reduce is r over the rows placed in periods with the unplaced ones, as
+// reduceRange counts them.
+func (g *ranged) reduce(r Reducer, periods []period, unplaced []contribution) Num {
+	g.took = g.took || len(periods) > 0
+	return reduceRange(r, periods, g.placed, unplaced)
+}
+
 // of is period p's rows: none for a period still to come, which has not
 // happened; a state's rows that hold at its end (holdsAt), of its sprints
 // for one grouped by sprint; an event's that fall in it. A state's are
 // valid until the next call.
 func (g *ranged) of(p period) []contribution {
+	g.took = g.took || !p.future
 	switch {
 	case p.future:
 		return nil
@@ -1245,7 +1290,7 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 		previous = nil
 	}
 	if c.p.cols.state() {
-		g := &ranged{periods: periods, bound: true, rows: holding(c.rows, sp.now), all: c.rows, state: true, bySprint: m.Bucket == BucketSprint}
+		g := &ranged{periods: periods, rows: holding(c.rows, sp.now), all: c.rows, state: true, bySprint: m.Bucket == BucketSprint}
 		if m.Bucket != BucketDay && len(periods) > 0 {
 			g.before, g.compared = holding(c.rows, periods[0].from), true
 		}
@@ -1256,7 +1301,7 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 		return t.created, t.updated
 	}
 	placed, unplaced := place(m, c.rows, spanOf, periods, previous)
-	g := &ranged{periods: periods, bound: true, placed: placed, unplaced: unplaced[0], unplacedBefore: unplaced[1], compared: m.Bucket != BucketDay}
+	g := &ranged{periods: periods, none: len(periods) == 0, placed: placed, unplaced: unplaced[0], unplacedBefore: unplaced[1], compared: m.Bucket != BucketDay}
 	for _, p := range periods {
 		g.rows = append(g.rows, placed[p.id]...)
 	}
@@ -1418,18 +1463,17 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 	if c.p.readsWorklogs() {
 		defer ev.markWidget(&out, w, m, g, sp)
 	}
-	rows := g.rows
 	switch w.Form {
 	case FormNumber:
 		if g.periods == nil && !g.state && g.placed == nil {
-			v := reduceRows(m.Reduce, rows)
+			v := reduceRows(m.Reduce, g.held())
 			out.Value = &v
 			return out
 		}
 		var v, prev Num
 		switch {
 		case g.state:
-			v = reduceRows(m.Reduce, rows)
+			v = reduceRows(m.Reduce, g.held())
 			// What held where the range begins needs no earlier sprints: only
 			// a copy still in its first read has nothing to compare with.
 			prev = reduceRows(m.Reduce, g.before)
@@ -1437,10 +1481,10 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 				prev = gapNum
 			}
 		default:
-			v = reduceRange(m.Reduce, g.periods, g.placed, g.unplaced)
+			v = g.reduce(m.Reduce, g.periods, g.unplaced)
 			prev = gapNum
 			if sp.previousGap == "" {
-				prev = reduceRange(m.Reduce, sp.previous, g.placed, g.unplacedBefore)
+				prev = g.reduce(m.Reduce, sp.previous, g.unplacedBefore)
 			}
 		}
 		out.Value = &v
@@ -1451,7 +1495,7 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 			out.Trend = append(out.Trend, p.value(m.Reduce, g.of(p)))
 		}
 	case FormList:
-		rows = append(slices.Clone(rows), g.unplaced...)
+		rows := append(slices.Clone(g.held()), g.unplaced...)
 		rowsCopy := slices.Clone(rows)
 		sortDrill(rowsCopy, ev.keyOf)
 		out.NotCounted = notCounted(rows)
@@ -1491,7 +1535,7 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 		// The shown buckets are chosen by their totals before any of their
 		// cells is made, so an answer holds at most limit buckets of the
 		// declared series' cells however many buckets the rows name.
-		shown, rest, grouped := ev.rank(w, m, rows)
+		shown, rest, grouped := ev.rank(w, m, g.held())
 		out.More = len(rest)
 		for _, b := range shown {
 			out.Buckets = append(out.Buckets, cell(b.key, b.label, false, b.total, grouped[b.key], func(rows []contribution) Num { return reduceRows(m.Reduce, rows) }))
@@ -1650,7 +1694,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		return DrillAnswer{}, refuse("dashboard_request_invalid", sp.daysNote, nil)
 	}
 	g := ev.inRange(m, c, sp)
-	rows := g.rows
+	rows := g.held()
 	reduce := func(rows []contribution) Num { return reduceRows(m.Reduce, rows) }
 	// cellPeriod is the period a drill of one bar or point counts.
 	var cellPeriod []period
@@ -1672,7 +1716,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	case r.Cell == nil && (g.placed == nil || g.state):
 		out.Value = reduceRows(m.Reduce, rows)
 	case r.Cell == nil:
-		out.Value = reduceRange(m.Reduce, g.periods, g.placed, g.unplaced)
+		out.Value = g.reduce(m.Reduce, g.periods, g.unplaced)
 		if m.Bucket == BucketDay {
 			out.Title += ", " + sp.daysLabel
 		} else {
@@ -1709,7 +1753,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		}
 		out.Value = reduce(rows)
 	}
-	if c.p.readsWorklogs() && g.counts() {
+	if c.p.readsWorklogs() && g.took {
 		ps := g.periods
 		if cellPeriod != nil {
 			ps = cellPeriod

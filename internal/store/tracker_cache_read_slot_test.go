@@ -19,16 +19,15 @@ import (
 // opens its snapshot through mirrorReadSnapshot, which waits for a history
 // read slot first.
 var mirrorPoolReads = map[string]int{
-	"GetMirrorRoot":             1, // one root, by connection
-	"GetMirrorCatalog":          1, // at most mirrorMaxLookup users and statuses, each by key
-	"ListMirrorCards":           1, // at most mirrorMaxLookup cards, each by key
-	"ListMirrorParents":         1, // at most mirrorMaxLookup parents' names, each by key
-	"ListMirrorIssueRows":       1, // a page of one issue's rows
-	"ListMirrorTicketRows":      1, // the rows of at most MirrorMaxBodies issues, each by key
-	"ListMirrorSprintNames":     1, // at most mirrorMaxLookup sprints on as many boards, each pair by key
-	"ListMirrorIssueWorklogs":   1, // a page of one issue's worklogs
-	"ReadMirrorWorklogReadDays": 1, // one author's read days of a range, by their key
-	"GetMirrorSync":             1, // one board's state
+	"GetMirrorRoot":           1, // one root, by connection
+	"GetMirrorCatalog":        1, // at most mirrorMaxLookup users and statuses, each by key
+	"ListMirrorCards":         1, // at most mirrorMaxLookup cards, each by key
+	"ListMirrorParents":       1, // at most mirrorMaxLookup parents' names, each by key
+	"ListMirrorIssueRows":     1, // a page of one issue's rows
+	"ListMirrorTicketRows":    1, // the rows of at most MirrorMaxBodies issues, each by key
+	"ListMirrorSprintNames":   1, // at most mirrorMaxLookup sprints on as many boards, each pair by key
+	"ListMirrorIssueWorklogs": 1, // a page of one issue's worklogs
+	"GetMirrorSync":           1, // one board's state
 	// One board's column statuses, at most mirrorMaxColumnStatuses.
 	"GetMirrorBoardStatuses": 1,
 	"ListMirrorBodies":       1, // at most MirrorMaxBodies bodies, each by key
@@ -167,7 +166,7 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 		read{"ListMirrorOffBoardLinkedIssues", func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err }},
 		read{"FinishMirrorCleanup", func() error { return s.FinishMirrorCleanup(context.Background(), nil) }},
 		read{"ExportMirrorBoard", func() error {
-			_, _, err := s.ExportMirrorBoard(context.Background(), export, root, "10", MirrorRegroup{}, MirrorExportTables, 0, CardShapeForTest)
+			_, _, err := s.ExportMirrorBoard(context.Background(), export, root, "10", MirrorRegroup{}, MirrorExportTables, 0, "", CardShapeForTest)
 			return err
 		}},
 	)

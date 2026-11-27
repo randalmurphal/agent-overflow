@@ -70,20 +70,20 @@ func relationsFixture(t *testing.T) (*Store, int64) {
 // tickets, as the Ticket screen lists them (no hidden mode, none being
 // deleted, none of another site or board), with each one's newest turn;
 // and the verified account's logged time on the board's tickets and its
-// read days from the day before the history window (10 November), not
-// from the earliest instant a count can ask (1 November, the sprints'
-// start); the export says both.
+// read days from the first day it is given (9 November), not from the
+// earliest instant a count can ask (1 November, the sprints' start); the
+// export says both.
 func TestTheExportHoldsTheBoardsThreadsAndYourLoggedTime(t *testing.T) {
 	t.Parallel()
 	s, root := relationsFixture(t)
 	conn := exportConn(t)
 	window := dayMS(t, "2026-11-10")
-	export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"threads", "worklogs", "worklog_days"}, window, CardShapeForTest)
+	export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"threads", "worklogs", "worklog_days"}, window, "2026-11-09", CardShapeForTest)
 	if err != nil || !ok {
 		t.Fatalf("export: %v, %v", ok, err)
 	}
-	if export.Window != window || export.Earliest != dayMS(t, "2026-11-01") || export.Viewer != "me" {
-		t.Fatalf("window %d, earliest %d, viewer %q; want %d, the sprints' start and me", export.Window, export.Earliest, export.Viewer, window)
+	if export.LoggedFrom != "2026-11-09" || export.Earliest != dayMS(t, "2026-11-01") || export.Viewer != "me" {
+		t.Fatalf("logged from %q, earliest %d, viewer %q; want 2026-11-09, the sprints' start and me", export.LoggedFrom, export.Earliest, export.Viewer)
 	}
 	threads := exportRows(t, conn, `SELECT id || '|' || ticket || '|' || origin || '|' || linked_at || '|' || created_at || '|' || archived || '|' || coalesce(last_turn_at, '-')
 		FROM threads ORDER BY id`)
@@ -106,7 +106,7 @@ func TestTheExportHoldsNoLoggedTimeWithoutAnAccount(t *testing.T) {
 	s, root := relationsFixture(t)
 	mustExec(t, s.db, `UPDATE tracker_connections SET verified_account_id = '' WHERE id = (SELECT connection_id FROM tracker_cache_roots WHERE id = ?)`, root)
 	conn := exportConn(t)
-	if export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"worklogs", "worklog_days"}, 0, CardShapeForTest); err != nil || !ok || export.Viewer != "" {
+	if export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"worklogs", "worklog_days"}, 0, "", CardShapeForTest); err != nil || !ok || export.Viewer != "" {
 		t.Fatalf("export: %+v, %v, %v; want no viewer", export, ok, err)
 	}
 	if got := exportRows(t, conn, `SELECT (SELECT count(*) FROM worklogs) || '|' || (SELECT count(*) FROM worklog_days)`); got[0] != "0|0" {

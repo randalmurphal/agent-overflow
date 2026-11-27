@@ -169,7 +169,7 @@ func (f *fixture) fill() Fill {
 		}
 		window := ms(testNow) - 180*day
 		return store.MirrorExport{Name: "WEB board", EstimateUnit: unit, PlansSprints: f.plansSprints, FirstReadDone: !f.reading,
-			Earliest: cmp.Or(f.earliest, window), Window: window, Viewer: map[bool]string{false: "u1"}[f.unverified]}, true, nil
+			Earliest: cmp.Or(f.earliest, window), LoggedFrom: time.UnixMilli(window).UTC().AddDate(0, 0, -1).Format(time.DateOnly), Viewer: map[bool]string{false: "u1"}[f.unverified]}, true, nil
 	}
 }
 

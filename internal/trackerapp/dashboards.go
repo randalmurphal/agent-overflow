@@ -163,7 +163,8 @@ func (s *Service) subscribedBoard(subscription string, r trackerdash.Request) (t
 // export of its rows with the project's status groups, its
 // EstimateUnit the unit the project counts the board in (StatusGroups.unit)
 // while the copy holds the board's own estimates, whether its
-// tracker has epics and its tracker logs time. The
+// tracker has epics and its tracker logs time, with its logged time from
+// loggedFrom and the reads of it (worklog_reads.go). The
 // caller leaves the service when the evaluation returns.
 func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.Board, error) {
 	if err := scope.boardOnly(); err != nil {
@@ -178,12 +179,17 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 		s.leave()
 		return trackerdash.Board{}, fmt.Errorf("trackerapp: read connection %s: %w", scope.Connection, err)
 	}
+	logged, err := s.loggedFrom()
+	if err != nil {
+		s.leave()
+		return trackerdash.Board{}, err
+	}
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-		export, ok, err := s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, relations, s.window().UnixMilli(), cardShape)
+		export, ok, err := s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, relations, s.window().UnixMilli(), logged.String(), cardShape)
 		export.EstimateUnit = int(groups.unit(tracker.EstimateUnit(export.EstimateUnit)))
 		return export, ok, err
 	}
-	return trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), TimeTracking: hasTimeTracking(row.Kind)}, nil
+	return trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), TimeTracking: hasTimeTracking(row.Kind), Worklogs: s.worklogsOf(row)}, nil
 }
 
 // boardOwn is what a project keeps for a board as an evaluation reads it
