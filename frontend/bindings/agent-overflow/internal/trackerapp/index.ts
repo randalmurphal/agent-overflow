@@ -96,6 +96,8 @@ export {
     TimeEntryRefView,
     TimeEntryView,
     TimeOfferView,
+    TimeSettings,
+    TimeTicket,
     TotalsAt,
     UnlinkRequest,
     UnreadBoard,
