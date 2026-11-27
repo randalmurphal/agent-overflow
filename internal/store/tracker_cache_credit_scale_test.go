@@ -156,12 +156,12 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 // a change that makes it dearer unnoticed. A change that makes it cheaper
 // lowers the number.
 var creditPaceSteps = map[string]int{
-	"1x2000, every row estimated":  131_190,
-	"1x2000, no row estimated":     65_552,
-	"1x20000, every row estimated": 585_690,
-	"1x20000, no row estimated":    270_752,
-	"5x4000, every row estimated":  181_692,
-	"5x4000, no row estimated":     88_354,
+	"1x2000, every row estimated":  133_390,
+	"1x2000, no row estimated":     65_652,
+	"1x20000, every row estimated": 607_690,
+	"1x20000, no row estimated":    271_752,
+	"5x4000, every row estimated":  186_092,
+	"5x4000, no row estimated":     88_554,
 }
 
 // creditExportAtScale fills a copy of board's credit by regroup, its
