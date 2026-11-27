@@ -43,7 +43,7 @@ type MirrorSprintFinished struct {
 //     the first change after it is from, both of the issue's current
 //     history generation; with no such change, it is the status now only
 //     when the issue's history was read for its current version
-//     (history_for > 0: the status never changed) or this sprint is the
+//     (mirrorHistoryReadForCard: the status never changed) or this sprint is the
 //     latest sprint of the board, closed or open, the issue is in (it was
 //     carried nowhere after it). Otherwise the member is not done: an
 //     issue carried on from the sprint, its history unread, finished in a
@@ -131,7 +131,7 @@ var mirrorStatusAtCompletionSQL = `coalesce(
 	    (SELECT c.from_value FROM tracker_cache_changes c
 	      WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id AND c.gen = i.history_gen AND c.kind = 1 AND c.at > l.completed_at
 	      ORDER BY c.seq LIMIT 1),
-	    iif(i.history_for > 0 OR NOT EXISTS (SELECT 1 FROM tracker_cache_issue_sprints later
+	    iif((` + mirrorHistoryReadForCard("i") + `) OR NOT EXISTS (SELECT 1 FROM tracker_cache_issue_sprints later
 	        CROSS JOIN tracker_cache_sprints sp ON sp.root_id = later.root_id AND sp.board_id = ?2 AND sp.sprint_id = later.sprint_id
 	       WHERE later.root_id = i.root_id AND later.issue_id = i.issue_id AND later.sprint_id <> l.sprint_id
 	         AND (sp.state IN (` + strconv.Itoa(MirrorSprintActive) + `, ` + strconv.Itoa(MirrorSprintFuture) + `) OR sp.completed_at > l.completed_at)),

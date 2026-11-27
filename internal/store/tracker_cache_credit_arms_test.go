@@ -372,3 +372,68 @@ func TestWritesThatChangeWhatCreditReadsMoveTheTotals(t *testing.T) {
 		}
 	}
 }
+
+// A closed sprint's member carried into the active sprint is not counted
+// done at the closed sprint's end from its status now unless its history
+// covers its card: 10008, To Do while in sprint 20 with a history read
+// that holds no status change, then read Done and resolved in sprint 21
+// before its history is read again, is not known done at 20's end.
+func TestACarriedTicketsStatusNowIsNotItsStatusAtAnEarlierEnd(t *testing.T) {
+	t.Parallel()
+	s, root := creditFixture(t)
+	regroup := creditRegroup(t, creditRules(false))
+	r := sectionRow("10008", "10008", "1", 5, "20", "21")
+	r.Card.UpdatedAt = 900
+	mustWriteRowPage(t, s, root, webPage("10", r), nil)
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10008"}}), MirrorCatalog{},
+		mirrorReadOf(root, 30)); err != nil {
+		t.Fatal(err)
+	}
+	r = sectionRow("10008", "10008", "10001", 5, "20", "21")
+	r.Card.UpdatedAt, r.Card.ResolvedAt = 1300, 1200
+	r.Card.Data = []byte(`{"summary":"done"}`)
+	mustWriteRowPage(t, s, root, webPage("10", r), nil)
+	rows, _ := creditOf(t, s, root, regroup)
+	var got []string
+	for _, row := range creditRowsOf(rows, "10008") {
+		if strings.HasPrefix(row, "20 ") {
+			got = append(got, row)
+		}
+	}
+	if want := []string{"20 - 10008 finished - - - 5.0 - - - - - - its status when the sprint ended is not known"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("sprint 20's credit of 10008\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if pace := paceOf(t, s, root, "10", regroup); len(pace) != 1 || pace[0].Done != 2 || pace[0].Estimate != 8 {
+		t.Fatalf("pace %+v; want sprint 20's 2 finished tickets of 8 points, not 10008", pace)
+	}
+}
+
+// When who finished a ticket is not known, a person who never had it is a
+// reviewer whoever finished it, and the actions of those who had it are
+// one review row not counted, saying why: 10009, done since it was made
+// (no move into done, no resolution) and reassigned from User 1 to User 2,
+// counts User 3's review and lists User 2's actions as not counted.
+func TestTheActionsOfAPossibleFinisherAreNotCounted(t *testing.T) {
+	t.Parallel()
+	s, root := creditFixture(t)
+	r := sectionRow("10009", "10009", "10001", 5, "20")
+	r.Card.UpdatedAt, r.Card.AssigneeID = 900, "acc-user2"
+	mustWriteRowPage(t, s, root, webPage("10", r), nil)
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10009",
+		Changes: []MirrorChange{{Kind: MirrorChangeAssignee, At: 300, From: "acc-user1", To: "acc-user2"}}}}), MirrorCatalog{}, mirrorReadOf(root, 30)); err != nil {
+		t.Fatal(err)
+	}
+	replaceActs(t, s, root, 40, nil,
+		MirrorIssueActs{IssueID: "10009", Source: MirrorActComment, ReadFor: 900, Acts: []MirrorAct{act("c8", "acc-user2", 600, 0), act("c9", "acc-user3", 600, 0)}},
+		MirrorIssueActs{IssueID: "10009", Source: MirrorActWorklog, ReadFor: 900, Acts: []MirrorAct{act("w8", "acc-user2", 650, 3600), act("w9", "acc-user3", 650, 3600)}})
+	rows, _ := creditOf(t, s, root, creditRegroup(t, creditRules(false)))
+	const unknown = "who had it when it finished is not known"
+	want := []string{
+		"20 - 10009 finished - 5.0 1.0 5.0 - - - - - - " + unknown,
+		"20 - 10009 review - - - 5.0 10 2 - - - - " + unknown,
+		"20 - 10009 review acc-user3 0.5 0.1 5.0 10 2 commented, logged time 1 - - -",
+	}
+	if got := creditRowsOf(rows, "10009"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("credit\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

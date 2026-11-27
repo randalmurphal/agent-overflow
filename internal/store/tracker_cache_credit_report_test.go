@@ -58,11 +58,11 @@ func creditReadColumns(t *testing.T, s *Store) []creditReadColumn {
 	return out
 }
 
-// issueColumnValues is, for each column of cols, every value issue's rows
-// of its table hold, keyed by the row's primary key.
-func issueColumnValues(t *testing.T, s *Store, root int64, issue string, cols []creditReadColumn) map[creditReadColumn]string {
+// issueColumnValues is, for each column of cols, the value each of
+// issue's rows of its table holds, by the row's primary key.
+func issueColumnValues(t *testing.T, s *Store, root int64, issue string, cols []creditReadColumn) map[creditReadColumn]map[string]string {
 	t.Helper()
-	out := map[creditReadColumn]string{}
+	out := map[creditReadColumn]map[string]string{}
 	for _, c := range cols {
 		key, err := queryIDs(s.db, `SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk`, c.table)
 		if err != nil {
@@ -71,14 +71,21 @@ func issueColumnValues(t *testing.T, s *Store, root int64, issue string, cols []
 		for i, k := range key {
 			key[i] = "quote(" + k + ")"
 		}
-		var v *string
-		q := fmt.Sprintf(`SELECT group_concat(k || '=' || v, ';') FROM (SELECT %s AS k, quote(%s) AS v FROM %s WHERE root_id = ? AND issue_id = ? ORDER BY k)`,
-			strings.Join(key, ` || ',' || `), c.column, c.table)
-		if err := s.db.QueryRow(q, root, issue).Scan(&v); err != nil {
+		rows, err := s.db.Query(fmt.Sprintf(`SELECT %s, quote(%s) FROM %s WHERE root_id = ? AND issue_id = ?`, strings.Join(key, ` || ',' || `), c.column, c.table),
+			root, issue)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if v != nil {
-			out[c] = *v
+		out[c] = map[string]string{}
+		for rows.Next() {
+			var k, v string
+			if err := rows.Scan(&k, &v); err != nil {
+				t.Fatal(err)
+			}
+			out[c][k] = v
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
 		}
 	}
 	return out
@@ -172,6 +179,10 @@ func TestEveryWriteThatChangesATicketsCreditReportsIt(t *testing.T) {
 		return slices.Contains(ch.Cards, "10007") || slices.Contains(ch.Rows, "10007")
 	}
 	long := longHistory("10007", clearMirrorChunk+1, 1)
+	// corrected is the history with its assignee change, the same change
+	// by its key, at another time between other people.
+	corrected := slices.Clone(changes)
+	corrected[1].At, corrected[1].From, corrected[1].To = 860, "acc-user4", "acc-user3"
 	changed := map[creditReadColumn]bool{}
 	for _, step := range []struct {
 		name  string
@@ -189,6 +200,7 @@ func TestEveryWriteThatChangesATicketsCreditReportsIt(t *testing.T) {
 		{"its comments fail to read", acts(41, failed("500 Internal Server Error"))},
 		{"its comments fail again for another reason", acts(42, failed("403 Forbidden"))},
 		{"its evidence is read for the edit", acts(43, nil, comments(1000), worklogs(1000, 0))},
+		{"a change of its history is corrected", history(44, MirrorHistory{Changes: corrected})},
 		{"its history is known only from after its finish", history(44, MirrorHistory{Changes: changes[1:], CompleteFrom: 500})},
 		{"its history is read again, long", history(45, long)},
 		{"everything credit reads of its card changes", card(1100, func(r *MirrorRow) {
@@ -197,6 +209,9 @@ func TestEveryWriteThatChangesATicketsCreditReportsIt(t *testing.T) {
 		})},
 		{"the board's estimate field changes", reset},
 		{"its row is read again after it", reread},
+		{"an act of it is corrected", acts(49, nil,
+			MirrorIssueActs{IssueID: "10007", Source: MirrorActComment, ReadFor: 1100, Acts: []MirrorAct{act("c7", "acc-user4", 610, 0)}},
+			MirrorIssueActs{IssueID: "10007", Source: MirrorActWorklog, ReadFor: 1100, Acts: []MirrorAct{act("w7", "acc-user3", 660, 7200)}})},
 	} {
 		beforeCols := issueColumnValues(t, s, root, "10007", cols)
 		beforeRows, _ := creditOf(t, s, root, regroup)
@@ -204,8 +219,10 @@ func TestEveryWriteThatChangesATicketsCreditReportsIt(t *testing.T) {
 		afterCols := issueColumnValues(t, s, root, "10007", cols)
 		afterRows, _ := creditOf(t, s, root, regroup)
 		for _, c := range cols {
-			if beforeCols[c] != "" && beforeCols[c] != afterCols[c] {
-				changed[c] = true
+			for k, v := range beforeCols[c] {
+				if after, ok := afterCols[c][k]; ok && after != v {
+					changed[c] = true
+				}
 			}
 		}
 		if before, after := creditRowsOf(beforeRows, "10007"), creditRowsOf(afterRows, "10007"); !slices.Equal(before, after) && !reported {
