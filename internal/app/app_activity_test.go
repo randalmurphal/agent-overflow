@@ -185,8 +185,9 @@ func TestTrackerToolsActivityReadsTheDaysAndTheirCommits(t *testing.T) {
 // and another frame names none.
 func TestATurnStartNamesItsThreadsDay(t *testing.T) {
 	t.Parallel()
-	a := activityApp(t, nil)
-	at := time.Date(2026, 11, 24, 9, 0, 0, 0, time.Local).UnixMilli()
+	nine := time.Date(2026, 11, 24, 9, 0, 0, 0, time.Local)
+	a := activityApp(t, &activityClock{t: nine.Add(-time.Minute)})
+	at := nine.UnixMilli()
 	a.emit(eventchan.ProviderTurnStarted, triage.TurnStartedEvent{ThreadID: "t1", TurnIndex: 0, StartedAt: at})
 	a.emit(eventchan.ProviderTurnCompleted, triage.TurnCompletedEvent{ThreadID: "t2", TurnIndex: 0})
 	days, err := a.activity.Days("2026-11-24", "2026-11-24")
