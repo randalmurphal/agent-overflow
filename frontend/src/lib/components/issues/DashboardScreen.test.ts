@@ -207,6 +207,38 @@ describe('a ticket list', () => {
     await vi.waitFor(() => expect(page.queryByTestId('dashboard-drill')).toBeNull());
   });
 
+  it('leaves a drill opened after a start alone when that start ends', async () => {
+    setCarriedSessionScopes('laptop', ['tracker:read', 'tracker:operate', 'threads:operate']);
+    const NUM = { ...VIEW, id: 'd_3', widgets: [{ ...widget('w_num', 'Stuck'), now: true }] } as unknown as DashboardView;
+    setBindingMock('TrackerDashboards', async () => listed([NUM]));
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1, widgets: [{ id: 'w_num', value: { v: 2 } }] } as unknown as Answer));
+    setBindingMock('TrackerDashboardDrill', async () => ({ title: 'Stuck', value: { v: 2 }, unit: 'tickets', estimates: 'points', count: 2, tickets: 2, counted: 2, page: 0, pages: 1, rows: ROWS, at: 1 }));
+    let made: () => void = () => {};
+    setBindingMock('StartTicketsThread', () => new Promise((resolve) => { made = () => resolve({ id: 't-drill', projectId: 'p1' }); }));
+    setBindingMock('SwitchThread', async (id: string) => ({ id, projectId: 'p1' }));
+    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    unmount = screen.unmount;
+    await flush();
+    const page = within(document.body);
+    const openDrill = async () => {
+      await fireEvent.click(screen.getByTestId('dashboard-number'));
+      await vi.waitFor(() => expect(page.getAllByTestId('dashboard-drill-row')).toHaveLength(2));
+      await fireEvent.click(page.getByRole('checkbox', { name: 'Select WEB-1' }));
+      await fireEvent.click(page.getByTestId('ticket-list-thread'));
+    };
+    await openDrill();
+    await fireEvent.click(page.getByTestId('ticket-list-thread-start'));
+    await fireEvent.keyDown(document, { key: 'Escape' });
+    await vi.waitFor(() => expect(page.queryByTestId('dashboard-drill')).toBeNull());
+    await openDrill();
+    await fireEvent.input(page.getByTestId('ticket-list-thread-text'), { target: { value: 'the second question' } });
+    made();
+    await flush();
+    await flush();
+    expect(page.getByTestId('dashboard-drill')).toBeTruthy();
+    expect((page.getByTestId('ticket-list-thread-text') as HTMLInputElement).value).toBe('the second question');
+  });
+
   it('offers no move or assignment where this device may not change tickets', async () => {
     const screen = mount(['tracker:read', 'threads:operate']);
     await flush();

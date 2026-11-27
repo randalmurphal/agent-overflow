@@ -93,7 +93,7 @@ describe('moveTickets', () => {
     setBindingMock('MoveTrackerIssue', () => new Promise((resolve) => { sent.push(() => resolve({ parts: [{ step: 'move', state: 'applied' }] })); }));
     const tickets = Array.from({ length: 6 }, (_, i) => ticket(`WEB-${i + 1}`, String(i + 1), 'To Do'));
     const status = { id: 's3', name: 'Done', off: '', moves: new Map(tickets.map((t) => [t.ctx.key, '31'])) };
-    const done = moveTickets(tickets, status);
+    const done = moveTickets(tickets, status, () => {});
     for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
     expect(tickets.map((t) => ticketWrite(t.ctx.key, 'status')?.pending)).toEqual([true, true, true, true, true, true]);
     expect(sent).toHaveLength(BULK_AT_ONCE);
@@ -101,7 +101,7 @@ describe('moveTickets', () => {
       sent.shift()!();
       for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
     }
-    expect(await done).toEqual({ made: new Set(tickets.map((t) => t.ctx.key)), sent: 6 });
+    expect(await done).toEqual({ made: 6, sent: 6 });
   });
 });
 

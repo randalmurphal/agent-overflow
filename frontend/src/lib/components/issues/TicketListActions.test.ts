@@ -190,6 +190,49 @@ describe('Move to', () => {
     expect((await moveBoth('To Do')).textContent).toContain('They are all in To Do already');
   });
 
+  it('plans from each ticket\'s own move as it settles, so a slow batch never undoes a later move', async () => {
+    const to = (id: string, sid: string, name: string): MoveView => ({ id, name, to: { id: sid, name } } as MoveView);
+    setBindingMock('TrackerMoves', async (_c: string, issue: string) => [to(`r${issue}`, 's2', 'Review'), to(`d${issue}`, 's3', 'Done')]);
+    let releaseB: () => void = () => {};
+    setBindingMock('MoveTrackerIssue', (_c: string, input: { issue: string; move: string }) =>
+      input.move === 'r10102' ? new Promise((resolve) => { releaseB = () => resolve(applied()); }) : Promise.resolve(applied()));
+    const view = draw([rowOf(1), rowOf(2)]);
+    const statusOf = async (name: string) => {
+      await vi.waitFor(() => expect(page().getAllByTestId('ticket-list-move-status')).toHaveLength(2));
+      return page().getAllByTestId('ticket-list-move-status').find((b) => b.textContent?.includes(name))!;
+    };
+    await select('WEB-1', 'WEB-2');
+    await fireEvent.click(view.getByTestId('ticket-list-move'));
+    await fireEvent.click(await statusOf('Review'));
+    await vi.waitFor(() => expect(view.queryAllByTestId('ticket-write-pending')).toHaveLength(1));
+
+    // WEB-1 is in Review while WEB-2 still saves.
+    await select('WEB-1');
+    await fireEvent.click(view.getByTestId('ticket-list-move'));
+    expect((await statusOf('Review')).textContent).toContain('It is in Review already');
+    await fireEvent.click(await statusOf('Done'));
+    await flush();
+    releaseB();
+    await flush();
+
+    await select('WEB-1');
+    await fireEvent.click(view.getByTestId('ticket-list-move'));
+    expect((await statusOf('Done')).textContent).toContain('It is in Done already');
+    expect((await statusOf('Review')).textContent).not.toContain('already');
+  });
+
+  it('closes Move to when a count again changes a selected ticket\'s status', async () => {
+    setBindingMock('TrackerMoves', async () => [toDone('n')]);
+    const view = draw([rowOf(1, 'Done'), rowOf(2)]);
+    await select('WEB-1', 'WEB-2');
+    await fireEvent.click(view.getByTestId('ticket-list-move'));
+    await vi.waitFor(() => expect(page().getByTestId('ticket-list-move-status')).toBeTruthy());
+    await view.rerender({ rows: [rowOf(1), rowOf(2)] });
+    await flush();
+    expect(page().queryByTestId('ticket-list-move-title')).toBeNull();
+    expect(view.getByTestId('ticket-list-count').textContent).toBe('2 selected');
+  });
+
   it('says in a toast what the tracker refused while the list is not shown', async () => {
     setBindingMock('TrackerMoves', async (_c: string, issue: string) => [toDone(`n${issue}`)]);
     setBindingMock('MoveTrackerIssue', async (_c: string, input: { issue: string }) => (input.issue === '10102' ? refused('WEB-2 needs a reviewer first') : applied()));
@@ -305,7 +348,41 @@ describe('Start a thread', () => {
     expect(blocked.getByTestId('ticket-list-off').textContent?.trim()).toBe('Pick the project its thread goes in.');
   });
 
-  it('keeps the text and the selection when the start is refused, and a start that ends never clears a later form\'s text', async () => {
+  it('starts one thread at a time, and a refused start gives back its text and selection', async () => {
+    let answer: (ok: boolean) => void = () => {};
+    setBindingMock('StartTicketsThread', () => new Promise((resolve, reject) => {
+      answer = (ok) => (ok ? resolve({ id: 't-1', projectId: 'p1' } as unknown as Thread) : reject(new Error('the tracker did not answer')));
+    }));
+    const view = draw([rowOf(1), rowOf(2)]);
+    await select('WEB-1');
+    await fireEvent.click(view.getByTestId('ticket-list-thread'));
+    await fireEvent.input(page().getByTestId('ticket-list-thread-text'), { target: { value: 'about one' } });
+    await fireEvent.click(page().getByTestId('ticket-list-thread-start'));
+    await flush();
+    await select('WEB-2');
+    expect((view.getByTestId('ticket-list-thread') as HTMLButtonElement).disabled).toBe(true);
+    expect(view.getByTestId('ticket-list-off').textContent).toContain('A thread is being started on 1 ticket');
+    await fireEvent.click(view.getByTestId('ticket-list-clear'));
+    answer(false);
+    await flush();
+    expect(view.getByTestId('ticket-list-count').textContent).toBe('1 selected');
+    expect(page().getByRole('checkbox', { name: 'Select WEB-1' }).getAttribute('aria-checked')).toBe('true');
+    await fireEvent.click(view.getByTestId('ticket-list-thread'));
+    expect((page().getByTestId('ticket-list-thread-text') as HTMLInputElement).value).toBe('about one');
+  });
+
+  it('keeps typed text with the tickets it was typed for', async () => {
+    const view = draw([rowOf(1), rowOf(2)]);
+    await select('WEB-1', 'WEB-2');
+    await fireEvent.click(view.getByTestId('ticket-list-thread'));
+    await fireEvent.input(page().getByTestId('ticket-list-thread-text'), { target: { value: 'compare these two' } });
+    await view.rerender({ rows: [rowOf(1)] });
+    await flush();
+    await fireEvent.click(view.getByTestId('ticket-list-thread'));
+    expect((page().getByTestId('ticket-list-thread-text') as HTMLInputElement).value).toBe('');
+  });
+
+  it('keeps the text and the selection when the start is refused, even with two tickets', async () => {
     let answer: (ok: boolean) => void = () => {};
     setBindingMock('StartTicketsThread', () => new Promise((resolve, reject) => {
       answer = (ok) => (ok ? resolve({ id: 't-1', projectId: 'p1' } as unknown as Thread) : reject(new Error('the tracker did not answer')));
@@ -321,14 +398,5 @@ describe('Start a thread', () => {
     expect(view.getByTestId('ticket-list-count').textContent).toBe('2 selected');
     await fireEvent.click(view.getByTestId('ticket-list-thread'));
     expect((page().getByTestId('ticket-list-thread-text') as HTMLInputElement).value).toBe('why stuck');
-
-    await fireEvent.click(page().getByTestId('ticket-list-thread-start'));
-    await flush();
-    await select('WEB-3');
-    await fireEvent.click(view.getByTestId('ticket-list-thread'));
-    await fireEvent.input(page().getByTestId('ticket-list-thread-text'), { target: { value: 'the next one' } });
-    answer(true);
-    await flush();
-    expect((page().getByTestId('ticket-list-thread-text') as HTMLInputElement).value).toBe('the next one');
   });
 });

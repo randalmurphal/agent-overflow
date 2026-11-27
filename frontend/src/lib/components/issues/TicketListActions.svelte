@@ -29,7 +29,8 @@
   // bar then says what the batch came to for a few seconds. On desktop a
   // row's box shows on hover and focus, and on every row while selecting;
   // under compact it shows always.
-  import { onDestroy, type Snippet } from 'svelte';
+  import { onDestroy, untrack, type Snippet } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import MessageSquare from '@lucide/svelte/icons/message-square';
@@ -105,19 +106,22 @@
     chosen = next;
   }
 
-  // The status each ticket this list moved is in now, by ticket ID, until
-  // the rows are counted again: a drill's rows show their tickets as they
-  // were when it counted, so its next move starts from where this one left
-  // them.
-  const movedTo = new Map<string, string>();
+  // The status each ticket this list moved is in now, by ticket ID,
+  // written as each ticket's move settles, until the rows are counted
+  // again: a drill's rows show their tickets as they were when it counted,
+  // so its next move starts from where this one left them. One status
+  // write is out per ticket at a time (the write store), so a ticket's
+  // later settle is its later move.
+  const movedTo = new SvelteMap<string, string>();
   $effect.pre(() => {
     void rows;
-    movedTo.clear();
+    untrack(() => movedTo.clear());
   });
+  const statusOf = (r: TicketRow) => movedTo.get(r.id) ?? r.status;
 
   function listTicket(r: TicketRow): ListTicket {
     const ref = { backend: source.backend, connection: source.connection, issue: r.id };
-    return { ctx: { key: trackerTicketKey(ref), ref, label: r.key }, status: movedTo.get(r.id) ?? r.status };
+    return { ctx: { key: trackerTicketKey(ref), ref, label: r.key }, status: statusOf(r) };
   }
   const keyOf = (r: TicketRow) => trackerTicketKey({ backend: source.backend, connection: source.connection, issue: r.id });
 
@@ -137,22 +141,26 @@
   onDestroy(() => clearTimeout(noteTimer));
 
   function madeWords(out: BatchOutcome, verb: string): string {
-    return out.made.size === out.sent ? `${many(out.sent)} ${verb}` : `${out.made.size} of ${many(out.sent)} ${verb}`;
+    return out.made === out.sent ? `${many(out.sent)} ${verb}` : `${out.made} of ${many(out.sent)} ${verb}`;
   }
 
   // ---- The actions ----
 
   type Open = 'move' | 'assign' | 'thread' | null;
   let open = $state<Open>(null);
-  // The tickets the open action is for, taken when it opened, and their
-  // IDs; its reads stop when it ends (`reads`).
+  // The tickets the open action is for, taken when it opened, and what it
+  // is for (`actingFor`): their IDs, and for Move to the statuses it
+  // planned from too; its reads stop when it ends (`reads`).
   let acting = $state.raw<ListTicket[]>([]);
-  let actingIDs = '';
+  let actingFor = '';
   let reads: AbortController | null = null;
-  // A count again that changed the selection ends the action it opened for.
+  function actionFor(which: Exclude<Open, null>): string {
+    return selected.map((r) => (which === 'move' ? `${r.id}\t${statusOf(r)}` : r.id)).join('\n');
+  }
+  // A count again that changed the selection, or a status Move to planned
+  // from, ends the action it opened for.
   $effect.pre(() => {
-    const ids = selected.map((r) => r.id).join(' ');
-    if (open && ids !== actingIDs) endAction();
+    if (open && actionFor(open) !== actingFor) untrack(endAction);
   });
   onDestroy(() => reads?.abort());
   let moveAnchor: HTMLElement | undefined = $state();
@@ -166,8 +174,9 @@
   function begin(which: Exclude<Open, null>): void {
     endAction();
     acting = selected.map(listTicket);
-    actingIDs = selected.map((r) => r.id).join(' ');
+    actingFor = actionFor(which);
     reads = new AbortController();
+    if (which === 'thread' && draft.for !== actingFor) draft = { for: actingFor, text: '' };
     open = which;
     if (which !== 'move') return;
     const tickets = acting;
@@ -184,7 +193,7 @@
     reads?.abort();
     reads = null;
     acting = [];
-    actingIDs = '';
+    actingFor = '';
     movesRead += 1;
     moves = { state: 'reading' };
   }
@@ -200,8 +209,7 @@
     chosen = new Set();
     const already = tickets.filter((t) => status.moves.get(t.ctx.key) === null).length;
     say(`Moving ${many(tickets.length - already)} to ${status.name}…`, false);
-    const out = await moveTickets(tickets, status);
-    for (const t of tickets) if (out.made.has(t.ctx.key)) movedTo.set(t.ctx.ref.issue, status.name);
+    const out = await moveTickets(tickets, status, (t) => movedTo.set(t.ctx.ref.issue, status.name));
     say(`${madeWords(out, `moved to ${status.name}`)}${already ? `, ${already} already in ${status.name}` : ''}`, true);
   }
 
@@ -214,30 +222,41 @@
     say(madeWords(out, person ? `assigned to ${person.name}` : 'unassigned'), true);
   }
 
-  // The text of the form, which a start takes: a refused start gives it
-  // back, with its selection, when the person has not begun another.
-  let threadText = $state('');
+  // The form's text, which belongs to the tickets it was typed for: a form
+  // opened for others starts empty. One start is out at a time
+  // (`starting`), and it is this list's: a refused one gives back its text
+  // and, when nothing is selected, its tickets; one that ends after the
+  // list is gone (its drill closed) does nothing.
+  let draft = $state<{ for: string; text: string }>({ for: '', text: '' });
+  let starting = $state(0);
+  let gone = false;
+  onDestroy(() => { gone = true; });
   async function startThread(): Promise<void> {
+    if (starting) return;
     const tickets = acting;
-    const typed = threadText;
+    const typed = draft.text;
+    const typedFor = actingFor;
     const ids = chosen;
-    threadText = '';
+    draft = { for: '', text: '' };
     endAction();
     chosen = new Set();
+    starting = tickets.length;
     say(`Starting a thread on ${many(tickets.length)}…`, false);
-    const made = await askAboutTickets(tickets.map((t) => t.ctx), source.project, typed.trim(), () => onThread?.());
+    const made = await askAboutTickets(tickets.map((t) => t.ctx), source.project, typed.trim(), () => { if (!gone) onThread?.(); });
+    starting = 0;
+    if (gone) return;
     if (made) {
       say(`Thread started with ${many(tickets.length)} attached`, true);
       return;
     }
     note = null;
-    if (chosen.size > 0 || open) return;
-    chosen = ids;
-    threadText = typed;
+    draft = { for: typedFor, text: typed };
+    if (chosen.size === 0 && !open) chosen = ids;
   }
 
   const threadOff = $derived(
     source.threadBlocked ||
+    (starting ? `A thread is being started on ${many(starting)}; start the next once it opens.` : '') ||
     (selected.length > MAX_THREAD_TICKETS ? `A thread takes at most ${MAX_THREAD_TICKETS} tickets, one file each; ${selected.length} are selected.` : ''),
   );
   const writeOff = $derived(source.writeBlocked);
@@ -371,7 +390,7 @@
         aria-label="What the thread is about"
         autofocus
         data-testid="ticket-list-thread-text"
-        bind:value={threadText}
+        bind:value={draft.text}
       />
       <Button size="xs" variant="primary" type="submit" testId="ticket-list-thread-start">Start</Button>
     </div>
