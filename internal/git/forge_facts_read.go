@@ -251,26 +251,38 @@ type factAnswer struct {
 }
 
 func newFactAnswer(data map[string]json.RawMessage, err error) (factAnswer, error) {
-	answer := factAnswer{data: data}
 	if err == nil {
-		return answer, nil
+		return factAnswer{data: data}, nil
 	}
-	gql, ok := errors.AsType[*forgeapi.GraphQLError](err)
-	if !ok || len(gql.Data) == 0 || string(gql.Data) == "null" || gql.Undecoded {
+	problems, ok := graphQLProblemsByAlias(err)
+	if !ok {
 		return factAnswer{}, err
 	}
-	answer.problems = map[string][]forgeapi.GraphQLProblem{}
+	return factAnswer{data: data, problems: problems}, nil
+}
+
+// graphQLProblemsByAlias splits err, a GraphQL answer's error, by the
+// top-level field (alias) each problem's path starts at, so the fields no
+// problem names are answers to keep. ok is false for an error that is no
+// GraphQL answer, an answer whose data is absent or did not decode, or a
+// problem without a path: no field's answer can be told apart.
+func graphQLProblemsByAlias(err error) (map[string][]forgeapi.GraphQLProblem, bool) {
+	gql, ok := errors.AsType[*forgeapi.GraphQLError](err)
+	if !ok || len(gql.Data) == 0 || string(gql.Data) == "null" || gql.Undecoded {
+		return nil, false
+	}
+	problems := map[string][]forgeapi.GraphQLProblem{}
 	for _, problem := range gql.Problems {
 		alias := ""
 		if len(problem.Path) > 0 {
 			alias, _ = problem.Path[0].(string)
 		}
 		if alias == "" {
-			return factAnswer{}, err
+			return nil, false
 		}
-		answer.problems[alias] = append(answer.problems[alias], problem)
+		problems[alias] = append(problems[alias], problem)
 	}
-	return answer, nil
+	return problems, true
 }
 
 // status is what an alias's problems say of its key: absent when every

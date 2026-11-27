@@ -36,7 +36,7 @@ import { takePinnedBackend } from '../../transport/backends';
 import { resetSidebarCatalogsForTest } from '../../stores/sidebarCatalogs';
 import { setCarriedSessionScopes } from '../../transport/scopes';
 import { DisconnectedError } from '../../transport/wsClient';
-import { openPaneFind, setPaneFindQuery } from '../../stores/paneFind.svelte';
+import { hasPaneFindProvider, openPaneFind, paneFindRegionKey, paneFindTarget, setPaneFindQuery } from '../../stores/paneFind.svelte';
 import { noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from '../../stores/layoutMode.svelte';
 import {
   getSettingsComputer,
@@ -55,7 +55,10 @@ import { noteProject } from '../../transport/entityIndex';
 import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { TransportError } from '../../transport/wsClient';
-import { bindingMockNames, getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { bindingMockNames, getBindingMock, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
+import { installPRDraftsFake } from '../../../test/helpers/prDraftsFake';
+import { commitList } from '../../../test/helpers/commitList';
+import { prKey } from '../../utils/prReference';
 import { getMinuteNow } from '../../stores/minuteClock.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import { trackerTicketKey } from '../../stores/trackerTicket.svelte';
@@ -1270,6 +1273,45 @@ async function openCard(view: ReturnType<typeof mount>, issue: string): Promise<
   });
 }
 
+const PR = { forge: 'github', host: 'github.com', namespace: 'example', repo: 'widgets', number: 9 } as const;
+const PR_URL = 'https://github.com/example/widgets/pull/9';
+
+// Work names project p1 as the checkout that shows #9, and the review
+// pinned to it answers as the Pull requests page's does.
+function installReview() {
+  project('p1', 'alpha', 1);
+  setBindingMock('GetTicketWork', async () => ({
+    key: 'WEB-1', branches: [], problems: [], forgeProblems: [], searchFull: [],
+    pullRequests: [{ ref: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'widgets', Number: 9 }, url: PR_URL, title: 'WEB-1 Docs', state: 'merged', branch: 'docs', projectId: 'p1', reviewProjectId: 'p1' }],
+  }));
+  setBindingMock('SearchTicketWork', async () => null);
+  const subscribe = setBindingMock('SubscribePRUpdates', async () => ({
+    id: 'pr-sub-9', prKey: prKey(PR), threads: [], headSHA: 'a'.repeat(40), seq: 1,
+    detail: {
+      number: 9, title: 'WEB-1 Docs', body: '', authorLogin: 'alice', state: 'merged', draft: false, headRefName: 'docs', baseRefName: 'main',
+      baseRefSHA: 'b'.repeat(40), headSHA: 'a'.repeat(40), url: PR_URL, additions: 1, deletions: 0, changedFiles: 1, viewerIsAuthor: false,
+      reviewDecision: '', latestReviews: [], checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
+      mergeability: 'clean', readiness: { state: 'ready', blockers: [], settled: [] },
+      merge: { methods: ['merge'], deleteBranchOffered: false, deleteBranchDefault: false, autoMergeAvailable: false, viewerCanMerge: true, viewerCanApprove: true, viewerApproved: false },
+    },
+  }));
+  const unsubscribe = setBindingMock('UnsubscribePRUpdates', async () => undefined);
+  setReviewDiffMock('OpenPRDiff', async () => ['diff --git a/a.ts b/a.ts', 'index 1111111..2222222 100644', '--- a/a.ts', '+++ b/a.ts', '@@ -1 +1 @@', '-a', '+b'].join('\n'));
+  setBindingMock('ListPRCommits', async () => commitList([]));
+  setBindingMock('ListPRReviewThreads', async () => []);
+  setBindingMock('SetPRCILogFollows', async () => ({ logs: {} }));
+  installPRDraftsFake();
+  return { subscribe, unsubscribe };
+}
+
+async function workRow(view: { container: HTMLElement }): Promise<HTMLElement> {
+  return waitFor(() => {
+    const row = within(within(view.container).getByTestId('ticket-screen')).getByTestId('ticket-work-pull');
+    expect(row.dataset.opens).toBe('review');
+    return row;
+  });
+}
+
 describe('the ticket in the pane', () => {
   // The ticket's chunk loads on the first open; load it before the first
   // test waits on it.
@@ -1292,6 +1334,92 @@ describe('the ticket in the pane', () => {
     await waitFor(() => expect(votes(mocks.visible, 'sub-')).toEqual([false, true]));
     expect(view.queryByTestId('ticket-screen')).toBeNull();
     await waitFor(() => expect(mocks.release).toHaveBeenCalledWith('ticket-1-1'));
+  });
+
+  describe('a pull request of the ticket\'s Work', () => {
+    beforeAll(async () => {
+      await import('./TicketReview.svelte');
+    });
+
+    it('shows its review over the ticket, voting the ticket hidden under it, and Back shows the ticket again', async () => {
+      install();
+      installTicket();
+      const ticketVotes = getBindingMock('SetTrackerSubscriptionVisible')!;
+      const review = installReview();
+      clearCommandRegistry();
+      registerIssuesCommands();
+      const back = focusIssuesPane();
+      // Inside its layout pane's element, as PaneHost mounts it, which a
+      // nested find surface reads presses from.
+      const host = document.body.appendChild(document.createElement('div'));
+      host.dataset.paneId = PANE;
+      const view = render(IssuesPane, { props: { paneId: PANE }, target: host });
+      await openCard(view, '1');
+      await fireEvent.click(await workRow(view));
+      const shown = await view.findByTestId('ticket-review');
+      expect(shown).toHaveAttribute('data-pr', prKey(PR));
+      // The bar holds Back, the number and the forge link; the title is the
+      // review's own.
+      expect(within(shown).getByTestId('ticket-review-number')).toHaveTextContent('#9');
+      expect(within(shown).getByTestId('ticket-review-back')).toBeTruthy();
+      expect(within(shown).getByTestId('ticket-review-forge')).toHaveTextContent('Open on GitHub');
+      expect(within(shown).queryByTestId('ticket-review-title')).toBeNull();
+      await waitFor(() => expect(review.subscribe).toHaveBeenCalledTimes(1));
+      expect(within(shown).getByTestId('review-pane')).toBeTruthy();
+      // The ticket stays mounted under it, hidden and inert, and votes
+      // hidden.
+      expect(view.getByTestId('ticket-under-review')).toHaveAttribute('inert');
+      expect(view.getByTestId('ticket-under-review')).toHaveClass('invisible');
+      expect(view.getByTestId('ticket-screen')).toBeTruthy();
+      await waitFor(() => expect(votes(ticketVotes, 'ticket-1')).toEqual([false]));
+      expect(document.activeElement).toBe(within(shown).getByTestId('ticket-review-body'));
+      // mod+f searches the review the person is in, with its own provider;
+      // a press back on the pane's header gives it to the board's cards.
+      const reviewFind = paneFindRegionKey(PANE, 'pull-request');
+      expect(paneFindTarget(PANE)).toBe(reviewFind);
+      expect(hasPaneFindProvider(reviewFind)).toBe(true);
+      await fireEvent.pointerDown(view.getByTestId('tool-pane-header'));
+      expect(paneFindTarget(PANE)).toBe(PANE);
+      await fireEvent.pointerDown(within(shown).getByTestId('review-pane'));
+      expect(paneFindTarget(PANE)).toBe(reviewFind);
+
+      // Escape (the phone's Back) shows the ticket again, voted shown, and
+      // lets the review's subscription go.
+      back();
+      await waitFor(() => expect(view.queryByTestId('ticket-review')).toBeNull());
+      expect(view.getByTestId('ticket-under-review')).not.toHaveAttribute('inert');
+      expect(view.getByTestId('ticket-under-review')).not.toHaveClass('invisible');
+      await waitFor(() => expect(votes(ticketVotes, 'ticket-1')).toEqual([false, true]));
+      await waitFor(() => expect(review.unsubscribe).toHaveBeenCalledWith('pr-sub-9'));
+      expect(paneFindTarget(PANE)).toBe(PANE);
+      expect(hasPaneFindProvider(reviewFind)).toBe(false);
+      // The ticket is where it was: a second Back closes it.
+      back();
+      await waitFor(() => expect(view.queryByTestId('ticket-screen')).toBeNull());
+      view.unmount();
+      host.remove();
+    });
+
+    it('ends with the open it came from: an open of the ticket shown or another ticket shows the ticket, not the review', async () => {
+      install();
+      installTicket();
+      installReview();
+      const view = mount();
+      await openCard(view, '1');
+      await fireEvent.click(await workRow(view));
+      await view.findByTestId('ticket-review');
+      // The card of the ticket shown, pressed again (beside, or from a
+      // thread's link): the ticket shows.
+      requestTicketOpen({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '1' }, seed: { key: 'WEB-1', title: 'Issue 1', card: null }, project: null, unplaced: vi.fn() });
+      await waitFor(() => expect(view.queryByTestId('ticket-review')).toBeNull());
+      expect(view.getByTestId('ticket-screen').dataset.issue).toBe('1');
+      await fireEvent.click(await workRow(view));
+      await view.findByTestId('ticket-review');
+      requestTicketOpen({ ref: { backend: HOME_BACKEND, connection: 'c1', issue: '2' }, seed: { key: 'WEB-2', title: 'Issue 2', card: null }, project: null, unplaced: vi.fn() });
+      await waitFor(() => expect(view.getByTestId('ticket-screen').dataset.issue).toBe('2'));
+      expect(view.queryByTestId('ticket-review')).toBeNull();
+      view.unmount();
+    });
   });
 
   describe('the project a ticket\'s Ask and Start work use', () => {
@@ -4071,6 +4199,63 @@ describe('a ticket in a pane of its own', () => {
     expect(ticketPaneIds()).toEqual([paneId]);
     expect(within(pane.container).getByTestId('ticket-screen').dataset.issue).toBe('1');
     clearCommandRegistry();
+  });
+
+  it('shows a pull request of its Work under the pane\'s own header, and Escape shows the ticket again', async () => {
+    placeIssuesPane();
+    install();
+    installTicket();
+    installReview();
+    await import('./TicketReview.svelte');
+    clearCommandRegistry();
+    registerIssuesCommands();
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    const paneId = ticketPaneIds()[0];
+    const pane = mountTicketPane(paneId);
+    await paneScreen(pane, '1');
+    const escape = () => runCommand('issues.escape', makeCommandContext(null, {}));
+    const flags = () => makeCommandContext(null, {}).flags;
+    // At the first ticket, with nothing open, Escape has nothing to do.
+    expect(flags()).toMatchObject({ issuesPaneFocused: true, toolDetailOpen: false });
+    await fireEvent.click(await workRow(pane));
+    const shown = await within(pane.container).findByTestId('ticket-review');
+    expect(within(shown).getByTestId('tool-pane-header')).toBeTruthy();
+    expect(within(shown).getByTestId('ticket-review-number')).toHaveTextContent('#9');
+    expect(within(shown).getByTestId('ticket-review-back')).toBeTruthy();
+    // The review is the pane's find, the pane having none of its own.
+    expect(paneFindTarget(paneId)).toBe(paneFindRegionKey(paneId, 'pull-request'));
+    expect(flags()).toMatchObject({ issuesPaneFocused: true, toolDetailOpen: true });
+    escape();
+    await waitFor(() => expect(within(pane.container).queryByTestId('ticket-review')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(within(pane.container).getByTestId('ticket-screen')));
+    expect(flags()).toMatchObject({ issuesPaneFocused: true, toolDetailOpen: false });
+    expect(ticketPaneIds()).toEqual([paneId]);
+    clearCommandRegistry();
+  });
+
+  it('shows the ticket, not its pull request, when the person opens the ticket in its own pane again', async () => {
+    placeIssuesPane();
+    install();
+    installTicket();
+    installReview();
+    await import('./TicketReview.svelte');
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    const paneId = ticketPaneIds()[0];
+    const pane = mountTicketPane(paneId);
+    await paneScreen(pane, '1');
+    await fireEvent.click(await workRow(pane));
+    await within(pane.container).findByTestId('ticket-review');
+
+    focusPane(PANE);
+    await fireEvent.click(within(card(view, '1')).getByTestId('issues-card-open'), { ctrlKey: true });
+    await waitFor(() => expect(within(pane.container).queryByTestId('ticket-review')).toBeNull());
+    expect(ticketPaneIds()).toEqual([paneId]);
+    expect(getFocusedPaneId()).toBe(paneId);
+    await waitFor(() => expect(document.activeElement).toBe(within(pane.container).getByTestId('ticket-screen')));
   });
 
   it('comes back after a reload on its ticket without taking the focus', async () => {

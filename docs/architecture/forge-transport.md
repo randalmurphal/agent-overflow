@@ -831,7 +831,8 @@ the host's limit), every request within the method's budget:
   `keySearchMaxPages` (5) pages, since a loose match (`WEB-10` for `WEB-1`)
   can fill a page ahead of the exact one; one with more is
   `PRKeySearch.Full`. A search whose request fails answers the pages it
-  read beside the error.
+  read beside the error, and on GitHub the parts of the failed answer
+  that no error's path names (`graphQLProblemsByAlias`).
 - `Core.ListPRsByHead(ctx, cwd, branch)` in every state, once for each
   branch of the ticket in a repository whose search answered: the
   repository's branches the search found and this computer's branches in
@@ -842,7 +843,9 @@ the host's limit), every request within the method's budget:
   several pull requests. GitHub `PRsByHead`, GitLab `merge_requests?state=all&source_branch=B`,
   each with the fork rules of `ListOpenPRs` above, except that GitLab
   reads a fork's parent in every state even when the fork has merge
-  requests of its own.
+  requests of its own. A lookup whose request fails answers what it read
+  before it beside the error: the origin's pull requests when the
+  parent's read fails.
 
 The forge's matches are looser than the key rule (a quoted GitHub term
 also matches a longer dashed ID it begins, as `WEB-1` would `WEB-1-2`;
@@ -860,8 +863,10 @@ key.
 
 A failed repository is one `TicketForgeProblem`, classified and worded
 by `newRepoForgeFailure` as the Pull requests page's project failures
-are, beside the rows its search read; it gets no lookups. A rate limit is
-the transport's gate, as for any interactive request.
+are, beside the rows its search and lookups read; a failed search gets no
+lookups. Work says that the search of the repository did not finish,
+which holds whether or not it read rows first. A rate limit is the
+transport's gate, as for any interactive request.
 
 ## Managing a PR
 

@@ -167,18 +167,15 @@ func (f *githubForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 // given branch of cwd's origin repository itself (githubPRsByHead).
 func (f *githubForge) ListPRsByHead(ctx context.Context, cwd, head string) ([]PRFound, error) {
 	nodes, err := f.githubPRsByHead(ctx, cwd, head, []string{"OPEN", "CLOSED", "MERGED"})
-	if err != nil {
-		return nil, err
-	}
 	found := make([]PRFound, 0, len(nodes))
 	for _, node := range nodes {
-		row, err := prFound(node.URL, node.Title, node.State, node.IsDraft, PRListAuthor{Login: node.Author.Login, Name: node.Author.Name}, node.HeadRefName)
-		if err != nil {
-			return nil, err
+		row, rowErr := prFound(node.URL, node.Title, node.State, node.IsDraft, PRListAuthor{Login: node.Author.Login, Name: node.Author.Name}, node.HeadRefName)
+		if rowErr != nil {
+			return found, rowErr
 		}
 		found = append(found, row)
 	}
-	return found, nil
+	return found, err
 }
 
 // githubPRsByHead reads the pull requests in states whose head is the
@@ -186,7 +183,8 @@ func (f *githubForge) ListPRsByHead(ctx context.Context, cwd, head string) ([]PR
 // origin from its own branch, and, when the origin is a fork, those
 // opened in its parent from the fork's branch. A pull request from
 // another fork's branch of the same name is not one: it is someone
-// else's work.
+// else's work. A read that fails answers the pull requests read before
+// it beside its error.
 func (f *githubForge) githubPRsByHead(ctx context.Context, cwd, head string, states []string) ([]githubHeadPullRaw, error) {
 	if strings.TrimSpace(head) == "" {
 		return nil, errors.New("pull request head branch is required")
@@ -200,16 +198,14 @@ func (f *githubForge) githubPRsByHead(ctx context.Context, cwd, head string, sta
 		return pulls, err
 	}
 	_, upstream, err := githubPRsByHeadIn(ctx, client, origin.Parent.Owner.Login, origin.Parent.Name, head, states, func(headRepo string, _ bool) bool { return headRepo == origin.ID })
-	if err != nil {
-		return nil, err
-	}
-	return append(pulls, upstream...), nil
+	return append(pulls, upstream...), err
 }
 
 // githubPRsByHeadIn reads owner/name's pull requests in states from a
 // head branch named head, keeping those keep accepts by their head
 // repository's node id and whether it is another repository, beside the
 // repository's id and parent. States are normalized (NormalizePRState).
+// A page that fails ends the read with the pages before it.
 func githubPRsByHeadIn(ctx context.Context, client *forgeapi.Client, owner, name, head string, states []string, keep func(headRepo string, crossRepository bool) bool) (githubRepoParentRaw, []githubHeadPullRaw, error) {
 	var repository githubRepoParentRaw
 	pulls := []githubHeadPullRaw{}
@@ -226,10 +222,10 @@ func githubPRsByHeadIn(ctx context.Context, client *forgeapi.Client, owner, name
 		}
 		vars := map[string]any{"owner": owner, "name": name, "head": head, "states": states, "after": after}
 		if _, err := client.GraphQL(ctx, githubPRsByHeadQuery, vars, &raw); err != nil {
-			return githubRepoParentRaw{}, nil, err
+			return repository, pulls, err
 		}
 		if raw.Repository == nil {
-			return githubRepoParentRaw{}, nil, fmt.Errorf("GitHub answered no repository %s/%s", owner, name)
+			return repository, pulls, fmt.Errorf("GitHub answered no repository %s/%s", owner, name)
 		}
 		repository = raw.Repository.githubRepoParentRaw
 		for _, node := range raw.Repository.PullRequests.Nodes {
