@@ -6,7 +6,8 @@ import "testing"
 // relation of the export, its card blobs of CardShapeForTest's shape:
 // WEB-10001 a done Bug, High, labeled frontend, in active sprint 21;
 // WEB-10002 an in-progress Task, Low, in sprint 21, with one status change
-// by acc-author, who is assigned nothing; WEB-10003 a to-do ticket whose
+// by acc-author, who is assigned nothing, so two status intervals and one
+// stretch in sprint 21, the only history read; WEB-10003 a to-do ticket whose
 // blob is of no version the shape reads. Every ticket is acc-user1's.
 func DashboardReadsFixtureForTest(t *testing.T) (*Store, int64) {
 	t.Helper()

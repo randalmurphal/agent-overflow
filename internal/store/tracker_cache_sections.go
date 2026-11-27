@@ -65,7 +65,14 @@ const mirrorSectionOrderSQL = ` ORDER BY b.order_key, b.issue_id LIMIT `
 // estimate reset, since its number is in the board's earlier estimate
 // definition. Every read of a row's estimate states it with this.
 func mirrorRowEstimate(reset string) string {
-	return `iif(b.read_at <= ` + reset + `, NULL, b.estimate)`
+	return `iif(` + mirrorRowEstimateRead(reset) + `, b.estimate, NULL)`
+}
+
+// mirrorRowEstimateRead holds for a board row b read after its board's
+// estimate reset: its estimate, and the estimate history read for its
+// issue after it (boards_rev), are in the board's estimate definition.
+func mirrorRowEstimateRead(reset string) string {
+	return `b.read_at > ` + reset
 }
 
 // mirrorRowColumnsSQL are a section row's columns, of a board row b and
@@ -190,8 +197,13 @@ const mirrorNotDoneSQL = `NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st
 // the mirror does not know counts as not done unless g names it. The list
 // is one uncorrelated subquery, which the statement builds once from the
 // root's catalog and probes per row.
-func mirrorRegroupedNotDone(g string) string {
-	return `i.status_id NOT IN (SELECT st.status_id FROM tracker_cache_statuses st
+func mirrorRegroupedNotDone(g string) string { return mirrorStatusNotDone("i.status_id", g) }
+
+// mirrorStatusNotDone is mirrorRegroupedNotDone of a status, an SQL
+// expression: the one rule for whether a status counts as not done, of a
+// ticket now (tickets.open) and of a stretch it held (status_intervals.open).
+func mirrorStatusNotDone(status, g string) string {
+	return status + ` NOT IN (SELECT st.status_id FROM tracker_cache_statuses st
 	 WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group IN (4, 5) AND st.status_id NOT IN (SELECT o.key FROM json_each(` + g + `) o)
 	 UNION ALL SELECT o.key FROM json_each(` + g + `) o WHERE o.value IN (4, 5, 6))`
 }

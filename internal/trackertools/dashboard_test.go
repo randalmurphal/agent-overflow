@@ -72,6 +72,11 @@ func TestDashboardWidgetRefusesAnUnknownField(t *testing.T) {
 	f := &fakeTracker{}
 	_, err := widgetCall(t, f, webBoards(), map[string]any{"board": "Web Team", "widget": map[string]any{"title": "x", "query": "SELECT 1"}})
 	refused(t, err, CodeInvalidRequest, `widget: json: unknown field "query". Call dashboard_widget with no widget for its fields.`)
+	// A built-in's pace and overlap are not a widget's fields.
+	for _, field := range []string{"pace", "overlap"} {
+		_, err = widgetCall(t, f, webBoards(), map[string]any{"board": "Web Team", "widget": map[string]any{"title": "x", field: true}})
+		refused(t, err, CodeInvalidRequest, `widget: json: unknown field "`+field+`". Call dashboard_widget with no widget for its fields.`)
+	}
 	if len(f.tries) != 0 {
 		t.Fatalf("tries = %v", f.tries)
 	}

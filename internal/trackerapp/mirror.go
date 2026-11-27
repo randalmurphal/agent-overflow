@@ -89,7 +89,7 @@ type MirrorStore interface {
 	ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
 	ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay string) (store.MirrorWorklogDays, error)
 
-	ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup store.MirrorRegroup, relations []string, card store.MirrorCardShape) (store.MirrorExport, bool, error)
+	ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup store.MirrorRegroup, relations []string, window int64, card store.MirrorCardShape) (store.MirrorExport, bool, error)
 }
 
 var (

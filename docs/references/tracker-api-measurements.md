@@ -861,7 +861,8 @@ encodes BLOBs by SQL type without the `iif`: it wrote `x'00ff'` as
 
 ### The built-in dashboard
 
-Measured on this branch with modernc.org/sqlite v1.63.0 under WSL2 on a
+Measured before the sprint history widgets, whose cost is in [Sprint
+history](#sprint-history), with modernc.org/sqlite v1.63.0 under WSL2 on a
 developer machine, each figure the median and spread of 5 runs. The
 board is the store's scale fixture: one board of n issues with 10
 changes each (20,000 at 2,000 issues), 100 sprints and 20 people
@@ -990,6 +991,95 @@ temporary files at 62.5 to 65.0 MB while it ran) left nothing once
 closed: 3.2 MB in use, 2 goroutines and 8 open files before it opened,
 8.7 MB and 3 goroutines with its four queries stopped, and 3.3 MB, 2
 goroutines and the same 8 files after it closed.
+
+### Sprint history
+
+The Overview of a sprint board copies `status_intervals` and
+`sprint_intervals` for Stuck, the burndown and the sprint table.
+Measured on the store's scale fixture with real times (one board, 10
+changes an issue, distinct dated sprints, the active one running now)
+under WSL2 on a developer machine, modernc.org/sqlite v1.63.0, in two
+cases:
+
+- **All changed:** every issue changed inside the 180-day window and is
+  in one of its sprints, so every history is read. This is the upper
+  bound.
+- **10% changed:** 10% of the issues changed inside the window, the
+  rest last changed before it. The share of a real board's issues
+  changed in 180 days was not measured; 10% is an assumption.
+
+Each case draws a burndown and counts a sprint table cell
+(`TestDashboardAtScale` fails otherwise). "Before" is the branch before
+the fix round that made every interval evidence of the card's version
+(16a4f70e3), on the same fixture.
+
+The fills (`TestMirrorExportFillsAtScale`, reading the history from the
+file; VM steps do not vary between runs, times are the best of 5):
+
+| Fill | Rows | VM steps before | VM steps after | Time before | Time after |
+|---|---|---|---|---|---|
+| status_intervals, 2,000, 10% changed | 3,000 | 166,702 | 276,390 | 3.3 ms | 4.6 ms |
+| sprint_intervals, 2,000, 10% changed | 400 | 123,418 | 130,818 | 2.2 ms | 2.2 ms |
+| status_intervals, 2,000, all changed | 12,000 | 854,302 | 1,230,390 | 19.3 ms | 22.9 ms |
+| sprint_intervals, 2,000, all changed | 4,000 | 1,133,218 | 1,207,218 | 22.2 ms | 23.7 ms |
+| status_intervals, 20,000, 10% changed | 30,000 | 1,664,302 | 2,760,390 | 45.4 ms | 63.2 ms |
+| sprint_intervals, 20,000, 10% changed | 4,000 | 1,223,218 | 1,297,218 | 29.6 ms | 30.2 ms |
+| status_intervals, 20,000, all changed | 120,000 | 8,540,302 | 12,300,390 | 241 ms | 298 ms |
+| sprint_intervals, 20,000, all changed | 40,000 | 11,321,218 | 12,061,218 | 283 ms | 289 ms |
+
+When the same copy holds `changes`, each fill reads them from it instead
+of the file (at 20,000 with 10% changed: 2,520,386 steps and 60.6 ms,
+and 1,137,215 steps and 24.2 ms). The status fill takes about 55 steps a
+ticket more than before at 10% changed. Of those, each row's `open` (the
+store's done rule for its status) is about 15 and the probe of each
+ticket whose status time is not known, for a status change up to its
+card, about 17, each measured by leaving it out at 2,000; the rest, not
+measured apart, is `began` and the cut at the card's version.
+
+An evaluation of the last 5 sprints (`TestDashboardAtScale`, median and
+spread of 5 runs, before and after run back to back):
+
+| Case | Before | After | Answer as JSON | Allocated |
+|---|---|---|---|---|
+| 2,000, 10% changed | 55.5 ms (42.5 to 65.1) | 52.4 ms (51.1 to 55.8) | 3,823 bytes | 1.7 MB |
+| 2,000, all changed | 126 ms (124 to 165) | 143 ms (137 to 146) | 3,847 bytes | 5.8 MB |
+| 20,000, 10% changed | 393 ms (380 to 405) | 452 ms (437 to 467) | 3,847 bytes | 14.3 MB |
+| 20,000, all changed | 1,235 and 1,288 ms | 1,355 and 1,309 ms | 3,867 bytes | 67.8 MB |
+
+The answer and the allocation are the same before and after. At 20,000
+all changed the two rows are two pairs of runs, before then after, each
+the median of 5; the copy as the Overview asks took 756 and 789 ms
+before and 816 and 799 ms after. An evaluation of this sprint answers
+2,309 to 2,313 bytes. A drill of the stuck tickets takes 76 ms at 2,000
+all changed and 733 ms at 20,000 (the fixture has no stuck ticket, so
+this is its copy).
+
+A state's rows are placed only where a widget reads them: a number at
+now, where the range begins and at each period's end, a list now, a
+chart at each period's end, each period's rows picked when the period is
+read. On this fixture that saves nothing, since its states hold few
+rows. On a board of Stuck's worst shape
+(`TestStuckWithPastStaysAtScale` in `internal/trackerdash`, a kanban
+board whose tickets are each stuck now and stuck twice before in the
+range before, the weeks Overview, three runs each):
+
+| Tickets | Before | After |
+|---|---|---|
+| 6,000 | 6,000 stuck; 145 to 167 ms, 69.2 MB | 6,000 stuck; 165 to 222 ms, 48.6 MB |
+| 10,001 | refused at the 20,000-row limit; 136 to 138 ms, 74.7 MB | 10,001 stuck; 245 to 291 ms, 103.5 MB |
+
+Before, the past stays' rows filled the limit, which counted every row
+the query returned; after, only the rows that hold at an instant a
+widget reads count.
+
+`idx_tracker_cache_issues_updated` (v175), which the fills seek issues
+updated in the window by, took 7.2, 6.4 and 6.6 ms to build on a mirror
+of 20,050 issues. A card write of 100 cards took 5.40, 5.24 and 6.00 ms
+with it and 5.64, 5.22 and 5.53 ms without it, no difference beyond the
+runs' spread. On the release upgrade corpus (a v0.0.16 database at scale
+0.1, 43,083 items) the mirror is empty when v175 runs, because v167
+empties it: migrating from schema 139 and booting took 1,325 ms through
+v175 and 1,158 ms through v174, one run each.
 
 ## Planning poker add-on
 
