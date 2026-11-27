@@ -17,9 +17,10 @@
 // dashboards it lists. A count whose unit is estimate draws, and drills,
 // as tickets on a board estimated in points. With neither Claude nor Codex
 // turned on, Ask your agent is disabled and says why. A proposal of the
-// person's logged time over This sprint reads every day of the last 180
-// from the tracker, then shows their hours and the change from the sprint
-// before; time logged in Jira since shows after the dashboard's Refresh. A
+// person's logged time over This sprint has the board's computer read
+// every day of the last 182 from the tracker, then shows their hours and
+// the change from the sprint before; time logged in Jira since shows
+// after the dashboard's Refresh. A
 // board on a paired computer takes a
 // widget its agent proposed from this computer's screen, the kept
 // dashboard is still there after that computer restarts, and Ask your
@@ -55,8 +56,8 @@ const BY_GROUP = {
   title: 'By status group', words: ['Tickets by their status group.'], sql: 'SELECT id AS ticket, status_group AS bucket FROM tickets',
   reduce: 'count', unit: 'tickets', bucket: 'text', form: 'bars',
 };
-/** The person's own logged time: the copy holds only the days the page
- * read from the tracker. */
+/** The person's own logged time: the copy holds only the days the board's
+ * computer read from the tracker. */
 const LOGGED = {
   title: 'Your hours', words: ['Your logged time.'], sql: 'SELECT ticket, seconds AS value, day_start(day) AS at FROM worklogs',
   reduce: 'sum', unit: 'time', form: 'number',
@@ -341,8 +342,7 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     await harness.send(project.threadIds[0], 'my hours this sprint');
     const event = await harness.awaitMcpResult({ server: SERVER, tool: 'dashboard_widget', cwd: project.path, timeoutMs: 60_000 });
     expect(event.report.isError, event.report.result).toBeFalsy();
-    // No day was read until the page showed the widget, and the page read
-    // the window's.
+    // Counting the widget has the board's computer read the window's days.
     const hours = proposal(screen, 'Your hours');
     await expect(hours.getByTestId('dashboard-number-value')).toHaveText('2h', { timeout: 30_000 });
     await expect(hours.getByTestId('dashboard-change')).toContainText('Up 1h from 1h, the last sprint', { timeout: 30_000 });
