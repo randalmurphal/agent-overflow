@@ -68,6 +68,12 @@
   const store: TrackerDashboard = createTrackerDashboard({ source: () => source, shown: () => shown, row: () => pins });
   onDestroy(() => store.destroy());
 
+  /** The board's Refresh: your logged time is read again when a tile
+   * shown needs it, as the Dashboards screen's Refresh reads it. */
+  export function refreshLogged(): void {
+    store.refreshLogged();
+  }
+
   // Every widget of the board's dashboards by ID, with the dashboard that
   // holds it (the first, for a built-in one).
   const widgets = $derived.by(() => {
@@ -123,6 +129,9 @@
     if (!value || value.error) return null;
     if (v.form === 'number') return numWords(value.value as Num | undefined, v.unit as DashboardUnit, estimates);
     if (v.form === 'list') {
+      // A list of your logged time is not known while its days are not
+      // all read (WidgetValue.unread).
+      if (value.unread?.length) return numWords({ ur: value.unread.length }, v.unit as DashboardUnit, estimates);
       const n = (value.tickets?.length ?? 0) + (value.more ?? 0);
       return { amount: String(n), word: n === 1 ? 'ticket' : 'tickets' };
     }

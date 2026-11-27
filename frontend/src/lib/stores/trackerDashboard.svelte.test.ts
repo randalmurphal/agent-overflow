@@ -701,6 +701,52 @@ describe('your logged time', () => {
     expect(s.logged.failure).toBe('');
   });
 
+  it('shows a failed Read again only on the computer it asked, and not once a newer ask was taken', async () => {
+    const { s, evaluate, reads } = await openedLogged(loggedAnswer(['2026-11-25']));
+    // Peer 1's ask is out when the board of another computer shows.
+    s.logged.retry();
+    await flush();
+    source = { backend: 'peer-2', board: { ...testBoard, backend: 'peer-2' }, subscription: 'sub-2', changes: 0, dashboards: 0 };
+    flushSync();
+    await flush();
+    reads.fail(new Error('peer-1 went offline'));
+    await flush();
+    expect(s.logged.failure).toBe('');
+
+    // An older ask that fails after a newer one was taken says nothing.
+    source = { backend: 'peer-1', board: testBoard, subscription: 'sub-1', changes: 0, dashboards: 0 };
+    flushSync();
+    await flush();
+    s.logged.retry();
+    s.logged.retry();
+    await flush();
+    reads.fail(new Error('the first ask failed late'));
+    reads.answer();
+    await flush();
+    expect(s.logged.failure).toBe('');
+  });
+
+  it('shows a failed Read again until an answer says the board\'s computer reads', async () => {
+    const { s, evaluate, reads } = await openedLogged(loggedAnswer(['2026-11-25']));
+    s.logged.retry();
+    await flush();
+    reads.fail(new Error('the computer is not connected'));
+    await flush();
+    expect(s.logged.failure).toBe('the computer is not connected');
+    told();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    evaluate.answer(loggedAnswer(['2026-11-25'], 2));
+    await flush();
+    expect(s.logged.failure).toBe('the computer is not connected');
+    told();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    evaluate.answer(loggedAnswer(['2026-11-25'], 3, { reading: true }));
+    await flush();
+    expect(s.logged.failure).toBe('');
+  });
+
   it('has Refresh read every day again while a widget counts your logged time, a known number among them, and not otherwise', async () => {
     const { s, evaluate, reads } = await openedLogged(loggedAnswer([]));
     s.refresh();

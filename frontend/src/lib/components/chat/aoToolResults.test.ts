@@ -554,9 +554,11 @@ describe('tracker tool write results', () => {
     expect(card('days', 2.5)).toMatchObject({ outcome: '2.5 days · 2 rows · on Web Team', lines: [{ detail: '2.5 days' }] });
   });
 
-  it('says a widget\'s days of logged time not read, and why a widget counts nothing', () => {
+  it('says a widget\'s days of logged time not read, or older than kept, and why a widget counts nothing', () => {
     expect(aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({ board: 'Web Team', unit: 'seconds', not_read: 24, rows: 0, first_rows: [] }), {}, names))
       .toMatchObject({ outcome: 'not known, 24 days of your logged time not read · 0 rows · on Web Team' });
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({ board: 'Web Team', unit: 'seconds', old: true, rows: 2, first_rows: [] }), {}, names))
+      .toMatchObject({ outcome: 'not known, it counts days older than the logged time kept · 2 rows · on Web Team' });
     expect(aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({ board: 'Web Team', unit: 'seconds', note: 'Only your own logged time is read.', rows: 0, first_rows: [] }), {}, names))
       .toMatchObject({ outcome: '0 rows · on Web Team', note: 'Only your own logged time is read.' });
   });

@@ -4967,6 +4967,58 @@ describe("the board's summary row", () => {
     view.unmount();
   });
 
+  it("has the board's Refresh read your logged time again while a pinned tile needs it, and not otherwise", async () => {
+    const hours = { id: 'w_2', title: 'Your hours', form: 'number', width: 3, unit: 'time', how: { ...how, reads: ['worklogs'] } };
+    const kept = { ...KEPT, widgets: [...KEPT.widgets, hours] };
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['w_2'] } as Partial<BoardView>) });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' };
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [{ id: 'w_2', value: { v: 3600 } }], logged: {} }));
+    const board = setBindingMock('RefreshTrackerSubscription', async () => undefined);
+    const reads = setBindingMock('ReadTrackerWorklogDays', async () => undefined);
+    const view = mount();
+    const chip = await view.findByTestId('board-row-chip');
+    await waitFor(() => expect(chip.textContent).toContain('1h'));
+    await fireEvent.click(view.getByTestId('issues-refresh'));
+    await waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+    expect(reads.mock.calls[0][0]).toBe('c1');
+    expect(board).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it("has the board's Refresh read no logged time when no pinned tile needs it", async () => {
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['stuck'] } as Partial<BoardView>) });
+    setBindingMock('TrackerDashboards', async () => listing());
+    setBindingMock('EvaluateTrackerDashboard', async () => answer());
+    const board = setBindingMock('RefreshTrackerSubscription', async () => undefined);
+    const reads = setBindingMock('ReadTrackerWorklogDays', async () => undefined);
+    const view = mount();
+    await waitFor(() => expect(view.getByTestId('board-row-chip').textContent).toContain('1 ticket'));
+    await fireEvent.click(view.getByTestId('issues-refresh'));
+    await waitFor(() => expect(board).toHaveBeenCalledTimes(1));
+    for (let i = 0; i < 10; i += 1) await tick();
+    expect(reads).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it('says a pinned list of your logged time is not known while its days are not read, and does not filter the board by it', async () => {
+    const logged = { id: 'w_3', title: 'Tickets I logged time on', form: 'list', width: 6, unit: 'time', now: true, how: { ...how, reads: ['worklogs'] } };
+    const kept = { ...KEPT, widgets: [...KEPT.widgets, logged] };
+    install({ view: { ...sprintBoard([row('1', 'a', 's1'), row('2', 'b', 's1')]), plan: [], pins: ['w_3'] } as unknown as BoardView });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' };
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [{ id: 'w_3', tickets: [], unread: ['2026-11-25'] }], logged: { failure: 'Jira asked to wait.' } }));
+    setBindingMock('TrackerDashboardDrill', async () => ({ title: 'Tickets I logged time on', ids: [], value: { ur: 1 }, count: 0, tickets: 0, counted: 0, page: 0, pages: 0, rows: [], at: 1 }));
+    const view = mount();
+    await waitFor(() => expect(view.getAllByTestId('issues-card')).toHaveLength(2));
+    const chip = await view.findByTestId('board-row-chip');
+    await waitFor(() => expect(chip.textContent?.replace(/\s+/g, ' ').trim()).toBe('Not known · Tickets I logged time on'));
+    await fireEvent.click(chip);
+    await waitFor(() => expect(view.getByTestId('issues-ticket-set-text').textContent?.replace(/\s+/g, ' ').trim()).toBe('Showing every ticket: Tickets I logged time on is not known, 1 day not read of your logged time'));
+    expect(view.getAllByTestId('issues-card')).toHaveLength(2);
+    view.unmount();
+  });
+
   it('takes a tile off, adds one from a dashboard, says a full row is full, and asks the agent for a new one', async () => {
     install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['stuck'] } as Partial<BoardView>) });
     setBindingMock('TrackerDashboards', async () => listing());

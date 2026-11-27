@@ -168,6 +168,7 @@
   let timeRefreshing = $state(false);
   // The Dashboards screen open now, for Refresh, and whether it is counting.
   let dashboardView: { refresh(): void } | undefined = $state();
+  let rowView: { refreshLogged(): void } | undefined = $state();
   let dashboardCounting = $state(false);
   // A ticket another surface asked for (a thread's link) opens here.
   $effect(() => {
@@ -401,6 +402,7 @@
       refreshFormReads(board.backend, board.connection);
     }
     if (screen === 'dashboards') dashboardView?.refresh();
+    else rowView?.refreshLogged();
   }
 
   // The board a dashboard counts: its subscription once the subscribe
@@ -436,6 +438,8 @@
         <Icon icon={Funnel} size={13} strokeWidth={2} class="shrink-0" />
         {#if set.ids}
           <span class="truncate" data-testid="issues-ticket-set-text">Showing only <b class="font-semibold text-fg">{tile.title}</b> · {set.ids.size === 1 ? '1 ticket' : `${set.ids.size} tickets`}</span>
+        {:else if set.incomplete}
+          <span class="truncate" data-testid="issues-ticket-set-text">Showing every ticket: <b class="font-semibold text-fg">{tile.title}</b> is not known, {set.incomplete}</span>
         {:else if set.error}
           <span class="truncate" data-testid="issues-ticket-set-text">Could not find the tickets of <b class="font-semibold text-fg">{tile.title}</b></span>
         {:else}
@@ -694,6 +698,7 @@
           {@const pins = rowPins}
           {#await loadSummaryRow() then mod}
             <mod.default
+              bind:this={rowView}
               source={rowSource}
               {pins}
               shown={selection.boardShown}

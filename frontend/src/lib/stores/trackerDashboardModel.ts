@@ -9,15 +9,20 @@ import { formatAmount, unitWord, type DashboardUnit } from '../utils/dashboardAm
 
 /** One number of a dashboard (trackerdash.Num, which the bindings type
  * as any for its own JSON form): a value, none ({}), not known (no `v`
- * and `nc` tickets not counted, or `ur` days of your logged time not
- * read), or a gap; `nc` beside a value is the tickets the metric could
+ * and `nc` tickets not counted, `ur` days of your logged time not read,
+ * or `old`: it counts logged time older than the days kept, which nothing
+ * reads), or a gap; `nc` beside a value is the tickets the metric could
  * not count. */
 export interface Num {
   readonly v?: number;
   readonly nc?: number;
   readonly ur?: number;
+  readonly old?: boolean;
   readonly gap?: boolean;
 }
+
+/** What a number of logged time older than the days kept says. */
+export const LOGGED_OLD_TEXT = 'older than the logged time kept';
 
 /** What a number of days of logged time not read says: "3 days not
  * read"; empty for none. */
@@ -52,7 +57,8 @@ export interface NumWords {
   readonly word: string;
   readonly value: string;
   readonly notCounted: string;
-  /** Its days of logged time not read: "3 days not read", or ''. */
+  /** Its days of logged time not read: "3 days not read", or why none
+   * can be (LOGGED_OLD_TEXT), or ''. */
   readonly notRead: string;
 }
 
@@ -64,12 +70,12 @@ export function numWords(n: Num | null | undefined, unit: DashboardUnit, estimat
     word,
     value: word ? `${amount} ${word}` : amount,
     notCounted: n?.gap ? '' : notCountedWords(n?.nc),
-    notRead: n?.gap ? '' : notReadWords(n?.ur),
+    notRead: n?.gap ? '' : n?.old ? LOGGED_OLD_TEXT : notReadWords(n?.ur),
   });
   if (!n) return words('None');
   if (n.gap) return words(GAP_TEXT);
   const v = numValue(n);
-  if (v === null) return words(n.nc || n.ur ? 'Not known' : 'None');
+  if (v === null) return words(n.nc || n.ur || n.old ? 'Not known' : 'None');
   return words(formatAmount(v, unit, estimates), unitWord(v, unit, estimates));
 }
 
@@ -122,6 +128,7 @@ export function changeMark(
   const v = numValue(value);
   if (v === null) return null;
   if (previous.gap) return { kind: 'gap', text: before?.previous_gap ?? '' };
+  if (previous.old) return { kind: 'gap', text: `The range before is ${LOGGED_OLD_TEXT}.` };
   if (previous.ur) return { kind: 'gap', text: `${previous.ur} ${previous.ur === 1 ? 'day' : 'days'} of the range before ${previous.ur === 1 ? 'is' : 'are'} not read.` };
   const p = numValue(previous);
   if (p === null) return null;

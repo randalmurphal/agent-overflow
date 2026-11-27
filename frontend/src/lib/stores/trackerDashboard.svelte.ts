@@ -208,8 +208,13 @@ export interface TrackerDashboard {
   setMine(mine: boolean): void;
   narrowPerson(person: Name | null): void;
   narrowEpic(epic: Name | null): void;
-  /** Lists the dashboards again and evaluates now, as Refresh asks. */
+  /** Lists the dashboards again and evaluates now, as Refresh asks, and
+   * reads your logged time again (refreshLogged). */
   refresh(): void;
+  /** Reads every day of your logged time again on the board's computer
+   * when a number shown needs it (the answer's `logged`); nothing
+   * otherwise. Refresh on the Dashboards screen and on the board. */
+  refreshLogged(): void;
   openDrill(target: DrillTarget): void;
   drillPage(page: number): void;
   closeDrill(): void;
@@ -324,8 +329,12 @@ export function createTrackerDashboard(opts: {
   // finds a widget that counts it, and tells the board when a run of reads
   // ends (TrackerBoardState.changes moves), so the dashboard counts again.
   // The page asks only for the person: Refresh and Read again
-  // (ReadTrackerWorklogDays). A failure of that call is the page's own.
-  let askFailure = $state('');
+  // (ReadTrackerWorklogDays). A failure of that call is the page's own:
+  // the latest ask's, shown for the computer and connection it asked,
+  // until another ask or an answer that says the board's computer reads.
+  let personRead = $state.raw<{ target: string; failure: string } | null>(null);
+  let personReadSeq = 0;
+  const personReadTarget = (s: DashboardSource): string => `${s.backend}\n${s.board.connection}`;
 
   const dashboard: DashboardView | null = $derived.by(() => {
     if (dashboards === null || dashboards === 'older') return null;
@@ -374,6 +383,7 @@ export function createTrackerDashboard(opts: {
         if (!token.isCurrent()) return;
         answer = a;
         answerKey = key;
+        if (a.logged?.reading) personRead = null;
         answerOf = r.dashboard;
         answered = { source: s, request: r };
         settledKey = key;
@@ -440,19 +450,29 @@ export function createTrackerDashboard(opts: {
   async function readLoggedAgain(): Promise<void> {
     const s = opts.source();
     if (!s) return;
-    askFailure = '';
+    const seq = ++personReadSeq;
+    const target = personReadTarget(s);
+    personRead = null;
     try {
       await withBackendTarget(s.backend, () => ReadTrackerWorklogDays(s.board.connection, timeZone()));
     } catch (err) {
-      askFailure = errString(err);
+      if (seq === personReadSeq) personRead = { target, failure: errString(err) };
       return;
     }
-    scheduler.request({ immediate: true });
+    if (seq === personReadSeq) scheduler.request({ immediate: true });
+  }
+
+  function refreshLogged(): void {
+    if (shownAnswer?.logged) void readLoggedAgain();
   }
 
   const logged: LoggedTimeRead = {
     get reading() { return shownAnswer?.logged?.reading ?? false; },
-    get failure() { return askFailure || (shownAnswer?.logged?.failure ?? ''); },
+    get failure() {
+      const s = opts.source();
+      const own = personRead && s && personRead.target === personReadTarget(s) ? personRead.failure : '';
+      return own || (shownAnswer?.logged?.failure ?? '');
+    },
     retry() {
       void readLoggedAgain();
     },
@@ -596,8 +616,9 @@ export function createTrackerDashboard(opts: {
       listGen += 1;
       scheduler.reset();
       scheduler.request({ immediate: true });
-      if (shownAnswer?.logged) void readLoggedAgain();
+      refreshLogged();
     },
+    refreshLogged,
     openDrill(target) {
       if (!answered || !shownAnswer) return;
       drillOf = { ...answered, estimates: shownAnswer.estimates };

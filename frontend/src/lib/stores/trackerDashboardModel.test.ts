@@ -33,6 +33,7 @@ describe('a number', () => {
     expect(formatNum({ ur: 1 }, 'time', 'points')).toBe('Not known, 1 day not read');
     expect(numWords({ ur: 2 }, 'time', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '', notRead: '2 days not read' });
     expect(formatNum({ gap: true, ur: 2 }, 'time', 'points')).toBe(GAP_TEXT);
+    expect(numWords({ old: true }, 'time', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '', notRead: 'older than the logged time kept' });
     expect(formatNum({ v: 0 }, 'time', 'points')).toBe('0m');
   });
 });
@@ -59,6 +60,7 @@ describe('the change mark', () => {
   it('says how many days of the range before are not read when only those keep it from comparing', () => {
     expect(changeMark({ v: 3600 }, { ur: 10 }, 'up', 'time', 'points', null)).toEqual({ kind: 'gap', text: '10 days of the range before are not read.' });
     expect(changeMark({ v: 3600 }, { ur: 1 }, 'up', 'time', 'points', null)).toEqual({ kind: 'gap', text: '1 day of the range before is not read.' });
+    expect(changeMark({ v: 3600 }, { old: true }, 'up', 'time', 'points', null)).toEqual({ kind: 'gap', text: 'The range before is older than the logged time kept.' });
   });
 
   it('is none when either range is not known, and stands beside what was not counted', () => {
