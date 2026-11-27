@@ -23,7 +23,8 @@ type PostTimeRequest struct {
 
 // PostTimeView is what a post did: each entry named as it is now, how
 // many it posted of those it could, the sentence that says it, and the
-// outcome of each entry the request named, in its order. Stale is the
+// outcome of each entry the request named, in its order, for the agent's
+// post (no screen reads it, so it is not on the wire). Stale is the
 // read-back of the posted days that failed, as a write's
 // (WriteView.Stale): those days do not show the posted time until their
 // next read.
@@ -32,7 +33,7 @@ type PostTimeView struct {
 	Posted   int             `json:"posted"`
 	Of       int             `json:"of"`
 	Sentence string          `json:"sentence"`
-	Outcomes []PostOutcome   `json:"outcomes"`
+	Outcomes []PostOutcome   `json:"-"`
 	Stale    []StaleView     `json:"stale,omitempty"`
 }
 
@@ -236,6 +237,17 @@ func notSentWhy(state string, ticket bool) string {
 // (PostOutcome.Why); "" for one it sends.
 func NotSentWhy(e TimeEntryView) string {
 	return notSentWhy(e.State, e.Key != "")
+}
+
+// NotSentOutcome is the outcome a post gives entry e, as NotSentWhy reads
+// it, when the post does not send it: uncertain for one that may already
+// be logged, not_posted for the rest.
+func NotSentOutcome(e TimeEntryView) PostOutcome {
+	o := PostOutcome{ID: e.ID, State: OutcomeNotPosted, Why: NotSentWhy(e)}
+	if e.State == store.TimeEntryUnknown {
+		o.State = OutcomeUncertain
+	}
+	return o
 }
 
 // checkedDays reads author's worklogs of the days of entries, at most
@@ -479,6 +491,18 @@ func postView(refs []TimeEntryRefView, read, now []store.TimeEntry, applied map[
 			fmt.Fprintf(&b, " %d questions for %s are still open.", questions[d], dayLabel(d))
 		}
 	}
+	if s := ReadBackSentence(stale); s != "" {
+		b.WriteString(" " + s)
+	}
+	out.Sentence = strings.TrimPrefix(b.String(), " ")
+	return out
+}
+
+// ReadBackSentence says the worklog days a post's read-back (Stale)
+// missed, which show the posted time after their next read; "" when it
+// missed none. A ticket detail it missed is no day.
+func ReadBackSentence(stale []StaleView) string {
+	var parts []string
 	for _, st := range stale {
 		var unread []string
 		for _, r := range st.Resources {
@@ -490,10 +514,9 @@ func postView(refs []TimeEntryRefView, read, now []store.TimeEntry, applied map[
 			continue
 		}
 		slices.Sort(unread)
-		fmt.Fprintf(&b, " The posted time shows on %s after the next read: %s.", DayRange(unread), strings.TrimSuffix(st.Failure.Message, "."))
+		parts = append(parts, fmt.Sprintf("The posted time shows on %s after the next read: %s.", DayRange(unread), strings.TrimSuffix(st.Failure.Message, ".")))
 	}
-	out.Sentence = strings.TrimPrefix(b.String(), " ")
-	return out
+	return strings.Join(parts, " ")
 }
 
 func sortedKeys(m map[string]int) []string {

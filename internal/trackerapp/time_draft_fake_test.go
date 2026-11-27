@@ -516,6 +516,24 @@ func TestAPostAnswersEachEntrysOutcome(t *testing.T) {
 		if !slices.Equal(got.Outcomes, want) {
 			t.Fatalf("the outcomes are\n%+v\nwant\n%+v", got.Outcomes, want)
 		}
+		// The outcomes are the agent's: the screen's answer does not carry
+		// them.
+		if raw, err := json.Marshal(got); err != nil || strings.Contains(string(raw), `"outcomes"`) {
+			t.Fatalf("the screen's answer is %s, %v; want no outcomes", raw, err)
+		}
+		// An entry the post does not send is answered as NotSentOutcome
+		// says before the post.
+		var unsent []TimeEntryRefView
+		var told []PostOutcome
+		for _, e := range got.Entries {
+			if NotSentWhy(e) != "" {
+				unsent = append(unsent, TimeEntryRefView{ID: e.ID, Revision: e.Revision})
+				told = append(told, NotSentOutcome(e))
+			}
+		}
+		if again, _ := d.post(t, false, unsent...); len(unsent) != 2 || !slices.Equal(again.Outcomes, told) {
+			t.Fatalf("the entries not sent were answered\n%+v\nNotSentOutcome told\n%+v", again.Outcomes, told)
+		}
 		w := d.draft(t, d.on("WEB-1", 1, "Built the form again"))
 		d.marks.mu.Lock()
 		d.marks.settleErr = errors.New("disk I/O error")

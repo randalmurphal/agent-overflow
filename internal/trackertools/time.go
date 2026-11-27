@@ -68,12 +68,13 @@ type timeDay struct {
 }
 
 // timeUnread is a connection whose time could not be read from its
-// tracker: the answer holds what this computer read before, and Days are
-// those it never read.
+// tracker: Account names it in a post's answer (postAccount); the answer
+// holds what this computer read before, and Days are those it never read.
 type timeUnread struct {
-	Site  string   `json:"site"`
-	Error string   `json:"error"`
-	Days  []string `json:"days,omitempty"`
+	Site    string   `json:"site"`
+	Account string   `json:"account,omitempty"`
+	Error   string   `json:"error"`
+	Days    []string `json:"days,omitempty"`
 }
 
 type timeReadAnswer struct {

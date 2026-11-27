@@ -117,7 +117,7 @@ func TestTrackerWriteOfSeveralTicketsWaitsForThePerson(t *testing.T) {
 	if got := fakeComments(t, f, "10101"); len(got) != 0 {
 		t.Fatalf("a comment was sent before the approval: %q", got)
 	}
-	answer := provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}
+	answer := provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}
 	if err := f.a.RespondToApproval(t.Context(), thread.ID, answer); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestTrackerWriteUnansweredEndsTheWait(t *testing.T) {
 		t.Fatalf("ticket_update = %v", result)
 	}
 	noTrackerWritePrompt(t, f.a, thread.ID)
-	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); !errors.Is(err, transport.ErrAlreadyHandled) {
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); !errors.Is(err, transport.ErrAlreadyHandled) {
 		t.Fatalf("an answer after the wait = %v, want already handled", err)
 	}
 	if got := fakeComments(t, f, "10101"); len(got) != 0 {

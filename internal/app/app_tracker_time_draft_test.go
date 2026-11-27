@@ -242,7 +242,7 @@ func TestAnAgentsPostLogsOnlyWhatThePersonSaw(t *testing.T) {
 	}}); isError {
 		t.Fatalf("the other thread's time_draft = %s", text)
 	}
-	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	result := <-done
@@ -275,7 +275,7 @@ func TestAnAgentsPostLogsOnlyWhatThePersonSaw(t *testing.T) {
 	if len(approval.Tickets) != 2 || approval.Tickets[0].Changes[0].Line != dayLabel+", 2h: Built the form" || approval.Tickets[1].Key != "WEB-3" {
 		t.Fatalf("the second prompt %+v", approval)
 	}
-	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	result = <-done
@@ -295,12 +295,10 @@ func TestAnAgentsPostLogsOnlyWhatThePersonSaw(t *testing.T) {
 	}
 }
 
-// A screen that predates the prompt occurrence, as a paired v0.0.19
-// client is, shows no tracker write's entries (its generic panel has no
-// preview for the kind) and answers with occurrence zero: that answer is
-// refused, nothing is logged, and the prompt stays open for a screen that
-// shows it, whose approval then logs the entry.
-func TestAnAnswerFromAScreenThatCannotShowThePostIsRefused(t *testing.T) {
+// An approval of a post from a screen that did not draw its entries
+// (olderApprovals) is refused: nothing is logged, and the prompt stays
+// open for a screen that drew them, whose approval then logs the entry.
+func TestAPostApprovedOnAScreenThatDrewNoEntryIsRefused(t *testing.T) {
 	t.Parallel()
 	f := newTrackerBoardFixture(t)
 	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
@@ -322,16 +320,20 @@ func TestAnAnswerFromAScreenThatCannotShowThePostIsRefused(t *testing.T) {
 	}
 	done := trackerWriteCall(t, f.a, endpoint, "time_draft", map[string]any{"post": []string{day}})
 	open, _ := trackerWritePrompt(t, f.a, thread.ID)
-	err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Decision: "accept"})
-	if err == nil || errors.Is(err, transport.ErrAlreadyHandled) {
-		t.Fatalf("an answer with no occurrence = %v; want a refusal that says the screen cannot show the change", err)
+	for name, answer := range olderApprovals(open) {
+		err := f.a.RespondToApproval(t.Context(), thread.ID, answer)
+		if err == nil || errors.Is(err, transport.ErrAlreadyHandled) {
+			t.Fatalf("%s's approval = %v; want a refusal that says the screen cannot show the change", name, err)
+		}
+		if n := posted(); n != 0 {
+			t.Fatalf("%s's approval logged %d worklogs", name, n)
+		}
+		if !f.a.trackerApprovalOpen(thread.ID, open.RequestID) {
+			t.Fatalf("%s's refused approval closed the prompt", name)
+		}
 	}
-	if n := posted(); n != 0 {
-		t.Fatalf("an answer from a screen that showed no entry logged %d worklogs", n)
-	}
-	open, _ = trackerWritePrompt(t, f.a, thread.ID)
-	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
-		t.Fatalf("the approval from a screen that shows it: %v", err)
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
+		t.Fatalf("the approval from a screen that drew it: %v", err)
 	}
 	if result := <-done; result[1].(bool) || posted() != 1 {
 		t.Fatalf("the post answered %v with %d worklogs", result, posted())
@@ -363,7 +365,7 @@ func TestAPostOfDaysFarApartReadsEachDay(t *testing.T) {
 		return slices.ContainsFunc(f.a.triage.PendingInteractiveRequests(thread.ID).Approvals, func(r provider.ApprovalRequest) bool { return r.Kind == triage.ApprovalKindTrackerWrite })
 	})
 	open, _ := trackerWritePrompt(t, f.a, thread.ID)
-	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 		t.Fatal(err)
 	}
 	if want := fmt.Sprintf(`{"logged":[{"day":%q,"key":"WEB-1","hours":1}]}`, day); func() bool { result := <-done; return result[1].(bool) || result[0] != want }() {
@@ -380,7 +382,7 @@ func TestAPostOfDaysFarApartReadsEachDay(t *testing.T) {
 	}
 	done = trackerWriteCall(t, f.a, endpoint, "time_draft", map[string]any{"post": []string{far, day}})
 	open, _ = trackerWritePrompt(t, f.a, thread.ID)
-	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 		t.Fatal(err)
 	}
 	if result := <-done; result[1].(bool) || !strings.Contains(result[0].(string), `"why":"may already be logged`) || !strings.Contains(result[0].(string), `"key":"WEB-2","hours":0.5`) {

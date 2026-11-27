@@ -53,7 +53,7 @@ func TestTrackerAgentSprintMoveRefusedWholeIsSaidForEachTicket(t *testing.T) {
 			done := trackerWriteCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": keys, "set": map[string]any{"sprint": "Sprint 2"}, "comment": "Planned."})
 			open, _ := trackerWritePrompt(t, f.a, thread.ID)
 			c.refuse(t, f)
-			if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+			if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 				t.Fatal(err)
 			}
 			result := <-done

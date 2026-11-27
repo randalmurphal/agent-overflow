@@ -192,9 +192,12 @@ type Approval struct {
 }
 
 // ApprovalTicket is one ticket of an Approval: its key as answers write
-// it, its title, and each change as a person reads it.
+// it, the connection it is changed through when another of its site's
+// connections is in the approval too (the post's postAccount), its
+// title, and each change as a person reads it.
 type ApprovalTicket struct {
 	Key     string           `json:"key"`
+	Account string           `json:"account,omitempty"`
 	Title   string           `json:"title,omitempty"`
 	Changes []ApprovalChange `json:"changes,omitempty"`
 }

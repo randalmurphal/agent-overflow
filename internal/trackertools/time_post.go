@@ -31,33 +31,49 @@ const postSpan = readSpan
 const postArg = "post"
 
 // timePostSite is one connection's part of a post: its source, how its
-// keys are written, the entries the approval showed, and how many of them
-// it offered to log.
+// keys are written, its name when another connection of its site posts
+// too (postAccount), the entries the approval showed, and how many of
+// them it offered to log.
 type timePostSite struct {
 	src     trackerapp.TicketSource
 	key     func(string) string
+	account string
 	entries []trackerapp.TimeEntryView
 	offered int
 }
 
 // timePostAnswer is what a post did with each entry it named, as the
-// approval showed it: those logged, those not logged grouped by why, and
-// the connections whose entries could not be read.
+// approval showed it: those logged, those not logged and those that may
+// be logged, each grouped by why, the connections whose entries could not
+// be read, and what a connection's post left unrecorded or unread here.
 type timePostAnswer struct {
-	Logged    []timeLine      `json:"logged"`
-	NotLogged []timeNotLogged `json:"not_logged,omitempty"`
-	Unread    []timeUnread    `json:"unread,omitempty"`
+	Logged      []timeLine      `json:"logged"`
+	NotLogged   []timeNotLogged `json:"not_logged,omitempty"`
+	MayBeLogged []timeNotLogged `json:"may_be_logged,omitempty"`
+	Unread      []timeUnread    `json:"unread,omitempty"`
+	Warnings    []timeWarning   `json:"warnings,omitempty"`
 }
 
 // timeLine is an entry as the approval showed it: its day, its ticket's
-// key (none for a question) and its hours.
+// key (none for a question), its connection's name (postAccount) and its
+// hours.
 type timeLine struct {
-	Day   string  `json:"day"`
-	Key   string  `json:"key,omitempty"`
-	Hours float64 `json:"hours"`
+	Day     string  `json:"day"`
+	Key     string  `json:"key,omitempty"`
+	Account string  `json:"account,omitempty"`
+	Hours   float64 `json:"hours"`
 }
 
-// timeNotLogged is the entries not logged for one reason.
+// timeWarning is what a connection's post did that its entries' lists do
+// not say: a day whose logged time this computer could not read back, or
+// a logged entry it could not record.
+type timeWarning struct {
+	Site    string `json:"site"`
+	Account string `json:"account,omitempty"`
+	Warning string `json:"warning"`
+}
+
+// timeNotLogged is the entries not logged, or that may be, for one reason.
 type timeNotLogged struct {
 	Why     string     `json:"why"`
 	Entries []timeLine `json:"entries"`
@@ -138,13 +154,13 @@ func (s *Server) timePost(ctx context.Context, caller Caller, post []string) (an
 				failed = onSite(src.Site, err)
 			}
 			message, _ = textClip(message, 0, refusalCut)
-			unread = append(unread, timeUnread{Site: src.Site, Error: message})
+			unread = append(unread, timeUnread{Site: src.Site, Account: postAccount(jira, src), Error: message})
 			continue
 		}
 		if len(got) == 0 {
 			continue
 		}
-		site := timePostSite{src: src, key: postKey(sources, jira, src), entries: got}
+		site := timePostSite{src: src, key: qualifier(sources, src.Site), account: postAccount(jira, src), entries: got}
 		for _, e := range got {
 			if trackerapp.NotSentWhy(e) == "" {
 				site.offered++
@@ -171,7 +187,7 @@ func (s *Server) timePost(ctx context.Context, caller Caller, post []string) (an
 		out := timePostAnswer{Logged: []timeLine{}, Unread: unread}
 		for _, site := range sites {
 			for _, e := range site.entries {
-				out.NotLogged = notLogged(out.NotLogged, trackerapp.NotSentWhy(e), site.line(e))
+				out.add(trackerapp.NotSentOutcome(e), site.line(e))
 			}
 		}
 		return fitPostAnswer(out)
@@ -195,7 +211,6 @@ func (s *Server) timePost(ctx context.Context, caller Caller, post []string) (an
 	wctx := context.WithoutCancel(ctx)
 	out := timePostAnswer{Logged: []timeLine{}, Unread: unread}
 	row := TimePostRow{ID: id, Days: days, Of: offered}
-	failed = nil
 	for _, site := range sites {
 		refs := make([]trackerapp.TimeEntryRefView, len(site.entries))
 		for i, e := range site.entries {
@@ -208,19 +223,16 @@ func (s *Server) timePost(ctx context.Context, caller Caller, post []string) (an
 		}
 		if len(got.Outcomes) == 0 {
 			// Refused before anything was sent.
-			if failed == nil {
-				failed = err
-			}
 			_, message, public := errorsx.PublicDetails(err)
 			if !public {
 				message = site.src.Site + ": the post failed"
 			}
 			for _, e := range site.entries {
-				why := trackerapp.NotSentWhy(e)
-				if why == "" {
-					why = "was not sent: " + message
+				o := trackerapp.NotSentOutcome(e)
+				if o.Why == "" {
+					o.Why = "was not sent: " + message
 				}
-				out.NotLogged = notLogged(out.NotLogged, why, site.line(e))
+				out.add(o, site.line(e))
 			}
 			continue
 		}
@@ -230,72 +242,119 @@ func (s *Server) timePost(ctx context.Context, caller Caller, post []string) (an
 		row.Connections = append(row.Connections, site.src.ID)
 		for i, o := range got.Outcomes {
 			e := site.entries[i]
-			switch o.State {
-			case trackerapp.OutcomePosted:
+			switch {
+			case o.State == trackerapp.OutcomePosted:
 				row.Posted++
-				out.Logged = append(out.Logged, site.line(e))
-				continue
-			case trackerapp.OutcomeUncertain:
-				if trackerapp.NotSentWhy(e) == "" {
-					row.Uncertain++
-				}
+			case o.State == trackerapp.OutcomeUncertain && trackerapp.NotSentWhy(e) == "":
+				row.Uncertain++
 			}
-			out.NotLogged = notLogged(out.NotLogged, o.Why, site.line(e))
+			out.add(o, site.line(e))
+		}
+		var warn []string
+		if missed := trackerapp.ReadBackSentence(got.Stale); missed != "" {
+			warn = append(warn, missed)
+		}
+		if err != nil {
+			// The send happened, and this computer could not record its
+			// outcomes: the entries stay sent while the app runs, and read
+			// as may already be logged after it restarts.
+			warn = append(warn, fmt.Sprintf("The time listed as logged is logged, but this computer could not record it (%s); "+
+				"the Time screen shows these entries as may already be logged after the app restarts.", strings.TrimSuffix(err.Error(), ".")))
+		}
+		if len(warn) > 0 {
+			out.Warnings = append(out.Warnings, timeWarning{Site: site.src.Site, Account: site.account, Warning: strings.Join(warn, " ")})
 		}
 	}
-	if len(row.Connections) == 0 {
-		// No post sent anything: that is the answer, and there is no post
-		// to put on the timeline.
-		return nil, failed
+	if len(row.Connections) > 0 {
+		// A post that sent nothing has nothing to put on the timeline; its
+		// answer says why.
+		s.h.Posted(caller.Thread, row)
 	}
-	s.h.Posted(caller.Thread, row)
 	return fitPostAnswer(out)
 }
 
 // line is entry e as the approval showed it.
 func (site timePostSite) line(e trackerapp.TimeEntryView) timeLine {
-	return timeLine{Day: e.Day, Key: site.key(e.Key), Hours: float64(e.Minutes) / 60}
+	return timeLine{Day: e.Day, Key: site.key(e.Key), Account: site.account, Hours: float64(e.Minutes) / 60}
 }
 
-// notLogged is groups with line added under why.
-func notLogged(groups []timeNotLogged, why string, line timeLine) []timeNotLogged {
-	if i := slices.IndexFunc(groups, func(g timeNotLogged) bool { return g.Why == why }); i >= 0 {
-		groups[i].Entries = append(groups[i].Entries, line)
-		return groups
+// add puts line, an entry the post named, in out by its outcome o: logged,
+// may be logged or not logged, each under o's why.
+func (out *timePostAnswer) add(o trackerapp.PostOutcome, line timeLine) {
+	under := func(groups []timeNotLogged) []timeNotLogged {
+		if i := slices.IndexFunc(groups, func(g timeNotLogged) bool { return g.Why == o.Why }); i >= 0 {
+			groups[i].Entries = append(groups[i].Entries, line)
+			return groups
+		}
+		return append(groups, timeNotLogged{Why: o.Why, Entries: []timeLine{line}})
 	}
-	return append(groups, timeNotLogged{Why: why, Entries: []timeLine{line}})
+	switch o.State {
+	case trackerapp.OutcomePosted:
+		out.Logged = append(out.Logged, line)
+	case trackerapp.OutcomeUncertain:
+		out.MayBeLogged = under(out.MayBeLogged)
+	default:
+		out.NotLogged = under(out.NotLogged)
+	}
 }
 
 // postAnswerMost is the most bytes a post's answer of sites' entries can
-// take, with each entry under a reason of its own cut to nothing: what
-// fitPostAnswer cuts the reasons to fit.
+// take: the answer with each entry under a reason of its own, in both
+// lists of reasons, and each connection with a warning, every text cut to
+// nothing, which is what fitPostAnswer cuts the texts to fit.
 func postAnswerMost(sites []timePostSite, unread []timeUnread) int {
-	n := sizeOf(timePostAnswer{Logged: []timeLine{}, NotLogged: []timeNotLogged{}, Unread: unread})
-	group := sizeOf(timeNotLogged{Entries: []timeLine{}}) + 1
+	most := timePostAnswer{Logged: []timeLine{}, Unread: unread}
 	for _, site := range sites {
+		most.Warnings = append(most.Warnings, timeWarning{Site: site.src.Site, Account: site.account})
 		for _, e := range site.entries {
-			n += group + sizeOf(site.line(e)) + 1
+			group := []timeNotLogged{{Entries: []timeLine{site.line(e)}}}
+			if most.MayBeLogged == nil {
+				most.MayBeLogged = group
+			} else {
+				most.NotLogged = append(most.NotLogged, group...)
+			}
 		}
 	}
-	return n
+	return sizeOf(most)
 }
 
-// fitPostAnswer is out within answerBudget: each reason cut at
-// refusalCut, and within that the reasons share what the entries leave.
+// fitPostAnswer is out within answerBudget: each reason and warning cut
+// at refusalCut, and within that they share what the entries leave.
 // Every entry stays (postAnswerMost).
 func fitPostAnswer(out timePostAnswer) (timePostAnswer, error) {
-	demands := make([]int, len(out.NotLogged))
-	weights := make([]int, len(out.NotLogged))
-	for i, g := range out.NotLogged {
-		demands[i], weights[i] = min(refusalCut, jsonLen(g.Why)+2), 1
+	var demands, weights []int
+	add := func(text string) {
+		demands = append(demands, min(refusalCut, jsonLen(text)+2))
+		weights = append(weights, 1)
+	}
+	for _, g := range out.NotLogged {
+		add(g.Why)
+	}
+	for _, g := range out.MayBeLogged {
+		add(g.Why)
+	}
+	for _, w := range out.Warnings {
+		add(w.Warning)
 	}
 	build := func(pool int) (timePostAnswer, error) {
 		shares := allot(demands, weights, pool)
+		clip := func(text string) string {
+			text, _ = textClip(text, 0, shares[0])
+			shares = shares[1:]
+			return text
+		}
 		cut := out
-		cut.NotLogged = make([]timeNotLogged, len(out.NotLogged))
-		for i, g := range out.NotLogged {
-			g.Why, _ = textClip(g.Why, 0, shares[i])
-			cut.NotLogged[i] = g
+		cut.NotLogged = slices.Clone(out.NotLogged)
+		for i := range cut.NotLogged {
+			cut.NotLogged[i].Why = clip(cut.NotLogged[i].Why)
+		}
+		cut.MayBeLogged = slices.Clone(out.MayBeLogged)
+		for i := range cut.MayBeLogged {
+			cut.MayBeLogged[i].Why = clip(cut.MayBeLogged[i].Why)
+		}
+		cut.Warnings = slices.Clone(out.Warnings)
+		for i := range cut.Warnings {
+			cut.Warnings[i].Warning = clip(cut.Warnings[i].Warning)
 		}
 		return cut, nil
 	}
@@ -303,50 +362,65 @@ func fitPostAnswer(out timePostAnswer) (timePostAnswer, error) {
 	return fit("the time post", answerBudget-sizeOf(bare), build)
 }
 
-// postKey writes a key of src's as a post's approval and answer show it:
-// qualified by its site when sources hold more than one connection, and,
-// when another of the Jira connections jira is of src's site, by the name
-// the person gave src in the Issues settings, or its account email when
-// they gave none.
-func postKey(sources, jira []trackerapp.TicketSource, src trackerapp.TicketSource) func(string) string {
-	key := qualifier(sources, src.Site)
-	if !slices.ContainsFunc(jira, func(o trackerapp.TicketSource) bool { return o.ID != src.ID && o.Site == src.Site }) {
-		return key
-	}
-	name, _ := textClip(cmp.Or(src.Label, src.Email), 0, refCut)
-	return func(k string) string {
-		if k == "" {
-			return ""
+// postAccount names src in a post's approval and answer when another of
+// the Jira connections jira is of src's site, and is "" when none is: by
+// the name the person gave src in the Issues settings, or its account
+// email when they gave none. When two of the site's connections would go
+// by one name, each of them goes by "label · email", or its email when it
+// has no label: emails are unique on a site (the connections' identity
+// index) and hold no space, so no two connections of a site share a name.
+func postAccount(jira []trackerapp.TicketSource, src trackerapp.TicketSource) string {
+	var names []string
+	for _, o := range jira {
+		if o.Site == src.Site {
+			names = append(names, cmp.Or(o.Label, o.Email))
 		}
-		return key(k) + " (" + name + ")"
 	}
+	if len(names) < 2 {
+		return ""
+	}
+	slices.Sort(names)
+	if len(slices.Compact(slices.Clone(names))) == len(names) {
+		return cmp.Or(src.Label, src.Email)
+	}
+	if src.Label == "" {
+		return src.Email
+	}
+	return src.Label + " · " + src.Email
 }
 
 // timeApproval is the approval of a post of days: titled with them, each
-// entry the post names under its ticket's key as postKey writes it, and
-// each question, which has no key, and each connection that could not be
-// read in Notes, every entry in the words trackerapp.EntryLine gives it.
+// entry the post names under its ticket of its connection, and each
+// question, which has no key, and each connection that could not be read
+// in Notes, every entry in the words trackerapp.EntryLine gives it.
 func timeApproval(id string, days []string, sites []timePostSite, unread []timeUnread) Approval {
 	a := Approval{ID: id, Title: "Log time for " + trackerapp.DayRange(days), Tool: "time_draft", Tickets: []ApprovalTicket{}}
 	for _, site := range sites {
 		for _, e := range site.entries {
 			line := trackerapp.EntryLine(e)
 			if e.Key == "" {
+				if site.account != "" {
+					line += " (" + site.account + ")"
+				}
 				a.Notes = append(a.Notes, line)
 				continue
 			}
 			k := site.key(e.Key)
-			i := slices.IndexFunc(a.Tickets, func(t ApprovalTicket) bool { return t.Key == k })
+			i := slices.IndexFunc(a.Tickets, func(t ApprovalTicket) bool { return t.Key == k && t.Account == site.account })
 			if i < 0 {
 				title, _ := textClip(e.Title, 0, refCut)
-				a.Tickets = append(a.Tickets, ApprovalTicket{Key: k, Title: title})
+				a.Tickets = append(a.Tickets, ApprovalTicket{Key: k, Account: site.account, Title: title})
 				i = len(a.Tickets) - 1
 			}
 			a.Tickets[i].Changes = append(a.Tickets[i].Changes, ApprovalChange{Line: line})
 		}
 	}
 	for _, u := range unread {
-		a.Notes = append(a.Notes, fmt.Sprintf("%s could not be read: %s; its time is not in this post.", u.Site, strings.TrimSuffix(u.Error, ".")))
+		name := u.Site
+		if u.Account != "" {
+			name += " (" + u.Account + ")"
+		}
+		a.Notes = append(a.Notes, fmt.Sprintf("%s could not be read: %s; its time is not in this post.", name, strings.TrimSuffix(u.Error, ".")))
 	}
 	return a
 }

@@ -41,7 +41,7 @@ func toolRoutes(t *testing.T, f *trackerBoardFixture, threadID, endpoint, tool s
 		default:
 		}
 		for _, req := range f.a.triage.PendingInteractiveRequests(threadID).Approvals {
-			if err := f.a.RespondToApproval(t.Context(), threadID, provider.ApprovalResponse{RequestID: req.RequestID, Occurrence: req.Occurrence, Decision: "allow"}); err != nil {
+			if err := f.a.RespondToApproval(t.Context(), threadID, provider.ApprovalResponse{RequestID: req.RequestID, Occurrence: req.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 				t.Fatal(err)
 			}
 		}

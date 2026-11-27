@@ -132,7 +132,7 @@ func TestTrackerWriteClearOfADescriptionChangedWhileWaiting(t *testing.T) {
 	}}); err != nil || v.Parts[0].State != "applied" {
 		t.Fatalf("the person's edit = %+v, %v", v, err)
 	}
-	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 		t.Fatal(err)
 	}
 	result := <-done
@@ -167,7 +167,7 @@ func TestTrackerWriteApprovedAfterTheThreadBecameReadOnly(t *testing.T) {
 	if err := f.a.store.UpdateRuntimeMode(thread.ID, string(provider.RuntimeReadOnly)); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 		t.Fatal(err)
 	}
 	result := <-done
@@ -190,7 +190,7 @@ func TestTrackerWriteApprovalAnsweredOnAnotherThread(t *testing.T) {
 	other, _ := trackerWriteThread(t, f, provider.RuntimeAuto)
 	done := trackerWriteCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1", "WEB-2"}, "comment": "Checked."})
 	open, _ := trackerWritePrompt(t, f.a, thread.ID)
-	if err := f.a.RespondToApproval(t.Context(), other.ID, provider.ApprovalResponse{RequestID: open.RequestID, Decision: "allow"}); err == nil {
+	if err := f.a.RespondToApproval(t.Context(), other.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err == nil {
 		t.Fatal("an answer on another thread was taken")
 	}
 	select {
@@ -212,35 +212,69 @@ func TestTrackerWriteApprovalAnsweredOnAnotherThread(t *testing.T) {
 	}
 }
 
-// An answer with no prompt occurrence, as a paired v0.0.19 screen sends
-// after showing a tracker write's tool name and no change, is refused:
-// nothing is written, the prompt stays open, and a screen that shows the
-// change still answers it.
-func TestTrackerWriteAnswerFromAScreenThatCannotShowItIsRefused(t *testing.T) {
+// An approval from a screen that did not draw the tracker write's
+// changes is refused: v0.0.19's, which names no prompt occurrence, and a
+// build's from before the tracker write's panel, which names one and draws
+// only the tool's name. Nothing is written, the prompt stays open, and a
+// screen that drew the changes still approves it.
+func TestTrackerWriteApprovedOnAScreenThatDrewNoChangeIsRefused(t *testing.T) {
 	t.Parallel()
 	f := newTrackerBoardFixture(t)
 	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
 	thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
 	done := trackerWriteCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1", "WEB-2"}, "comment": "Checked."})
 	open, _ := trackerWritePrompt(t, f.a, thread.ID)
-	err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Decision: "accept"})
-	if err == nil || errors.Is(err, transport.ErrAlreadyHandled) || !strings.Contains(err.Error(), "cannot show what this change sends") {
-		t.Fatalf("an answer with no occurrence = %v; want a refusal that says the screen cannot show the change", err)
+	for name, answer := range olderApprovals(open) {
+		err := f.a.RespondToApproval(t.Context(), thread.ID, answer)
+		if err == nil || errors.Is(err, transport.ErrAlreadyHandled) || !strings.Contains(err.Error(), "cannot show what this change sends") {
+			t.Fatalf("%s's approval = %v; want a refusal that says the screen cannot show the change", name, err)
+		}
+		if got := append(fakeComments(t, f, "10101"), fakeComments(t, f, "10102")...); len(got) != 0 {
+			t.Fatalf("%s's approval commented %q", name, got)
+		}
+		if !f.a.trackerApprovalOpen(thread.ID, open.RequestID) {
+			t.Fatalf("%s's refused approval closed the prompt", name)
+		}
 	}
-	if got := append(fakeComments(t, f, "10101"), fakeComments(t, f, "10102")...); len(got) != 0 {
-		t.Fatalf("an answer from a screen that showed no change commented %q", got)
-	}
-	if !f.a.trackerApprovalOpen(thread.ID, open.RequestID) {
-		t.Fatal("the refused answer closed the approval")
-	}
-	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 		t.Fatal(err)
 	}
 	if result := <-done; result[1].(bool) {
 		t.Fatalf("ticket_update = %v", result)
 	}
 	if got := append(fakeComments(t, f, "10101"), fakeComments(t, f, "10102")...); len(got) != 2 {
-		t.Fatalf("the approval from a screen that shows it commented %q", got)
+		t.Fatalf("the approval from a screen that drew it commented %q", got)
+	}
+}
+
+// olderApprovals are the approvals of prompt open that screens which do
+// not draw a tracker write's changes send: v0.0.19's, with no occurrence,
+// and one from a build between the occurrence and the tracker write's
+// panel, with the occurrence and nothing drawn.
+func olderApprovals(open provider.ApprovalRequest) map[string]provider.ApprovalResponse {
+	return map[string]provider.ApprovalResponse{
+		"v0.0.19":               {RequestID: open.RequestID, Decision: "accept"},
+		"a build with no panel": {RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "accept"},
+	}
+}
+
+// A deny from a screen that did not draw the changes still settles the
+// call: it sends nothing either way.
+func TestTrackerWriteDeniedOnAnyScreenSettles(t *testing.T) {
+	t.Parallel()
+	f := newTrackerBoardFixture(t)
+	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
+	thread, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
+	done := trackerWriteCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1", "WEB-2"}, "comment": "Checked."})
+	open, _ := trackerWritePrompt(t, f.a, thread.ID)
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Decision: "decline"}); err != nil {
+		t.Fatal(err)
+	}
+	if result := <-done; !result[1].(bool) || !strings.HasPrefix(result[0].(string), "[tracker_write_denied]") {
+		t.Fatalf("ticket_update = %v", result)
+	}
+	if got := append(fakeComments(t, f, "10101"), fakeComments(t, f, "10102")...); len(got) != 0 {
+		t.Fatalf("a denied call commented %q", got)
 	}
 }
 

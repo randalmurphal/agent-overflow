@@ -97,13 +97,8 @@ func postedAsRead(open []trackerapp.TimeEntryView, in trackerapp.PostTimeRequest
 	var out trackerapp.PostTimeView
 	for _, ref := range in.Entries {
 		o := trackerapp.PostOutcome{ID: ref.ID, State: trackerapp.OutcomePosted}
-		if i := slices.IndexFunc(open, func(e trackerapp.TimeEntryView) bool { return e.ID == ref.ID }); i >= 0 {
-			if why := trackerapp.NotSentWhy(open[i]); why != "" {
-				o.State, o.Why = trackerapp.OutcomeNotPosted, why
-				if open[i].State == "unknown" {
-					o.State = trackerapp.OutcomeUncertain
-				}
-			}
+		if i := slices.IndexFunc(open, func(e trackerapp.TimeEntryView) bool { return e.ID == ref.ID }); i >= 0 && trackerapp.NotSentWhy(open[i]) != "" {
+			o = trackerapp.NotSentOutcome(open[i])
 		}
 		if o.State == trackerapp.OutcomePosted {
 			out.Posted++

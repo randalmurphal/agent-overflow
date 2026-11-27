@@ -88,8 +88,8 @@ func TestAPostAsksThePersonAndPostsWhatTheySaw(t *testing.T) {
 	if want := `{"logged":[{"day":"2026-11-23","key":"WEB-1","hours":1}],"not_logged":[` +
 		`{"why":"changed since it was read; read the day again","entries":[{"day":"2026-11-24","key":"WEB-1","hours":1.5}]},` +
 		`{"why":"was refused: Worklog is closed for this period","entries":[{"day":"2026-11-24","key":"WEB-2","hours":0.5}]},` +
-		`{"why":"` + mayHave + `","entries":[{"day":"2026-11-24","key":"WEB-3","hours":1}]},` +
-		`{"why":"its ticket is not picked yet, so it is not posted","entries":[{"day":"2026-11-24","hours":0.25}]}]}`; answer != want {
+		`{"why":"its ticket is not picked yet, so it is not posted","entries":[{"day":"2026-11-24","hours":0.25}]}],` +
+		`"may_be_logged":[{"why":"` + mayHave + `","entries":[{"day":"2026-11-24","key":"WEB-3","hours":1}]}]}`; answer != want {
 		t.Fatalf("answered %s\nwant    %s", answer, want)
 	}
 	if len(h.postRows) != 1 || h.postRows[0].Title() != "Logged 1 of 3 entries for Mon Nov 23 to Tue Nov 24" ||
@@ -163,7 +163,8 @@ func TestAPostThatIsNotApprovedPostsNothing(t *testing.T) {
 // key with its site; the post runs once per site, and the entries of a
 // site whose post was refused before it sent are not logged, with the
 // refusal, beside the ones logged. The row counts what was offered on
-// both.
+// both. When every site's post is refused, the answer names each entry
+// with its refusal, and nothing is on the timeline.
 func TestAPostOnTwoSitesAsksOnceAndAnswersEach(t *testing.T) {
 	t.Parallel()
 	other := []trackerapp.TimeEntryView{{ID: 9, Revision: 1, Day: "2026-11-24", Issue: "20101", Key: "OPS-1", Minutes: 60, Reason: "On call", State: "drafted"}}
@@ -195,15 +196,19 @@ func TestAPostOnTwoSitesAsksOnceAndAnswersEach(t *testing.T) {
 	if len(h.postRows) != 1 || h.postRows[0].Title() != "Logged 2 of 3 entries for Tue Nov 24" || !slices.Equal(h.postRows[0].Connections, []string{timeJira.ID}) {
 		t.Fatalf("the timeline rows are %+v", h.postRows)
 	}
-	// Every site failing is the call's error, and nothing is on the timeline.
 	f.post = func(string, trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
 		return trackerapp.PostTimeView{}, errorsx.Public("tracker_disabled", "this connection is turned off", nil)
 	}
 	h = &fakeHost{}
-	_, err = timeCall(t, timeServer(f, h), "time_draft", map[string]any{"post": []string{"2026-11-24"}})
-	refused(t, err, "tracker_disabled", "example.atlassian.net: this connection is turned off")
-	if len(h.postRows) != 0 {
-		t.Fatalf("a post that never ran wrote %+v", h.postRows)
+	answer, err = timeCall(t, timeServer(f, h), "time_draft", map[string]any{"post": []string{"2026-11-24"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = `{"logged":[],"not_logged":[{"why":"was not sent: example.atlassian.net: this connection is turned off","entries":[` +
+		`{"day":"2026-11-24","key":"example.atlassian.net/WEB-1","hours":1.5},{"day":"2026-11-24","key":"example.atlassian.net/WEB-2","hours":0.5}]},` +
+		`{"why":"was not sent: other.atlassian.net: this connection is turned off","entries":[{"day":"2026-11-24","key":"other.atlassian.net/OPS-1","hours":1}]}]}`
+	if answer != want || len(h.postRows) != 0 {
+		t.Fatalf("answered %s\nwant     %s\nrows %+v", answer, want, h.postRows)
 	}
 }
 
@@ -287,8 +292,8 @@ func TestADayWithNothingToSendSaysWhyEachIsNot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"logged":[],"not_logged":[{"why":"` + mayHave + `","entries":[{"day":"2026-11-24","key":"WEB-3","hours":1}]},` +
-		`{"why":"its ticket is not picked yet, so it is not posted","entries":[{"day":"2026-11-24","hours":0.25}]}]}`
+	want := `{"logged":[],"not_logged":[{"why":"its ticket is not picked yet, so it is not posted","entries":[{"day":"2026-11-24","hours":0.25}]}],` +
+		`"may_be_logged":[{"why":"` + mayHave + `","entries":[{"day":"2026-11-24","key":"WEB-3","hours":1}]}]}`
 	if answer != want {
 		t.Fatalf("answered %s\nwant     %s", answer, want)
 	}
@@ -299,40 +304,105 @@ func TestADayWithNothingToSendSaysWhyEachIsNot(t *testing.T) {
 
 // Two connections of one site are told apart on the card and in the
 // answer by the name the person gave each in the Issues settings, or its
-// account email when they gave none, so their entries of one ticket are
-// two headings.
+// account email when they gave none, and by both when they gave the two
+// one name, so their entries of one ticket are two headings; each key
+// stays as answers write it, so it opens that ticket again. A connection
+// that could not be read is named the same way.
 func TestTwoAccountsOfOneSiteAreToldApart(t *testing.T) {
 	t.Parallel()
 	named := timeJira
 	named.Label, named.Email = "Work", "user1@example.com"
 	second := trackerapp.TicketSource{ID: "conn-jira-b", Site: timeJira.Site, Kind: "jira", Account: "acc-user2", Email: "user2@example.com"}
+	third := trackerapp.TicketSource{ID: "conn-jira-c", Site: timeJira.Site, Kind: "jira", Account: "acc-user3", Email: "user3@example.com"}
 	mine := []trackerapp.TimeEntryView{{ID: 7, Revision: 1, Day: "2026-11-24", Issue: "10101", Key: "WEB-1", Minutes: 30, Reason: "Paired", State: "drafted"}}
-	f := &fakeTracker{sources: []trackerapp.TicketSource{named, second, timeJira2}, open: map[string][]trackerapp.TimeEntryView{
+	f := &fakeTracker{sources: []trackerapp.TicketSource{named, second, third, timeJira2}, open: map[string][]trackerapp.TimeEntryView{
 		named.ID: openDay()[:1], second.ID: mine, timeJira2.ID: {}}}
 	f.post = func(connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
 		return postedAsRead(f.open[connection], in), nil
+	}
+	headings := func(a Approval) []string {
+		var out []string
+		for _, tk := range a.Tickets {
+			out = append(out, tk.Key+" | "+tk.Account)
+		}
+		return out
 	}
 	h := &fakeHost{}
 	answer, err := timeCall(t, timeServer(f, h), "time_draft", map[string]any{"post": []string{"2026-11-24"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var keys []string
-	for _, tk := range h.approvals[0].Tickets {
-		keys = append(keys, tk.Key)
+	if want := []string{"example.atlassian.net/WEB-1 | Work", "example.atlassian.net/WEB-1 | user2@example.com"}; !slices.Equal(headings(h.approvals[0]), want) {
+		t.Fatalf("the card's headings are %q; want %q", headings(h.approvals[0]), want)
 	}
-	if want := []string{"example.atlassian.net/WEB-1 (Work)", "example.atlassian.net/WEB-1 (user2@example.com)"}; !slices.Equal(keys, want) {
-		t.Fatalf("the card's headings are %q; want %q", keys, want)
+	unread := `{"site":"example.atlassian.net","account":"user3@example.com","error":"this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings"}`
+	if want := `{"logged":[{"day":"2026-11-24","key":"example.atlassian.net/WEB-1","account":"Work","hours":1.5},` +
+		`{"day":"2026-11-24","key":"example.atlassian.net/WEB-1","account":"user2@example.com","hours":0.5}],"unread":[` + unread + `]}`; answer != want {
+		t.Fatalf("answered %s\nwant     %s", answer, want)
 	}
-	if want := `{"logged":[{"day":"2026-11-24","key":"example.atlassian.net/WEB-1 (Work)","hours":1.5},` +
-		`{"day":"2026-11-24","key":"example.atlassian.net/WEB-1 (user2@example.com)","hours":0.5}]}`; answer != want {
+	if want := "example.atlassian.net (user3@example.com) could not be read: "; len(h.approvals[0].Notes) != 1 || !strings.HasPrefix(h.approvals[0].Notes[0], want) {
+		t.Fatalf("the card's notes are %q; want one starting %q", h.approvals[0].Notes, want)
+	}
+	// One name for two: each goes by its name and email.
+	second.Label = "Work"
+	f.sources = []trackerapp.TicketSource{named, second}
+	h = &fakeHost{}
+	answer, err = timeCall(t, timeServer(f, h), "time_draft", map[string]any{"post": []string{"2026-11-24"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"example.atlassian.net/WEB-1 | Work · user1@example.com", "example.atlassian.net/WEB-1 | Work · user2@example.com"}; !slices.Equal(headings(h.approvals[0]), want) {
+		t.Fatalf("the card's headings are %q; want %q", headings(h.approvals[0]), want)
+	}
+	if want := `{"logged":[{"day":"2026-11-24","key":"example.atlassian.net/WEB-1","account":"Work · user1@example.com","hours":1.5},` +
+		`{"day":"2026-11-24","key":"example.atlassian.net/WEB-1","account":"Work · user2@example.com","hours":0.5}]}`; answer != want {
 		t.Fatalf("answered %s\nwant     %s", answer, want)
 	}
 }
 
+// No two connections of one site come out of postAccount with one name,
+// however their names and emails collide, and a site with one connection
+// names none.
+func TestPostAccountNamesEachConnectionOfASiteApart(t *testing.T) {
+	t.Parallel()
+	conn := func(id, site, label, email string) trackerapp.TicketSource {
+		return trackerapp.TicketSource{ID: id, Site: site, Kind: "jira", Label: label, Email: email}
+	}
+	for _, tc := range [][]trackerapp.TicketSource{
+		{conn("a", "s", "Work", "a@x.com"), conn("b", "s", "", "b@x.com")},
+		{conn("a", "s", "Work", "a@x.com"), conn("b", "s", "Work", "b@x.com")},
+		{conn("a", "s", "", "a@x.com"), conn("b", "s", "", "b@x.com")},
+		// A label that is another's email.
+		{conn("a", "s", "b@x.com", "a@x.com"), conn("b", "s", "", "b@x.com")},
+		// A label that is what a collision names another.
+		{conn("a", "s", "Work", "a@x.com"), conn("b", "s", "Work", "b@x.com"), conn("c", "s", "Work · a@x.com", "c@x.com")},
+		{conn("a", "s", "b@x.com", "a@x.com"), conn("b", "s", "", "b@x.com"), conn("c", "s", "a@x.com", "c@x.com")},
+		{conn("a", "s", "Work", "a@x.com"), conn("b", "s", "Home", "b@x.com"), conn("c", "s", "Home · b@x.com", "c@x.com")},
+	} {
+		jira := append(tc, conn("o", "other", "Work", "a@x.com"))
+		seen := map[string]string{}
+		for _, src := range tc {
+			name := postAccount(jira, src)
+			if name == "" {
+				t.Errorf("%+v: %s has no name", tc, src.ID)
+			}
+			if other, ok := seen[name]; ok {
+				t.Errorf("%+v: %s and %s are both %q", tc, other, src.ID, name)
+			}
+			seen[name] = src.ID
+		}
+		if name := postAccount(jira, jira[len(jira)-1]); name != "" {
+			t.Errorf("the one connection of its site is named %q", name)
+		}
+	}
+}
+
 // A post that failed after it sent answers what the service knows of each
-// entry and puts its row on the timeline, counting the entries that may
-// have been logged; the error is logged.
+// entry, an entry that may have been logged in a list of its own, says
+// that this computer could not record the post, and puts its row on the
+// timeline, counting the entries that may have been logged; the error is
+// logged. A post whose read-back missed a day says which day shows the
+// time after its next read.
 func TestAPostThatFailedAfterSendingWritesItsRow(t *testing.T) {
 	t.Parallel()
 	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, open: map[string][]trackerapp.TimeEntryView{timeJira.ID: openDay()[:2]},
@@ -348,7 +418,9 @@ func TestAPostThatFailedAfterSendingWritesItsRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"logged":[{"day":"2026-11-24","key":"WEB-1","hours":1.5}],"not_logged":[{"why":"` + mayHave + `","entries":[{"day":"2026-11-24","key":"WEB-2","hours":0.5}]}]}`; answer != want {
+	if want := `{"logged":[{"day":"2026-11-24","key":"WEB-1","hours":1.5}],"may_be_logged":[{"why":"` + mayHave + `","entries":[{"day":"2026-11-24","key":"WEB-2","hours":0.5}]}],` +
+		`"warnings":[{"site":"example.atlassian.net","warning":"The time listed as logged is logged, but this computer could not record it ` +
+		`(example.atlassian.net: trackerapp: settle the posted entries: disk I/O error); the Time screen shows these entries as may already be logged after the app restarts."}]}`; answer != want {
 		t.Fatalf("answered %s\nwant     %s", answer, want)
 	}
 	if len(h.postRows) != 1 || h.postRows[0].Title() != "Logged 1 of 2 entries for Tue Nov 24; 1 may have been logged" || h.postRows[0].Uncertain != 1 {
@@ -356,6 +428,20 @@ func TestAPostThatFailedAfterSendingWritesItsRow(t *testing.T) {
 	}
 	if len(logged) != 1 || !strings.Contains(logged[0], "disk I/O error") {
 		t.Fatalf("logged %q", logged)
+	}
+	f.post = func(_ string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
+		out := postedAsRead(openDay(), in)
+		out.Stale = []trackerapp.StaleView{{Failure: trackerapp.FailureView{Message: "Jira did not answer in time."},
+			Resources: []trackerapp.ResourceView{{Kind: "worklogs", Day: "2026-11-24"}}}}
+		return out, nil
+	}
+	answer, err = timeCall(t, timeServer(f, &fakeHost{}), "time_draft", map[string]any{"post": []string{"2026-11-24"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"logged":[{"day":"2026-11-24","key":"WEB-1","hours":1.5},{"day":"2026-11-24","key":"WEB-2","hours":0.5}],` +
+		`"warnings":[{"site":"example.atlassian.net","warning":"The posted time shows on Tue Nov 24 after the next read: Jira did not answer in time."}]}`; answer != want {
+		t.Fatalf("answered %s\nwant     %s", answer, want)
 	}
 }
 
@@ -401,5 +487,56 @@ func TestAPostsAnswerNamesEveryEntryWithinItsBudget(t *testing.T) {
 	refused(t, err, CodeInvalidRequest, "Tue Nov 24 holds more entries not yet logged than one answer names; post fewer days in each call.")
 	if len(h.approvals) != 0 {
 		t.Fatalf("asked %d", len(h.approvals))
+	}
+}
+
+// A post admitted with its answer at the edge of the budget still names
+// every entry and its connection's warning: the admission reserves room
+// for both.
+func TestAPostsAnswerAtTheBudgetsEdgeKeepsItsWarning(t *testing.T) {
+	t.Parallel()
+	entries := func(pad int) []trackerapp.TimeEntryView {
+		var out []trackerapp.TimeEntryView
+		for i := range 250 {
+			key := fmt.Sprintf("WEB-%03d%s", i, strings.Repeat("9", pad/250))
+			if i < pad%250 {
+				key += "9"
+			}
+			out = append(out, trackerapp.TimeEntryView{ID: int64(i + 1), Revision: 1, Day: "2026-11-24", Issue: fmt.Sprint(10000 + i), Key: key,
+				Minutes: 5, Reason: "x", State: "drafted"})
+		}
+		return out
+	}
+	// The longest keys the admission takes.
+	pad := 0
+	for postAnswerMost([]timePostSite{{src: timeJira, key: qualifier(nil, timeJira.Site), entries: entries(pad + 1)}}, nil) <= answerBudget {
+		pad++
+	}
+	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, open: map[string][]trackerapp.TimeEntryView{timeJira.ID: entries(pad)},
+		post: func(_ string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
+			var out trackerapp.PostTimeView
+			for i, ref := range in.Entries {
+				o := trackerapp.PostOutcome{ID: ref.ID, State: "not_posted", Why: fmt.Sprintf("was refused: %d %s", ref.ID, strings.Repeat("closed ", 150))}
+				if i%2 == 0 {
+					o.State = "uncertain"
+				}
+				out.Outcomes = append(out.Outcomes, o)
+			}
+			return out, fmt.Errorf("trackerapp: settle the posted entries: %s", strings.Repeat("disk I/O error ", 100))
+		}}
+	answer, err := timeCall(t, timeServer(f, &fakeHost{}), "time_draft", map[string]any{"post": []string{"2026-11-24"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got timePostAnswer
+	if err := json.Unmarshal([]byte(answer), &got); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, g := range append(got.NotLogged, got.MayBeLogged...) {
+		n += len(g.Entries)
+	}
+	if len(answer) > answerBudget || n != 250 || len(got.Warnings) != 1 {
+		t.Fatalf("the answer is %d bytes naming %d entries and %d warnings; want at most %d naming all 250 and the warning", len(answer), n, len(got.Warnings), answerBudget)
 	}
 }
