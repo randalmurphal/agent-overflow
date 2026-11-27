@@ -1,5 +1,7 @@
 package store
 
+import "strconv"
+
 // The export's thread links and the viewer's logged time (threads,
 // worklogs, worklog_days).
 //
@@ -15,14 +17,16 @@ package store
 //     the dashboard's Mine reads (trackerdash.Board.Viewer). worklogs holds
 //     the time on the board's tickets alone; worklog_days holds every day
 //     of that person's the mirror read, whatever it logged. Both start a
-//     day before the earliest instant a count can ask
-//     (mirrorExportIntervalsFrom), so a day read in any time zone is there.
+//     day before the history window (MirrorExport.Window), so they hold
+//     the days the Dashboards screen reads, in any time zone, and no day
+//     it does not: a count of them finds a day before the window not read
+//     rather than holding a part of a sprint that began before it.
 //     The mirror holds the worklogs of the connection's time source alone
 //     (its time-source triggers), so neither needs to name the source.
 //   - Each fill seeks by its keys: the site's links, the person's days.
 
 // mirrorExportFirstDaySQL is the first day the export's logged time holds.
-var mirrorExportFirstDaySQL = `date(` + mirrorExportIntervalsFrom() + ` / 1000, 'unixepoch', '-1 day')`
+var mirrorExportFirstDaySQL = `date(CAST(?` + strconv.Itoa(mirrorExportLoggedArg) + ` AS INTEGER) / 1000, 'unixepoch', '-1 day')`
 
 // mirrorExportViewerSQL is the verified account of root ?1's connection.
 const mirrorExportViewerSQL = `(SELECT c.verified_account_id FROM tracker_cache_roots r

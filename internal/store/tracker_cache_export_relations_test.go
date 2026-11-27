@@ -24,10 +24,11 @@ func dayMS(t *testing.T, day string) int64 {
 //	threads: A linked to 10001 with two turns, B archived on 10002, C (a
 //	scratch, hidden) on 10003, D on 10004 (board 11's), E on 10001 of
 //	another site, F being deleted on 10005
-//	worklogs: me on 10001 on 31 October and 20 November, on 10004 on 20
-//	November, on 10002 on 30 October; someone else on 10001 on 20 November
-//	read days: me on 30 and 31 October, 19 and 20 November and in 2025;
-//	someone else on 21 November
+//	worklogs: me on 10001 on 31 October, 8, 9 and 20 November, on 10004 on
+//	20 November, on 10002 on 30 October; someone else on 10001 on 20
+//	November
+//	read days: me on 30 and 31 October, 8, 9, 19 and 20 November and in
+//	2025; someone else on 21 November
 func relationsFixture(t *testing.T) (*Store, int64) {
 	t.Helper()
 	s, root := paceFixture(t)
@@ -50,13 +51,15 @@ func relationsFixture(t *testing.T) (*Store, int64) {
 	}
 	for _, w := range []struct{ id, issue, author, day string }{
 		{"w1", "10001", "me", "2026-10-31"}, {"w2", "10001", "me", "2026-11-20"}, {"w3", "10004", "me", "2026-11-20"},
-		{"w4", "10002", "me", "2026-10-30"}, {"w5", "10001", "someone", "2026-11-20"},
+		{"w4", "10002", "me", "2026-10-30"}, {"w5", "10001", "someone", "2026-11-20"}, {"w6", "10001", "me", "2026-11-08"},
+		{"w7", "10001", "me", "2026-11-09"},
 	} {
 		mustExec(t, s.db, `INSERT INTO tracker_cache_worklogs(root_id, worklog_id, issue_id, author_id, day, spent_seconds) VALUES (?, ?, ?, ?, ?, 3600)`,
 			root, w.id, w.issue, w.author, w.day)
 	}
 	for _, d := range []struct{ author, day string }{
-		{"me", "2026-10-30"}, {"me", "2026-10-31"}, {"me", "2026-11-19"}, {"me", "2026-11-20"}, {"me", "2025-06-01"}, {"someone", "2026-11-21"},
+		{"me", "2026-10-30"}, {"me", "2026-10-31"}, {"me", "2026-11-08"}, {"me", "2026-11-09"}, {"me", "2026-11-19"}, {"me", "2026-11-20"},
+		{"me", "2025-06-01"}, {"someone", "2026-11-21"},
 	} {
 		mustExec(t, s.db, `INSERT INTO tracker_cache_worklog_days(root_id, author_id, day, read_at) VALUES (?, ?, ?, 1)`, root, d.author, d.day)
 	}
@@ -67,8 +70,9 @@ func relationsFixture(t *testing.T) (*Store, int64) {
 // tickets, as the Ticket screen lists them (no hidden mode, none being
 // deleted, none of another site or board), with each one's newest turn;
 // and the verified account's logged time on the board's tickets and its
-// read days, from a day before the earliest instant a count can ask; the
-// export says the history window it was given, after that earliest.
+// read days from the day before the history window (10 November), not
+// from the earliest instant a count can ask (1 November, the sprints'
+// start); the export says both.
 func TestTheExportHoldsTheBoardsThreadsAndYourLoggedTime(t *testing.T) {
 	t.Parallel()
 	s, root := relationsFixture(t)
@@ -87,10 +91,10 @@ func TestTheExportHoldsTheBoardsThreadsAndYourLoggedTime(t *testing.T) {
 		t.Fatalf("threads = %v; want %v", threads, want)
 	}
 	worklogs := exportRows(t, conn, `SELECT id || '|' || ticket || '|' || day || '|' || seconds FROM worklogs ORDER BY id`)
-	if want := []string{"w1|10001|2026-10-31|3600", "w2|10001|2026-11-20|3600"}; !reflect.DeepEqual(worklogs, want) {
+	if want := []string{"w2|10001|2026-11-20|3600", "w7|10001|2026-11-09|3600"}; !reflect.DeepEqual(worklogs, want) {
 		t.Fatalf("worklogs = %v; want %v", worklogs, want)
 	}
-	if got, want := exportRows(t, conn, `SELECT day FROM worklog_days ORDER BY day`), []string{"2026-10-31", "2026-11-19", "2026-11-20"}; !reflect.DeepEqual(got, want) {
+	if got, want := exportRows(t, conn, `SELECT day FROM worklog_days ORDER BY day`), []string{"2026-11-09", "2026-11-19", "2026-11-20"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("read days = %v; want %v", got, want)
 	}
 }

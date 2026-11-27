@@ -129,7 +129,8 @@ func TestLoggedTimeComparesOnceTheRangeBeforeIsRead(t *testing.T) {
 // A number of logged time that counts now, its rows placed at no instant,
 // counts every day the copy can hold: with none read, the 180 days from
 // the copy's earliest to today are not read; with one not read, that one.
-// A day before the copy's 180 days is not known and not read.
+// A kept sprint that began before them changes nothing: the copy holds
+// the 180 days.
 func TestLoggedTimeCountingNowNeedsEveryDayTheCopyHolds(t *testing.T) {
 	t.Parallel()
 	all := func(f *fixture) Board {
@@ -153,13 +154,43 @@ func TestLoggedTimeCountingNowNeedsEveryDayTheCopyHolds(t *testing.T) {
 	if n.Unread != nil || num(n.Value) != "5400" {
 		t.Fatalf("all read: %s, unread %v", num(n.Value), n.Unread)
 	}
-	// A kept sprint that began 10 days before the copy's 180 days: those
-	// 10 days are not known and never read; the page reads the 180.
+	// A kept sprint that began 10 days before the copy's 180 days: the
+	// number counts the 180 the copy holds, and is known once they are read.
 	old := worklogBoard()
 	old.earliest = ms(testNow) - 190*day
 	n = widgetOf(t, mustEvaluate(t, evaluator(), all(old), r), "all")
-	if len(n.Unread) != 180 || n.Unread[0] != "2026-05-30" || num(n.Value) != "not known, 190 days not read" {
+	if len(n.Unread) != 180 || n.Unread[0] != "2026-05-30" || num(n.Value) != "not known, 180 days not read" {
 		t.Fatalf("an older sprint kept: %s, %d unread from %v", num(n.Value), len(n.Unread), n.Unread[:min(1, len(n.Unread))])
+	}
+	old = worklogBoard(daysOf("2026-05-30", "2026-11-25")...)
+	old.earliest = ms(testNow) - 190*day
+	if n := widgetOf(t, mustEvaluate(t, evaluator(), all(old), r), "all"); n.Unread != nil || num(n.Value) != "5400" {
+		t.Fatalf("an older sprint kept, all read: %s, unread %v", num(n.Value), n.Unread)
+	}
+}
+
+// A sprint that began before the copy's 180 days holds days the page
+// never reads: its period stays not known by them, never a part of its
+// time, and the page is told to read only the rest. The sprint ran from
+// 190 days ago to 176 days ago: 14 days, the first 10 before the window.
+func TestLoggedTimeOfASprintBeforeTheWindowIsNotKnown(t *testing.T) {
+	t.Parallel()
+	board := func(read ...string) Board {
+		f := worklogBoard(read...)
+		f.plansSprints = true
+		f.earliest = ms(testNow) - 190*day
+		f.sprint("s1", "Sprint 1", "closed", ms(testNow)-190*day, ms(testNow)-176*day, 1)
+		f.exec(`INSERT INTO worklogs VALUES ('w8', 'T1', '2026-06-01', 600)`)
+		return loggedTime(f)
+	}
+	r := Request{Dashboard: "mine", Range: RangeSprints3, TimeZone: "UTC"}
+	n := widgetOf(t, mustEvaluate(t, evaluator(), board(), r), "n")
+	if num(n.Value) != "not known, 14 days not read" || !reflect.DeepEqual(n.Unread, daysOf("2026-05-30", "2026-06-02")) {
+		t.Fatalf("none read: %s, unread %v", num(n.Value), n.Unread)
+	}
+	n = widgetOf(t, mustEvaluate(t, evaluator(), board(daysOf("2026-05-30", "2026-06-02")...), r), "n")
+	if num(n.Value) != "not known, 10 days not read" || n.Unread != nil {
+		t.Fatalf("the window's days read: %s, unread %v", num(n.Value), n.Unread)
 	}
 }
 

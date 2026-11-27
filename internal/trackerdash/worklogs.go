@@ -15,8 +15,10 @@ import (
 //     its widget lists the days not read of the range, and of the range
 //     before when it shows a value of it, for the page to read
 //     (WidgetValue.Unread, frontend trackerDashboard). It lists none
-//     before the copy's history window (MirrorExport.Window), so the page
-//     reads at most 180 days: a period with such a day stays not known. A
+//     before the copy's history window (MirrorExport.Window), where the
+//     copy's logged time begins, so the page reads at most 180 days: a
+//     period with a day before it (a sprint that began before it) stays
+//     not known, and a metric that counts now counts from it. A
 //     day is in the period that holds its dayStart, the instant day_start
 //     places a row of it at. A weekend's day counts like any other.
 //   - Its rows are the viewer's: a row's person is the viewer unless the
@@ -82,10 +84,10 @@ func (ev *evaluation) unreadOf(ps []period, now int64) []string {
 
 // rangeUnread is the days not read that metric m's number over the range
 // counts: its periods' (g), or for a metric that counts now every day the
-// copy can hold.
+// copy holds of logged time, from the history window.
 func (ev *evaluation) rangeUnread(g *ranged, now int64) []string {
 	if g.periods == nil {
-		return ev.unread(ev.export.Earliest, now, now)
+		return ev.unread(ev.export.Window, now, now)
 	}
 	return ev.unreadOf(g.periods, now)
 }
@@ -99,6 +101,9 @@ func (ev *evaluation) readable(days []string) []string {
 		first = first.AddDate(0, 0, 1)
 	}
 	i, _ := slices.BinarySearch(days, first.Format(time.DateOnly))
+	if i == len(days) {
+		return nil
+	}
 	return days[i:]
 }
 

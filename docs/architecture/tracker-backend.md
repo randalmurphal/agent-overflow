@@ -2571,7 +2571,9 @@ The rules are the comments at the top of
   tickets of one person, the connection's verified account (the viewer,
   `Answer.Viewer`), and `worklog_days(day)` the days of that person's
   the mirror read, whatever was logged on them. Both start the day before
-  the earliest instant a count can ask. A count that reads `worklogs`
+  the history window (`MirrorExport.Window`, 180 days), where the page's
+  reads stop, not at the earliest instant a count can ask: a sprint that
+  began before the window has days the copy never holds. A count that reads `worklogs`
   also copies `worklog_days`. A metric of it counts in the unit `time`,
   seconds that the screen shows as hours.
 - `day_start(day)` is the instant a row of a day is placed at: the first
@@ -2593,8 +2595,9 @@ The rules are the comments at the top of
   (a number's comparison), for the page to read (`WidgetValue.Unread`);
   the evaluator makes no tracker request. It lists no day at or before
   the copy's history window (`MirrorExport.Window`, 180 days), so a
-  period that holds one stays not known, as does a number that counts
-  now on a copy whose earliest kept sprint began before that window.
+  period that holds one, a sprint that began before it, stays not known
+  rather than counting part of its time. A number that counts now counts
+  the days from the window, and is known once they are read.
 - The Dashboards screen reads those days, while a widget that lists
   them is shown, through `RefreshTrackerWorklogs` on the board's
   computer: one read at a time, each of at most 31 consecutive days, then

@@ -97,6 +97,11 @@ const mirrorExportCardArg = 11
 // shape.
 var mirrorExportWindowArg = mirrorExportCardArg + len(mirrorExportCardColumns)
 
+// mirrorExportLoggedArg is the parameter of the history window's start,
+// where the logged time begins (MirrorExport.Window), after
+// mirrorExportWindowArg.
+var mirrorExportLoggedArg = mirrorExportWindowArg + 1
+
 // args is the shape as the fills bind it, ?6 to ?10 and then a member
 // path for each column of mirrorExportCardColumns (mirrorExportFills).
 func (c MirrorCardShape) args() []any {
@@ -272,8 +277,9 @@ func (f mirrorExportFill) text(relations map[string]bool) string {
 // mirrorExportFills are the fill statements in order: ?1 root, ?2 board,
 // ?3 the regrouping (a JSON object, '{}' for none), ?4 the board's
 // estimate reset, ?5 whether the board has an estimate (0 or 1), from
-// ?6 the card blob's shape (MirrorCardShape.args), and then the history
-// window's start (mirrorExportWindowArg). Each
+// ?6 the card blob's shape (MirrorCardShape.args), then the earliest
+// instant a count can ask (mirrorExportWindowArg) and the history
+// window's start (mirrorExportLoggedArg). Each
 // names the snapshot's tables by main and the file's unqualified, so a
 // file table the snapshot has a relation of the same name as (threads) is
 // read only through a view of the file's (mirrorExportRelationFills). An export runs those of the
@@ -417,8 +423,8 @@ type MirrorExport struct {
 	// it is in the export.
 	Earliest int64
 	// Window is the start of the history window the export was given, no
-	// earlier than Earliest: a day of logged time before it is one the
-	// Dashboards screen does not read (trackerdash worklogs.go).
+	// earlier than Earliest: the logged time begins the day before it, at
+	// the days the Dashboards screen reads (trackerdash worklogs.go).
 	Window int64
 }
 
@@ -501,7 +507,7 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	}
 	export.Earliest = mirrorExportEarliest(window, earliestSprint)
 	export.Window = window
-	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, export.Earliest, card)
+	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, export.Earliest, window, card)
 	for _, fill := range mirrorExportFills {
 		if !fill.runs(relations) {
 			continue
@@ -519,8 +525,9 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 
 // mirrorExportArgs is what the fills bind (mirrorExportFills).
 // from is the earliest instant a count can ask of the intervals
-// (mirrorExportEarliest).
-func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, from int64, card MirrorCardShape) []any {
+// (mirrorExportEarliest), window the history window's start, where the
+// logged time begins.
+func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, from, window int64, card MirrorCardShape) []any {
 	groups := regroup.statuses
 	if groups == "" {
 		groups = "{}"
@@ -529,7 +536,7 @@ func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, reset
 	if estimated {
 		hasEstimate = 1
 	}
-	return append(append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...), from)
+	return append(append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...), from, window)
 }
 
 // mirrorExportURI is the read-only URI of the database file at path.
