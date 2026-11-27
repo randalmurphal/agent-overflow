@@ -94,6 +94,10 @@ func (o oneCredential) History(ctx context.Context, q HistoryQuery) (History, er
 	return trackerapi.Walk(ctx, func(ctx context.Context) (History, error) { return o.p.History(ctx, q) })
 }
 
+func (o oneCredential) Evidence(ctx context.Context, q EvidenceQuery) (Evidence, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) (Evidence, error) { return o.p.Evidence(ctx, q) })
+}
+
 func (o oneCredential) Detail(ctx context.Context, issue IssueID) (Detail, error) {
 	return trackerapi.Walk(ctx, func(ctx context.Context) (Detail, error) { return o.p.Detail(ctx, issue) })
 }
