@@ -371,10 +371,13 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   async function readWorklogs(s: DashboardSource, a: Answer): Promise<void> {
     const viewer = a.viewer ?? '';
     const key = `${s.backend}\n${s.board.connection}\n${viewer}`;
+    // Another account or connection: the last one's read, if still out,
+    // changes nothing when it returns (it checks askedFor).
     if (key !== askedFor) {
       asked.clear();
       askedFor = key;
       worklogFailure = '';
+      worklogReading = false;
     }
     if (!viewer || worklogReading || worklogFailure) return;
     const days = [...new Set(a.widgets.flatMap((w) => w.unread ?? []))].filter((d) => !asked.has(d)).sort();
@@ -395,7 +398,8 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     } finally {
       if (askedFor === key) {
         worklogReading = false;
-        scheduler.request({ immediate: true });
+        // A hidden screen counts again when it shows.
+        if (opts.shown()) scheduler.request({ immediate: true });
       }
     }
   }

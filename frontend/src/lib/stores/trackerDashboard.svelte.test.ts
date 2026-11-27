@@ -683,4 +683,49 @@ describe('your logged time', () => {
     await flush();
     expect(s.logged.failure).toBe('the computer is not connected');
   });
+
+  it('counts again after a read only while the screen shows', async () => {
+    const { s, evaluate } = await opened();
+    const refresh = held<unknown>('RefreshTrackerWorklogs');
+    s.refresh();
+    await flush();
+    evaluate.answer(unreadAnswer(['2026-11-25']));
+    await flush();
+    shown = false;
+    await flush();
+    refresh.answer(read);
+    await flush();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    expect(evaluate.calls).toHaveLength(2);
+    shown = true;
+    await flush();
+    expect(evaluate.calls).toHaveLength(3);
+  });
+
+  it('reads another connection\'s days while the last connection\'s read is still out, and that read changes nothing after', async () => {
+    const { s, evaluate } = await opened();
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
+    const refresh = held<unknown>('RefreshTrackerWorklogs');
+    s.refresh();
+    await flush();
+    evaluate.answer(unreadAnswer(['2026-11-25']));
+    await flush();
+    expect(refresh.calls).toHaveLength(1);
+    source = { backend: 'peer-1', board: { ...testBoard, connection: 'conn-2', board: '2' }, subscription: 'sub-2', changes: 0 };
+    await flush();
+    list.answer(listed([VIEW]));
+    await flush();
+    evaluate.answer(unreadAnswer(['2026-11-25'], 3));
+    await flush();
+    expect(refresh.calls.map((c) => c[0])).toEqual(['conn-1', 'conn-2']);
+    expect(s.logged.reading).toBe(true);
+    refresh.answer({ worklogs: [], failure: { kind: 'rate_limited', message: 'Jira asked to wait', at: 1 } });
+    await flush();
+    expect(s.logged.reading).toBe(true);
+    expect(s.logged.failure).toBe('');
+    refresh.answer(read);
+    await flush();
+    expect(s.logged.reading).toBe(false);
+  });
 });
