@@ -3,7 +3,7 @@
 // and the tone by the metric's good direction.
 
 import { describe, expect, it } from 'vitest';
-import { changeMark, drillCountWords, formatNum, GAP_TEXT, numValue, numWords } from './trackerDashboardModel';
+import { changeMark, drillCountWords, formatNum, GAP_TEXT, limitSide, limitStep, numValue, numWords, overLimit } from './trackerDashboardModel';
 import { band, labelEvery, valueScale } from '../components/issues/charts/chartScale';
 
 describe('a number', () => {
@@ -100,5 +100,24 @@ describe('the charts\' geometry', () => {
     expect(labelEvery(10, 640)).toBe(1);
     expect(labelEvery(10, 320)).toBe(2);
     expect(labelEvery(12, 100)).toBe(12);
+  });
+});
+
+describe("a number's limit", () => {
+  it('warns below it where up is good news, else above it, and not with no limit or no value', () => {
+    expect([limitSide('up'), limitSide('down'), limitSide('')]).toEqual(['below', 'above', 'above']);
+    expect(overLimit({ v: 4 }, 3, 'down')).toBe(true);
+    expect(overLimit({ v: 3 }, 3, 'down')).toBe(false);
+    expect(overLimit({ v: 4 }, 3, '')).toBe(true);
+    expect(overLimit({ v: 2 }, 3, 'up')).toBe(true);
+    expect(overLimit({ v: 3 }, 3, 'up')).toBe(false);
+    expect(overLimit({ v: 4 }, null, 'down')).toBe(false);
+    expect(overLimit({ nc: 2 }, 0, 'down')).toBe(false);
+  });
+
+  it('steps by an hour on a board of time estimates, else by 1', () => {
+    expect(limitStep('estimate', 'time')).toBe(3600);
+    expect(limitStep('estimate', 'points')).toBe(1);
+    expect(limitStep('tickets', 'time')).toBe(1);
   });
 });

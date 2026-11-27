@@ -134,6 +134,18 @@ export function overLimit(value: Num | null | undefined, limit: number | null | 
   return limitSide(good) === 'below' ? v < limit : v > limit;
 }
 
+/** A limit as words: "3 tickets", "2h". */
+export function limitWords(limit: number, unit: DashboardUnit, estimates: string): string {
+  const word = unitWord(limit, unit, estimates);
+  return word ? `${formatAmount(limit, unit, estimates)} ${word}` : formatAmount(limit, unit, estimates);
+}
+
+/** What a number past its limit says: "over your limit of 3 tickets",
+ * or "under …" where the limit warns below. */
+export function pastLimitWords(limit: number, good: string, unit: DashboardUnit, estimates: string): string {
+  return `${limitSide(good) === 'below' ? 'under' : 'over'} your limit of ${limitWords(limit, unit, estimates)}`;
+}
+
 /** How far one press of a limit's − or + moves it: an hour for a board
  * whose estimates are time (seconds), else 1. */
 export function limitStep(unit: DashboardUnit, estimates: string): number {

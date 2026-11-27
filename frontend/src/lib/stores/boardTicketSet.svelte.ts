@@ -87,15 +87,16 @@ export function createBoardTicketSet(opts: { source: () => DashboardSource | nul
   const stop = $effect.root(() => {
     // Another board clears the filter; a new subscription of the same
     // board, or the board shown again, reads the set at once.
+    // Strings, so a change of the board's count alone moves neither.
+    const board = $derived(boardOf(opts.source()));
+    const subscription = $derived(opts.source()?.subscription ?? '');
     $effect(() => {
-      const s = opts.source();
-      const board = boardOf(s);
-      // A new subscription of the board reads the set again.
-      void s?.subscription;
+      void subscription;
+      const on = board;
       const shown = opts.shown();
       untrack(() => {
         if (!tile) return;
-        if (board !== pickedOn) {
+        if (on !== pickedOn) {
           pick(null);
           return;
         }

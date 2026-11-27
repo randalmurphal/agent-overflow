@@ -34,7 +34,7 @@
   import { readFrontendValue, writeFrontendValue } from '../../stores/frontendStorage';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { askAgentAboutDashboards, createTrackerDashboard, pickDashboardNext, rowRequest, type DashboardSource, type TrackerDashboard } from '../../stores/trackerDashboard.svelte';
-  import { limitSide, numValue, numWords, overLimit, type Num } from '../../stores/trackerDashboardModel';
+  import { numValue, numWords, overLimit, pastLimitWords, type Num } from '../../stores/trackerDashboardModel';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { scopeGrant } from '../../transport/scopes';
   import { formatAmount, type DashboardUnit } from '../../utils/dashboardAmount';
@@ -120,8 +120,7 @@
   }
   function overText(v: WidgetView): string {
     const limit = store.tiles?.limits[v.id];
-    if (limit === undefined) return '';
-    return `${limitSide(v.good ?? '') === 'below' ? 'under' : 'over'} your limit of ${formatAmount(limit, v.unit as DashboardUnit, estimates)}`;
+    return limit === undefined ? '' : pastLimitWords(limit, v.good ?? '', v.unit as DashboardUnit, estimates);
   }
   // A chart's or a table's last three buckets with their totals.
   function rowsOf(v: WidgetView, value: WidgetValue): { label: string; total: string }[] {
@@ -196,8 +195,7 @@
             onclick={() => press(w)}
           >
             <Icon icon={isOver ? TriangleAlert : formIcon(w.view)} size={13} strokeWidth={2} class="shrink-0 {isOver ? 'text-warning' : ''}" />
-            {#if n}<b class="font-semibold text-fg">{n.amount}</b>{#if n.word}<span>{n.word}</span>{/if}<span class="text-fg-muted">·</span>{/if}
-            <span class="truncate">{w.view.title}</span>
+            <span class="truncate">{#if n}<b class="font-semibold text-fg">{n.amount}</b>{`${n.word ? ` ${n.word}` : ''} · `}{/if}{w.view.title}</span>
           </button>
         {/each}
         {#if pinned.length === 0}

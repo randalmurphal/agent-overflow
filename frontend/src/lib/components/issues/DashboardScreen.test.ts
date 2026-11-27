@@ -248,3 +248,131 @@ describe('a ticket list', () => {
     expect((screen.getByTestId('ticket-list-thread') as HTMLButtonElement).disabled).toBe(false);
   });
 });
+
+describe("a widget's limit and pin", () => {
+  const LAPTOP = { ...SOURCE, backend: 'laptop', board: { ...SOURCE.board, backend: 'laptop' } };
+  const STUCK = { ...widget('stuck', 'Stuck right now'), good: 'down', now: true } as unknown as WidgetView;
+  const PACE = { ...widget('pace', 'Usual pace'), good: 'up', unit: 'estimate' } as unknown as WidgetView;
+  const LIST = { ...widget('stuck_list', 'Stuck tickets'), form: 'list', width: 12 } as unknown as WidgetView;
+  const OVERVIEW = { ...VIEW, widgets: [STUCK, PACE, LIST] } as unknown as DashboardView;
+  const ANSWER = {
+    range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1,
+    widgets: [{ id: 'stuck', value: { v: 4 } }, { id: 'pace', value: { v: 20 } }, { id: 'stuck_list', tickets: [] }],
+  } as unknown as Answer;
+  type Tiles = { pins: string[]; limits: Record<string, number>; proposed: string[] };
+
+  function mount(tiles: Tiles | undefined, opts: { compact?: boolean; proposals?: ProposalView[] } = {}) {
+    setCarriedSessionScopes('laptop', ['tracker:read', 'tracker:operate', 'threads:read', 'threads:operate']);
+    const state = { tiles };
+    setBindingMock('TrackerDashboards', async () => ({ ...listed([OVERVIEW, KEPT], opts.proposals ?? []), ...(state.tiles ? { tiles: state.tiles } : {}) }));
+    setBindingMock('EvaluateTrackerDashboard', async () => ANSWER);
+    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: opts.compact ?? false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    unmount = screen.unmount;
+    return { screen, state };
+  }
+  const cell = (screen: { container: HTMLElement }, id: string) => screen.container.querySelector<HTMLElement>(`[data-testid="dashboard-widget"][data-widget="${id}"]`)!;
+
+  it('sets a number\'s limit from its bell, marks the number past it, and turns it off', async () => {
+    const limits: unknown[][] = [];
+    setBindingMock('SetTrackerWidgetLimit', async (...args: unknown[]) => { limits.push(args); });
+    const { screen, state } = mount({ pins: [], limits: {}, proposed: [] });
+    await flush();
+    const stuck = cell(screen, 'stuck');
+    expect(within(stuck).getByTestId('dashboard-limit-toggle').title).toBe('Warn me at a limit');
+    expect(within(cell(screen, 'stuck_list')).queryByTestId('dashboard-limit-toggle')).toBeNull();
+    await fireEvent.click(within(stuck).getByTestId('dashboard-limit-toggle'));
+    await flush();
+    const pop = within(document.body).getByTestId('dashboard-limit');
+    expect(pop.textContent).toContain('Warn me when this is above');
+    expect(within(pop).getByTestId('dashboard-limit-value').textContent).toBe('4');
+    expect(within(pop).getByTestId('dashboard-limit-note').textContent).toBe('No limit is set.');
+    await fireEvent.click(within(pop).getByTestId('dashboard-limit-switch'));
+    await flush();
+    expect(limits).toEqual([['sub-1', 'stuck', 4]]);
+
+    // The board's computer stored 3 and said so.
+    state.tiles = { pins: [], limits: { stuck: 3 }, proposed: [] };
+    trackerDashboardsUpdated('laptop');
+    await flush();
+    expect(stuck.dataset.over).toBe('true');
+    expect(within(stuck).getByTestId('dashboard-over').textContent?.trim()).toBe('over your limit of 3 tickets');
+    expect(within(stuck).getByTestId('dashboard-limit-toggle').title).toBe('Warns above 3 tickets');
+    expect(within(pop).getByTestId('dashboard-limit-note').textContent).toBe('The tile turns amber.');
+    await fireEvent.click(within(pop).getByTestId('dashboard-limit-raise'));
+    await flush();
+    await fireEvent.click(within(pop).getByTestId('dashboard-limit-switch'));
+    await flush();
+    expect(limits).toEqual([['sub-1', 'stuck', 4], ['sub-1', 'stuck', 4], ['sub-1', 'stuck', null]]);
+  });
+
+  it('warns below a limit where up is good news', async () => {
+    const { screen } = mount({ pins: ['pace'], limits: { pace: 25 }, proposed: [] });
+    await flush();
+    const pace = cell(screen, 'pace');
+    expect(pace.dataset.over).toBe('true');
+    expect(within(pace).getByTestId('dashboard-over').textContent?.trim()).toBe('under your limit of 25 points');
+    await fireEvent.click(within(pace).getByTestId('dashboard-limit-toggle'));
+    await flush();
+    const pop = within(document.body).getByTestId('dashboard-limit');
+    expect(pop.textContent).toContain('Warn me when this is below');
+    expect(within(pop).getByTestId('dashboard-limit-note').textContent).toBe('The tile turns amber, here and on the board row.');
+  });
+
+  it('pins a widget to the board row and takes no pin once the row is full', async () => {
+    const pins: unknown[][] = [];
+    setBindingMock('PinTrackerWidget', async (...args: unknown[]) => { pins.push(args); });
+    const { screen, state } = mount({ pins: [], limits: {}, proposed: [] });
+    await flush();
+    const pin = within(cell(screen, 'stuck_list')).getByTestId('dashboard-pin');
+    expect(pin.title).toBe('Show on the board row');
+    await fireEvent.click(pin);
+    await flush();
+    expect(pins).toEqual([['sub-1', 'stuck_list', true]]);
+
+    state.tiles = { pins: ['a', 'b', 'c', 'd', 'stuck_list'], limits: {}, proposed: [] };
+    trackerDashboardsUpdated('laptop');
+    await flush();
+    const on = within(cell(screen, 'stuck_list')).getByTestId('dashboard-pin');
+    expect(on.getAttribute('aria-pressed')).toBe('true');
+    expect(on.title).toBe('Take off the board row');
+    const full = within(cell(screen, 'stuck')).getByTestId('dashboard-pin') as HTMLButtonElement;
+    expect(full.disabled).toBe(true);
+    expect(full.title).toBe("The board's row already shows 5 tiles. Take one off to pin this one.");
+    await fireEvent.click(on);
+    await flush();
+    expect(pins).toEqual([['sub-1', 'stuck_list', true], ['sub-1', 'stuck_list', false]]);
+  });
+
+  it('shows no bell or pin from a computer that keeps no tiles', async () => {
+    const { screen } = mount(undefined);
+    await flush();
+    expect(screen.getAllByTestId('dashboard-widget')).toHaveLength(3);
+    expect(screen.queryAllByTestId('dashboard-limit-toggle')).toHaveLength(0);
+    expect(screen.queryAllByTestId('dashboard-pin')).toHaveLength(0);
+  });
+
+  it('under compact shows only the controls switched on until the dashboard is edited, Overview included', async () => {
+    const { screen } = mount({ pins: ['stuck_list'], limits: {}, proposed: [] }, { compact: true });
+    await flush();
+    expect(screen.queryAllByTestId('dashboard-limit-toggle')).toHaveLength(0);
+    expect(screen.getAllByTestId('dashboard-pin').map((b) => b.closest<HTMLElement>('[data-widget]')!.dataset.widget)).toEqual(['stuck_list']);
+    await fireEvent.click(screen.getByTestId('dashboard-edit'));
+    await flush();
+    expect(screen.getAllByTestId('dashboard-limit-toggle')).toHaveLength(2);
+    expect(screen.getAllByTestId('dashboard-pin')).toHaveLength(3);
+    expect(screen.queryAllByTestId('dashboard-remove')).toHaveLength(0);
+  });
+
+  it('says what Keep does with a proposal its agent asked to show on the board row', async () => {
+    const asked = { view: widget('w_8', 'Reviews waiting'), thread: 't-1' } as unknown as ProposalView;
+    const { screen, state } = mount({ pins: [], limits: {}, proposed: ['w_8'] }, { proposals: [asked, PROPOSED] });
+    await flush();
+    expect(screen.getAllByTestId('dashboard-keep-pin').map((n) => n.textContent)).toEqual(['Keep also shows it on the board row.']);
+    state.tiles = { pins: ['a', 'b', 'c', 'd', 'e'], limits: {}, proposed: ['w_8'] };
+    trackerDashboardsUpdated('laptop');
+    await flush();
+    expect(screen.getAllByTestId('dashboard-keep-pin').map((n) => n.textContent)).toEqual(['Asked for the board row, which already shows 5 tiles: Keep adds it to a dashboard only.']);
+    // A proposal takes no bell or pin until it is kept.
+    expect(within(cell(screen, 'w_8')).queryByTestId('dashboard-pin')).toBeNull();
+  });
+});

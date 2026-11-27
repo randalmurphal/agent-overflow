@@ -19,6 +19,7 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { readFrontendValue } from './frontendStorage';
 import { trackerDashboardsUpdated } from './trackerBoardEvents';
 import { applySettingsSnapshot } from './settings.svelte';
+import { methodNotFound } from '../../test/helpers/olderComputer';
 
 const VIEW = {
   id: 'overview_sprints',
@@ -140,7 +141,8 @@ describe('when the screen opens', () => {
     const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     const evaluate = held<Answer>('EvaluateTrackerDashboard');
     const s = open();
-    list.answer(null);
+    // A release before dashboards has no such method.
+    list.fail(methodNotFound());
     await flush();
     expect(s.dashboards).toBe('older');
     expect(evaluate.calls).toHaveLength(0);
@@ -613,5 +615,57 @@ describe('the board\'s own dashboards', () => {
     list.answer(listed([VIEW]));
     await flush();
     expect(s.ask).toBe('');
+  });
+});
+
+describe("a board's summary row", () => {
+  const ROW_VIEW = { ...VIEW, default_range: 'sprints_3' } as unknown as DashboardView;
+  type Tiles = { pins: string[]; limits: Record<string, number>; proposed: string[] };
+  function rowListed(tiles: Tiles): TrackerDashboardsView {
+    return { ...listed([ROW_VIEW]), tiles } as unknown as TrackerDashboardsView;
+  }
+  function openRow(): TrackerDashboard {
+    const s: TrackerDashboard = createTrackerDashboard({ source: () => source, shown: () => shown, row: () => s.tiles?.pins ?? [] });
+    store = s;
+    flushSync();
+    return s;
+  }
+
+  it('counts the pinned widgets alone over the built-in\'s default range, nothing with none pinned, and again when a pin moves', async () => {
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
+    const evaluate = held<Answer>('EvaluateTrackerDashboard');
+    const s = openRow();
+    list.answer(rowListed({ pins: [], limits: {}, proposed: [] }));
+    await flush();
+    expect(s.tiles?.pins).toEqual([]);
+    expect(evaluate.calls).toHaveLength(0);
+
+    trackerDashboardsUpdated('peer-1');
+    flushSync();
+    list.answer(rowListed({ pins: ['stuck', 'w_1'], limits: {}, proposed: [] }));
+    await flush();
+    expect(evaluate.calls).toHaveLength(1);
+    expect(evaluate.calls[0][1]).toMatchObject({ dashboard: 'overview_sprints', range: 'sprints_3', mine: false, person: '', epic: '', widgets: ['stuck', 'w_1'] });
+    evaluate.answer(answerFor('sprints_3'));
+    await flush();
+
+    // A change of a limit lists again and counts nothing: the row's
+    // numbers do not move with it.
+    trackerDashboardsUpdated('peer-1');
+    flushSync();
+    list.answer(rowListed({ pins: ['stuck', 'w_1'], limits: { stuck: 3 }, proposed: [] }));
+    await flush();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    expect(evaluate.calls).toHaveLength(1);
+    expect(s.tiles?.limits).toEqual({ stuck: 3 });
+
+    // The board's changes count it again by the dashboards' rule.
+    source = { ...source!, changes: 1 };
+    flushSync();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    expect(evaluate.calls).toHaveLength(2);
+    expect(evaluate.calls[1][1]).toMatchObject({ widgets: ['stuck', 'w_1'] });
   });
 });

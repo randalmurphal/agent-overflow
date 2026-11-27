@@ -56,7 +56,9 @@
     formatNum,
     limitSide,
     limitStep,
+    limitWords,
     overLimit,
+    pastLimitWords,
     notCountedWords,
     numValue,
     numWords,
@@ -109,10 +111,6 @@
   const amount = $derived(numWords(value?.value as Num | undefined, unit, estimates));
   const side = $derived(limitSide(view.good ?? ''));
   const over = $derived(view.form === 'number' && !value?.error && overLimit(value?.value as Num | undefined, limit, view.good ?? ''));
-  function amountOf(v: number): string {
-    const word = unitWord(v, unit, estimates);
-    return word ? `${formatAmount(v, unit, estimates)} ${word}` : formatAmount(v, unit, estimates);
-  }
 
   // The limit's popover. Its value is the limit, or the number now while
   // none is set; a step or Turn on sets it.
@@ -173,8 +171,8 @@
           class="inline-flex size-5 items-center justify-center rounded-[var(--radius-control)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:size-8 {limit !== null ? 'bg-accent text-accent-fg' : 'text-fg-muted hover:bg-surface-1 hover:text-fg'}"
           aria-haspopup="dialog"
           aria-expanded={limitOpen}
-          aria-label={limit !== null ? `Warns ${side} ${amountOf(limit)}` : 'Warn me at a limit'}
-          title={limit !== null ? `Warns ${side} ${amountOf(limit)}` : 'Warn me at a limit'}
+          aria-label={limit !== null ? `Warns ${side} ${limitWords(limit, unit, estimates)}` : 'Warn me at a limit'}
+          title={limit !== null ? `Warns ${side} ${limitWords(limit, unit, estimates)}` : 'Warn me at a limit'}
           data-testid="dashboard-limit-toggle"
           data-on={limit !== null}
           onclick={() => { limitOpen = !limitOpen; }}
@@ -229,7 +227,7 @@
           {#if over && limit !== null}
             <span class="inline-flex items-center gap-1 text-[0.6875rem] text-fg-muted" data-testid="dashboard-over">
               <Icon icon={TriangleAlert} size={12} strokeWidth={2.25} class="shrink-0 text-warning" />
-              <span>{side === 'below' ? 'under' : 'over'} your limit of {amountOf(limit)}</span>
+              <span>{pastLimitWords(limit, view.good ?? '', unit, estimates)}</span>
             </span>
           {/if}
           {#if mark?.kind === 'change'}
