@@ -1070,9 +1070,10 @@ func checkTime(t TimeSettings) (*TimeSettings, error) {
 			return nil, err
 		}
 		ticket.Site = key.site
-		if !isTicketKey(ticket.Key) {
+		if !IsTicketKey(ticket.Tracker, ticket.Key) {
 			return nil, invalidSetup("%s names %q of %s, which is not a ticket key (WEB-1)", sectionTime, truncateID(ticket.Key), key.site)
 		}
+		ticket.Key = strings.ToUpper(ticket.Key)
 	}
 	if t.NeverEpics != nil && *t.NeverEpics {
 		t.NeverEpics = nil
@@ -1081,16 +1082,6 @@ func checkTime(t TimeSettings) (*TimeSettings, error) {
 		return nil, nil
 	}
 	return &t, nil
-}
-
-// isTicketKey is whether key is a ticket key: a tracker project
-// (isTicketProject), a dash and a number with no leading zero.
-func isTicketKey(key string) bool {
-	project, number, ok := strings.Cut(key, "-")
-	if !ok || !isTicketProject(project) || number == "" || number[0] == '0' || len(number) > 18 {
-		return false
-	}
-	return strings.Trim(number, "0123456789") == ""
 }
 
 // isTicketProject is whether project is a ticket key's project, as

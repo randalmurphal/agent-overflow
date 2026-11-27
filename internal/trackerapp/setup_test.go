@@ -1268,6 +1268,14 @@ func TestTimeSettingsAreSavedWithTheirDefaults(t *testing.T) {
 		t.Fatalf("time settings cleared left their section:\n%s", after)
 	}
 
+	// A key is the Jira parser's (IsTicketKey), stored in capitals.
+	for key, stored := range map[string]string{"ops-1": "OPS-1", "A-1": "A-1"} {
+		got := m.saveSetup(t, m.project(), Setup{Time: &TimeSettings{TimeOff: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: key}}})
+		if tt := got.Stored.Setup.Time; tt == nil || tt.TimeOff == nil || tt.TimeOff.Key != stored {
+			t.Errorf("the key %s is stored as %+v; want %s", key, tt, stored)
+		}
+	}
+
 	for name, tc := range map[string]struct {
 		ticket TimeTicket
 		says   string
@@ -1275,8 +1283,7 @@ func TestTimeSettingsAreSavedWithTheirDefaults(t *testing.T) {
 		"a Linear ticket": {TimeTicket{Tracker: "linear", Site: "example", Key: "ENG-1"}, "time is logged on Jira only"},
 		"no key":          {TimeTicket{Tracker: "jira", Site: m.conn.Site}, "not a ticket key"},
 		"a project alone": {TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS"}, "not a ticket key"},
-		"a lowercase key": {TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "ops-1"}, "not a ticket key"},
-		"a leading zero":  {TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-01"}, "not a ticket key"},
+		"a number alone":  {TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "10101"}, "not a ticket key"},
 		"no site":         {TimeTicket{Tracker: "jira", Key: "OPS-1"}, "empty jira site"},
 	} {
 		ticket := tc.ticket
