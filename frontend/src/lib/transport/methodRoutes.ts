@@ -119,6 +119,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1185171749: 'selected', // DismissPRReview
 	1317713039: 'thread', // DismissSessionBanner
 	41472159: 'thread', // DismissThreadWorktreeSetup
+	350315805: 'home', // DismissTrackerWidget
 	1456387330: 'thread', // DismissUnsavedThreadRows
 	115027584: 'home', // DownloadUpdate
 	1579042384: 'selected', // EditOpenAIKeyFile
@@ -259,6 +260,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	850013031: 'thread', // InterruptTurn
 	2219602920: 'home', // IntroduceOwnDevice
 	2789068977: 'home', // IsWSL
+	2951524960: 'home', // KeepTrackerWidget
 	4036611847: 'home', // LinkTrackerIssues
 	1602023272: 'thread', // ListActivityRunMembers
 	2526318276: 'selected', // ListAgentComputers
@@ -413,6 +415,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	684418419: 'home', // RemoveProviderAccount
 	21628411: 'home', // RemoveTrackerConnection
 	2493130714: 'home', // RemoveTrackerTimeEntries
+	446977083: 'home', // RemoveTrackerWidget
 	1528076361: 'home', // RenameBackend
 	3728890856: 'project', // RenameProject
 	727416435: 'thread', // RenameThread
@@ -514,6 +517,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2623175319: 'home', // StartSSHConnection
 	3009548683: 'selected', // StartTerminal
 	2291054583: 'project', // StartTicketThread
+	3031630647: 'home', // StartTrackerDashboardThread
 	1961738625: 'home', // StartTrackerSprint
 	2580445357: 'thread', // StopBackgroundTasks
 	536320598: 'thread', // StopClaudeTask

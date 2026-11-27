@@ -86,6 +86,16 @@ const (
 	UnitDays     Unit = "days"
 )
 
+// numbersUnit is the unit m's numbers are in, the one every reader of
+// them (the widget, its drill, the tool's answer) draws them in: a
+// count's are tickets, whatever its unit.
+func (m Metric) numbersUnit() Unit {
+	if m.Reduce == ReduceCount {
+		return UnitTickets
+	}
+	return m.Unit
+}
+
 // Good is the direction of a change that is good news.
 type Good string
 
@@ -97,26 +107,27 @@ const (
 )
 
 // Metric is one named query and how its rows are reduced. The same struct
-// holds the app's metrics and, with authoring, an agent's; Validate is the
+// holds the app's metrics and an agent's; Validate is the
 // one check both pass.
 type Metric struct {
-	// Name is the metric's immutable machine name.
-	Name string
+	// Name is the metric's immutable machine name; a project's metric is
+	// named by its widget, so it is not part of the metric's JSON.
+	Name string `json:"-"`
 	// Title is what a widget of it is called.
-	Title string
+	Title string `json:"title"`
 	// Words say in plain words what it counts, at most three sentences.
-	Words []string
+	Words []string `json:"words"`
 	// SQL is the one SELECT.
-	SQL string
+	SQL string `json:"sql"`
 	// Reduce, Unit, Good and Bucket are as their types say.
-	Reduce Reducer
-	Unit   Unit
-	Good   Good
-	Bucket Bucket
+	Reduce Reducer `json:"reduce"`
+	Unit   Unit    `json:"unit"`
+	Good   Good    `json:"good,omitempty"`
+	Bucket Bucket  `json:"bucket,omitempty"`
 	// Series is the series it names, in the order a chart's legend and a
 	// table's columns follow; a row names one of them, and a metric that
 	// names none returns no series column.
-	Series []string
+	Series []string `json:"series,omitempty"`
 }
 
 // Bounds of a metric's definition.

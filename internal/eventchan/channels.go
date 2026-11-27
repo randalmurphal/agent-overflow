@@ -304,11 +304,17 @@ const (
 // TrackerSetupUpdated is a payload-less refetch nudge sent after a
 // project's tracker setup changed as it is stored. Receivers read again,
 // through ProjectTrackerSetup, the setups they hold.
+//
+// TrackerDashboardsUpdated is a payload-less refetch nudge sent after a
+// board's dashboards changed: one its project keeps, or a widget an agent
+// proposed on it. Receivers showing a dashboard of that computer read the
+// board's dashboards again (TrackerDashboards) and count again.
 const (
 	TrackerConnectionsUpdated Channel = "tracker:connections_updated"
 	TrackerBoardUpdated       Channel = "tracker:board_updated"
 	TrackerIssueUpdated       Channel = "tracker:issue_updated"
 	TrackerSetupUpdated       Channel = "tracker:setup_updated"
+	TrackerDashboardsUpdated  Channel = "tracker:dashboards_updated"
 	TrackerTimeEntriesUpdated Channel = "tracker:time_entries_updated"
 )
 

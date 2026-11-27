@@ -118,6 +118,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ThreadTransfer,
 		eventchan.TrackerBoardUpdated,
 		eventchan.TrackerConnectionsUpdated,
+		eventchan.TrackerDashboardsUpdated,
 		eventchan.TrackerIssueUpdated,
 		eventchan.TrackerSetupUpdated,
 		eventchan.TrackerTimeEntriesUpdated,

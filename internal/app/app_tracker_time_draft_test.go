@@ -155,7 +155,7 @@ func TestTheTimeToolsNeedAJiraConnection(t *testing.T) {
 		t.Fatalf("a session with only Linear sees %v", got)
 	}
 	text, isError := trackerMCPStreamedCall(t, app, endpoint, "time_read", map[string]any{})
-	if !isError || text != `[tracker_request_invalid] There is no tool named "time_read". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update.` {
+	if !isError || text != `[tracker_request_invalid] There is no tool named "time_read". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update, dashboard_widget.` {
 		t.Fatalf("time_read on a Linear session = %s (error %v)", text, isError)
 	}
 }

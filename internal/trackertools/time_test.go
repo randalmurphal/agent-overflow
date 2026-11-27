@@ -57,14 +57,14 @@ func TestTheTimeToolsAreGivenWithAJiraConnection(t *testing.T) {
 	for _, tool := range s.Tools(true) {
 		names = append(names, tool["name"].(string))
 	}
-	if !slices.Equal(names, []string{"ticket_find", "ticket_read", "ticket_create", "ticket_update", "time_read", "time_draft"}) || !slices.Equal(names, ToolNames(true)) {
+	if !slices.Equal(names, []string{"ticket_find", "ticket_read", "ticket_create", "ticket_update", "dashboard_widget", "time_read", "time_draft"}) || !slices.Equal(names, ToolNames(true)) {
 		t.Fatalf("with the time tools = %v", names)
 	}
-	if got := len(s.Tools(false)); got != 4 {
+	if got := len(s.Tools(false)); got != 5 {
 		t.Fatalf("without the time tools %d tools are listed", got)
 	}
 	sizes := map[string]int{}
-	for _, tool := range s.Tools(true)[4:] {
+	for _, tool := range s.Tools(true)[5:] {
 		raw, err := json.Marshal(tool)
 		if err != nil {
 			t.Fatal(err)
@@ -76,7 +76,7 @@ func TestTheTimeToolsAreGivenWithAJiraConnection(t *testing.T) {
 		t.Errorf("the time tools are %v bytes; pinned time_read 268, time_draft 687", sizes)
 	}
 	_, err := s.Call(t.Context(), testCaller, "time_draft", json.RawMessage(`{}`))
-	refused(t, err, CodeInvalidRequest, `There is no tool named "time_draft". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update.`)
+	refused(t, err, CodeInvalidRequest, `There is no tool named "time_draft". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update, dashboard_widget.`)
 }
 
 // time_read's days and their refusals, each asserted as the text the

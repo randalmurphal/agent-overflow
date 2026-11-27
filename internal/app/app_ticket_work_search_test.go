@@ -32,7 +32,14 @@ type workSearchFixture struct {
 
 func newWorkSearchFixture(t *testing.T, fixture forgefake.Fixture) workSearchFixture {
 	t.Helper()
-	f := newTrackerBoardFixture(t)
+	return newWorkSearchFixtureOn(t, trackerBoardSetup{site: trackerBoardSite()}, fixture)
+}
+
+// newWorkSearchFixtureOn is newWorkSearchFixture with the tracker setup
+// setup: its Jira site and its budget.
+func newWorkSearchFixtureOn(t *testing.T, setup trackerBoardSetup, fixture forgefake.Fixture) workSearchFixture {
+	t.Helper()
+	f := newTrackerBoardFixtureOn(t, setup)
 	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
 	f.subscribe(t, ctx)
 	f.boardEvent(t, "for the first read", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10101") })

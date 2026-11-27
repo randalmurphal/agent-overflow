@@ -343,6 +343,11 @@ func (s *jiraSite) seedIssues(e *Engine) error {
 		if err := s.completeIssue(e, is, p); err != nil {
 			return fmt.Errorf("issue %s: %w", is.Key, err)
 		}
+		for _, pr := range is.PullRequests {
+			if pr.InstanceType == "" || pr.URL == "" || pr.Status == "" {
+				return fmt.Errorf("issue %s: a pull request needs its instance type, URL and status", is.Key)
+			}
+		}
 	}
 	for _, is := range s.Issues {
 		if is.Parent != "" && s.issue(is.Parent) == nil {

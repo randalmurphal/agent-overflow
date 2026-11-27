@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/store"
 )
 
 // teamBoard is sprintBoard with its tickets:
@@ -154,9 +156,14 @@ func TestAFirstReadNotFinishedIsSaid(t *testing.T) {
 // now. A metric of the range has both.
 func TestNowMetricHasNoChangeMark(t *testing.T) {
 	t.Parallel()
-	a := mustEvaluate(t, evaluator(), teamBoard().board(), utcSprints3)
+	e := evaluator()
+	a := mustEvaluate(t, e, teamBoard().board(), utcSprints3)
+	list, err := e.Dashboards(context.Background(), Kind{PlansSprints: true, Epics: true}, store.MirrorEstimatePoints, Own{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	views := map[string]WidgetView{}
-	for _, v := range a.Dashboard.Widgets {
+	for _, v := range list.Dashboards[0].Widgets {
 		views[v.ID] = v
 	}
 	stuck := widgetOf(t, a, "stuck")
@@ -377,11 +384,11 @@ func TestDrillStartsAgainWhenTheCountMoved(t *testing.T) {
 func TestEveryKindOffersItsBuiltInDashboard(t *testing.T) {
 	t.Parallel()
 	for _, k := range []Kind{{true, true}, {true, false}, {false, true}, {false, false}} {
-		views, err := evaluator().Dashboards(context.Background(), k)
+		list, err := evaluator().Dashboards(context.Background(), k, store.MirrorEstimatePoints, Own{})
 		if err != nil {
 			t.Fatalf("%+v: %v", k, err)
 		}
-		v := views[0]
+		v := list.Dashboards[0]
 		width, epics := 0, false
 		for _, w := range v.Widgets {
 			width += w.Width
@@ -539,7 +546,7 @@ func TestATableMakesTheCellsItShows(t *testing.T) {
 		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1, 0, 1, 1 FROM n`, ago(5)).
 		exec(`INSERT INTO sprint_tickets SELECT 's7', id FROM tickets WHERE id LIKE 'p%%'`)
 	e := evaluator()
-	o, err := e.begin(context.Background(), f.board(), utcSprints3, func(Widget) bool { return true })
+	o, err := e.begin(context.Background(), f.board(), utcSprints3, func(Widget, bool) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}

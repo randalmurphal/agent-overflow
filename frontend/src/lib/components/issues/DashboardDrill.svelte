@@ -14,7 +14,8 @@
   import ErrorNotice from '../shared/ErrorNotice.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import type { DrillState } from '../../stores/trackerDashboard.svelte';
-  import { drillCountWords, FIRST_READ_TEXT, formatAmount, numWords, unitWord, type DashboardUnit, type Num } from '../../stores/trackerDashboardModel';
+  import { drillCountWords, FIRST_READ_TEXT, numWords, type Num } from '../../stores/trackerDashboardModel';
+  import { formatAmount, unitWord, type DashboardUnit } from '../../utils/dashboardAmount';
 
   interface Props {
     drill: DrillState;

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -99,15 +98,6 @@ func (t *trackerApprovals) settle(threadID, id string, approved bool) bool {
 	delete(t.waiting, k)
 	ch <- approved
 	return true
-}
-
-// waitText is a wait as the refusal says it: "15 minutes", or "2
-// seconds" for a wait under a minute (a harness boot's).
-func waitText(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%d seconds", int(d/time.Second))
-	}
-	return fmt.Sprintf("%d minutes", int(d/time.Minute))
 }
 
 func (t *trackerApprovals) waitFor() time.Duration {
@@ -357,27 +347,26 @@ func (h trackerToolsHost) Posted(threadID string, row trackertools.TimePostRow) 
 	}
 }
 
-func (h trackerToolsHost) CreateBoards(threadID, project string) ([]trackertools.CreateBoard, error) {
+func (h trackerToolsHost) Boards(threadID string) (string, []trackertools.ListedBoard, error) {
 	a := h.a
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return nil, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
+		return "", nil, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
 	}
 	svc, err := a.trackerService()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	choices, err := svc.BoardChoices()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	var out []trackertools.CreateBoard
-	for _, c := range choices {
-		if strings.EqualFold(c.TrackerProject, project) {
-			out = append(out, trackertools.CreateBoard{Connection: c.Connection, Board: c.Board, Thread: c.Project == thread.ProjectID})
-		}
+	out := make([]trackertools.ListedBoard, len(choices))
+	for i, c := range choices {
+		out[i] = trackertools.ListedBoard{Connection: c.Connection, ConnectionLabel: c.ConnectionLabel, Board: c.Board, Name: c.Name, TrackerProject: c.TrackerProject,
+			Thread: thread.ProjectID != "" && c.Project == thread.ProjectID}
 	}
-	return out, nil
+	return thread.ProjectID, out, nil
 }
 
 func (h trackerToolsHost) Live(threadID, session string) bool {

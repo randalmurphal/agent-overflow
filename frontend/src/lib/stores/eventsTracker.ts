@@ -1,6 +1,6 @@
 import type { EventOrigin } from '../transport/handle';
 import { backendKeyForOrigin } from '../transport/backends';
-import { trackerBoardUpdated, trackerIssueUpdated, trackerSetupUpdated, type TrackerBoardEvent, type TrackerIssueEvent } from './trackerBoardEvents';
+import { trackerBoardUpdated, trackerDashboardsUpdated, trackerIssueUpdated, trackerSetupUpdated, type TrackerBoardEvent, type TrackerIssueEvent } from './trackerBoardEvents';
 
 // Routed by the board's scope on the computer that sent it: the channel
 // reaches every client holding tracker:read, and the board store applies a
@@ -21,4 +21,11 @@ export function applyTrackerIssueUpdated(event: TrackerIssueEvent | null | undef
 // changed, and the setups held of that computer's projects read again.
 export function applyTrackerSetupUpdated(_event: unknown, origin?: EventOrigin): void {
   trackerSetupUpdated(backendKeyForOrigin(origin?.backendId ?? ''));
+}
+
+// Payload-less: a board's dashboards, or the widgets agents proposed on it,
+// changed on the computer that sent it; an open Dashboards screen of that
+// computer lists its dashboards and counts again.
+export function applyTrackerDashboardsUpdated(_event: unknown, origin?: EventOrigin): void {
+  trackerDashboardsUpdated(backendKeyForOrigin(origin?.backendId ?? ''));
 }
