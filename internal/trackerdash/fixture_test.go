@@ -1,6 +1,7 @@
 package trackerdash
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
@@ -31,6 +32,9 @@ type fixture struct {
 	groups map[string]string
 	// reading is a board whose first read has not finished.
 	reading bool
+	// earliest is the copy's earliest instant when a kept sprint began
+	// before its window (180 days before testNow); 0 for the window.
+	earliest int64
 }
 
 func newFixture(plansSprints bool, estimates string) *fixture {
@@ -160,8 +164,9 @@ func (f *fixture) fill() Fill {
 				return store.MirrorExport{}, false, fmt.Errorf("%s: %w", s, err)
 			}
 		}
+		window := ms(testNow) - 180*day
 		return store.MirrorExport{Name: "WEB board", EstimateUnit: unit, PlansSprints: f.plansSprints, FirstReadDone: !f.reading,
-			Earliest: ms(testNow) - 180*day}, true, nil
+			Earliest: cmp.Or(f.earliest, window), Window: window}, true, nil
 	}
 }
 

@@ -67,14 +67,19 @@ func relationsFixture(t *testing.T) (*Store, int64) {
 // tickets, as the Ticket screen lists them (no hidden mode, none being
 // deleted, none of another site or board), with each one's newest turn;
 // and the verified account's logged time on the board's tickets and its
-// read days, from a day before the earliest instant a count can ask.
+// read days, from a day before the earliest instant a count can ask; the
+// export says the history window it was given, after that earliest.
 func TestTheExportHoldsTheBoardsThreadsAndYourLoggedTime(t *testing.T) {
 	t.Parallel()
 	s, root := relationsFixture(t)
 	conn := exportConn(t)
 	window := dayMS(t, "2026-11-10")
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"threads", "worklogs", "worklog_days"}, window, CardShapeForTest); err != nil || !ok {
+	export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"threads", "worklogs", "worklog_days"}, window, CardShapeForTest)
+	if err != nil || !ok {
 		t.Fatalf("export: %v, %v", ok, err)
+	}
+	if export.Window != window || export.Earliest != dayMS(t, "2026-11-01") {
+		t.Fatalf("window %d, earliest %d; want %d and the sprints' start", export.Window, export.Earliest, window)
 	}
 	threads := exportRows(t, conn, `SELECT id || '|' || ticket || '|' || origin || '|' || linked_at || '|' || created_at || '|' || archived || '|' || coalesce(last_turn_at, '-')
 		FROM threads ORDER BY id`)

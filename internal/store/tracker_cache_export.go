@@ -416,6 +416,10 @@ type MirrorExport struct {
 	// (mirrorExportEarliest): no interval and no day of logged time before
 	// it is in the export.
 	Earliest int64
+	// Window is the start of the history window the export was given, no
+	// earlier than Earliest: a day of logged time before it is one the
+	// Dashboards screen does not read (trackerdash worklogs.go).
+	Window int64
 }
 
 // ErrMirrorExportUnsupported is an export from a store with no database
@@ -496,6 +500,7 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 		return MirrorExport{}, false, fmt.Errorf("store: read board %s's earliest sprint to export it: %w", boardID, err)
 	}
 	export.Earliest = mirrorExportEarliest(window, earliestSprint)
+	export.Window = window
 	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, export.Earliest, card)
 	for _, fill := range mirrorExportFills {
 		if !fill.runs(relations) {

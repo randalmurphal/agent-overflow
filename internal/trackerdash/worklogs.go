@@ -12,10 +12,13 @@ import (
 //   - A metric that reads worklogs counts only where its days were read:
 //     each of its periods, and its number over the range, with a day not
 //     read is not known, saying how many days were not read (Num.UR), and
-//     its widget lists the range's days not read (WidgetValue.Unread) for
-//     the page to read (frontend trackerDashboard). A day is in the period
-//     that holds its dayStart, the instant day_start places a row of it
-//     at. A weekend's day counts like any other.
+//     its widget lists the days not read of the range, and of the range
+//     before when it shows a value of it, for the page to read
+//     (WidgetValue.Unread, frontend trackerDashboard). It lists none
+//     before the copy's history window (MirrorExport.Window), so the page
+//     reads at most 180 days: a period with such a day stays not known. A
+//     day is in the period that holds its dayStart, the instant day_start
+//     places a row of it at. A weekend's day counts like any other.
 //   - Its rows are the viewer's: a row's person is the viewer unless the
 //     metric names one, so Mine keeps them all, and a page narrowed to
 //     another person says only the viewer's time is read rather than 0.
@@ -87,6 +90,18 @@ func (ev *evaluation) rangeUnread(g *ranged, now int64) []string {
 	return ev.unreadOf(g.periods, now)
 }
 
+// readable is days (YYYY-MM-DD, in order) without those the page does
+// not read: a day placed at or before the copy's history window.
+func (ev *evaluation) readable(days []string) []string {
+	t := time.UnixMilli(ev.export.Window).In(ev.loc)
+	first := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, ev.loc)
+	if placed(first) <= ev.export.Window {
+		first = first.AddDate(0, 0, 1)
+	}
+	i, _ := slices.BinarySearch(days, first.Format(time.DateOnly))
+	return days[i:]
+}
+
 // markUnread makes n not known where days of it were not read.
 func markUnread(n *Num, days int) {
 	if n != nil && days > 0 {
@@ -95,15 +110,18 @@ func markUnread(n *Num, days int) {
 }
 
 // markWidget marks widget value out of metric m, its rows sorted into
-// the range as g, where its days were not read, and lists the range's
-// days not read.
+// the range as g, where its days were not read, and lists the days not
+// read of the range and of the range before it shows that the page reads.
 func (ev *evaluation) markWidget(out *WidgetValue, w Widget, m Metric, g *ranged, sp span) {
 	days := ev.rangeUnread(g, sp.now)
-	out.Unread = days
+	toRead := days
 	markUnread(out.Value, len(days))
 	if out.Previous != nil && !out.Previous.Gap {
-		markUnread(out.Previous, len(ev.unreadOf(sp.previous, sp.now)))
+		before := ev.unreadOf(sp.previous, sp.now)
+		markUnread(out.Previous, len(before))
+		toRead = slices.Compact(slices.Sorted(slices.Values(slices.Concat(days, before))))
 	}
+	out.Unread = ev.readable(toRead)
 	for i := range out.Trend {
 		markUnread(&out.Trend[i], len(ev.unreadOf(g.periods[i:i+1], sp.now)))
 	}

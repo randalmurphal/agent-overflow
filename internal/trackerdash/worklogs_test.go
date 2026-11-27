@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 )
@@ -62,8 +63,9 @@ func trendOf(w WidgetValue) []string {
 // A number, a period and a bar of the viewer's logged time count only
 // where every day of them was read: today unread, the range's number and
 // its week are not known, one day not read, the week before counts, and
-// the page is told which days to read; once today is read, they count.
-// The range before, none of it read, is not known by its 14 days.
+// the page is told which days to read, the range before's among them for
+// the number that compares with it; once today is read, they count. The
+// range before, none of it read, is not known by its 14 days.
 func TestLoggedTimeCountsOnlyWhereItsDaysWereRead(t *testing.T) {
 	t.Parallel()
 	read := daysOf("2026-11-16", "2026-11-24")
@@ -71,8 +73,11 @@ func TestLoggedTimeCountsOnlyWhereItsDaysWereRead(t *testing.T) {
 	a := mustEvaluate(t, evaluator(), loggedTime(worklogBoard(read...)), r)
 	n := widgetOf(t, a, "n")
 	if num(n.Value) != "not known, 1 days not read" || num(n.Previous) != "not known, 14 days not read" ||
-		!reflect.DeepEqual(trendOf(n), []string{"3600", "not known, 1 days not read"}) || !reflect.DeepEqual(n.Unread, []string{"2026-11-25"}) {
+		!reflect.DeepEqual(trendOf(n), []string{"3600", "not known, 1 days not read"}) || !reflect.DeepEqual(n.Unread, append(daysOf("2026-11-02", "2026-11-15"), "2026-11-25")) {
 		t.Fatalf("number = %s, before %s, trend %v, unread %v", num(n.Value), num(n.Previous), trendOf(n), n.Unread)
+	}
+	if u := widgetOf(t, a, "bars").Unread; !reflect.DeepEqual(u, []string{"2026-11-25"}) {
+		t.Fatalf("bars, which compare with nothing, read %v", u)
 	}
 	var bars []string
 	for _, b := range widgetOf(t, a, "bars").Buckets {
@@ -96,14 +101,35 @@ func TestLoggedTimeCountsOnlyWhereItsDaysWereRead(t *testing.T) {
 		t.Fatalf("the number's drill = %s, %d rows", num(&d.Value), len(d.Rows))
 	}
 	a = mustEvaluate(t, evaluator(), loggedTime(worklogBoard(append(read, "2026-11-25")...)), r)
-	if n := widgetOf(t, a, "n"); num(n.Value) != "5400" || n.Unread != nil {
-		t.Fatalf("all read: %s, unread %v", num(n.Value), n.Unread)
+	if n := widgetOf(t, a, "n"); num(n.Value) != "5400" || n.Unread == nil {
+		t.Fatalf("the range read: %s, unread %v", num(n.Value), n.Unread)
+	}
+}
+
+// A number of logged time compares with the range before once the page
+// reads that range's days: until then the range before is not known and
+// its days are listed; once read, the change has both numbers.
+func TestLoggedTimeComparesOnceTheRangeBeforeIsRead(t *testing.T) {
+	t.Parallel()
+	r := Request{Dashboard: "mine", Range: RangeWeeks2, TimeZone: "UTC"}
+	f := worklogBoard(daysOf("2026-11-16", "2026-11-25")...)
+	f.exec(`INSERT INTO worklogs VALUES ('w0', 'T1', '2026-11-10', 600)`)
+	n := widgetOf(t, mustEvaluate(t, evaluator(), loggedTime(f), r), "n")
+	if num(n.Value) != "5400" || num(n.Previous) != "not known, 14 days not read" || !reflect.DeepEqual(n.Unread, daysOf("2026-11-02", "2026-11-15")) {
+		t.Fatalf("before the read: %s, before %s, unread %v", num(n.Value), num(n.Previous), n.Unread)
+	}
+	f = worklogBoard(daysOf("2026-11-02", "2026-11-25")...)
+	f.exec(`INSERT INTO worklogs VALUES ('w0', 'T1', '2026-11-10', 600)`)
+	n = widgetOf(t, mustEvaluate(t, evaluator(), loggedTime(f), r), "n")
+	if num(n.Value) != "5400" || num(n.Previous) != "600" || n.Unread != nil {
+		t.Fatalf("after the read: %s, before %s, unread %v", num(n.Value), num(n.Previous), n.Unread)
 	}
 }
 
 // A number of logged time that counts now, its rows placed at no instant,
 // counts every day the copy can hold: with none read, the 180 days from
 // the copy's earliest to today are not read; with one not read, that one.
+// A day before the copy's 180 days is not known and not read.
 func TestLoggedTimeCountingNowNeedsEveryDayTheCopyHolds(t *testing.T) {
 	t.Parallel()
 	all := func(f *fixture) Board {
@@ -127,6 +153,14 @@ func TestLoggedTimeCountingNowNeedsEveryDayTheCopyHolds(t *testing.T) {
 	if n.Unread != nil || num(n.Value) != "5400" {
 		t.Fatalf("all read: %s, unread %v", num(n.Value), n.Unread)
 	}
+	// A kept sprint that began 10 days before the copy's 180 days: those
+	// 10 days are not known and never read; the page reads the 180.
+	old := worklogBoard()
+	old.earliest = ms(testNow) - 190*day
+	n = widgetOf(t, mustEvaluate(t, evaluator(), all(old), r), "all")
+	if len(n.Unread) != 180 || n.Unread[0] != "2026-05-30" || num(n.Value) != "not known, 190 days not read" {
+		t.Fatalf("an older sprint kept: %s, %d unread from %v", num(n.Value), len(n.Unread), n.Unread[:min(1, len(n.Unread))])
+	}
 }
 
 // A day of a weekend is read like any other: time logged on Saturday 21
@@ -134,7 +168,7 @@ func TestLoggedTimeCountingNowNeedsEveryDayTheCopyHolds(t *testing.T) {
 // and the page is told to read them.
 func TestALoggedWeekendDayCountsOnlyOnceRead(t *testing.T) {
 	t.Parallel()
-	weekdays := append(daysOf("2026-11-16", "2026-11-20"), daysOf("2026-11-23", "2026-11-25")...)
+	weekdays := slices.Concat(daysOf("2026-11-02", "2026-11-20"), daysOf("2026-11-23", "2026-11-25"))
 	f := worklogBoard(weekdays...)
 	f.exec(`INSERT INTO worklogs VALUES ('w3', 'T1', '2026-11-21', 600)`)
 	r := Request{Dashboard: "mine", Range: RangeWeeks2, TimeZone: "UTC"}
@@ -142,7 +176,7 @@ func TestALoggedWeekendDayCountsOnlyOnceRead(t *testing.T) {
 	if !reflect.DeepEqual(trendOf(n), []string{"not known, 2 days not read", "1800"}) || !reflect.DeepEqual(n.Unread, []string{"2026-11-21", "2026-11-22"}) {
 		t.Fatalf("trend %v, unread %v", trendOf(n), n.Unread)
 	}
-	f = worklogBoard(daysOf("2026-11-16", "2026-11-25")...)
+	f = worklogBoard(daysOf("2026-11-02", "2026-11-25")...)
 	f.exec(`INSERT INTO worklogs VALUES ('w3', 'T1', '2026-11-21', 600)`)
 	if n := widgetOf(t, mustEvaluate(t, evaluator(), loggedTime(f), r), "n"); !reflect.DeepEqual(trendOf(n), []string{"4200", "1800"}) {
 		t.Fatalf("all read: trend %v", trendOf(n))
