@@ -32,7 +32,7 @@ async function openBoard(page: Page, pane: Locator, compact: boolean): Promise<v
   const picker = pane.getByTestId('issues-tabs-picker');
   if (await picker.isVisible()) {
     await press(picker, compact);
-    await press(page.getByTestId('issues-tab-option').filter({ hasText: 'Board' }), compact);
+    await press(page.getByTestId('issues-tab-option').filter({ hasText: /^Board$/ }), compact);
   } else {
     await press(pane.locator('[data-testid="issues-tab"][data-screen="board"]'), compact);
   }
@@ -88,6 +88,9 @@ export function registerBoardRowFlow({ compact }: BoardRowSurface): void {
     const backlog = await openBacklog(page, pane, compact);
     await expect(pane.getByTestId('board-row')).toHaveCount(0);
     await expect(filter).toHaveText('Showing only Stuck right now · 1 ticket');
+    // The active sprint opens folded.
+    const active = backlog.locator('[data-testid="issues-backlog-section"][data-list="sprint:1"]');
+    if ((await active.getAttribute('data-open')) === null) await press(active.getByTestId('issues-backlog-fold'), compact);
     await expect(backlog.getByTestId('issues-backlog-row')).toHaveCount(1);
     await expect(backlog.getByTestId('issues-backlog-row')).toHaveAttribute('data-issue', '10120');
     await openBoard(page, pane, compact);
