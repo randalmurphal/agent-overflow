@@ -208,7 +208,8 @@ type BucketValue struct {
 // unique within it, since a ticket can count more than once (done in two
 // sprints). Assignee is the person the row counts for: the metric's
 // person column, else the ticket's assignee. Period is the sprint or week
-// a row of the range falls in, Series the metric's series it is in.
+// a row of the range falls in, Series the metric's series it is in, and
+// Heading the drill's heading of it within the series.
 // Value is the row's number in the metric's unit, absent for a metric
 // that counts tickets, whose rows' values are not what it counts.
 type TicketRow struct {
@@ -223,6 +224,7 @@ type TicketRow struct {
 	Counted  bool     `json:"counted"`
 	Period   string   `json:"period,omitempty"`
 	Series   string   `json:"series,omitempty"`
+	Heading  string   `json:"heading,omitempty"`
 	Note     string   `json:"note,omitempty"`
 }
 
@@ -1737,7 +1739,7 @@ func (ev *evaluation) keyOf(ticket string) string {
 // ticket's assignee) and its series.
 func (ev *evaluation) ticket(c contribution, m Metric, cols columns, i int) TicketRow {
 	t, ok := ev.tickets[c.ticket]
-	r := TicketRow{Row: i, ID: c.ticket, Key: c.ticket, Counted: c.counted, Period: c.period, Series: c.series, Note: c.note}
+	r := TicketRow{Row: i, ID: c.ticket, Key: c.ticket, Counted: c.counted, Period: c.period, Series: c.series, Heading: c.heading, Note: c.note}
 	person := t.assignee
 	if cols.has(ColumnPerson) {
 		person = c.person
@@ -1786,20 +1788,74 @@ type DrillCell struct {
 // Reading is as an Answer's. Asked for IDs, it holds those tickets' IDs
 // in the drill's order, and no page.
 type DrillAnswer struct {
-	Title     string      `json:"title"`
-	Reading   bool        `json:"reading,omitempty"`
-	Value     Num         `json:"value"`
-	Unit      Unit        `json:"unit"`
-	Estimates string      `json:"estimates"`
-	Count     int         `json:"count"`
-	Tickets   int         `json:"tickets"`
-	Counted   int         `json:"counted"`
-	Page      int         `json:"page"`
-	Pages     int         `json:"pages"`
-	Restarted bool        `json:"restarted,omitempty"`
-	Rows      []TicketRow `json:"rows"`
-	IDs       []string    `json:"ids,omitempty"`
-	At        int64       `json:"at"`
+	Title     string       `json:"title"`
+	Reading   bool         `json:"reading,omitempty"`
+	Value     Num          `json:"value"`
+	Unit      Unit         `json:"unit"`
+	Estimates string       `json:"estimates"`
+	Count     int          `json:"count"`
+	Tickets   int          `json:"tickets"`
+	Counted   int          `json:"counted"`
+	Page      int          `json:"page"`
+	Pages     int          `json:"pages"`
+	Restarted bool         `json:"restarted,omitempty"`
+	Rows      []TicketRow  `json:"rows"`
+	Groups    []DrillGroup `json:"groups,omitempty"`
+	IDs       []string     `json:"ids,omitempty"`
+	At        int64        `json:"at"`
+}
+
+// DrillGroup is one group of a drill's rows, of a metric that returns a
+// series or a heading column: its series (in the metric's order) and its
+// heading within the series (none first, then by name), the number of its
+// rows alone as the drill counts its own (Value), and how many rows it
+// lists over every page (Rows). The rows of every page are in the
+// groups' order.
+type DrillGroup struct {
+	Series  string `json:"series,omitempty"`
+	Heading string `json:"heading,omitempty"`
+	Value   Num    `json:"value"`
+	Rows    int    `json:"rows"`
+}
+
+// drillGroups orders rows, sorted as sortDrill sorts them, into the
+// groups of a metric that returns a series or a heading column, keeping
+// each group's order, and returns the groups, each with the number of
+// its part of counts, the rows the drill's own number reduces; nil for a
+// metric that returns neither.
+func (ev *evaluation) drillGroups(rows []contribution, m Metric, cols columns, counts taken) []DrillGroup {
+	if !cols.has(ColumnSeries) && !cols.has(ColumnHeading) {
+		return nil
+	}
+	type group struct{ series, heading string }
+	parts := map[group][]contribution{}
+	for _, row := range counts.rows {
+		k := group{row.series, row.heading}
+		parts[k] = append(parts[k], row)
+	}
+	slices.SortStableFunc(rows, func(a, b contribution) int {
+		if a.series != b.series {
+			return cmp.Compare(slices.Index(m.Series, a.series), slices.Index(m.Series, b.series))
+		}
+		if (a.heading == "") != (b.heading == "") {
+			if a.heading == "" {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.heading, b.heading)
+	})
+	var out []DrillGroup
+	for from := 0; from < len(rows); {
+		to := from + 1
+		for to < len(rows) && rows[to].series == rows[from].series && rows[to].heading == rows[from].heading {
+			to++
+		}
+		k := group{rows[from].series, rows[from].heading}
+		out = append(out, DrillGroup{Series: k.series, Heading: k.heading, Value: ev.num(m.Reduce, counts.sub(parts[k])), Rows: to - from})
+		from = to
+	}
+	return out
 }
 
 // drillReads is what drill r of widget w reads of metric m (reads): the
@@ -1868,7 +1924,10 @@ func (o *opened) drill(w Widget, m Metric, c counted, r DrillRequest) (DrillAnsw
 		return DrillAnswer{}, refuse("dashboard_request_invalid", sp.daysNote, nil)
 	}
 	g := ev.inRange(m, c, sp)
+	// t is the rows the drill lists, and ranged the range's rows its
+	// number reduces when they are not the rows listed.
 	t := g.held()
+	var ranged *taken
 	switch {
 	case r.Cell != nil && r.Rest:
 		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("a drill of widget %q names one cell or the rest, not both", truncate(w.ID, 64)), nil)
@@ -1893,8 +1952,8 @@ func (o *opened) drill(w Widget, m Metric, c counted, r DrillRequest) (DrillAnsw
 		}
 		// The number is the range's; the rows are listed with those of no
 		// instant.
-		out.Value = ev.num(m.Reduce, g.whole())
-		t = g.listed()
+		whole := g.whole()
+		ranged, t = &whole, g.listed()
 	case !ranks(w, m):
 		j := slices.IndexFunc(g.periods, func(p period) bool { return p.id == r.Cell.Bucket })
 		if j < 0 {
@@ -1920,12 +1979,14 @@ func (o *opened) drill(w Widget, m Metric, c counted, r DrillRequest) (DrillAnsw
 		t = t.sub(bySeries(t.rows, r.Cell.Series, true))
 		out.Title += ", " + r.Cell.Series
 	}
-	if r.Cell != nil || !g.events || r.Rest {
-		out.Value = ev.num(m.Reduce, t)
+	counts := t
+	if ranged != nil {
+		counts = *ranged
 	}
-	rows := t.rows
-	rows = slices.Clone(rows)
+	out.Value = ev.num(m.Reduce, counts)
+	rows := slices.Clone(t.rows)
 	sortDrill(rows, ev.keyOf)
+	out.Groups = ev.drillGroups(rows, m, c.p.cols, counts)
 	out.Count = len(rows)
 	tickets := map[string]bool{}
 	for _, row := range rows {

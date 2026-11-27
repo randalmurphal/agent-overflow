@@ -224,6 +224,9 @@ const (
 	seriesFinished = "Finished tickets"
 	seriesReview   = "Review credit"
 	seriesSupport  = "Support credit"
+	// headingNotQualified is the drill's heading of the reviewers of a
+	// finished ticket who did not do enough of what the rule counts.
+	headingNotQualified = "Acted but did not qualify"
 )
 
 // creditMetric is the pace of a board whose project counts credit, by
@@ -234,7 +237,8 @@ const (
 func creditMetric(plansSprints bool) Metric {
 	// note is a row's note: why it is not counted, how a review or support
 	// time was counted, in the base the evaluator counts it from
-	// (:estimates), and what the count leaves out.
+	// (:estimates), and what the count leaves out. heading lists a reviewer who did not qualify
+	// apart in the drill.
 	const note = `CASE WHEN c.value IS NULL THEN c.note
        WHEN c.kind = 'review' AND c.qualified = 1 THEN printf('%d%% of %s for %s', c.review_share, CASE :estimates
            WHEN 'points' THEN printf('%g points', coalesce(c.points, 0)) WHEN 'time' THEN printf('%gh', round(coalesce(c.points, 0) / 3600.0, 2))
@@ -244,6 +248,7 @@ func creditMetric(plansSprints bool) Metric {
        WHEN c.kind = 'support' THEN printf('%gh ÷ %d = %g', round(c.hours, 2), c.hours_per_point, round(c.share, 2)) || coalesce(' · ' || c.note, '')
        ELSE c.note END`
 	series := `CASE c.kind WHEN 'finished' THEN '` + seriesFinished + `' WHEN 'review' THEN '` + seriesReview + `' ELSE '` + seriesSupport + `' END`
+	heading := `iif(c.kind = 'review' AND c.qualified = 0, '` + headingNotQualified + `', NULL)`
 	m := Metric{
 		Title:  "Usual pace",
 		Reduce: ReduceAverageOfPeriodSums, Unit: UnitEstimate, Good: GoodUp, Series: []string{seriesFinished, seriesReview, seriesSupport},
@@ -256,7 +261,7 @@ func creditMetric(plansSprints bool) Metric {
 			"A board without estimates, or of a project that counts tickets, counts a finished ticket as one and credit as its part of one.",
 		}
 		m.SQL = `SELECT c.ticket AS ticket, c.value AS value, c.share AS share, c.sprint AS bucket, c.person AS person, ` + series + ` AS series,
-  ` + note + ` AS note
+  ` + heading + ` AS heading, ` + note + ` AS note
 FROM credit c WHERE c.sprint IS NOT NULL`
 		return m
 	}
@@ -267,7 +272,7 @@ FROM credit c WHERE c.sprint IS NOT NULL`
 		"A board without estimates, or of a project that counts tickets, counts a finished ticket as one and credit as its part of one.",
 	}
 	m.SQL = `SELECT c.ticket AS ticket, c.value AS value, c.share AS share, c.at AS at, c.person AS person, ` + series + ` AS series,
-  iif(c.at IS NULL AND c.kind = 'review', ` + finishUnknown + ` || coalesce(' · ' || ` + note + `, ''), ` + note + `) AS note
+  ` + heading + ` AS heading, iif(c.at IS NULL AND c.kind = 'review', ` + finishUnknown + ` || coalesce(' · ' || ` + note + `, ''), ` + note + `) AS note
 FROM credit c WHERE c.sprint IS NULL AND (c.at > :since OR c.at IS NULL)`
 	return m
 }

@@ -64,8 +64,8 @@ func TestADrillOfABarIsChargedOnlyItsSprint(t *testing.T) {
 		t.Fatal("the chart counted 20,800 rows of WEB Sprint 5; want it over the limit")
 	}
 	d := mustDrill(t, b, DrillRequest{Request: utcSprints5, Widget: "finished", Cell: &DrillCell{Bucket: "sprint:s6"}})
-	if d.Count != 5 {
-		t.Fatalf("WEB Sprint 6's bar holds %d rows; want its 5", d.Count)
+	if d.Count != 6 {
+		t.Fatalf("WEB Sprint 6's bar holds %d rows; want its 6", d.Count)
 	}
 }
 

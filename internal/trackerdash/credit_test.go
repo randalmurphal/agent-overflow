@@ -12,13 +12,14 @@ import (
 // creditBoard is the sprint board of a project that counts credit, with
 // its credit in sprint 6:
 //
-//	WEB-1  finished, 5 points, for User 1; User 2 reviewed it (10%: 0.5)
+//	WEB-1  finished, 5 points, for User 1; User 2 reviewed it (10%: 0.5),
+//	       User 3 commented, which does not qualify
 //	WEB-2  finished, 3 points, for User 2; who reviewed it is not read
 //	WEB-3  support, User 2 logged 2 hours (a point a 4 hours: 0.5)
 //
 // and, with estimates none, a board that counts tickets.
 func creditBoard(estimates string) *fixture {
-	f := sprintBoard()
+	f := sprintBoard().person("u3", "User 3")
 	f.estimates = estimates
 	f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", assignee: "u1", points: "5", created: ago(20)}).member("s6", "t1", true)
 	f.ticket(ticket{id: "t2", key: "WEB-2", status: "5", group: "done", assignee: "u2", points: "3", created: ago(20)}).member("s6", "t2", true)
@@ -30,6 +31,7 @@ func creditBoard(estimates string) *fixture {
 	}
 	row("t1", "finished", "u1", "5", "5", "1", "", "NULL", "NULL", "")
 	row("t1", "review", "u2", "5", "0.5", "0.1", "commented, logged time", "1", "NULL", "")
+	row("t1", "review", "u3", "5", "0", "0", "commented", "0", "NULL", "")
 	row("t2", "finished", "u2", "3", "3", "1", "", "NULL", "NULL", "")
 	row("t2", "review", "", "3", "NULL", "NULL", "", "NULL", "NULL", "who worked on it is not read yet")
 	row("t3", "support", "u2", "NULL", "0.5", "0.5", "", "NULL", "2", "")
@@ -78,7 +80,9 @@ func TestThePaceCountsCreditInThreeSeries(t *testing.T) {
 }
 
 // The pace's drill lists each credit row with the person it counts for,
-// its series and how it was counted; the row not read names no person.
+// its series and how it was counted, grouped as finished tickets, review
+// credit, reviewers who did not qualify, and support credit, each group
+// with its number over the range; the row not read names no person.
 func TestThePacesDrillSaysHowCreditWasCounted(t *testing.T) {
 	t.Parallel()
 	d, err := evaluator().Drill(context.Background(), creditOn(creditBoard("points")), DrillRequest{Request: utcSprints5, Widget: "pace"})
@@ -91,17 +95,33 @@ func TestThePacesDrillSaysHowCreditWasCounted(t *testing.T) {
 		if r.Value != nil {
 			value = fmt.Sprint(*r.Value)
 		}
-		rows = append(rows, strings.Join([]string{r.Key, r.Series, r.Assignee, value, fmt.Sprint(r.Counted), r.Note}, " | "))
+		rows = append(rows, strings.Join([]string{r.Key, r.Series, r.Heading, r.Assignee, value, fmt.Sprint(r.Counted), r.Note}, " | "))
 	}
 	want := []string{
-		"WEB-1 | Finished tickets | User 1 | 5 | true | ",
-		"WEB-2 | Finished tickets | User 2 | 3 | true | ",
-		"WEB-1 | Review credit | User 2 | 0.5 | true | 10% of 5 points for commented, logged time",
-		"WEB-3 | Support credit | User 2 | 0.5 | true | 2h ÷ 4 = 0.5",
-		"WEB-2 | Review credit |  | - | false | who worked on it is not read yet",
+		"WEB-1 | Finished tickets |  | User 1 | 5 | true | ",
+		"WEB-2 | Finished tickets |  | User 2 | 3 | true | ",
+		"WEB-1 | Review credit |  | User 2 | 0.5 | true | 10% of 5 points for commented, logged time",
+		"WEB-2 | Review credit |  |  | - | false | who worked on it is not read yet",
+		"WEB-1 | Review credit | Acted but did not qualify | User 3 | 0 | true | no credit: commented; needs 2 of commented, logged time",
+		"WEB-3 | Support credit |  | User 2 | 0.5 | true | 2h ÷ 4 = 0.5",
 	}
 	if !reflect.DeepEqual(rows, want) {
 		t.Fatalf("drill\n%s\nwant\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
+	}
+	// Five sprints of the range, sprint 6's rows alone: each group's number
+	// is its rows' sum over 5.
+	var groups []string
+	for _, g := range d.Groups {
+		groups = append(groups, fmt.Sprintf("%s | %s | %s | %d", g.Series, g.Heading, num(&g.Value), g.Rows))
+	}
+	wantGroups := []string{
+		"Finished tickets |  | 1.6 | 2",
+		"Review credit |  | 0.1, 1 not counted | 2",
+		"Review credit | Acted but did not qualify | 0 | 1",
+		"Support credit |  | 0.1 | 1",
+	}
+	if !reflect.DeepEqual(groups, wantGroups) {
+		t.Fatalf("groups\n%s\nwant\n%s", strings.Join(groups, "\n"), strings.Join(wantGroups, "\n"))
 	}
 }
 

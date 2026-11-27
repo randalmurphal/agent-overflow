@@ -183,27 +183,63 @@ type BoardView struct {
 // store.MirrorPaceSprints, one with no member on the board as zero)
 // finished on average: how many sprints it averages, the tickets whose
 // status counted as done when their sprint was completed, and the sum of
-// their estimates as the board holds them now. No credit rule is applied.
-// It is part of the section totals (BoardTotals), read with them.
+// their estimates as the board holds them now. While the project counts
+// credit, Rows and Estimate add each sprint's review and support credit
+// (in tickets and in the estimate), and Credit says what each part adds
+// and how many tickets' credit is not counted. It is part of the section
+// totals (BoardTotals), read with them.
 type PaceView struct {
-	Sprints  int     `json:"sprints"`
+	Sprints  int         `json:"sprints"`
+	Rows     float64     `json:"rows"`
+	Estimate float64     `json:"estimate"`
+	Credit   *PaceCredit `json:"credit,omitempty"`
+}
+
+// PaceCredit is a pace's parts while its project counts credit, each an
+// average over the pace's sprints in tickets (Rows) and in the estimate
+// (Estimate): the finished tickets, their review credit and the support
+// credit; and Unread, the tickets of those sprints whose review or
+// support credit is not counted because who worked on them is not read.
+type PaceCredit struct {
+	Finished PaceAmount `json:"finished"`
+	Review   PaceAmount `json:"review"`
+	Support  PaceAmount `json:"support"`
+	Unread   int        `json:"unread"`
+}
+
+// PaceAmount is a part of a pace in tickets and in the estimate.
+type PaceAmount struct {
 	Rows     float64 `json:"rows"`
 	Estimate float64 `json:"estimate"`
 }
 
-// paceOf is the average of finished, nil for none.
-func paceOf(finished []store.MirrorSprintFinished) *PaceView {
+// paceOf is the average of finished, nil for none; with credit, the
+// project's credit is part of it.
+func paceOf(finished []store.MirrorSprintFinished, credit bool) *PaceView {
 	if len(finished) == 0 {
 		return nil
 	}
-	var p PaceView
+	var c PaceCredit
 	for _, f := range finished {
-		p.Rows += float64(f.Done)
-		p.Estimate += f.Estimate
+		c.Finished.Rows += float64(f.Done)
+		c.Finished.Estimate += f.Estimate
+		c.Review.Rows += f.ReviewShares
+		c.Review.Estimate += f.Review
+		c.Support.Rows += f.SupportShares
+		c.Support.Estimate += f.Support
+		c.Unread += f.Unread
 	}
-	p.Sprints = len(finished)
-	p.Rows /= float64(p.Sprints)
-	p.Estimate /= float64(p.Sprints)
+	n := float64(len(finished))
+	for _, a := range []*PaceAmount{&c.Finished, &c.Review, &c.Support} {
+		a.Rows /= n
+		a.Estimate /= n
+	}
+	p := PaceView{Sprints: len(finished), Rows: c.Finished.Rows, Estimate: c.Finished.Estimate}
+	if credit {
+		p.Rows += c.Review.Rows + c.Support.Rows
+		p.Estimate += c.Review.Estimate + c.Support.Estimate
+		p.Credit = &c
+	}
 	return &p
 }
 
@@ -337,7 +373,7 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)
 	}
 	v.Sync = syncViewOf(sync.MirrorSyncOutcome)
-	v.Screen, v.Plan, v.Pace = screen, plan, paceOf(snap.Counts.Pace)
+	v.Screen, v.Plan, v.Pace = screen, plan, paceOf(snap.Counts.Pace, groups.credit)
 	v.Sections = pages
 	row, err := s.viewRow(scope.Connection)
 	if err != nil {
