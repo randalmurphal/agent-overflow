@@ -145,12 +145,12 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 // a change that makes it dearer unnoticed. A change that makes it cheaper
 // lowers the number.
 var creditPaceSteps = map[string]int{
-	"1x2000, every row estimated":  123_992,
-	"1x2000, no row estimated":     64_354,
-	"1x20000, every row estimated": 554_192,
-	"1x20000, no row estimated":    257_854,
-	"5x4000, every row estimated":  171_794,
-	"5x4000, no row estimated":     85_856,
+	"1x2000, every row estimated":  128_896,
+	"1x2000, no row estimated":     64_558,
+	"1x20000, every row estimated": 559_996,
+	"1x20000, no row estimated":    258_058,
+	"5x4000, every row estimated":  176_798,
+	"5x4000, no row estimated":     86_060,
 }
 
 // creditExportAtScale fills a copy of board's credit by regroup, its
@@ -306,10 +306,17 @@ func cardsMovedAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize,
 		name    string
 		prepare func(int)
 		drop    bool
-	}{{"every receipt passed", receipts, false}, {"no receipts", none, false}, {"trigger dropped, every receipt passed", receipts, true},
-		{"trigger dropped, no receipts", none, true}} {
-		if c.drop {
-			mustExec(t, s.db, `DROP TRIGGER trg_tracker_cache_credit_card_moved`)
+	}{{"trigger dropped, every receipt passed", receipts, true}, {"every receipt passed", receipts, false},
+		{"trigger dropped, no receipts", none, true}, {"no receipts", none, false}} {
+		mustExec(t, s.db, `DROP TRIGGER IF EXISTS trg_tracker_cache_credit_card_moved`)
+		if !c.drop {
+			mustExec(t, s.db, trigger)
+		}
+		// A write first, unmeasured: the first after the other paths
+		// does work of their state that no later one does.
+		c.prepare(0)
+		if err := write(0); err != nil {
+			t.Fatal(err)
 		}
 		cost := measureScale(t, rec, c.prepare, write)
 		c.prepare(0)
@@ -320,9 +327,6 @@ func cardsMovedAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize,
 			t.Fatal(err)
 		}
 		t.Logf("credit, a board read writing %d cards, %-38s %10d VM steps %s, totals revision +%d", size.issues, c.name, steps, cost, revision()-before)
-		if c.drop {
-			mustExec(t, s.db, trigger)
-		}
 	}
 	none(0)
 }
