@@ -204,7 +204,9 @@ board methods, events and the patch read in
   Mine saved for the next screen, the person or epic narrowed to, and the
   one drill open. It counts again on the board's changes
   (`TrackerBoardState.changes`), at most once every 5 s, and every 10
-  minutes; its rules are at the top of the store. The board's summary
+  minutes, and lists again when the project's dashboards of the board
+  change (`TrackerBoardState.dashboards`); its rules are at the top of
+  the store. The board's summary
   row (`BoardSummaryRow.svelte`) is one of these stores made with `row`,
   counting the pinned widgets alone, whose pins are the board
   subscription's (`TrackerBoardState.pins`); the tickets its tile filters the

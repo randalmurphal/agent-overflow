@@ -189,21 +189,20 @@ func reachLinearProvider(arg string, c *linear.Client) {
 
 func reachTrackerApp(arg string) {
 	svc, err := trackerapp.New(trackerapp.Deps{
-		Changed:           func() {},
-		CredentialsDir:    arg,
-		ConfigDir:         arg,
-		SetupChanged:      func() {},
-		DashboardsChanged: func(trackerapp.DashboardsChange) {},
-		Origin:            trackerapp.APIOrigin,
-		Version:           arg,
-		Now:               time.Now,
-		Life:              context.Background(),
-		EmitBoard:         func(trackerapp.BoardEvent) {},
-		EmitIssue:         func(trackerapp.IssueEvent) {},
-		Settled:           func(context.Context) error { return nil },
-		ClientConnected:   func() bool { return false },
-		LoopFailed:        func(error) {},
-		LinksChanged:      func([]string) {},
+		Changed:         func() {},
+		CredentialsDir:  arg,
+		ConfigDir:       arg,
+		SetupChanged:    func() {},
+		Origin:          trackerapp.APIOrigin,
+		Version:         arg,
+		Now:             time.Now,
+		Life:            context.Background(),
+		EmitBoard:       func(trackerapp.BoardEvent) {},
+		EmitIssue:       func(trackerapp.IssueEvent) {},
+		Settled:         func(context.Context) error { return nil },
+		ClientConnected: func() bool { return false },
+		LoopFailed:      func(error) {},
+		LinksChanged:    func([]string) {},
 	})
 	check(err)
 	defer svc.Stop()

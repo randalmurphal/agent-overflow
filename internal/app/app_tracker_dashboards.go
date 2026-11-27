@@ -18,9 +18,8 @@ import (
 // keeps, and the widgets agents proposed on it (trackerapp/dashboards.go).
 // trackerdash evaluates them in a copy of the board it makes for each
 // call, so nothing outlives a call; the wire shapes are trackerdash's own.
-// tracker:dashboards_updated tells every client of this computer which
-// project's board's dashboards changed and whether what they count did
-// (trackerapp.DashboardsChange).
+// A change of a board's dashboards is told on the board's event
+// (trackerapp.BoardEvent.Dashboards) to its subscribers of the project.
 
 // TrackerDashboardsView is what a subscribed board's Dashboards screen
 // lays out: the dashboards it offers, the built-in first, each with its
@@ -210,18 +209,19 @@ func (a *App) RemoveTrackerWidget(ctx context.Context, subscriptionID, dashboard
 	return dashboardError(svc.RemoveWidget(subscriptionID, dashboard, widget))
 }
 
-// SetTrackerWidgetLimit sets the limit of a number widget of a subscribed
-// board's dashboards, or clears it for nil; over it, the widget and its
-// tile on the board's summary row are marked.
+// SetTrackerWidgetLimit changes the limit of a number widget of a
+// subscribed board's dashboards, to a value its count answered or by a
+// step of the stored one (trackerapp.LimitChange), or clears it for nil;
+// over it, the widget and its tile on the board's summary row are marked.
 //
 //ao:scope tracker:operate
 //ao:route home
-func (a *App) SetTrackerWidgetLimit(ctx context.Context, subscriptionID, widget string, limit *float64) error {
+func (a *App) SetTrackerWidgetLimit(ctx context.Context, subscriptionID, widget string, change *trackerapp.LimitChange) error {
 	svc, err := a.trackerService()
 	if err != nil {
 		return err
 	}
-	return dashboardError(svc.SetWidgetLimit(ctx, subscriptionID, widget, limit))
+	return dashboardError(svc.SetWidgetLimit(ctx, subscriptionID, widget, change))
 }
 
 // PinTrackerWidget pins a widget of a subscribed board's dashboards to the

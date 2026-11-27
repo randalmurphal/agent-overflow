@@ -16,3 +16,10 @@ func Builtin(k Kind) (Dashboard, map[string]Metric) {
 func ValueUnit(m Metric, estimateUnit int) string {
 	return valueUnit(m, estimatesOf(estimateUnit))
 }
+
+// EstimatesOf is what a board whose estimates are estimateUnit
+// (store.MirrorEstimate*) counts them as, as an answer names it
+// (Answer.Estimates): points, time or none.
+func EstimatesOf(estimateUnit int) string {
+	return estimatesOf(estimateUnit)
+}

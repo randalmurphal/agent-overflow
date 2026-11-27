@@ -2348,13 +2348,19 @@ the proposal under the proposals' lock, and every reader of both (the
 list, a count, a drill) reads them under that lock too, so it sees the
 widget proposed or kept and never both or neither, and a failed write
 leaves it proposed.
-Each change, from any client, emits `tracker:dashboards_updated` once
-(`trackerapp.DashboardsChange`): the project, the board (empty for every
-board of the project, as a change of the unit it counts in is), and
-`counts`, whether what the dashboards count moved. An open screen of
-that project's board lists the board's dashboards again, and counts
-again when `counts` says so; a screen of another board or project reads
-nothing, and a hidden screen lists them when it shows.
+Each change, from any client or an agent's proposal, is told once on the
+board's event to the board's subscriptions of the project
+(`BoardEvent.Dashboards`, `trackerapp.ProjectDashboards`: the project
+and `counts`, whether what the dashboards count moved; `tellDashboards`),
+and a change of the unit the project counts in is told so on every board
+of the project. The board's event is per site and board and replays
+with its gaps, so no change is lost behind another board's. In the
+window, the board's subscription moves its `dashboards` count, and its
+`changes` too when `counts` says so; a gap moves both. An open screen of
+that project's board lists the board's dashboards again when
+`dashboards` moves and counts again by the rule `changes` follows; a
+screen of another board, site or project reads nothing, and a hidden
+screen lists them when it shows.
 
 ### Limits and the summary row
 
@@ -2380,16 +2386,27 @@ is good news, else above it); nothing is stored for it.
 `SetTrackerWidgetLimit` and `PinTrackerWidget` (`tracker:operate`) set
 them inside the setup file's write (`editBoard`), against the widgets
 the board has in that write, so a removal written beside a pin leaves no
-pin of a widget that is gone. They refuse a widget the board does not
-have, a limit on a widget that is not a number or one that is not
-finite, and a pin past a full row (`admitPin`, which Keep shares). A
-limit emits `tracker:dashboards_updated` with `counts` false; a pin
-emits none. The list answers `tiles` (the limits shown, the proposals
-whose agent asked for a pin, and `max`). An agent's widget may name
-`limit` and `pin` (the rules `dashboard_widget` answers say so); Keep
-gives the kept widget that limit, and pins it while the row has room.
-`EvaluateTrackerDashboard` refuses a request naming more widgets than
-the row holds.
+pin of a widget that is gone. A limit's change (`LimitChange`) is a
+value, with the `estimates` of the count that answered it, or a step,
+Raise (1) or Lower (-1): the computer moves the limit it stores by one
+step of its unit (`limitStep`: an hour of seconds, half a day, else 1),
+never below 0, and a widget with no limit in its unit now steps from the
+value sent. So the value, its unit and the step have one owner, a press
+before any count lands steps the stored limit in its own unit, and a
+step after another window's write steps from it. They refuse a widget
+the board does not have, a limit on a widget that is not a number or one
+that is not finite, a value counted in other estimates than the board's
+now (`dashboard_limit_unit`), a step with nothing to step from, and a
+pin past a full row (`admitPin`, which Keep shares). A limit is told
+with `counts` false; a pin is told by the pins. The list answers `tiles`
+(the limits shown, each with its unit, the proposals whose agent asked
+for a pin, and `max`). An agent's widget may name `limit` and `pin` (the
+rules `dashboard_widget` answers say so); the proposal holds the limit
+in the unit its number was in when it was proposed, shown while that
+unit holds, and Keep gives the kept widget that limit in that unit, and
+pins it while the row has room. A count and a drill
+(`EvaluateTrackerDashboard`, `TrackerDashboardDrill`) refuse a request
+naming more widgets than the row holds.
 
 The pins are the board subscription's: `BoardView.pins` carries them
 with the board, and a change of them is the board event's `pins`
@@ -2406,15 +2423,15 @@ widgets alone over its default range, for the team, without the
 proposals, counted again by the dashboards' rule (the board's changes,
 at most once every 5 s, and every 10 minutes); a change of its pins
 changes that request. A change of a limit lists again and counts
-nothing. A screen steps a limit from the value its last accepted write
-stored until a list begun after that write lands. A tile whose
+nothing. A screen shows the limit its latest list holds, in that
+limit's unit, and holds no record of its own writes. A tile whose
 value is a set of tickets now (a number or a list of a widget that
 counts now, or a state's number with no bucket, `WidgetView.State`)
 filters the board to its tickets: a drill of it asked
 for `IDs` answers every ticket of its rows, in the drill's order, and no
 page. The set follows the tile's count: it is read again by the same
-rule while the Board or the Backlog shows, and on each dashboards
-change of its board that moves counts. It is the pane's board's: it
+rule while the Board or the Backlog shows, a dashboards change that
+moves counts included. It is the pane's board's: it
 holds through a reconnect, reading nothing until the new subscription
 answers, and clears when the pane shows another board or its widget
 leaves the board's pins. The filter is applied on the page, as Only mine and Search are,
@@ -3591,9 +3608,8 @@ screen ([Dashboards](#dashboards)): the built-in, the ones its project
 keeps and the widgets agents propose, with the wrappers of
 `TrackerDashboards`, `EvaluateTrackerDashboard`, `TrackerDashboardDrill`,
 `KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`,
-`SetTrackerWidgetLimit`, `PinTrackerWidget`,
-`StartTrackerDashboardThread` and `tracker:dashboards_updated`
-(`stores/trackerDashboard.svelte.ts`), the board's summary row and the
+`SetTrackerWidgetLimit`, `PinTrackerWidget` and
+`StartTrackerDashboardThread` (`stores/trackerDashboard.svelte.ts`), the board's summary row and the
 tickets its tile filters the board to
 (`components/issues/BoardSummaryRow.svelte`,
 `stores/boardTicketSet.svelte.ts`), and a ticket list's selection

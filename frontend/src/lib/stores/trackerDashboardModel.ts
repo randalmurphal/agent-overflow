@@ -4,6 +4,7 @@
 // The numbers themselves are the board's computer's (trackerdash), one
 // evaluation per answer.
 
+import type { TileLimit } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { formatAmount, unitWord, type DashboardUnit } from '../utils/dashboardAmount';
 
 /** One number of a dashboard (trackerdash.Num, which the bindings type
@@ -134,21 +135,41 @@ export function overLimit(value: Num | null | undefined, limit: number | null | 
   return limitSide(good) === 'below' ? v < limit : v > limit;
 }
 
-/** A limit as words: "3 tickets", "2h". */
-export function limitWords(limit: number, unit: DashboardUnit, estimates: string): string {
-  const word = unitWord(limit, unit, estimates);
-  return word ? `${formatAmount(limit, unit, estimates)} ${word}` : formatAmount(limit, unit, estimates);
+/** A limit as the screen's numbers are formatted: the unit it was set in
+ * (trackerapp.TileLimit: tickets, days, points or seconds) as a widget's
+ * unit and the estimates its numbers are counted in. */
+export function limitFormat(limit: TileLimit): { unit: DashboardUnit; estimates: string } {
+  switch (limit.unit) {
+    case 'seconds': return { unit: 'estimate', estimates: 'time' };
+    case 'points': return { unit: 'estimate', estimates: 'points' };
+    case 'days': return { unit: 'days', estimates: '' };
+  }
+  return { unit: 'tickets', estimates: '' };
+}
+
+/** A limit as words, in its own unit: "3 tickets", "2h". */
+export function limitWords(limit: TileLimit): string {
+  const { unit, estimates } = limitFormat(limit);
+  const word = unitWord(limit.value, unit, estimates);
+  return word ? `${formatAmount(limit.value, unit, estimates)} ${word}` : formatAmount(limit.value, unit, estimates);
 }
 
 /** What a number past its limit says: "over your limit of 3 tickets",
  * or "under …" where the limit warns below. */
-export function pastLimitWords(limit: number, good: string, unit: DashboardUnit, estimates: string): string {
-  return `${limitSide(good) === 'below' ? 'under' : 'over'} your limit of ${limitWords(limit, unit, estimates)}`;
+export function pastLimitWords(limit: TileLimit, good: string): string {
+  return `${limitSide(good) === 'below' ? 'under' : 'over'} your limit of ${limitWords(limit)}`;
 }
 
-/** How far one press of a limit's − or + moves it: an hour for a board
- * whose estimates are time (seconds), half a day for days, else 1. */
-export function limitStep(unit: DashboardUnit, estimates: string): number {
-  if (unit === 'days') return 0.5;
-  return unit === 'estimate' && estimates === 'time' ? 3600 : 1;
+/** Whether a widget's series are named: more than one, or one with a
+ * name. */
+export function namedSeries(series: readonly string[]): boolean {
+  return series.length > 1 || (series[0] ?? '') !== '';
+}
+
+/** Whether a bucket of a widget's named series shows its total: not when
+ * the metric's series overlap (a ticket counting in several, as the
+ * sprint table's do), whose total would count such a ticket more than
+ * once. The one rule, for the Dashboards screen and the board's row. */
+export function showsTotal(view: { readonly overlap?: boolean }, series: readonly string[]): boolean {
+  return namedSeries(series) && !view.overlap;
 }

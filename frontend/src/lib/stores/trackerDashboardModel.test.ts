@@ -3,7 +3,7 @@
 // and the tone by the metric's good direction.
 
 import { describe, expect, it } from 'vitest';
-import { changeMark, drillCountWords, formatNum, GAP_TEXT, limitSide, limitStep, numValue, numWords, overLimit } from './trackerDashboardModel';
+import { changeMark, drillCountWords, formatNum, GAP_TEXT, limitSide, limitWords, numValue, numWords, overLimit, pastLimitWords, showsTotal } from './trackerDashboardModel';
 import { band, labelEvery, valueScale } from '../components/issues/charts/chartScale';
 
 describe('a number', () => {
@@ -115,10 +115,19 @@ describe("a number's limit", () => {
     expect(overLimit({ nc: 2 }, 0, 'down')).toBe(false);
   });
 
-  it('steps by an hour on a board of time estimates, by half a day for days, else by 1', () => {
-    expect(limitStep('estimate', 'time')).toBe(3600);
-    expect(limitStep('estimate', 'points')).toBe(1);
-    expect(limitStep('tickets', 'time')).toBe(1);
-    expect(limitStep('days', 'points')).toBe(0.5);
+  it('reads in the unit it was set in, whatever the count is in', () => {
+    expect(limitWords({ value: 7200, unit: 'seconds' })).toBe('2h');
+    expect(limitWords({ value: 3, unit: 'points' })).toBe('3 points');
+    expect(limitWords({ value: 1, unit: 'tickets' })).toBe('1 ticket');
+    expect(limitWords({ value: 2.5, unit: 'days' })).toBe('2.5 days');
+    expect(pastLimitWords({ value: 3, unit: 'tickets' }, 'up')).toBe('under your limit of 3 tickets');
+  });
+});
+
+describe("a table's totals", () => {
+  it('are shown for named series that do not overlap, and for no other', () => {
+    expect(showsTotal({}, ['Committed', 'Added'])).toBe(true);
+    expect(showsTotal({ overlap: true }, ['Committed', 'Done'])).toBe(false);
+    expect(showsTotal({}, [''])).toBe(false);
   });
 });

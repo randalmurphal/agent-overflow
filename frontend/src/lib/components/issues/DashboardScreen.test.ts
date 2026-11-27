@@ -13,12 +13,11 @@ import type { TrackerDashboardsView } from '../../../../bindings/agent-overflow/
 import type { Answer, DashboardView, ProposalView, WidgetView } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { getToasts } from '../../stores/toast.svelte';
-import { trackerDashboardsUpdated } from '../../stores/trackerBoardEvents';
 import { setCarriedSessionScopes } from '../../transport/scopes';
 import DashboardScreen from './DashboardScreen.svelte';
 
 const VIEW = { id: 'overview_sprints', title: 'Overview', default_range: 'sprints_5', ranges: [{ id: 'sprints_5', label: 'Last 5 sprints' }], widgets: [] } as unknown as DashboardView;
-const SOURCE = { backend: 'home', board: { backend: 'home', projectId: 'p1', connection: 'conn-1', board: '1' }, subscription: 'sub-1', changes: 0 };
+const SOURCE = { backend: 'home', board: { backend: 'home', projectId: 'p1', connection: 'conn-1', board: '1' }, subscription: 'sub-1', changes: 0, dashboards: 0 };
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i += 1) await tick();
@@ -61,7 +60,7 @@ describe('the list of dashboards', () => {
     unmount = screen.unmount;
     await flush();
     expect(screen.getByTestId('dashboard-title').textContent).toBe('Overview');
-    trackerDashboardsUpdated('home', { project: 'p1', board: '1', counts: true });
+    await screen.rerender({ source: { ...SOURCE, dashboards: 1 } });
     await flush();
     expect(screen.getByTestId('dashboard-toolbar')).toBeTruthy();
     expect(screen.getByTestId('dashboard-list-error').textContent).toContain("Could not list this board's dashboards again");
@@ -261,21 +260,23 @@ describe("a widget's limit and pin", () => {
   } as unknown as Answer;
   /** The board's pins (its subscription's) and the list's limits and
    * proposals asked for the row. */
-  type Tiles = { pins: string[] | null; limits: Record<string, number>; proposed: string[] };
+  type Tiles = { pins: string[] | null; limits: Record<string, { value: number; unit: string }>; proposed: string[] };
 
-  function mount(tiles: Tiles, opts: { compact?: boolean; proposals?: ProposalView[] } = {}) {
+  /** With `counting`, the count is out until the test ends. */
+  function mount(tiles: Tiles, opts: { compact?: boolean; proposals?: ProposalView[]; counting?: boolean } = {}) {
     setCarriedSessionScopes('laptop', ['tracker:read', 'tracker:operate', 'threads:read', 'threads:operate']);
     const state = { tiles };
     setBindingMock('TrackerDashboards', async () => ({ ...listed([OVERVIEW, KEPT], opts.proposals ?? []), tiles: { limits: state.tiles.limits, proposed: state.tiles.proposed, max: 5 } }));
-    setBindingMock('EvaluateTrackerDashboard', async () => ANSWER);
-    const screen = render(DashboardScreen, { props: { source: LAPTOP, boardName: 'WEB board', shown: true, compact: opts.compact ?? false, computerName: 'Laptop', onOpenTicket: () => {}, pins: tiles.pins } });
+    setBindingMock('EvaluateTrackerDashboard', opts.counting ? () => new Promise<Answer>(() => {}) : async () => ANSWER);
+    let source = LAPTOP;
+    const screen = render(DashboardScreen, { props: { source, boardName: 'WEB board', shown: true, compact: opts.compact ?? false, computerName: 'Laptop', onOpenTicket: () => {}, pins: tiles.pins } });
     unmount = screen.unmount;
     /** The board's computer stored `next`: its subscription tells the pins
-     * and its dashboards event the rest. */
+     * and that the project's dashboards changed. */
     async function set(next: Tiles): Promise<void> {
       state.tiles = next;
-      await screen.rerender({ pins: next.pins });
-      trackerDashboardsUpdated('laptop', { project: 'p1', board: '1', counts: false });
+      source = { ...source, dashboards: source.dashboards + 1 };
+      await screen.rerender({ pins: next.pins, source });
       await flush();
     }
     return { screen, set };
@@ -298,10 +299,10 @@ describe("a widget's limit and pin", () => {
     expect(within(pop).getByTestId('dashboard-limit-note').textContent).toBe('No limit is set.');
     await fireEvent.click(within(pop).getByTestId('dashboard-limit-switch'));
     await flush();
-    expect(limits).toEqual([['sub-1', 'stuck', 4]]);
+    expect(limits).toEqual([['sub-1', 'stuck', { value: 4, estimates: 'points' }]]);
 
     // The board's computer stored 3 and said so.
-    await set({ pins: [], limits: { stuck: 3 }, proposed: [] });
+    await set({ pins: [], limits: { stuck: { value: 3, unit: 'tickets' } }, proposed: [] });
     expect(stuck.dataset.over).toBe('true');
     expect(within(stuck).getByTestId('dashboard-over').textContent?.trim()).toBe('over your limit of 3 tickets');
     expect(within(stuck).getByTestId('dashboard-limit-toggle').title).toBe('Warns above 3 tickets');
@@ -310,35 +311,37 @@ describe("a widget's limit and pin", () => {
     await flush();
     await fireEvent.click(within(pop).getByTestId('dashboard-limit-switch'));
     await flush();
-    expect(limits).toEqual([['sub-1', 'stuck', 4], ['sub-1', 'stuck', 4], ['sub-1', 'stuck', null]]);
+    expect(limits).toEqual([['sub-1', 'stuck', { value: 4, estimates: 'points' }], ['sub-1', 'stuck', { step: 1 }], ['sub-1', 'stuck', null]]);
   });
 
-  it('raises twice from the limit the first raise stored while the list read after it is out', async () => {
+  it('steps a limit on the board\'s computer before any count lands, and shows it in its own unit', async () => {
     const writes: unknown[] = [];
-    setBindingMock('SetTrackerWidgetLimit', async (_sub: string, _id: string, limit: unknown) => {
-      writes.push(limit);
-      // The computer tells the change before it answers.
-      trackerDashboardsUpdated('laptop', { project: 'p1', board: '1', counts: false });
-    });
-    const { screen } = mount({ pins: [], limits: { stuck: 3 }, proposed: [] });
+    setBindingMock('SetTrackerWidgetLimit', async (_sub: string, _id: string, change: unknown) => { writes.push(change); });
+    // An hour's limit on a board of time estimates, whose count is out.
+    const { screen } = mount({ pins: [], limits: { pace: { value: 3600, unit: 'seconds' } }, proposed: [] }, { counting: true });
     await flush();
-    // Every list after the first is out until the test answers it.
-    const lists: Array<() => void> = [];
-    setBindingMock('TrackerDashboards', () => new Promise((resolve) => lists.push(() => resolve({ ...listed([OVERVIEW, KEPT]), tiles: { limits: { stuck: 4 }, proposed: [], max: 5 } }))));
+    await fireEvent.click(within(cell(screen, 'pace')).getByTestId('dashboard-limit-toggle'));
+    await flush();
+    const pop = within(document.body).getByTestId('dashboard-limit');
+    expect(within(pop).getByTestId('dashboard-limit-value').textContent).toBe('1h');
+    await fireEvent.click(within(pop).getByTestId('dashboard-limit-raise'));
+    await flush();
+    expect(writes).toEqual([{ step: 1 }]);
+  });
+
+  it('takes no step or Turn on for a widget with no limit until a count gives its number', async () => {
+    const { screen } = mount({ pins: [], limits: {}, proposed: [] }, { counting: true });
+    await flush();
     await fireEvent.click(within(cell(screen, 'stuck')).getByTestId('dashboard-limit-toggle'));
     await flush();
     const pop = within(document.body).getByTestId('dashboard-limit');
-    await fireEvent.click(within(pop).getByTestId('dashboard-limit-raise'));
-    await flush();
-    expect(lists.length).toBeGreaterThan(0);
-    await fireEvent.click(within(pop).getByTestId('dashboard-limit-raise'));
-    await flush();
-    expect(writes).toEqual([4, 5]);
-    expect(within(pop).getByTestId('dashboard-limit-value').textContent).toBe('5');
+    for (const id of ['dashboard-limit-lower', 'dashboard-limit-raise', 'dashboard-limit-switch']) {
+      expect((within(pop).getByTestId(id) as HTMLButtonElement).disabled).toBe(true);
+    }
   });
 
   it('shows a limit only while the list has it in the widget\'s unit now, and again when it is back', async () => {
-    const { screen, set } = mount({ pins: [], limits: { pace: 25 }, proposed: [] });
+    const { screen, set } = mount({ pins: [], limits: { pace: { value: 25, unit: 'points' } }, proposed: [] });
     await flush();
     const pace = cell(screen, 'pace');
     expect(pace.dataset.over).toBe('true');
@@ -348,13 +351,13 @@ describe("a widget's limit and pin", () => {
     expect(pace.dataset.over).toBe('false');
     expect(within(pace).queryByTestId('dashboard-over')).toBeNull();
     expect(within(pace).getByTestId('dashboard-limit-toggle').dataset.on).toBe('false');
-    await set({ pins: [], limits: { pace: 25 }, proposed: [] });
+    await set({ pins: [], limits: { pace: { value: 25, unit: 'points' } }, proposed: [] });
     expect(pace.dataset.over).toBe('true');
     expect(within(pace).getByTestId('dashboard-limit-toggle').dataset.on).toBe('true');
   });
 
   it('warns below a limit where up is good news', async () => {
-    const { screen } = mount({ pins: ['pace'], limits: { pace: 25 }, proposed: [] });
+    const { screen } = mount({ pins: ['pace'], limits: { pace: { value: 25, unit: 'points' } }, proposed: [] });
     await flush();
     const pace = cell(screen, 'pace');
     expect(pace.dataset.over).toBe('true');

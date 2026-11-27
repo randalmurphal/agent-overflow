@@ -10,11 +10,12 @@
 // tile's widget answers (trackerdash.DrillRequest.IDs), read when the tile
 // is picked, again by the rule a dashboard counts again by
 // (recountOnChanges: the board's changes, at most once every 5 s, and
-// every 10 minutes) while the board or the backlog shows, at once when it
-// shows again or a new subscription answers, and on each change of the
-// board's dashboards that moves what they count. With no subscription it
-// reads nothing. Until the first read lands there is no set and the board
-// shows every card; a read that fails keeps the last set and says why.
+// every 10 minutes; a change of what the board's dashboards count moves
+// the board's changes too) while the board or the backlog shows, and at
+// once when it shows again or a new subscription answers. With no
+// subscription it reads nothing. Until the first read lands there is no
+// set and the board shows every card; a read that fails keeps the last set
+// and says why.
 
 import { untrack } from 'svelte';
 import type { Request } from '../../../bindings/agent-overflow/internal/trackerdash/models';
@@ -23,7 +24,6 @@ import { createRefreshScheduler } from '../utils/refreshScheduler';
 import { TrackerDashboardDrill } from './bindings';
 import type { TrackerBoardRef } from './trackerBoard.svelte';
 import { DASHBOARD_CHANGE_INTERVAL_MS, recountOnChanges, type DashboardSource } from './trackerDashboard.svelte';
-import { onTrackerDashboardsUpdated } from './trackerBoardEvents';
 
 /** A tile the board is filtered to: its widget, its title, and the request
  * its row counted it with (trackerDashboard.svelte#rowRequest). */
@@ -126,12 +126,6 @@ export function createBoardTicketSet(opts: {
       if (!tile) return;
       recountOnChanges(scheduler, () => opts.source()?.changes ?? -1, opts.shown);
     });
-    $effect(() => onTrackerDashboardsUpdated((backend, change) => {
-      const b = opts.board();
-      if (!tile || !b || b.backend !== backend || change.project !== b.projectId || !change.counts) return;
-      if (change.board && change.board !== b.board) return;
-      if (opts.source() && opts.shown()) scheduler.request();
-    }));
   });
 
   return {

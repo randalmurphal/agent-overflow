@@ -1,4 +1,6 @@
 <script lang="ts" module>
+  import type { LimitChange } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+
   /** What the header's bell and pin set, through the board's computer. */
   export interface TileControls {
     readonly pinned: boolean;
@@ -12,7 +14,9 @@
     readonly blocked?: string;
     /** Only the controls switched on show (compact, out of edit mode). */
     readonly onlyOn: boolean;
-    setLimit(limit: number | null): void;
+    /** Changes the limit (trackerapp.LimitChange), or turns it off with
+     * null. */
+    setLimit(change: LimitChange | null): void;
     setPinned(pinned: boolean): void;
   }
 </script>
@@ -50,20 +54,23 @@
     WidgetValue,
     WidgetView,
   } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
+  import type { TileLimit } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import Icon from '../primitives/Icon.svelte';
   import Popover from '../primitives/Popover.svelte';
   import Button from '../primitives/Button.svelte';
   import {
     changeMark,
     formatNum,
+    limitFormat,
     limitSide,
-    limitStep,
     limitWords,
     overLimit,
     pastLimitWords,
     notCountedWords,
     numValue,
     numWords,
+    namedSeries,
+    showsTotal,
     type Num,
   } from '../../stores/trackerDashboardModel';
   import { formatAmount, unitWord, type DashboardUnit } from '../../utils/dashboardAmount';
@@ -91,8 +98,8 @@
     /** Where a ticket list's selection is written. */
     tickets: TicketListSource;
     actions?: Snippet;
-    /** A number widget's limit; null for none. */
-    limit?: number | null;
+    /** A number widget's limit, in the unit it applies in; null for none. */
+    limit?: TileLimit | null;
     /** The bell and the pin; none from a computer whose release keeps no
      * tiles. */
     tile?: TileControls;
@@ -103,10 +110,8 @@
   let showHow = $state(false);
   const unit = $derived(view.unit as DashboardUnit);
   const series = $derived(value?.series ?? view.series ?? ['']);
-  const named = $derived(series.length > 1 || (series[0] ?? '') !== '');
-  // A table of named series adds them up, unless its metric's series
-  // overlap (a ticket counting in several), as the sprint table's do.
-  const total = $derived(named && !view.overlap);
+  const named = $derived(namedSeries(series));
+  const total = $derived(showsTotal(view, series));
   const byPeriod = $derived(view.bucket === 'period' || view.bucket === 'sprint');
   // A widget that counts now has no earlier value to compare with, whatever
   // its answer holds. A state's previous value is what held where the range
@@ -120,19 +125,23 @@
   const how = $derived(value?.range_words ? { ...view.how, range: value.range_words } : view.how);
   const amount = $derived(numWords(value?.value as Num | undefined, unit, estimates));
   const side = $derived(limitSide(view.good ?? ''));
-  const over = $derived(view.form === 'number' && !value?.error && overLimit(value?.value as Num | undefined, limit, view.good ?? ''));
+  const over = $derived(view.form === 'number' && !value?.error && overLimit(value?.value as Num | undefined, limit?.value, view.good ?? ''));
 
-  // The limit's popover. Its value is the limit, or the number now while
-  // none is set; a step or Turn on sets it.
+  // The limit's popover. Its value is the limit, in its own unit, or the
+  // number now while none is set. A step moves the limit the computer
+  // stores by its unit's step, and with none starts from the number now,
+  // as Turn on sets it; with no limit they wait for a count to give that
+  // number, in the estimates it was counted in.
   let limitAnchor: HTMLElement | undefined = $state();
   let limitOpen = $state(false);
-  const limitShown = $derived(limit ?? numValue(value?.value as Num | undefined) ?? 0);
+  const now = $derived(value && !value.error ? numValue(value.value as Num | undefined) : null);
+  const limitShown = $derived(limit ? { value: limit.value, ...limitFormat(limit) } : { value: now ?? 0, unit, estimates });
   function step(by: number): void {
-    tile?.setLimit(Math.max(0, limitShown + by * limitStep(unit, estimates)));
+    tile?.setLimit(limit ? { step: by } : { step: by, value: now, estimates });
   }
   // What the limit's popover reads of the controls, in one value, so no
   // expression of it reads `tile` beside another value as it goes.
-  const limitOff = $derived(!tile || !!tile.blocked || tile.busy);
+  const limitOff = $derived(!tile || !!tile.blocked || tile.busy || (!limit && now === null));
   const limitNote = $derived(limit === null ? 'No limit is set.' : `The tile turns amber${tile?.pinned ? ', here and on the board row' : ''}.`);
   const bellShown = $derived(!!tile && view.form === 'number' && (!tile.onlyOn || limit !== null));
   const pinShown = $derived(!!tile && (!tile.onlyOn || tile.pinned));
@@ -185,8 +194,8 @@
           class="inline-flex size-5 items-center justify-center rounded-[var(--radius-control)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:size-8 {limit !== null ? 'bg-accent text-accent-fg' : 'text-fg-muted hover:bg-surface-1 hover:text-fg'}"
           aria-haspopup="dialog"
           aria-expanded={limitOpen}
-          aria-label={limit !== null ? `Warns ${side} ${limitWords(limit, unit, estimates)}` : 'Warn me at a limit'}
-          title={limit !== null ? `Warns ${side} ${limitWords(limit, unit, estimates)}` : 'Warn me at a limit'}
+          aria-label={limit !== null ? `Warns ${side} ${limitWords(limit)}` : 'Warn me at a limit'}
+          title={limit !== null ? `Warns ${side} ${limitWords(limit)}` : 'Warn me at a limit'}
           data-testid="dashboard-limit-toggle"
           data-on={limit !== null}
           onclick={() => { limitOpen = !limitOpen; }}
@@ -243,7 +252,7 @@
           {#if over && limit !== null}
             <span class="inline-flex items-center gap-1 text-[0.6875rem] text-fg-muted" data-testid="dashboard-over">
               <Icon icon={TriangleAlert} size={12} strokeWidth={2.25} class="shrink-0 text-warning" />
-              <span>{pastLimitWords(limit, view.good ?? '', unit, estimates)}</span>
+              <span>{pastLimitWords(limit, view.good ?? '')}</span>
             </span>
           {/if}
           {#if mark?.kind === 'change'}
@@ -348,12 +357,12 @@
     <div class="flex w-[280px] flex-col gap-2 rounded-[var(--radius-card)] border border-border-subtle bg-surface-1 p-3 text-[0.75rem] shadow-menu compact:w-full" data-testid="dashboard-limit">
       <h4 class="font-medium text-fg">Warn me when this is {side}</h4>
       <div class="flex items-center gap-2">
-        <Button size="xs" variant="ghost" testId="dashboard-limit-lower" title="Lower" disabled={limitOff || limitShown <= 0} onclick={() => step(-1)}>−</Button>
-        <b class="tabular-nums text-fg" data-testid="dashboard-limit-value">{formatAmount(limitShown, unit, estimates)}</b>
+        <Button size="xs" variant="ghost" testId="dashboard-limit-lower" title="Lower" disabled={limitOff || limitShown.value <= 0} onclick={() => step(-1)}>−</Button>
+        <b class="tabular-nums text-fg" data-testid="dashboard-limit-value">{formatAmount(limitShown.value, limitShown.unit, limitShown.estimates)}</b>
         <Button size="xs" variant="ghost" testId="dashboard-limit-raise" title="Raise" disabled={limitOff} onclick={() => step(1)}>+</Button>
-        <span class="text-fg-muted">{unitWord(limitShown, unit, estimates)}</span>
+        <span class="text-fg-muted">{unitWord(limitShown.value, limitShown.unit, limitShown.estimates)}</span>
         <span class="flex-1"></span>
-        <Button size="xs" variant="tinted" testId="dashboard-limit-switch" title={tile?.blocked} disabled={limitOff} onclick={() => tile?.setLimit(limit !== null ? null : limitShown)}>{limit !== null ? 'Turn off' : 'Turn on'}</Button>
+        <Button size="xs" variant="tinted" testId="dashboard-limit-switch" title={tile?.blocked} disabled={limitOff} onclick={() => tile?.setLimit(limit !== null ? null : { value: now, estimates })}>{limit !== null ? 'Turn off' : 'Turn on'}</Button>
       </div>
       <p class="text-fg-muted" data-testid="dashboard-limit-note">{limitNote}</p>
     </div>

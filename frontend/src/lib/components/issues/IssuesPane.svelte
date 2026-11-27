@@ -406,7 +406,7 @@
   // The board a dashboard counts: its subscription once the subscribe
   // answered, and how many times the board changed since.
   const dashboardSource = $derived(
-    board && boardState?.subscription ? { backend: board.backend, board, subscription: boardState.subscription, changes: boardState.changes } : null,
+    board && boardState?.subscription ? { backend: board.backend, board, subscription: boardState.subscription, changes: boardState.changes, dashboards: boardState.dashboards } : null,
   );
   // The board's summary row: mounted while the board pins a widget or the
   // person edits the row, which a board with none starts from its Add a

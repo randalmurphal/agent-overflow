@@ -48,8 +48,10 @@ type boardPump struct {
 type boardPending struct {
 	changed, removed     []tracker.IssueID
 	readAgain, truncated bool
-	// pins are a project's pins that changed (tellPins), sent at once.
-	pins *ProjectPins
+	// pins are a project's pins that changed (tellPins), and dashboards a
+	// change of a project's dashboards (tellDashboards), each sent at once.
+	pins       *ProjectPins
+	dashboards *ProjectDashboards
 	// due reports something to send: a change or a failure that started,
 	// changed or cleared.
 	due bool
@@ -506,7 +508,7 @@ func (s *Service) flushBoardLocked(p *boardPump) {
 	p.pending = boardPending{}
 	s.emitBoard(BoardEvent{
 		Scope: p.scope, Seq: s.nextSeqLocked(), Changed: pending.changed, Removed: pending.removed,
-		Truncated: pending.truncated, ReadAgain: pending.readAgain, Pins: pending.pins, Sync: p.toldLocked(),
+		Truncated: pending.truncated, ReadAgain: pending.readAgain, Pins: pending.pins, Dashboards: pending.dashboards, Sync: p.toldLocked(),
 	})
 }
 

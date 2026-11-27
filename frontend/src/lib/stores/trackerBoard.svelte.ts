@@ -137,10 +137,16 @@ export interface TrackerBoardState {
    * dashboard's); empty until the subscribe answers. */
   readonly subscription: string;
   /** How many times the board changed since the subscribe answered: an
-   * event that named rows, said to read again or told the board's first
-   * reconcile, or a gap. A surface that reads the board its own way (a
+   * event that named rows, said to read again, told the board's first
+   * reconcile or told a change of what this project's dashboards of the
+   * board count, or a gap. A surface that reads the board its own way (a
    * dashboard) reads again when it moves. */
   readonly changes: number;
+  /** How many times this project's dashboards of the board changed since
+   * the subscribe answered (`TrackerBoardEvent.dashboards`: a widget kept,
+   * dismissed, removed or proposed, a limit, the unit counted in), or a
+   * gap. A surface that lists them reads the list again when it moves. */
+  readonly dashboards: number;
   /** The widgets the board's project pins to its summary row, in the
    * row's order: the board's read's (`BoardView.pins`), then each event
    * that tells the project's pins (`TrackerBoardEvent.pins`), which reads
@@ -199,7 +205,7 @@ const NO_SECTION_ERRORS: ReadonlyMap<string, unknown> = new Map();
 
 const FIRST_STATE: TrackerBoardState = {
   held: null, failure: null, readAt: 0, ended: false, paging: NO_SECTIONS, sectionErrors: NO_SECTION_ERRORS,
-  refreshing: false, refreshNotice: null, readError: null, subscription: '', changes: 0, pins: null,
+  refreshing: false, refreshNotice: null, readError: null, subscription: '', changes: 0, dashboards: 0, pins: null,
 };
 
 // The subscribe refusals that hold until the board's lists change: the
@@ -354,9 +360,11 @@ function fold(live: Live, event: TrackerBoardEvent): void {
     next.pins = event.pins.pins ?? [];
     live.pinsSeq = event.seq;
   }
+  const dashboards = event.dashboards?.project === live.ref.projectId ? event.dashboards : null;
+  if (dashboards) next.dashboards = live.state.dashboards + 1;
   const ids = [...(event.changed ?? []), ...(event.removed ?? [])];
   if (event.read_again || event.truncated) live.readAgain = true;
-  if (ids.length > 0 || event.read_again || event.truncated) next.changes = live.state.changes + 1;
+  if (ids.length > 0 || event.read_again || event.truncated || dashboards?.counts) next.changes = live.state.changes + 1;
   releaseRetries(live, next);
   for (const id of ids) live.pending.add(id);
   if (live.pending.size > MAX_PATCH_IDS) {
@@ -383,14 +391,15 @@ function applyTrackerBoardEvent(event: TrackerBoardEvent, backend: BackendKey): 
 }
 
 /** A gap on `tracker:board_updated`: every board of the computer reads
- * whole again. Answers the settling of those reads, or undefined when no
- * board of the computer is held. */
+ * whole again, and what reads it its own way reads again, its dashboards
+ * listed and counted. Answers the settling of the boards' reads, or
+ * undefined when no board of the computer is held. */
 function resyncTrackerBoardsAfterGap(backend: BackendKey): Promise<void> | undefined {
   const runs: Promise<void>[] = [];
   for (const live of lives.values()) {
     if (live.ref.backend !== backend || !live.id || live.state.ended) continue;
     live.readAgain = true;
-    const next: StateChange = { changes: live.state.changes + 1 };
+    const next: StateChange = { changes: live.state.changes + 1, dashboards: live.state.dashboards + 1 };
     releaseRetries(live, next);
     update(live, next);
     runs.push(drain(live));

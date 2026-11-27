@@ -6479,12 +6479,13 @@ export function SetTrackerSubscriptionVisible(subscriptionID: string, visible: b
 }
 
 /**
- * SetTrackerWidgetLimit sets the limit of a number widget of a subscribed
- * board's dashboards, or clears it for nil; over it, the widget and its
- * tile on the board's summary row are marked.
+ * SetTrackerWidgetLimit changes the limit of a number widget of a
+ * subscribed board's dashboards, to a value its count answered or by a
+ * step of the stored one (trackerapp.LimitChange), or clears it for nil;
+ * over it, the widget and its tile on the board's summary row are marked.
  */
-export function SetTrackerWidgetLimit(subscriptionID: string, widget: string, limit: number | null): $CancellablePromise<void> {
-    return $Call.ByID(3937459196, subscriptionID, widget, limit);
+export function SetTrackerWidgetLimit(subscriptionID: string, widget: string, change: trackerapp$0.LimitChange | null): $CancellablePromise<void> {
+    return $Call.ByID(3937459196, subscriptionID, widget, change);
 }
 
 /**

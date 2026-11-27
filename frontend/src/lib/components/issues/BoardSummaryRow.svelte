@@ -36,7 +36,7 @@
   import { readFrontendValue, writeFrontendValue } from '../../stores/frontendStorage';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { askAgentAboutDashboards, createTrackerDashboard, pickDashboardNext, rowRequest, type DashboardSource, type TrackerDashboard } from '../../stores/trackerDashboard.svelte';
-  import { numValue, numWords, overLimit, pastLimitWords, type Num } from '../../stores/trackerDashboardModel';
+  import { namedSeries, numValue, numWords, overLimit, pastLimitWords, showsTotal, type Num } from '../../stores/trackerDashboardModel';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { scopeGrant } from '../../transport/scopes';
   import { formatAmount, type DashboardUnit } from '../../utils/dashboardAmount';
@@ -115,7 +115,7 @@
   }
 
   function over(v: WidgetView, value: WidgetValue | undefined): boolean {
-    return v.form === 'number' && !!value && !value.error && overLimit(value.value as Num | undefined, store.limitOf(v.id), v.good ?? '');
+    return v.form === 'number' && !!value && !value.error && overLimit(value.value as Num | undefined, store.tiles?.limits[v.id]?.value, v.good ?? '');
   }
   // A number's words; a list's tickets; nothing for a chart.
   function chipNumber(v: WidgetView, value: WidgetValue | undefined): { amount: string; word: string } | null {
@@ -131,15 +131,23 @@
     return v.form === 'number' ? Hash : v.form === 'list' ? List : ChartColumn;
   }
   function overText(v: WidgetView): string {
-    const limit = store.limitOf(v.id);
-    return limit === null ? '' : pastLimitWords(limit, v.good ?? '', v.unit as DashboardUnit, estimates);
+    const limit = store.tiles?.limits[v.id];
+    return limit ? pastLimitWords(limit, v.good ?? '') : '';
   }
-  // A chart's or a table's last three buckets with their totals.
+  // A chart's or a table's last three buckets with their totals; a
+  // bucket of series whose total the dashboard leaves out (showsTotal)
+  // shows each series' value by its name instead.
   function rowsOf(v: WidgetView, value: WidgetValue): { label: string; total: string }[] {
     const buckets = value.buckets ?? [];
     const byPeriod = v.bucket === 'period' || v.bucket === 'sprint';
     const shownBuckets = byPeriod ? buckets.slice(-3) : buckets.slice(0, 3);
-    return shownBuckets.map((b) => ({ label: b.label, total: numValue(b.total as Num) === null ? '–' : formatAmount(numValue(b.total as Num)!, v.unit as DashboardUnit, estimates) }));
+    const series = value.series ?? v.series ?? [''];
+    const amount = (n: Num | undefined) => numValue(n) === null ? '–' : formatAmount(numValue(n)!, v.unit as DashboardUnit, estimates);
+    const each = namedSeries(series) && !showsTotal(v, series);
+    return shownBuckets.map((b) => ({
+      label: b.label,
+      total: each ? series.map((name, i) => `${name} ${amount(b.cells[i] as Num)}`).join(' · ') : amount(b.total as Num),
+    }));
   }
 
   async function act(what: string, run: () => Promise<void>): Promise<void> {

@@ -14,7 +14,6 @@ import { getPinnedBackend } from '../transport/backends';
 import { createBoardTicketSet, type BoardTicketSet } from './boardTicketSet.svelte';
 import type { TrackerBoardRef } from './trackerBoard.svelte';
 import { DASHBOARD_CHANGE_INTERVAL_MS, DASHBOARD_REFRESH_MS, type DashboardSource } from './trackerDashboard.svelte';
-import { trackerDashboardsUpdated } from './trackerBoardEvents';
 
 const BOARD = { backend: 'peer-1', projectId: 'p1', connection: 'conn-1', board: '1' };
 const REQUEST = { dashboard: 'overview_sprints', range: 'sprints_3', mine: false, person: '', epic: '', time_zone: 'UTC', widgets: ['stuck'] } as Request;
@@ -52,7 +51,7 @@ function drills() {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
   board = BOARD;
-  source = { backend: 'peer-1', board: BOARD, subscription: 'sub-1', changes: 0 };
+  source = { backend: 'peer-1', board: BOARD, subscription: 'sub-1', changes: 0, dashboards: 0 };
   pins = ['stuck'];
   shown = true;
   set = createBoardTicketSet({ board: () => board, source: () => source, pins: () => pins, shown: () => shown });
@@ -91,7 +90,8 @@ describe("a tile's tickets", () => {
     expect([...set!.ids!]).toEqual(['11', '12', '13']);
 
     // A read that fails keeps the last set and says why.
-    trackerDashboardsUpdated('peer-1', { project: 'p1', board: '1', counts: true });
+    source = { ...source!, changes: 2 };
+    flushSync();
     vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
     await flush();
     expect(drill.calls).toHaveLength(3);
@@ -126,7 +126,7 @@ describe("a tile's tickets", () => {
     drill.answer(['10']);
     await flush();
     board = { ...BOARD, board: '2' };
-    source = { backend: 'peer-1', board, subscription: 'sub-2', changes: 0 };
+    source = { backend: 'peer-1', board, subscription: 'sub-2', changes: 0, dashboards: 0 };
     flushSync();
     expect(set!.tile).toBeNull();
     expect(set!.ids).toBeNull();
@@ -157,7 +157,7 @@ describe("a tile's tickets", () => {
     expect(set!.tile).toEqual(TILE);
     expect([...set!.ids!]).toEqual(['10']);
     expect(drill.calls).toHaveLength(1);
-    source = { backend: 'peer-1', board: BOARD, subscription: 'sub-2', changes: 0 };
+    source = { backend: 'peer-1', board: BOARD, subscription: 'sub-2', changes: 0, dashboards: 0 };
     pins = ['stuck'];
     flushSync();
     expect(drill.calls).toHaveLength(2);
@@ -192,25 +192,6 @@ describe("a tile's tickets", () => {
     await flush();
     expect(drill.calls).toHaveLength(1);
     vi.advanceTimersByTime(1);
-    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
-    await flush();
-    expect(drill.calls).toHaveLength(2);
-  });
-
-  it('are read again only for a change of the board\'s dashboards that moves their counts', async () => {
-    const drill = drills();
-    set!.pick(TILE);
-    flushSync();
-    drill.answer(['10']);
-    await flush();
-    trackerDashboardsUpdated('home', { project: 'p1', board: '1', counts: true });
-    trackerDashboardsUpdated('peer-1', { project: 'p2', board: '1', counts: true });
-    trackerDashboardsUpdated('peer-1', { project: 'p1', board: '2', counts: true });
-    trackerDashboardsUpdated('peer-1', { project: 'p1', board: '1', counts: false });
-    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS * 2);
-    await flush();
-    expect(drill.calls).toHaveLength(1);
-    trackerDashboardsUpdated('peer-1', { project: 'p1', counts: true });
     vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
     await flush();
     expect(drill.calls).toHaveLength(2);

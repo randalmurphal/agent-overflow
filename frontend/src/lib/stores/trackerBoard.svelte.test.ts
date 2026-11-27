@@ -891,6 +891,34 @@ describe('the board subscription', () => {
     other.release();
   });
 
+  it("moves its dashboards count on each change of its project's dashboards of the board, and its changes too when what they count changed, and on a gap", async () => {
+    const mocks = install({ view: view([{ section: SPRINT, rows: [row('1', 'a')] }]) });
+    const mine = attachTrackerBoard(REF, true);
+    const other = attachTrackerBoard({ ...REF, projectId: 'p2' }, true);
+    // The board of the same ID on another site the project lists.
+    const elsewhere = attachTrackerBoard({ ...REF, connection: 'c2' }, true);
+    await flush();
+    const counts = (b: typeof mine) => [b.current?.dashboards, b.current?.changes];
+    // Two changes in a row, a Keep's and a limit's, both arrive.
+    applyTrackerBoardEvent(event(11, { dashboards: { project: 'p1', counts: true } }), HOME_BACKEND);
+    applyTrackerBoardEvent(event(12, { dashboards: { project: 'p1', counts: false } }), HOME_BACKEND);
+    await flush();
+    expect(counts(mine)).toEqual([2, 1]);
+    expect(counts(other)).toEqual([0, 0]);
+    expect(counts(elsewhere)).toEqual([0, 0]);
+    expect(mocks.board).not.toHaveBeenCalled();
+    expect(mocks.patch).not.toHaveBeenCalled();
+    // A gap may have lost one: every board of the computer lists and counts again.
+    await resyncTrackerBoardsAfterGap(HOME_BACKEND);
+    await flush();
+    expect(counts(mine)).toEqual([3, 2]);
+    expect(counts(other)).toEqual([1, 1]);
+    expect(counts(elsewhere)).toEqual([1, 1]);
+    mine.release();
+    other.release();
+    elsewhere.release();
+  });
+
   it('keeps pins an event told during a full read over the pins the read answers', async () => {
     install({ view: { ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), pins: ['stuck'] } as unknown as BoardView });
     const board = attachTrackerBoard(REF, true);

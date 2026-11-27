@@ -587,6 +587,9 @@ func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setu
 // that may be stale, or failed to read them, reads again, its pins with
 // it.
 func (s *Service) setupMoved(slug string, before, after *heldSetup) {
+	if s.afterSetupWrite != nil {
+		s.afterSetupWrite()
+	}
 	switch {
 	case before == nil && after == nil:
 		return
@@ -604,39 +607,35 @@ func (s *Service) setupMoved(slug string, before, after *heldSetup) {
 		s.tellPins(slug, before, after)
 	}
 	// A board's dashboards are laid out and counted in the unit the
-	// project counts it in (Dashboards): a change of it has them listed
-	// and counted again.
+	// project counts it in (Dashboards): a change of it has every board's
+	// listed and counted again.
 	if before == nil || after == nil || before.view.Setup.Estimates.countsTickets() != after.view.Setup.Estimates.countsTickets() {
-		if project := s.projectOfSlug(slug); project != "" {
-			s.dashboardsChanged(DashboardsChange{Project: project, Counts: true})
-		}
+		s.tellDashboards(slug, true, func(siteKey, tracker.BoardID) bool { return true })
 	}
 	s.setupChanged()
 }
 
-// projectOfSlug is the project of slug as a board subscription names it,
-// empty when no board subscription holds one: no client shows its
-// dashboards.
-func (s *Service) projectOfSlug(slug string) string {
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	for _, h := range s.subs.handles {
-		if h.board != nil && h.setup.slug == slug {
-			return h.project
-		}
-	}
-	return ""
-}
-
 // tellPins tells every board pump holding a handle of slug's project on a
-// board whose pins changed from before to after the project's pins now,
-// on the board's event (BoardEvent.Pins), so a subscriber of the project
-// holds them with no read and one of another project on the board holds
-// its own. A setup's pins are written only by editBoard, which keeps them
-// to the widgets the board has.
+// board whose pins changed from before to after the project's pins as
+// the setup holds them when the event is numbered, on the board's event
+// (BoardEvent.Pins), so a subscriber of the project holds them with no
+// read and one of another project on the board holds its own. The pins
+// are read under setupMu inside the hold of subMu that numbers the event,
+// so of two writes that publish in either order the event numbered last
+// carries the pins of the last write: a later write's event carries them,
+// or numbers after this one. No setup held (a write after this one could
+// not tell what it wrote) sends none: that write reads the boards again
+// (setupMoved). A setup's pins are written only by editBoard, which keeps
+// them to the widgets the board has.
 func (s *Service) tellPins(slug string, before, after *heldSetup) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
+	s.setupMu.Lock()
+	now := s.setups[slug]
+	s.setupMu.Unlock()
+	if now == nil {
+		return
+	}
 	told := map[*boardPump]bool{}
 	for _, h := range s.subs.handles {
 		p := h.board
@@ -644,15 +643,39 @@ func (s *Service) tellPins(slug string, before, after *heldSetup) {
 			continue
 		}
 		board := string(p.scope.Board)
-		pins := tilesOf(after.kept.tiles, h.setup.site, board).Pins
-		if slices.Equal(tilesOf(before.kept.tiles, h.setup.site, board).Pins, pins) {
+		if slices.Equal(tilesOf(before.kept.tiles, h.setup.site, board).Pins, tilesOf(after.kept.tiles, h.setup.site, board).Pins) {
 			continue
 		}
 		told[p] = true
-		p.pending.pins = &ProjectPins{Project: h.project, Pins: append([]string{}, pins...)}
+		p.pending.pins = &ProjectPins{Project: h.project, Pins: append([]string{}, tilesOf(now.kept.tiles, h.setup.site, board).Pins...)}
 		p.pending.due = true
 		s.flushBoardLocked(p)
 	}
+}
+
+// tellDashboards tells every board pump holding a handle of slug's
+// project on a board that on picks, on the board's event, that the project's
+// dashboards of the board changed, and with counts that what they count
+// did (BoardEvent.Dashboards).
+func (s *Service) tellDashboards(slug string, counts bool, on func(siteKey, tracker.BoardID) bool) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	told := map[*boardPump]bool{}
+	for _, h := range s.subs.handles {
+		p := h.board
+		if p == nil || told[p] || h.setup.slug != slug || !on(h.setup.site, p.scope.Board) || p.over || p.core.DeadLocked() {
+			continue
+		}
+		told[p] = true
+		p.pending.dashboards = &ProjectDashboards{Project: h.project, Counts: counts}
+		p.pending.due = true
+		s.flushBoardLocked(p)
+	}
+}
+
+// boardIs picks board of site, for tellDashboards.
+func boardIs(site siteKey, board string) func(siteKey, tracker.BoardID) bool {
+	return func(st siteKey, b tracker.BoardID) bool { return st == site && string(b) == board }
 }
 
 // readBoardsAgain has every board pump with a handle of project slug on a

@@ -77,15 +77,15 @@
   }
 
   // The widget a tile of the summary row opened this screen at: shown once
-  // its dashboard's answer is laid out, since the widgets above it take
-  // their height from their numbers.
+  // its dashboard's first count has settled, answered or failed, and is
+  // laid out, since the widgets above it take their height from it.
   // svelte-ignore state_referenced_locally
   let showWidget = source ? takeShownWidget(source.board) : '';
   let gridEl: HTMLElement | undefined = $state();
   $effect(() => {
     const d = store.dashboard;
     const grid = gridEl;
-    if (!showWidget || !d || !grid || !store.answer || !d.widgets.some((w) => w.id === showWidget)) return;
+    if (!showWidget || !d || !grid || (!store.answer && !store.error) || !d.widgets.some((w) => w.id === showWidget)) return;
     const id = showWidget;
     showWidget = '';
     requestAnimationFrame(() => grid.querySelector<HTMLElement>(`[data-widget-cell="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'start' }));
@@ -269,7 +269,7 @@
       onTicket={openTicket}
       {tickets}
       {actions}
-      limit={proposed ? null : store.limitOf(w.id)}
+      limit={proposed ? null : tiles?.limits[w.id] ?? null}
       tile={proposed ? undefined : tileOf(w)}
     />
   </div>

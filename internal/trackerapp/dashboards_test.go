@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerdash"
 )
@@ -188,13 +189,13 @@ func TestATriedWidgetIsCountedAndShownOnlyWhenAsked(t *testing.T) {
 	if tried.Count != 3 || tried.Value.Value == nil || *tried.Value.Value.V != 3 || len(tried.Rows) != 3 || tried.Rows[0].Key == "" {
 		t.Fatalf("tried = %+v", tried)
 	}
-	if l := m.list(t, sub); len(l.Proposals) != 0 || m.events.dashboards.Load() != 0 {
-		t.Fatalf("a try without show proposed: %+v, told %d", l.Proposals, m.events.dashboards.Load())
+	if l := m.list(t, sub); len(l.Proposals) != 0 || len(m.dashboardsSince(0)) != 0 {
+		t.Fatalf("a try without show proposed: %+v, told %+v", l.Proposals, m.dashboardsSince(0))
 	}
 
 	id := m.propose(t, openTickets())
-	if !isOwnID(id, widgetPrefix) || m.events.dashboards.Load() != 1 {
-		t.Fatalf("proposal %q, told %d", id, m.events.dashboards.Load())
+	if told := m.dashboardsSince(0); !isOwnID(id, widgetPrefix) || !slices.Equal(told, []ProjectDashboards{{Project: m.project(), Counts: true}}) {
+		t.Fatalf("proposal %q, told %+v", id, told)
 	}
 	if ps := m.list(t, sub).Proposals; len(ps) != 1 || ps[0].View.ID != id || ps[0].Thread != "thread-1" || ps[0].View.How.SQL == "" {
 		t.Fatalf("proposals = %+v", ps)
@@ -253,13 +254,13 @@ func TestKeepMovesAProposalOntoAKeptDashboard(t *testing.T) {
 	if _, err := m.svc.KeepProposal(sub, first, KeepTarget{}); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("a Keep onto no dashboard: %v", err)
 	}
-	told := m.events.dashboards.Load()
+	told := m.boardEventCount()
 	id, err := m.svc.KeepProposal(sub, first, KeepTarget{Title: " Bugs "})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := m.events.dashboards.Load() - told; n != 1 {
-		t.Fatalf("a Keep was told %d times; want 1", n)
+	if got := m.dashboardsSince(told); !slices.Equal(got, []ProjectDashboards{{Project: m.project(), Counts: true}}) {
+		t.Fatalf("a Keep was told %+v; want once, counting again", got)
 	}
 	list := m.list(t, sub)
 	if ds := list.Dashboards; len(ds) != 2 || ds[1].ID != id || ds[1].Title != "Bugs" || len(ds[1].Widgets) != 1 || ds[1].Widgets[0].ID != first || len(list.Proposals) != 0 {
@@ -281,15 +282,15 @@ func TestKeepMovesAProposalOntoAKeptDashboard(t *testing.T) {
 	if _, err := m.svc.KeepProposal(sub, third, KeepTarget{Dashboard: "d_0123"}); refusalCode(err) != "dashboard_gone" {
 		t.Fatalf("a Keep onto a dashboard that is gone: %v", err)
 	}
-	told = m.events.dashboards.Load()
+	told = m.boardEventCount()
 	if err := m.svc.DismissProposal(sub, third); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.svc.DismissProposal(sub, third); err != nil {
 		t.Fatal(err)
 	}
-	if n := m.events.dashboards.Load() - told; n != 1 {
-		t.Fatalf("two Dismisses were told %d times, want once", n)
+	if got := m.dashboardsSince(told); !slices.Equal(got, []ProjectDashboards{{Project: m.project(), Counts: true}}) {
+		t.Fatalf("two Dismisses were told %+v, want once", got)
 	}
 	if l := m.list(t, sub); len(l.Proposals) != 0 || len(l.Dashboards[1].Widgets) != 2 {
 		t.Fatalf("after the second Keep and the Dismiss: %+v", l)
@@ -327,15 +328,15 @@ func TestKeptDashboardsLiveInTheSetupFile(t *testing.T) {
 		t.Fatalf("after setup saves over %s: %+v", stored.Revision, list)
 	}
 
-	told := m.events.dashboards.Load()
+	told := m.boardEventCount()
 	if err := m.svc.RemoveWidget(sub, id, w); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.svc.RemoveWidget(sub, id, w); err != nil {
 		t.Fatal(err)
 	}
-	if n := m.events.dashboards.Load() - told; n != 1 {
-		t.Fatalf("a Remove, twice, was told %d times; want 1", n)
+	if got := m.dashboardsSince(told); !slices.Equal(got, []ProjectDashboards{{Project: m.project(), Counts: true}}) {
+		t.Fatalf("a Remove, twice, was told %+v; want once", got)
 	}
 	if list := m.list(t, sub).Dashboards; len(list) != 1 {
 		t.Fatalf("the dashboard outlived its last widget: %+v", list)
@@ -390,27 +391,39 @@ func TestKeepRefusesANewerSectionAndAFullFile(t *testing.T) {
 	}
 }
 
-// A Keep is one change the clients are told of once: whoever reads the
-// board when told finds the widget kept and no longer proposed, and a
-// Dismiss of it then finds nothing to drop.
+// A Keep is one change the clients are told of once: when it is told,
+// the widget is kept and no longer proposed, so whoever lists the board
+// then finds it so. The hook runs on the Keep's goroutine as the event
+// is emitted, under subMu, so it reads the service's state as the Keep
+// left it rather than through a listing, which takes subMu.
 func TestAKeepIsToldOnceAndReadsSettled(t *testing.T) {
 	t.Parallel()
 	m, sub := dashboardFixture(t)
 	p := m.propose(t, openTickets())
+	_, key, err := m.svc.boardHandle(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
 	type seen struct{ proposed, kept bool }
 	var reads []seen
-	hook := func() {
-		l := m.list(t, sub)
-		kept := len(l.Dashboards) == 2 && slices.ContainsFunc(l.Dashboards[1].Widgets, func(w trackerdash.WidgetView) bool { return w.ID == p })
-		reads = append(reads, seen{proposed(l, p), kept})
+	hook := func(e any) {
+		if b, ok := e.(BoardEvent); !ok || b.Dashboards == nil {
+			return
+		}
+		held := m.svc.setups[key.slug]
+		kept := held != nil && slices.ContainsFunc(dashboardsOf(held.kept.dashboards, key.site, string(testBoard)), func(d KeptDashboard) bool {
+			return slices.ContainsFunc(d.Widgets, func(w KeptWidget) bool { return w.ID == p })
+		})
+		proposed := slices.ContainsFunc(m.svc.proposals[proposalKey{key.slug, key.site, testBoard}], func(h heldProposal) bool { return h.widget.ID == p })
+		reads = append(reads, seen{proposed, kept})
 	}
-	m.events.onDashboards.Store(&hook)
+	m.events.onEmit.Store(&hook)
 	if _, err := m.svc.KeepProposal(sub, p, KeepTarget{Title: "Bugs"}); err != nil {
 		t.Fatal(err)
 	}
-	m.events.onDashboards.Store(nil)
+	m.events.onEmit.Store(nil)
 	if len(reads) != 1 || reads[0] != (seen{proposed: false, kept: true}) {
-		t.Fatalf("what a reader found at each nudge of one Keep: %+v; want one, kept and not proposed", reads)
+		t.Fatalf("what the service held at each telling of one Keep: %+v; want one, kept and not proposed", reads)
 	}
 }
 
@@ -557,5 +570,60 @@ func TestAnEvaluationOfAProjectCountingTicketsCountsTickets(t *testing.T) {
 	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
 	if got, want := reads(), `tried {"v":2,"nc":1} tickets; dashboard {"v":2,"nc":1} none, no estimate {"v":1}; drill {"v":2,"nc":1} none`; got != want {
 		t.Fatalf("counting tickets:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A change of a board's dashboards that no person's press makes reaches
+// every open dashboard of the project's board, on the board's event, and
+// no other: an agent's proposal, which names the project and the board,
+// not a subscription, is told to the board's subscriptions of the
+// project, two windows' pump among them, and not to the project's other
+// board, nor to the board of the same ID on another site the project
+// lists; a setup save that changes the unit the project counts in is told
+// to every board of the project, counting again. Another project on the
+// board takes none of it as its own.
+func TestADashboardsChangeReachesEveryOpenDashboardOfItsBoardAndNoOther(t *testing.T) {
+	t.Parallel()
+	m, _ := dashboardFixture(t)
+	m.subscribeShown(t, m.project())
+	m.listIn(t, "other")
+	m.subscribeShown(t, "other")
+	second := Scope{Connection: m.conn.ID, Board: "2"}
+	m.subscribe(t, second.Board)
+	elsewhere := m.add(NewConnection{Kind: store.TrackerKindJira, Site: "elsewhere.atlassian.net", Account: "User1@Example.com"})
+	held := []store.HeldTrackerBoard{}
+	for _, b := range must[[]store.ProjectTrackerBoard](t)(m.st.ListProjectTrackerBoards(m.project())) {
+		held = append(held, store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst})
+	}
+	list := []store.ProjectTrackerBoard{{ConnectionID: m.conn.ID, BoardID: string(testBoard)}, {ConnectionID: m.conn.ID, BoardID: "2"}, {ConnectionID: elsewhere.ID, BoardID: string(testBoard)}}
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), held, list); err != nil {
+		t.Fatal(err)
+	}
+	there := Scope{Connection: elsewhere.ID, Board: testBoard}
+	if _, err := m.svc.SubscribeBoard(m.project(), there, []Section{{Kind: SectionBacklog}}, true, untied); err != nil {
+		t.Fatal(err)
+	}
+	told := func(n int) map[Scope][]ProjectDashboards {
+		boards, _, _ := m.events.snapshot()
+		out := map[Scope][]ProjectDashboards{}
+		for _, e := range boards[n:] {
+			if e.Dashboards != nil {
+				out[e.Scope] = append(out[e.Scope], *e.Dashboards)
+			}
+		}
+		return out
+	}
+	counts := []ProjectDashboards{{Project: m.project(), Counts: true}}
+
+	n := m.boardEventCount()
+	m.propose(t, openTickets())
+	if got := told(n); len(got) != 1 || !slices.Equal(got[m.scope()], counts) {
+		t.Fatalf("an agent's proposal was told %+v; want once, on the board's event of the project, counting again", got)
+	}
+
+	n = m.boardEventCount()
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
+	if got := told(n); len(got) != 3 || !slices.Equal(got[m.scope()], counts) || !slices.Equal(got[second], counts) || !slices.Equal(got[there], counts) {
+		t.Fatalf("a change of the unit was told %+v; want once on each of the project's boards, counting again", got)
 	}
 }

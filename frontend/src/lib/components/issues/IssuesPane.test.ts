@@ -4657,7 +4657,7 @@ describe("the board's summary row", () => {
     };
   }
   function listing(): unknown {
-    return { dashboards: [OVERVIEW, KEPT], proposals: [], ask: '', tiles: { limits: { stuck: 0 }, proposed: [], max: 5 } };
+    return { dashboards: [OVERVIEW, KEPT], proposals: [], ask: '', tiles: { limits: { stuck: { value: 0, unit: 'tickets' } }, proposed: [], max: 5 } };
   }
   /** The board's computer tells the project's pins on the board's event. */
   let seq = 10;
@@ -4822,6 +4822,51 @@ describe("the board's summary row", () => {
     } finally {
       scrolled.mockRestore();
     }
+  });
+
+  it('opens a chart\'s dashboard at its widget when the first count fails', async () => {
+    const scrolled = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {});
+    try {
+      const chart = { id: 'w_chart', title: 'Reviews per week', form: 'bars', width: 6, unit: 'tickets', bucket: 'period', how };
+      const kept = { ...KEPT, widgets: [...KEPT.widgets, chart] };
+      install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['w_chart'] } as Partial<BoardView>) });
+      setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+      // The row's count answers; the dashboard's first count is refused.
+      setBindingMock('EvaluateTrackerDashboard', async (_sub: string, r: { widgets?: string[] }) => {
+        if (r.widgets?.length) return answer();
+        throw new Error('dashboard_busy');
+      });
+      const view = mount();
+      await fireEvent.click(await view.findByTestId('board-row-chip'));
+      await waitFor(() => expect(view.getByTestId('dashboard-title')).toHaveTextContent('Mine'));
+      await waitFor(() => expect(scrolled).toHaveBeenCalledTimes(1));
+      expect((scrolled.mock.contexts[0] as HTMLElement).dataset.widgetCell).toBe('w_chart');
+      view.unmount();
+    } finally {
+      scrolled.mockRestore();
+    }
+  });
+
+  it('shows each series of a table whose series overlap, not their sum', async () => {
+    const table = {
+      id: 'sprints', title: 'Sprints', form: 'table', width: 12, unit: 'estimate', bucket: 'sprint', series: ['Committed', 'Done'], overlap: true, how,
+    };
+    const overview = { ...OVERVIEW, widgets: [...OVERVIEW.widgets, table] };
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['sprints'] } as Partial<BoardView>) });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [overview, KEPT], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    // A five-point ticket committed and done in the sprint counts in both.
+    setBindingMock('EvaluateTrackerDashboard', async () => ({
+      range: { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' }, estimates: 'points', at: 1,
+      widgets: [{ id: 'sprints', series: ['Committed', 'Done'], buckets: [{ key: 's1', label: 'Sprint 1', cells: [{ v: 5 }, { v: 5 }], total: { v: 10 } }] }],
+    }));
+    const view = mount();
+    await view.findByTestId('board-row-chip');
+    await fireEvent.click(view.getByTestId('board-row-toggle'));
+    const [tile] = await view.findAllByTestId('board-row-tile');
+    await waitFor(() => expect(tile.textContent).toContain('Sprint 1'));
+    expect(tile.textContent?.replace(/\s+/g, ' ')).toContain('Sprint 1Committed 5 · Done 5');
+    expect(tile.textContent).not.toContain('10');
+    view.unmount();
   });
 
   it('takes a tile off, adds one from a dashboard, says a full row is full, and asks the agent for a new one', async () => {

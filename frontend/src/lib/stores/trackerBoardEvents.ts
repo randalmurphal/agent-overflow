@@ -21,18 +21,12 @@ export interface TrackerBoardEvent {
   /** One project's pins that changed (trackerapp.ProjectPins): only that
    * project's subscriptions hold them. */
   pins?: { project: string; pins: string[] } | null;
+  /** One project's dashboards of the board changed
+   * (trackerapp.ProjectDashboards), and with `counts` what they count:
+   * only that project's subscriptions take it. */
+  dashboards?: { project: string; counts: boolean } | null;
   sync?: SyncView;
   ended?: boolean;
-}
-
-/** The `tracker:dashboards_updated` frame (trackerapp.DashboardsChange):
- * the dashboards of `project`'s `board` changed, of every board of the
- * project when it names none, and `counts` says whether what they count
- * did; a limit's change counts nothing again. */
-export interface TrackerDashboardsChange {
-  project: string;
-  board?: string;
-  counts: boolean;
 }
 
 /** The `tracker:issue_updated` frame (trackerapp.IssueEvent). */
@@ -70,7 +64,6 @@ let tickets: TrackerChannel<TrackerIssueEvent> | null = null;
 const timeEntries = new Set<TrackerChannel<TrackerTimeEntriesEvent>>();
 const listsChanged = new Set<(backend: BackendKey) => void>();
 const setupUpdated = new Set<(backend: BackendKey) => void>();
-const dashboardsUpdated = new Set<(backend: BackendKey, change: TrackerDashboardsChange) => void>();
 
 /** The board store takes the channel when it loads. */
 export function takeTrackerBoardChannel(channel: TrackerChannel<TrackerBoardEvent>): void {
@@ -130,19 +123,6 @@ export function onTrackerBoardListsChanged(listener: (backend: BackendKey) => vo
  * connections changed, or this window saved a project's boards. */
 export function trackerBoardListsChanged(backend: BackendKey): void {
   for (const listener of listsChanged) listener(backend);
-}
-
-/** Runs `listener` on every `tracker:dashboards_updated` from a computer:
- * a board's dashboards there, the widgets proposed on it or a limit,
- * changed; the returned function stops it. */
-export function onTrackerDashboardsUpdated(listener: (backend: BackendKey, change: TrackerDashboardsChange) => void): () => void {
-  dashboardsUpdated.add(listener);
-  return () => { dashboardsUpdated.delete(listener); };
-}
-
-/** A `tracker:dashboards_updated` frame from `backend`. */
-export function trackerDashboardsUpdated(backend: BackendKey, change: TrackerDashboardsChange): void {
-  for (const listener of dashboardsUpdated) listener(backend, change);
 }
 
 /** Runs `listener` on every `tracker:setup_updated` from a computer: some

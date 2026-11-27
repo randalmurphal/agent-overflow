@@ -53,6 +53,18 @@ type TileLimit struct {
 // limitUnits are the units a limit is set in.
 var limitUnits = []string{"tickets", "days", "points", "seconds"}
 
+// limitStep is how far a Raise or a Lower moves a limit set in unit: an
+// hour of seconds, half a day, else 1.
+func limitStep(unit string) float64 {
+	switch unit {
+	case "seconds":
+		return 3600
+	case "days":
+		return 0.5
+	}
+	return 1
+}
+
 type boardTilesV1 struct {
 	Version int          `json:"version"`
 	Boards  []BoardTiles `json:"boards"`
@@ -206,11 +218,11 @@ func livePins(t BoardTiles, ws map[string]tileWidget) []string {
 // shownLimits is t's limits that apply on a board whose estimates are
 // estimateUnit: of a number widget ws holds, set in the unit its number
 // is in now.
-func shownLimits(t BoardTiles, ws map[string]tileWidget, estimateUnit int) map[string]float64 {
-	out := map[string]float64{}
+func shownLimits(t BoardTiles, ws map[string]tileWidget, estimateUnit int) map[string]TileLimit {
+	out := map[string]TileLimit{}
 	for id, l := range t.Limits {
 		if w, ok := ws[id]; ok && w.form == trackerdash.FormNumber && trackerdash.ValueUnit(w.metric, estimateUnit) == l.Unit {
-			out[id] = l.Value
+			out[id] = l
 		}
 	}
 	return out
@@ -270,34 +282,38 @@ func (s *Service) boardPins(key setupKey, board string, k trackerdash.Kind) ([]s
 	if err != nil {
 		return nil, err
 	}
-	ws := tileWidgets(k, dashboardsOf(held.kept.dashboards, key.site, board))
-	return livePins(tilesOf(held.kept.tiles, key.site, board), ws), nil
+	t := tilesOf(held.kept.tiles, key.site, board)
+	if len(t.Pins) == 0 {
+		return nil, nil
+	}
+	return livePins(t, tileWidgets(k, dashboardsOf(held.kept.dashboards, key.site, board))), nil
 }
 
 // BoardTilesView is a board's summary row as its Dashboards screen reads
 // it, beside the pins its board subscription carries (BoardView.Pins):
-// each number widget's limit that applies now by widget ID, a proposed
-// one's included, the proposals Keep pins (Proposed), and how many tiles
-// the row shows (Max); the maps and lists not nil.
+// each number widget's limit that applies now, with its unit, by widget
+// ID, a proposed one's included, the proposals Keep pins (Proposed), and
+// how many tiles the row shows (Max); the maps and lists not nil.
 type BoardTilesView struct {
-	Limits   map[string]float64 `json:"limits"`
-	Proposed []string           `json:"proposed"`
-	Max      int                `json:"max"`
+	Limits   map[string]TileLimit `json:"limits"`
+	Proposed []string             `json:"proposed"`
+	Max      int                  `json:"max"`
 }
 
 // tilesView is t and the marks of proposed as a listing answers them: the
 // limits that apply on a board whose estimates are estimateUnit among the
-// widgets ws, and those proposed that l lists.
+// widgets ws, and those proposed that l lists, whose limit applies while
+// the unit it was proposed in holds, as a kept one's does.
 func tilesView(t BoardTiles, ws map[string]tileWidget, estimateUnit int, proposed []heldProposal, l trackerdash.Listing) BoardTilesView {
 	out := BoardTilesView{Limits: shownLimits(t, ws, estimateUnit), Proposed: []string{}, Max: maxPins}
 	for _, p := range proposed {
 		if !slices.ContainsFunc(l.Proposals, func(v trackerdash.ProposalView) bool { return v.View.ID == p.widget.ID }) {
 			continue
 		}
-		if p.marks.Limit != nil && p.widget.Form == trackerdash.FormNumber {
-			out.Limits[p.widget.ID] = *p.marks.Limit
+		if p.limit != nil && p.limit.Unit == trackerdash.ValueUnit(p.widget.Metric, estimateUnit) {
+			out.Limits[p.widget.ID] = *p.limit
 		}
-		if p.marks.Pin {
+		if p.pin {
 			out.Proposed = append(out.Proposed, p.widget.ID)
 		}
 	}
@@ -324,30 +340,76 @@ func checkLimit(v float64) error {
 	return nil
 }
 
-// SetWidgetLimit sets the limit of widget, a number widget of the board
-// subscription's dashboards, in the unit its number is in now, or clears
-// it for nil; the board's tile and the widget are marked when its number
-// passes it. The clients are told the board's dashboards changed, and
-// that nothing they count did.
-func (s *Service) SetWidgetLimit(ctx context.Context, subscription, widget string, limit *float64) error {
-	if limit != nil {
-		if err := checkLimit(*limit); err != nil {
-			return err
+// estimatesWords is how a refusal names what a board's estimates are
+// counted in (trackerdash.EstimatesOf).
+func estimatesWords(estimates string) string {
+	switch estimates {
+	case "points":
+		return "story points"
+	case "time":
+		return "estimated time"
+	}
+	return "tickets"
+}
+
+// LimitChange is a change of a number widget's limit: Value, the number
+// a count answered in Estimates (trackerdash.Answer.Estimates), and Step,
+// a Raise (1) or a Lower (-1) of the stored limit by its unit's step
+// (limitStep). A step of a widget with no limit stored in the unit its
+// number is in now starts from Value, which it then names.
+type LimitChange struct {
+	Value     *float64 `json:"value,omitempty"`
+	Estimates string   `json:"estimates,omitempty"`
+	Step      int      `json:"step,omitempty"`
+}
+
+// SetWidgetLimit changes the limit of widget, a number widget of the board
+// subscription's dashboards, by change, or clears it for nil; the board's
+// tile and the widget are marked when its number passes it. The limit is
+// in the unit its number is in now: a Value counted in other estimates
+// than the board's now is refused, and a step moves the stored limit
+// from the value it holds when the write is made, never below 0. The
+// clients are told the board's dashboards changed, and that nothing they
+// count did.
+func (s *Service) SetWidgetLimit(ctx context.Context, subscription, widget string, change *LimitChange) error {
+	if change != nil {
+		if change.Step < -1 || change.Step > 1 || change.Step == 0 && change.Value == nil {
+			return fmt.Errorf("%w: a limit's change is a value, a step of 1 or -1, or both", ErrInvalidRequest)
+		}
+		if change.Value != nil {
+			if err := checkLimit(*change.Value); err != nil {
+				return err
+			}
 		}
 	}
-	scope, project, changed, err := s.editTiles(subscription, widget, func(w tileWidget, tb tileBoard, t *BoardTiles) error {
+	key, scope, changed, err := s.editTiles(subscription, widget, func(w tileWidget, tb tileBoard, t *BoardTiles) error {
 		if w.form != trackerdash.FormNumber {
 			return dashRefusal("dashboard_limit_not_number", "only a number tile carries a limit")
 		}
 		old, had := t.Limits[widget]
-		if limit == nil {
+		if change == nil {
 			if !had {
 				return errNoEdit
 			}
 			delete(t.Limits, widget)
 			return nil
 		}
-		next := TileLimit{Value: *limit, Unit: trackerdash.ValueUnit(w.metric, tb.estimateUnit)}
+		unit := trackerdash.ValueUnit(w.metric, tb.estimateUnit)
+		if change.Value != nil {
+			if now := trackerdash.EstimatesOf(tb.estimateUnit); change.Estimates != now {
+				return dashRefusal("dashboard_limit_unit", fmt.Sprintf("the board's numbers are counted in %s now; set the limit again from its new count", estimatesWords(now)))
+			}
+		}
+		var value float64
+		switch {
+		case change.Step != 0 && had && old.Unit == unit:
+			value = old.Value + float64(change.Step)*limitStep(unit)
+		case change.Value == nil:
+			return dashRefusal("dashboard_limit_start", "this widget has no limit to step from; count it and set one")
+		default:
+			value = *change.Value + float64(change.Step)*limitStep(unit)
+		}
+		next := TileLimit{Value: max(0, value), Unit: unit}
 		if had && old == next {
 			return errNoEdit
 		}
@@ -358,7 +420,7 @@ func (s *Service) SetWidgetLimit(ctx context.Context, subscription, widget strin
 		return nil
 	})
 	if changed {
-		s.dashboardsChanged(DashboardsChange{Project: project, Board: string(scope.Board)})
+		s.tellDashboards(key.slug, false, boardIs(key.site, string(scope.Board)))
 	}
 	return err
 }
@@ -388,16 +450,16 @@ func rowFull() error {
 
 // editTiles changes the tiles of the board subscription's board with
 // edit, given widget as the board has it when the edit is written
-// (editBoard), and answers the board, its project and whether the tiles
-// changed. A widget the board does not have then is refused.
-func (s *Service) editTiles(subscription, widget string, edit func(tileWidget, tileBoard, *BoardTiles) error) (Scope, string, bool, error) {
-	scope, key, project, err := s.boardHandleProject(subscription)
+// (editBoard), and answers the board's project and scope and whether the
+// tiles changed. A widget the board does not have then is refused.
+func (s *Service) editTiles(subscription, widget string, edit func(tileWidget, tileBoard, *BoardTiles) error) (setupKey, Scope, bool, error) {
+	scope, key, err := s.boardHandle(subscription)
 	if err != nil {
-		return Scope{}, "", false, err
+		return setupKey{}, Scope{}, false, err
 	}
 	tb, err := s.tileBoardOf(scope, key)
 	if err != nil {
-		return Scope{}, "", false, err
+		return setupKey{}, Scope{}, false, err
 	}
 	changed, err := s.editBoard(key.slug, key.site, string(scope.Board), tb.kind, func(b *boardKept, ws map[string]tileWidget) error {
 		w, ok := ws[widget]
@@ -406,5 +468,5 @@ func (s *Service) editTiles(subscription, widget string, edit func(tileWidget, t
 		}
 		return edit(w, tb, &b.tiles)
 	})
-	return scope, project, changed, err
+	return key, scope, changed, err
 }

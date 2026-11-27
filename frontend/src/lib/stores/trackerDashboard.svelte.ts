@@ -19,8 +19,8 @@
 // Freshness. The board's subscription keeps syncing while the screen
 // shows (issuesPane.svelte.ts votes it shown), and the board's changes
 // count (TrackerBoardState.changes) moves with each event that names rows
-// or says to read again, a status-groups change among them, and with a
-// gap. A move asks for an evaluation, at most one every 5 s
+// or says to read again, a status-groups change among them, with a change
+// of what the project's dashboards of the board count, and with a gap. A move asks for an evaluation, at most one every 5 s
 // (refreshScheduler); a change of what is counted (the range, Team or
 // Mine, a narrowing, the subscription after a reconnect) drops the one in
 // flight and evaluates at once; and every 10 minutes the screen evaluates
@@ -39,15 +39,15 @@
 //
 // A board's own dashboards and the widgets agents proposed on it are the
 // board's computer's too (trackerapp/dashboards.go): Keep, Dismiss and
-// Remove are its methods, and every change there, from any client, is a
-// `tracker:dashboards_updated` from that computer, on which the screen
-// lists the dashboards again, and counts again when the change says the
-// numbers moved (a limit does not move them). The event names the project
-// and the board it changed, or no board for all of the project's; a store
-// of another lists nothing. A change of that computer's settings lists
-// them again too, for Ask's sentence, and so does Refresh, for whatever
-// else the list was built from. A Keep onto a new dashboard shows it once
-// the list read after the Keep holds it.
+// Remove are its methods, and every change there, from any client, is
+// told on the board's event to its subscriptions of the project
+// (TrackerBoardState.dashboards), on which the screen lists the
+// dashboards again; one that moved the numbers (a limit does not) moves
+// the board's changes too, so it counts again. A gap moves both. A change
+// of that computer's settings lists them again too, for Ask's sentence,
+// and so does Refresh, for whatever else the list was built from. A Keep
+// onto a new dashboard shows it once the list read after the Keep holds
+// it.
 //
 // The board's summary row (BoardSummaryRow.svelte) is one of these too,
 // made with `row`: what it counts is one dashboard made of the widgets
@@ -56,13 +56,13 @@
 // freshness rule; the proposals are not counted. The pins are the board
 // subscription's (TrackerBoardState.pins), which a pin from any client
 // changes with no read. A number widget's limit is the list's (`tiles`,
-// trackerapp/board_tiles.go); the limit a write here set stands
-// (`limitOf`) until a list begun after the write lands, so a second step
-// counts from the first.
+// trackerapp/board_tiles.go), with the unit it applies in; a Raise or a
+// Lower sends a step, which the computer applies to the limit it stores,
+// so a step counts from the last one whatever this list shows yet.
 
 import { untrack } from 'svelte';
-import { SvelteMap, SvelteSet } from 'svelte/reactivity';
-import type { BoardTilesView, KeepTarget } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { SvelteSet } from 'svelte/reactivity';
+import type { BoardTilesView, KeepTarget, LimitChange } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import type {
   Answer,
   DashboardView,
@@ -91,7 +91,6 @@ import { openTicketThread } from './ticketWork.svelte';
 import { prependThreadReply } from './threads.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
 import type { TrackerBoardRef } from './trackerBoard.svelte';
-import { onTrackerDashboardsUpdated } from './trackerBoardEvents';
 
 const RANGE_KEY = 'issues-dashboard-range';
 const MINE_KEY = 'issues-dashboard-mine';
@@ -103,12 +102,15 @@ export const DASHBOARD_CHANGE_INTERVAL_MS = 5_000;
 export const DASHBOARD_REFRESH_MS = 10 * 60_000;
 
 /** The board a dashboard counts: the board, its subscription on its
- * computer, and how many times it changed (TrackerBoardState.changes). */
+ * computer, how many times it changed (TrackerBoardState.changes) and how
+ * many times its project's dashboards of it did
+ * (TrackerBoardState.dashboards). */
 export interface DashboardSource {
   readonly backend: BackendKey;
   readonly board: TrackerBoardRef;
   readonly subscription: string;
   readonly changes: number;
+  readonly dashboards: number;
 }
 
 /** A number of a widget whose rows a drill lists, one of the targets
@@ -137,14 +139,11 @@ export interface TrackerDashboard {
    * computer whose release has none. Reactive. */
   readonly dashboards: readonly DashboardView[] | 'older' | null;
   readonly dashboardsError: unknown;
-  /** Each number widget's limit, the proposals asked for the board's
-   * summary row and how many widgets the row holds, as the list has them;
-   * null until read, and from a computer whose release has no dashboards.
-   * Reactive. */
+  /** Each number widget's limit with its unit, the proposals asked for
+   * the board's summary row and how many widgets the row holds, as the
+   * list has them; null until read, and from a computer whose release has
+   * no dashboards. Reactive. */
   readonly tiles: BoardTilesView | null;
-  /** A widget's limit: the one the last write here set, until a list begun
-   * after it lands, else the list's; null for none. Reactive. */
-  limitOf(widget: string): number | null;
   /** The widgets agents proposed on the board, as the list has them.
    * Reactive. */
   readonly proposals: readonly ProposalView[];
@@ -182,8 +181,9 @@ export interface TrackerDashboard {
   dismiss(proposal: string): Promise<void>;
   /** Removes a widget from the dashboard shown. */
   removeWidget(widget: string): Promise<void>;
-  /** Sets a number widget's limit, or clears it with null. */
-  setLimit(widget: string, limit: number | null): Promise<void>;
+  /** Changes a number widget's limit (trackerapp.LimitChange), or clears
+   * it with null. */
+  setLimit(widget: string, change: LimitChange | null): Promise<void>;
   /** Pins a widget to the board's summary row, or takes it off. */
   pin(widget: string, pinned: boolean): Promise<void>;
   setRange(range: string): void;
@@ -271,19 +271,14 @@ export function createTrackerDashboard(opts: {
    * it counts those alone. */
   row?: () => readonly string[];
 }): TrackerDashboard {
-  // Starts each list, so a limit's write knows which lists began after it.
-  let listSeq = 0;
-  // The limit the last accepted write set on each widget, and the last list
-  // begun before it; a list begun later clears it when it lands.
-  const written = new SvelteMap<string, { readonly value: number | null; readonly after: number }>();
   let dashboards = $state.raw<readonly DashboardView[] | 'older' | null>(null);
   let tiles = $state.raw<BoardTilesView | null>(null);
   let proposals = $state.raw<readonly ProposalView[]>([]);
   let ask = $state('');
   let dashboardsError = $state.raw<unknown>(null);
   let listedFor = '';
-  // Moves with each change of the dashboards on the board's computer, so
-  // the list is read again.
+  // Moves with each change here that the list must follow: a Keep, a
+  // change of the computer's settings, a Refresh.
   let listGen = $state(0);
   let dashboardPick = $state<string>('');
   const busy = new SvelteSet<string>();
@@ -383,7 +378,7 @@ export function createTrackerDashboard(opts: {
       const s = opts.source();
       const gen = listGen;
       if (!s?.subscription || !opts.shown()) return;
-      const key = `${s.backend}\n${s.subscription}\n${gen}`;
+      const key = `${s.backend}\n${s.subscription}\n${s.dashboards}\n${gen}`;
       if (key === untrack(() => listedFor)) return;
       untrack(() => void list(s, key));
     });
@@ -398,16 +393,6 @@ export function createTrackerDashboard(opts: {
       if (settingsSeen !== null && current !== settingsSeen) untrack(() => { listGen += 1; });
       settingsSeen = current;
     });
-
-    $effect(() => onTrackerDashboardsUpdated((backend, change) => {
-      const s = opts.source();
-      if (s?.backend !== backend || change.project !== s.board.projectId) return;
-      if (change.board && change.board !== s.board.board) return;
-      listGen += 1;
-      // The row's pins are the board's, which change its request; what
-      // else changes the numbers is a widget of a dashboard.
-      if (change.counts && opts.shown() && !opts.row) scheduler.request({ immediate: true });
-    }));
 
     // What is counted changed, or the screen shows again: the evaluation
     // in flight is dropped and one starts now.
@@ -427,7 +412,6 @@ export function createTrackerDashboard(opts: {
 
   function list(s: DashboardSource, key: string): Promise<void> {
     listedFor = key;
-    const begun = ++listSeq;
     return (async () => {
       try {
         const answer = await withBackendTarget(s.backend, () => TrackerDashboards(s.subscription));
@@ -435,7 +419,6 @@ export function createTrackerDashboard(opts: {
         dashboards = answer?.dashboards ?? 'older';
         proposals = answer?.proposals ?? [];
         tiles = answer?.tiles ?? null;
-        for (const [id, w] of written) if (w.after < begun) written.delete(id);
         ask = answer?.ask ?? '';
         dashboardsError = null;
       } catch (err) {
@@ -499,10 +482,6 @@ export function createTrackerDashboard(opts: {
     get dashboards() { return dashboards; },
     get dashboardsError() { return dashboardsError; },
     get tiles() { return tiles; },
-    limitOf(widget) {
-      const w = written.get(widget);
-      return w ? w.value : tiles?.limits[widget] ?? null;
-    },
     get proposals() { return proposals; },
     get ask() { return ask; },
     get dashboard() { return dashboard; },
@@ -516,7 +495,7 @@ export function createTrackerDashboard(opts: {
       if (!kept || !s) return;
       // The new dashboard shows once a list read after the Keep holds it.
       listGen += 1;
-      await list(s, `${s.backend}\n${s.subscription}\n${listGen}`);
+      await list(s, `${s.backend}\n${s.subscription}\n${s.dashboards}\n${listGen}`);
       pick(kept);
     },
     async dismiss(proposal) {
@@ -528,7 +507,7 @@ export function createTrackerDashboard(opts: {
       await change(widget, (s) => RemoveTrackerWidget(s.subscription, d.id, widget));
     },
     async setLimit(widget, limit) {
-      if (await change(widget, (s) => SetTrackerWidgetLimit(s.subscription, widget, limit))) written.set(widget, { value: limit, after: listSeq });
+      await change(widget, (s) => SetTrackerWidgetLimit(s.subscription, widget, limit));
     },
     async pin(widget, pinned) {
       await change(widget, (s) => PinTrackerWidget(s.subscription, widget, pinned));

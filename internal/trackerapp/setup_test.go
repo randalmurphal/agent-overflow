@@ -103,6 +103,19 @@ func (m *mirrorFixture) readAgainSince(n int) bool {
 	return slices.ContainsFunc(boards[n:], func(e BoardEvent) bool { return e.Scope == m.scope() && e.ReadAgain })
 }
 
+// dashboardsSince is what the board events of the fixture's board after
+// the first n tell of a project's dashboards (BoardEvent.Dashboards).
+func (m *mirrorFixture) dashboardsSince(n int) []ProjectDashboards {
+	boards, _, _ := m.events.snapshot()
+	var out []ProjectDashboards
+	for _, e := range boards[n:] {
+		if e.Scope == m.scope() && e.Dashboards != nil {
+			out = append(out, *e.Dashboards)
+		}
+	}
+	return out
+}
+
 func (m *mirrorFixture) boardEventCount() int {
 	boards, _, _ := m.events.snapshot()
 	return len(boards)
@@ -1407,10 +1420,10 @@ func TestAProjectThatCountsTicketsReadsItsBoardInTickets(t *testing.T) {
 	if v := m.viewOf(t, mine.ID); v.Estimate.Unit != "points" || v.Counts != "points" {
 		t.Fatalf("the board before: estimate %q, counts %q", v.Estimate.Unit, v.Counts)
 	}
-	n, dashboards := m.boardEventCount(), m.events.dashboards.Load()
+	n := m.boardEventCount()
 	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
-	if !m.readAgainSince(n) || m.events.dashboards.Load() != dashboards+1 {
-		t.Fatalf("the project began counting tickets: read again %v, dashboards told %d times", m.readAgainSince(n), m.events.dashboards.Load()-dashboards)
+	if got := m.dashboardsSince(n); !m.readAgainSince(n) || !slices.Equal(got, []ProjectDashboards{{Project: m.project(), Counts: true}}) {
+		t.Fatalf("the project began counting tickets: read again %v, dashboards told %+v", m.readAgainSince(n), got)
 	}
 	if v := m.viewOf(t, mine.ID); v.Estimate.Unit != "points" || v.Counts != "none" {
 		t.Fatalf("the board counting tickets: estimate %q, counts %q", v.Estimate.Unit, v.Counts)
@@ -1418,10 +1431,10 @@ func TestAProjectThatCountsTicketsReadsItsBoardInTickets(t *testing.T) {
 	if v := m.viewOf(t, theirs.ID); v.Counts != "points" {
 		t.Fatalf("the other project's board: counts %q", v.Counts)
 	}
-	n, dashboards = m.boardEventCount(), m.events.dashboards.Load()
+	n = m.boardEventCount()
 	off := false
 	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets", Poker: &off}})
-	if m.readAgainSince(n) || m.events.dashboards.Load() != dashboards {
+	if m.readAgainSince(n) || len(m.dashboardsSince(n)) != 0 {
 		t.Fatal("turning poker off read the board or its dashboards again")
 	}
 	n = m.boardEventCount()

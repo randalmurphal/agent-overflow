@@ -63,21 +63,23 @@ var (
 // not name (the board's structure, a status's name or group) or named more
 // than maxEventIssues (Truncated), and the client reads the board view
 // again. Pins are one project's pins that changed, which its subscribers
-// hold with no read. Sync is the board's sync state; Failure in it is sent
+// hold with no read, and Dashboards a change of one project's dashboards
+// of the board, on which they list them again. Sync is the board's sync state; Failure in it is sent
 // once when it starts or changes and once when it clears. Ended is the
 // last event:
 // the subscription ended (the connection was turned off or removed, or the
 // board is no longer listed), and every handle on it with it.
 type BoardEvent struct {
-	Scope     Scope             `json:"scope"`
-	Seq       uint64            `json:"seq"`
-	Changed   []tracker.IssueID `json:"changed,omitempty"`
-	Removed   []tracker.IssueID `json:"removed,omitempty"`
-	Truncated bool              `json:"truncated,omitempty"`
-	ReadAgain bool              `json:"read_again,omitempty"`
-	Pins      *ProjectPins      `json:"pins,omitempty"`
-	Sync      SyncView          `json:"sync"`
-	Ended     bool              `json:"ended,omitempty"`
+	Scope      Scope              `json:"scope"`
+	Seq        uint64             `json:"seq"`
+	Changed    []tracker.IssueID  `json:"changed,omitempty"`
+	Removed    []tracker.IssueID  `json:"removed,omitempty"`
+	Truncated  bool               `json:"truncated,omitempty"`
+	ReadAgain  bool               `json:"read_again,omitempty"`
+	Pins       *ProjectPins       `json:"pins,omitempty"`
+	Dashboards *ProjectDashboards `json:"dashboards,omitempty"`
+	Sync       SyncView           `json:"sync"`
+	Ended      bool               `json:"ended,omitempty"`
 }
 
 // ProjectPins is the widgets a project now pins to a board's summary row,
@@ -87,6 +89,16 @@ type BoardEvent struct {
 type ProjectPins struct {
 	Project string   `json:"project"`
 	Pins    []string `json:"pins"`
+}
+
+// ProjectDashboards tells, on a board's event, that a project's
+// dashboards of the board changed: a widget kept, dismissed, removed or
+// proposed, a limit set, or the unit the project counts in. With Counts
+// what they count changed too; a limit's change does not, as it changes
+// how a number is drawn. Only the subscriptions of Project take it.
+type ProjectDashboards struct {
+	Project string `json:"project"`
+	Counts  bool   `json:"counts"`
 }
 
 // IssueEvent tells an open ticket's subscribers, of Issue on Connection,
