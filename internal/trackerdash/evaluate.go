@@ -1256,10 +1256,10 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 	case FormBars, FormLine, FormTable:
 		out.Series = seriesOf(m, c.p.cols)
 		named := c.p.cols.has(ColumnSeries)
-		cell := func(key, label string, partial bool, total Num, rows []contribution) BucketValue {
+		cell := func(key, label string, partial bool, total Num, rows []contribution, reduce func([]contribution) Num) BucketValue {
 			b := BucketValue{Key: key, Label: label, Partial: partial, Total: total}
 			for _, s := range out.Series {
-				b.Cells = append(b.Cells, reduceRows(m.Reduce, bySeries(rows, s, named)))
+				b.Cells = append(b.Cells, reduce(bySeries(rows, s, named)))
 			}
 			return b
 		}
@@ -1268,11 +1268,8 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 		out.NotCounted = notCounted(g.unplaced)
 		if !ranks(w, m) {
 			for _, p := range g.periods {
-				b := cell(p.id, p.label, p.partial, reduceRows(m.Reduce, placed[p.id]), placed[p.id])
-				if p.future {
-					// A day still to come has no value, not a zero.
-					b.Total, b.Cells = Num{}, make([]Num, len(b.Cells))
-				}
+				reduce := func(rows []contribution) Num { return p.value(m.Reduce, rows) }
+				b := cell(p.id, p.label, p.partial, reduce(placed[p.id]), placed[p.id], reduce)
 				b.Last = p.last
 				out.Buckets = append(out.Buckets, b)
 			}
@@ -1284,7 +1281,7 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 		shown, rest, grouped := ev.rank(w, m, rows)
 		out.More = len(rest)
 		for _, b := range shown {
-			out.Buckets = append(out.Buckets, cell(b.key, b.label, false, b.total, grouped[b.key]))
+			out.Buckets = append(out.Buckets, cell(b.key, b.label, false, b.total, grouped[b.key], func(rows []contribution) Num { return reduceRows(m.Reduce, rows) }))
 		}
 	}
 	return out
@@ -1420,6 +1417,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	}
 	g := ev.inRange(m, c, sp)
 	rows, placed := g.rows, g.placed
+	reduce := func(rows []contribution) Num { return reduceRows(m.Reduce, rows) }
 	switch {
 	case r.Cell != nil && r.Rest:
 		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("a drill of widget %q names one cell or the rest, not both", truncate(w.ID, 64)), nil)
@@ -1453,6 +1451,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		p := g.periods[j]
 		out.Title += ", " + p.label
 		rows = placed[p.id]
+		reduce = func(rows []contribution) Num { return p.value(m.Reduce, rows) }
 	default:
 		var cell []contribution
 		for _, row := range rows {
@@ -1471,7 +1470,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 			rows = bySeries(rows, r.Cell.Series, true)
 			out.Title += ", " + r.Cell.Series
 		}
-		out.Value = reduceRows(m.Reduce, rows)
+		out.Value = reduce(rows)
 	}
 	rows = slices.Clone(rows)
 	sortDrill(rows, ev.keyOf)

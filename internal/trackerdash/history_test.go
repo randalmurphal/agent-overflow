@@ -117,6 +117,15 @@ func TestTheBurndownCountsTheOpenWorkOfEachDay(t *testing.T) {
 	if want := []string{"WEB-D counted", "WEB-A counted", "WEB-C counted", "WEB-I counted", "WEB-E not counted: its history is not read yet", "WEB-F not counted: its status then is not known"}; !reflect.DeepEqual(rows, want) || num(&d.Value) != "10, 2 not counted" {
 		t.Fatalf("Nov 24's drill = %s %v; want %v", num(&d.Value), rows, want)
 	}
+	// A later day has not happened: its point opens no tickets.
+	d, err = evaluator().Drill(context.Background(), burnBoard("points").board(), DrillRequest{Request: Request{Dashboard: builtinSprintsID, TimeZone: "UTC"},
+		Widget: "burndown", Cell: &DrillCell{Bucket: "day:2026-12-04"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Rows) != 0 || d.Value.V != nil {
+		t.Fatalf("Dec 4's drill = %s with %d rows; want none", num(&d.Value), len(d.Rows))
+	}
 }
 
 // A board with no active sprint, one whose active sprint has no dates,
@@ -266,6 +275,8 @@ func TestAStateCountsWhereItHolds(t *testing.T) {
 //	T  added to c1 14 days ago at 4 points, re-estimated to 5 a day later
 //	U  in c2 from before
 //	V  1 point, made 15 days ago in c1, its history from then
+//	W  1 point, in c1 from 30 days ago until 22 days ago, before its start
+//	X  in c1 from before its start at 2 points, re-estimated to 3 10 days ago
 func scopeBoard() *fixture {
 	f := newFixture(true, "points").status("1", "To Do", "todo").status("5", "Done", "done").
 		dated("c1", "WEB Sprint 1", "closed", ago(20), ago(6), ago(6), 1).
@@ -276,14 +287,15 @@ func scopeBoard() *fixture {
 	}{
 		{"P", "5", "done", "3", ago(40), ago(40)}, {"Q", "1", "todo", "2", ago(40), ago(40)}, {"R", "1", "todo", "1", ago(40), ago(40)},
 		{"S", "1", "todo", "2", ago(40), ago(18)}, {"T", "1", "todo", "5", ago(40), ago(40)}, {"U", "1", "todo", "1", ago(40), ago(40)},
-		{"V", "1", "todo", "1", ago(15), ago(15)},
+		{"V", "1", "todo", "1", ago(15), ago(15)}, {"W", "1", "todo", "1", ago(40), ago(40)}, {"X", "1", "todo", "3", ago(40), ago(40)},
 	} {
 		f.ticket(ticket{id: t.id, key: "WEB-" + t.id, status: t.status, group: t.group, points: t.points, created: t.created, historyFrom: t.history})
 	}
-	f.member("c1", "P", true).member("c1", "S", false).member("c1", "T", false).member("c2", "U", false)
+	f.member("c1", "P", true).member("c1", "S", false).member("c1", "T", false).member("c1", "X", false).member("c2", "U", false)
 	return f.stretch("c1", "P", "3", ago(25), 0).stretch("c1", "Q", "2", ago(15), ago(10)).stretch("c1", "R", "1", ago(25), ago(12)).
 		stretch("c1", "S", "2", ago(18), 0).stretch("c1", "T", "4", ago(14), ago(13)).stretch("c1", "T", "5", ago(13), 0).
-		stretch("c2", "U", "1", ago(25), 0).stretch("c1", "V", "1", ago(15), 0)
+		stretch("c2", "U", "1", ago(25), 0).stretch("c1", "V", "1", ago(15), 0).stretch("c1", "W", "1", ago(30), ago(22)).
+		stretch("c1", "X", "2", ago(25), ago(10)).stretch("c1", "X", "3", ago(10), 0)
 }
 
 // A finished sprint's table says what was committed at its start, added
@@ -307,7 +319,7 @@ func TestTheSprintScopeTableCountsEachSprintsChanges(t *testing.T) {
 		got = append(got, row)
 	}
 	want := []string{
-		"WEB Sprint 1 | 4, 1 not counted | 7, 1 not counted | 3 | 3", // P and R; Q, T at 4 and V; Q and R; P
+		"WEB Sprint 1 | 6, 1 not counted | 7, 1 not counted | 3 | 3", // P, R and X at 2; Q, T at 4 and V; Q and R; P
 		"WEB Sprint 2 | not known, 1 not counted | not known, 1 not counted | 0 | 0",
 	}
 	if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(w.Series, []string{"Committed", "Added", "Removed", "Completed"}) {
