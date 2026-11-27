@@ -684,6 +684,43 @@ describe('your logged time', () => {
     expect(s.logged.failure).toBe('the computer is not connected');
   });
 
+  it('does not ask again for days an answer counted before the read ended', async () => {
+    const { s, evaluate } = await opened();
+    const refresh = held<unknown>('RefreshTrackerWorklogs');
+    s.refresh();
+    await flush();
+    evaluate.answer(unreadAnswer(['2026-11-25']));
+    await flush();
+    source = { ...source!, changes: 1 };
+    await flush();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    expect(evaluate.calls).toHaveLength(3);
+    refresh.answer(read);
+    await flush();
+    evaluate.answer(unreadAnswer(['2026-11-25'], 3));
+    await flush();
+    expect(refresh.calls).toHaveLength(1);
+  });
+
+  it('after a failure reads no further days, those of the same read or a later answer, until the retry', async () => {
+    const { s, evaluate } = await opened();
+    const refresh = held<unknown>('RefreshTrackerWorklogs');
+    s.refresh();
+    await flush();
+    evaluate.answer(unreadAnswer(daysFrom('2026-10-20', 37)));
+    await flush();
+    refresh.answer({ worklogs: [], failure: { kind: 'rate_limited', message: 'Jira asked to wait', at: 1 } });
+    await flush();
+    expect(refresh.calls).toHaveLength(1);
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    evaluate.answer(unreadAnswer([...daysFrom('2026-10-20', 37), '2026-11-26'], 3));
+    await flush();
+    expect(refresh.calls).toHaveLength(1);
+    expect(s.logged.failure).toBe('Jira asked to wait');
+  });
+
   it('counts again after a read only while the screen shows', async () => {
     const { s, evaluate } = await opened();
     const refresh = held<unknown>('RefreshTrackerWorklogs');
