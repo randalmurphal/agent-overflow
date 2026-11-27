@@ -53,7 +53,7 @@
 // computer's tracker read, which a new ticket makes a new read of.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { AgentRules, BoardPace, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace, SupportView, TimeTicket } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { AgentRules, BoardPace, CreditRules, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, SiteSupport, StartPlace, SupportView, TimeTicket } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { ProjectTrackerPace, ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, ProjectTrackerSupport, SetProjectTrackerSetup, TrackerLookup } from './bindings';
 import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -496,6 +496,43 @@ export function acquireTrackerSupport(project: string, connection: string, board
 export function trackerSupportOf(project: string, connection: string, board: string, issues: readonly string[]): SupportView | null {
   const entry = supports.get(supportKey(project, connection, board, issues));
   return entry?.error == null ? entry?.value ?? null : null;
+}
+
+/** Whether the project counts credit: its credit section is on. A
+ * project with no section reads as off (trackerapp's heldSetup.credit). */
+export function creditOn(setup: Setup | null | undefined): boolean {
+  return setup?.credit?.on === true;
+}
+
+/** `setup` counting credit or not. Off keeps the rules, the snapshots
+ * and the support picks, so on again loses nothing. */
+export function withCreditOn(setup: Setup, on: boolean): Setup {
+  return { ...setup, credit: { ...setup.credit!, on } };
+}
+
+/** `setup` with `change` made to its credit rules: for every sprint, in
+ * each snapshot, each keeping when it took effect; else from this sprint,
+ * as a new newest snapshot with no time, which the computer stamps
+ * (trackerapp's stampCredit: it replaces the newest while no sprint has
+ * completed since that one took effect). */
+export function withCreditRules(setup: Setup, change: (rules: CreditRules) => CreditRules, everySprint: boolean): Setup {
+  const credit = setup.credit!;
+  const rules = everySprint
+    ? credit.rules.map((r) => ({ ...change(r), from: r.from }))
+    : [...credit.rules, { ...change(credit.rules[credit.rules.length - 1]), from: undefined }];
+  return { ...setup, credit: { ...credit, rules } };
+}
+
+/** `setup` with `change` made to which tickets of `tracker`'s site `site`
+ * are support. The computer drops an entry that names none. */
+export function withSupport(setup: Setup, tracker: string, site: string, change: (support: SiteSupport) => SiteSupport): Setup {
+  const credit = setup.credit!;
+  const i = credit.support.findIndex((s) => s.tracker === tracker && s.site === site);
+  const support = [...credit.support];
+  const next = change(i >= 0 ? support[i] : { tracker, site, types: [], labels: [], boards: [] });
+  if (i >= 0) support[i] = next;
+  else support.push(next);
+  return { ...setup, credit: { ...credit, support } };
 }
 
 /** A check of the tickets `keys` through `connection` on computer
