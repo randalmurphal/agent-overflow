@@ -40,6 +40,8 @@
   import { workGate } from './ticketWorkGate';
   import DashboardDrill from './DashboardDrill.svelte';
   import DashboardWidget from './DashboardWidget.svelte';
+  import type { TicketListSource } from './TicketListActions.svelte';
+  import { setTicketWriteSurface } from './ticketWriteSurface';
 
   interface Props {
     source: DashboardSource | null;
@@ -56,6 +58,9 @@
   let { source, boardName, shown, compact, computerName, onOpenTicket, counting = $bindable(false) }: Props = $props();
 
   const store = createTrackerDashboard({ source: () => source, shown: () => shown });
+  // A ticket list's rows say what became of their writes while the
+  // dashboard is shown; else a toast does.
+  setTicketWriteSurface(() => shown);
   onDestroy(() => store.destroy());
   $effect(() => { counting = store.counting; });
 
@@ -126,6 +131,13 @@
   const askBlocked = $derived(source
     ? workGate(source.backend, source.board.projectId).ask || store.ask || undefined
     : undefined);
+  const tickets = $derived<TicketListSource>({
+    backend: source?.backend ?? '',
+    connection: source?.board.connection ?? '',
+    project: source?.board.projectId ?? '',
+    writeBlocked: editBlocked ?? '',
+    threadBlocked: source ? workGate(source.backend, source.board.projectId).ask : '',
+  });
 
   let pickerOpen = $state(false);
   let pickerAnchor: HTMLElement | undefined = $state();
@@ -207,6 +219,7 @@
       onPerson={(p) => store.narrowPerson(p)}
       onEpic={(e) => store.narrowEpic(e)}
       onTicket={openTicket}
+      {tickets}
       {actions}
     />
   </div>
@@ -376,5 +389,5 @@
   </div>
 </Popover>
 {#if store.drill}
-  <DashboardDrill drill={store.drill} onPage={(p) => store.drillPage(p)} onTicket={openTicket} onClose={() => store.closeDrill()} />
+  <DashboardDrill drill={store.drill} onPage={(p) => store.drillPage(p)} onTicket={openTicket} {tickets} onClose={() => store.closeDrill()} />
 {/if}

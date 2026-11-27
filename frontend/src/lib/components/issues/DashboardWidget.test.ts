@@ -10,9 +10,14 @@ import type { RangeView, WidgetValue, WidgetView } from '../../../../bindings/ag
 import type { DrillState } from '../../stores/trackerDashboard.svelte';
 import DashboardDrill from './DashboardDrill.svelte';
 import DashboardWidget from './DashboardWidget.svelte';
+import type { TicketListSource } from './TicketListActions.svelte';
+import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 
 const HOW = { words: ['The estimate of the tickets finished in each sprint, averaged.'], counts: 'The points of each sprint added up', range: 'It counts the range\'s sprints.', rules: 'none', sql: 'SELECT 1', reads: ['tickets'] };
 const RANGE = { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: 'the 5 sprints before' } as unknown as RangeView;
+
+const TICKETS: TicketListSource = { backend: '', connection: 'conn-1', project: 'project-1', writeBlocked: '', threadBlocked: '' };
+const SHOWN = ticketWriteSurfaceContext(() => true);
 
 function view(over: Record<string, unknown>): WidgetView {
   return { id: 'pace', title: 'Usual pace', form: 'number', width: 4, unit: 'estimate', good: 'up', how: HOW, ...over } as unknown as WidgetView;
@@ -23,7 +28,7 @@ function draw(v: WidgetView, value: WidgetValue | undefined, range: RangeView = 
   const onPerson = vi.fn();
   const onEpic = vi.fn();
   const onTicket = vi.fn();
-  const r = render(DashboardWidget, { props: { view: v, value, range, estimates: 'points', onDrill, onPerson, onEpic, onTicket } });
+  const r = render(DashboardWidget, { props: { view: v, value, range, estimates: 'points', onDrill, onPerson, onEpic, onTicket, tickets: TICKETS }, context: SHOWN });
   return { ...r, onDrill, onPerson, onEpic, onTicket };
 }
 
@@ -67,7 +72,7 @@ describe('a number with tickets not counted', () => {
       error: null,
       answer: { title: 'Stuck', value, unit: 'tickets', estimates: 'points', count: 0, tickets: 0, counted: 0, page: 0, pages: 1, rows: [], at: 0, ...over },
     } as unknown as DrillState;
-    return render(DashboardDrill, { props: { drill: state, onPage: vi.fn(), onTicket: vi.fn(), onClose: vi.fn() } });
+    return render(DashboardDrill, { props: { drill: state, onPage: vi.fn(), onTicket: vi.fn(), tickets: TICKETS, onClose: vi.fn() }, context: SHOWN });
   }
 
   it('reads in the same words on the tile, a cell\'s tip, the list and the drill', () => {
