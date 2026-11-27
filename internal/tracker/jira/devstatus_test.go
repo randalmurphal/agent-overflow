@@ -139,25 +139,23 @@ func TestDevSummaryOfASiteWithNoDataIsAbsent(t *testing.T) {
 	}
 }
 
-// An element in errors or configErrors fails the read with the element
-// as given, cut short, since no element's fields have been measured; the
-// first three are quoted and the rest counted.
-func TestDevStatusErrorsFailWithTheElementCutShort(t *testing.T) {
+// An element in errors or configErrors fails the read, counted: no
+// element's fields have been measured, and none of their text is kept,
+// in the error or its message.
+func TestDevStatusErrorsFailCountedWithNoText(t *testing.T) {
 	t.Parallel()
 	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
-	long := strings.Repeat("x", 400)
-	f.On("GET", devSummaryURL, jiratest.Reply(200, `{"errors":[],"configErrors":[{"message":"`+long+`"}],"summary":{"pullrequest":{"overall":{"count":0},"byInstanceType":{}}}}`))
-	f.On("GET", devDetailURL, jiratest.Reply(200, `{"errors":["the integration is down","a","b","c","d"],"detail":[]}`))
+	f.On("GET", devSummaryURL, jiratest.Reply(200, `{"errors":["private-a"],"configErrors":[{"message":"private-b"},{"x":1}],"summary":{"pullrequest":{"overall":{"count":0},"byInstanceType":{}}}}`))
+	f.On("GET", devDetailURL, jiratest.Reply(200, `{"errors":["private-c","d"],"detail":[]}`))
 	_, err := c.DevSummary(t.Context(), "10101")
 	var dev *DevStatusError
-	if !errors.As(err, &dev) || len(dev.Errors) != 1 || dev.More != 0 ||
-		dev.Errors[0] != (`{"message":"` + long)[:devStatusErrorBytes]+"…" {
-		t.Fatalf("summary err = %#v", err)
+	if !errors.As(err, &dev) || *dev != (DevStatusError{Errors: 1, ConfigErrors: 2}) || strings.Contains(err.Error(), "private") {
+		t.Fatalf("summary err = %v", err)
 	}
 	_, err = c.DevPullRequests(t.Context(), "10101", gitlabType)
-	if !errors.As(err, &dev) || !slices.Equal(dev.Errors, []string{`"the integration is down"`, `"a"`, `"b"`}) || dev.More != 2 ||
-		err.Error() != `jira: rest/dev-status/latest/issue/detail for `+gitlabType+`: answered errors: "the integration is down"; "a"; "b" (and 2 more)` {
+	if !errors.As(err, &dev) || *dev != (DevStatusError{Errors: 2}) ||
+		err.Error() != "jira: rest/dev-status/latest/issue/detail for "+gitlabType+": answered 2 errors and 0 configuration errors" {
 		t.Fatalf("detail err = %v", err)
 	}
 }

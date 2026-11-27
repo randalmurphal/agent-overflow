@@ -79,8 +79,13 @@ func (r *ticketWorkRead) addDevelopment(dev ticketDevelopment) {
 		case at < 0:
 			r.work.PullRequests = append(r.work.PullRequests, row)
 		case r.recorded[id]:
+			// Jira's row takes the record's place; what Jira leaves out
+			// (a branch, a status) stays as the thread recorded it.
 			if row.Branch == "" {
 				row.Branch = r.work.PullRequests[at].Branch
+			}
+			if row.State == "" {
+				row.State = r.work.PullRequests[at].State
 			}
 			r.work.PullRequests[at] = row
 			delete(r.recorded, id)
@@ -103,26 +108,30 @@ func developmentState(pr tracker.LinkedPullRequest) string {
 }
 
 // developmentProblem is what Work says of a development read that did
-// not answer whole, empty when it did: that it did not answer within its
-// wait, the hold's failure, or each failed read with where it was and
-// the status its message does not say.
+// not answer whole, empty when it did: the hold's failure; or that it did
+// not answer within its wait, beside each read that failed otherwise (a
+// read the wait ended fails as a transient one, which the wait says); or
+// each failed read, with where it was and the status its message does
+// not say.
 func developmentProblem(dev ticketDevelopment) string {
 	const failed = "Jira's development data could not be read"
-	switch {
-	case dev.timedOut > 0:
-		return "Jira's development data did not answer within " + waitText(dev.timedOut) + "; Refresh reads it again"
-	case dev.err != nil:
+	if dev.err != nil {
 		_, message := trackerRefusal(dev.err)
 		if message == "" {
 			log.Printf("ticket work: development data: %v", dev.err)
 			message = "the app's log has the cause"
 		}
 		return failed + ": " + message
-	case len(dev.failures) == 0:
-		return ""
 	}
-	text := failed
-	for i, f := range dev.failures {
+	failures := dev.failures
+	if dev.timedOut > 0 {
+		failures = slices.DeleteFunc(slices.Clone(failures), func(f trackerapp.DevelopmentFailure) bool { return f.Failure.Kind == trackerapp.FailureTransient })
+	}
+	text := ""
+	if len(failures) > 0 {
+		text = failed
+	}
+	for i, f := range failures {
 		where := f.Where
 		if f.Status != 0 {
 			where = strings.TrimPrefix(where+", HTTP "+strconv.Itoa(f.Status), ", ")
@@ -139,6 +148,13 @@ func developmentProblem(dev ticketDevelopment) string {
 			text += "(" + where + "): "
 		}
 		text += f.Failure.Message
+	}
+	if dev.timedOut > 0 {
+		waited := "Jira's development data did not answer within " + waitText(dev.timedOut) + "; Refresh reads it again"
+		if text == "" {
+			return waited
+		}
+		return waited + ". " + text
 	}
 	return text
 }

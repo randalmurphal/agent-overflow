@@ -248,11 +248,7 @@ func ClassifyFailure(kind string, err error) Failure {
 		return Failure{Kind: FailureTracker, Message: "Jira answered in a form Agent Overflow does not know (" + devShape.Why +
 			"); Jira does not document these endpoints, and they may have changed"}
 	case errors.As(err, &devErrors):
-		message := "Jira reported errors: " + strings.Join(devErrors.Errors, "; ")
-		if devErrors.More > 0 {
-			message += fmt.Sprintf(" (and %d more)", devErrors.More)
-		}
-		return Failure{Kind: FailureTracker, Message: message}
+		return Failure{Kind: FailureTracker, Message: devStatusMessage(devErrors.Errors, devErrors.ConfigErrors)}
 	case errors.As(err, &tooLarge):
 		return Failure{Kind: FailureTracker, Message: answered(tooLarge.Tracker) + " sent an answer larger than Agent Overflow reads"}
 	case errors.Is(err, trackerapi.ErrCredentialChanged):
@@ -414,4 +410,23 @@ func keyFileLabel(kind string) keyfile.Label {
 		return keyfile.Label{Service: "Linear", Kind: keyfile.APIKey}
 	}
 	return keyfile.Label{Service: trackerName(kind), Kind: keyfile.APIToken}
+}
+
+// devStatusMessage says a development panel answer that named errors, by
+// their count alone: the classifier's sentences hold no tracker text.
+func devStatusMessage(errs, configErrs int) string {
+	count := func(n int, one, many string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return fmt.Sprintf("%d %s", n, many)
+	}
+	var parts []string
+	if errs > 0 {
+		parts = append(parts, count(errs, "error reading the site's forge integration", "errors reading the site's forge integration"))
+	}
+	if configErrs > 0 {
+		parts = append(parts, count(configErrs, "error in its configuration", "errors in its configuration"))
+	}
+	return "Jira reported " + strings.Join(parts, " and ") + "; the ticket's development panel in Jira may say more"
 }

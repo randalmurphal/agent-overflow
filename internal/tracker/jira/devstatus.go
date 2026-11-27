@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -17,13 +16,6 @@ import (
 // shapes read here are the measured ones
 // (docs/references/tracker-api-measurements.md, "Development data").
 const devStatusPath = "rest/dev-status/latest/issue/"
-
-// devStatusErrorBytes bounds each element of an answer's errors that a
-// DevStatusError quotes, and devStatusErrorsQuoted how many it quotes.
-const (
-	devStatusErrorBytes   = 300
-	devStatusErrorsQuoted = 3
-)
 
 // DevCallError is a failure of one development panel read: Path is the
 // endpoint, InstanceType the integration a detail read asked for (empty
@@ -54,21 +46,17 @@ func (e *DevAbsentError) Error() string {
 }
 
 // DevStatusError is a development panel answer whose errors or
-// configErrors name something: the panel could not read the integration.
-// Errors holds the first devStatusErrorsQuoted elements as the answer
-// gave them, each cut to devStatusErrorBytes, and More counts the rest;
-// no element has been measured, so none is read for its fields.
+// configErrors name something: the panel could not read the integration,
+// or its configuration is wrong. It counts them and holds none of their
+// text: no element has been measured, and what an integration writes
+// there is no text the app may show or log.
 type DevStatusError struct {
-	Errors []string
-	More   int
+	Errors       int
+	ConfigErrors int
 }
 
 func (e *DevStatusError) Error() string {
-	text := "answered errors: " + strings.Join(e.Errors, "; ")
-	if e.More > 0 {
-		text += fmt.Sprintf(" (and %d more)", e.More)
-	}
-	return text
+	return fmt.Sprintf("answered %d errors and %d configuration errors", e.Errors, e.ConfigErrors)
 }
 
 // DevSummary is what the development panel counts for an issue's pull
@@ -216,7 +204,7 @@ func (c *Client) devPullRequests(ctx context.Context, path, issueID, instanceTyp
 	if _, err := c.call(ctx, trackerapi.Request{Path: path, Query: q}, &out); err != nil {
 		return nil, err
 	}
-	if err := devErrors(out.Errors); err != nil {
+	if err := devErrors(out.Errors, nil); err != nil {
 		return nil, err
 	}
 	if out.Detail == nil {
@@ -241,27 +229,13 @@ func (c *Client) devPullRequests(ctx context.Context, path, issueID, instanceTyp
 	return prs, nil
 }
 
-// devErrors is a *DevStatusError for the elements lists name, nil when
-// every list is empty.
-func devErrors(lists ...[]json.RawMessage) error {
-	var dev DevStatusError
-	for _, list := range lists {
-		for _, raw := range list {
-			if len(dev.Errors) == devStatusErrorsQuoted {
-				dev.More++
-				continue
-			}
-			text := string(raw)
-			if len(text) > devStatusErrorBytes {
-				text = text[:devStatusErrorBytes] + "…"
-			}
-			dev.Errors = append(dev.Errors, text)
-		}
-	}
-	if len(dev.Errors) == 0 {
+// devErrors is a *DevStatusError counting the elements of errors and
+// configErrors, nil when both are empty.
+func devErrors(errs, configErrs []json.RawMessage) error {
+	if len(errs) == 0 && len(configErrs) == 0 {
 		return nil
 	}
-	return &dev
+	return &DevStatusError{Errors: len(errs), ConfigErrors: len(configErrs)}
 }
 
 // DevShapeError is a development panel answer that is not in the

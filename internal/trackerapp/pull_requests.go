@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/url"
+	"strings"
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/jira"
@@ -16,11 +18,12 @@ type DevelopmentFailure struct {
 	// read asked for ("rest/dev-status/latest/issue/detail for <type>");
 	// empty when the failure names no read.
 	Where string
-	// Status is the HTTP status of a refused credential or a rate limit,
-	// which Failure's message does not say; zero otherwise.
+	// Status is the HTTP status the read's own endpoint answered with a
+	// refused credential or a rate limit, which Failure's message does not
+	// say; zero otherwise, as for a refusal of the sign-in check a 404
+	// ran.
 	Status  int
 	Failure Failure
-	Err     error
 }
 
 // IssuePullRequests are the pull requests the tracker's forge
@@ -64,15 +67,19 @@ func (s *Service) IssuePullRequests(ctx context.Context, id, issue string) ([]tr
 // developmentFailure is err, a failed read of a connection of kind, as a
 // DevelopmentFailure.
 func developmentFailure(kind string, err error) DevelopmentFailure {
-	f := DevelopmentFailure{Failure: ClassifyFailure(kind, err), Err: err}
-	if call, ok := errors.AsType[*jira.DevCallError](err); ok {
-		f.Where = call.Path
-		if call.InstanceType != "" {
-			f.Where += " for " + call.InstanceType
-		}
+	f := DevelopmentFailure{Failure: ClassifyFailure(kind, err)}
+	call, ok := errors.AsType[*jira.DevCallError](err)
+	if !ok {
+		return f
+	}
+	f.Where = call.Path
+	if call.InstanceType != "" {
+		f.Where += " for " + call.InstanceType
 	}
 	if auth, ok := errors.AsType[*trackerapi.AuthError](err); ok {
-		f.Status = auth.Status
+		if u, perr := url.Parse(auth.URL); perr == nil && strings.HasSuffix(u.Path, "/"+call.Path) {
+			f.Status = auth.Status
+		}
 	} else if limited, ok := errors.AsType[*trackerapi.RateLimitedError](err); ok {
 		f.Status = limited.Status
 	}

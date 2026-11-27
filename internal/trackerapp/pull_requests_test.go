@@ -45,7 +45,7 @@ func TestIssuePullRequestsNeverSettleTheProblem(t *testing.T) {
 	}{
 		{"a refusal", &jira.DevCallError{Path: "rest/dev-status/latest/issue/summary", Err: &trackerapi.StatusError{Tracker: "jira", Status: 403}}},
 		{"an answer not as measured", fmt.Errorf("jiraprovider: development summary of 10001: %w", &jira.DevCallError{Path: "rest/dev-status/latest/issue/summary", Err: &jira.DevShapeError{Why: "no count"}})},
-		{"errors in the answer", errors.Join(&jira.DevCallError{Path: "rest/dev-status/latest/issue/detail", InstanceType: "a", Err: &jira.DevStatusError{Errors: []string{`"down"`}}})},
+		{"errors in the answer", errors.Join(&jira.DevCallError{Path: "rest/dev-status/latest/issue/detail", InstanceType: "a", Err: &jira.DevStatusError{Errors: 1}})},
 		{"a refused token", &jira.DevCallError{Path: "rest/dev-status/latest/issue/summary", Err: &trackerapi.AuthError{Tracker: "jira", Status: 401}}},
 		{"a success", nil},
 	} {
@@ -58,7 +58,7 @@ func TestIssuePullRequestsNeverSettleTheProblem(t *testing.T) {
 			if len(failures) != 0 {
 				t.Errorf("%s: failures %+v", tc.name, failures)
 			}
-		} else if len(failures) != 1 || !errors.Is(failures[0].Err, tc.err) && !errors.Is(tc.err, failures[0].Err) || failures[0].Failure != ClassifyFailure(f.conn.Kind, tc.err) ||
+		} else if len(failures) != 1 || failures[0].Failure != ClassifyFailure(f.conn.Kind, tc.err) ||
 			!strings.HasPrefix(failures[0].Where, "rest/dev-status/latest/issue/") {
 			t.Errorf("%s: failures %+v; want the one failure with where it was", tc.name, failures)
 		}
@@ -83,6 +83,18 @@ func TestIssuePullRequestsNeverSettleTheProblem(t *testing.T) {
 	if err != nil || len(failures) != 2 || failures[0].Where != "rest/dev-status/latest/issue/detail for a" || failures[0].Status != 429 ||
 		failures[1].Where != "rest/dev-status/latest/issue/detail for b" || failures[1].Status != 0 || failures[1].Failure.Kind != FailureForbidden {
 		t.Fatalf("two failed integrations: %+v, %v", failures, err)
+	}
+
+	// A refused credential's status is the read's when its own endpoint
+	// answered it, and not when the sign-in check a 404 ran did.
+	for url, want := range map[string]int{
+		"https://example.atlassian.net/rest/dev-status/latest/issue/summary?issueId=10001": 401,
+		"https://example.atlassian.net/rest/api/3/myself":                                  0,
+	} {
+		answer = &jira.DevCallError{Path: "rest/dev-status/latest/issue/summary", Err: &trackerapi.AuthError{Tracker: "jira", Status: 401, URL: url}}
+		if _, failures, err := f.svc.IssuePullRequests(t.Context(), f.conn.ID, "10001"); err != nil || len(failures) != 1 || failures[0].Status != want {
+			t.Fatalf("a 401 of %s: %+v, %v; want status %d", url, failures, err, want)
+		}
 	}
 
 	for name, none := range map[string]error{
