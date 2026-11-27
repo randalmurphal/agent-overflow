@@ -35,7 +35,10 @@ import (
 //   - start_work: by tracker site and tracker project, what Start work
 //     does to a ticket and where its thread runs (StartWorkDefaults);
 //   - agents: what a thread of the project may do to tickets through the
-//     tracker tools (AgentRules).
+//     tracker tools (AgentRules);
+//   - time: the Jira tickets meeting and time-off hours go on, and
+//     whether an agent's time draft may put hours on an epic
+//     (TimeSettings).
 //
 // A section this build does not know, or one at a version newer than it
 // reads, is kept byte for byte and written back unchanged by a replace,
@@ -75,6 +78,7 @@ const (
 	sectionTicketPins   = "ticket_pins"
 	sectionStartWork    = "start_work"
 	sectionAgents       = "agents"
+	sectionTime         = "time"
 	setupSectionVersion = 1
 )
 
@@ -146,6 +150,7 @@ type Setup struct {
 	TicketPins   []SitePins          `json:"ticket_pins"`
 	StartWork    []StartWorkDefaults `json:"start_work"`
 	Agents       *AgentRules         `json:"agents,omitempty"`
+	Time         *TimeSettings       `json:"time,omitempty"`
 }
 
 // UnmarshalJSON reads a replace's setup whole or refuses it: a JSON object
@@ -236,6 +241,26 @@ func (r AgentRules) Asks() bool { return r.AskSeveral == nil || *r.AskSeveral }
 
 // set reports whether the rules set anything, which is a section.
 func (r AgentRules) set() bool { return r.ChangeTickets != nil || r.AskSeveral != nil }
+
+// TimeSettings is where a project's time goes: the ticket meeting hours
+// go on and the ticket time off goes on, each a Jira ticket, and whether
+// an agent's time draft may put hours on an epic, which it may not
+// unless NeverEpics is false. A person's own log is not held to it.
+type TimeSettings struct {
+	Meetings   *TimeTicket `json:"meetings,omitempty"`
+	TimeOff    *TimeTicket `json:"time_off,omitempty"`
+	NeverEpics *bool       `json:"never_epics,omitempty"`
+}
+
+// RefusesEpics is whether an agent's draft may not put hours on an epic.
+func (t TimeSettings) RefusesEpics() bool { return t.NeverEpics == nil || *t.NeverEpics }
+
+// TimeTicket is a ticket a project's time goes on, by its site and key.
+type TimeTicket struct {
+	Tracker string `json:"tracker"`
+	Site    string `json:"site"`
+	Key     string `json:"key"`
+}
 
 // SetupView is a project's tracker setup as it is stored: the revision a
 // replace names (empty while there is no file), the setup itself, which a
@@ -570,6 +595,12 @@ type (
 		ChangeTickets *bool `json:"change_tickets,omitempty"`
 		AskSeveral    *bool `json:"ask_several,omitempty"`
 	}
+	timeV1 struct {
+		Version    int         `json:"version"`
+		Meetings   *TimeTicket `json:"meetings,omitempty"`
+		TimeOff    *TimeTicket `json:"time_off,omitempty"`
+		NeverEpics *bool       `json:"never_epics,omitempty"`
+	}
 )
 
 // decodeSetup is the setup data holds, every section this build does not
@@ -593,7 +624,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(sections)) {
 		section := sections[name]
-		if name != sectionStatusGroups && name != sectionTicketPins && name != sectionStartWork && name != sectionAgents {
+		if !slices.Contains([]string{sectionStatusGroups, sectionTicketPins, sectionStartWork, sectionAgents, sectionTime}, name) {
 			keep(name, section)
 			continue
 		}
@@ -626,6 +657,10 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 			var s agentsV1
 			err = decodeStrict(section, &s)
 			setup.Agents = &AgentRules{ChangeTickets: s.ChangeTickets, AskSeveral: s.AskSeveral}
+		case sectionTime:
+			var s timeV1
+			err = decodeStrict(section, &s)
+			setup.Time = &TimeSettings{Meetings: s.Meetings, TimeOff: s.TimeOff, NeverEpics: s.NeverEpics}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("section %s: %w", name, err)
@@ -691,6 +726,11 @@ func encodeSetup(setup Setup, raw map[string]json.RawMessage, newer []string) ([
 			return nil, err
 		}
 	}
+	if setup.Time != nil {
+		if err := add(sectionTime, timeV1{Version: setupSectionVersion, Meetings: setup.Time.Meetings, TimeOff: setup.Time.TimeOff, NeverEpics: setup.Time.NeverEpics}); err != nil {
+			return nil, err
+		}
+	}
 	if len(sections) == 0 {
 		return nil, nil
 	}
@@ -730,7 +770,7 @@ func setupRevision(data []byte) string {
 // keeps (named by newer) and the revision of its file.
 func heldOf(setup Setup, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
 	held := &heldSetup{
-		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins), StartWork: slicesx.OrEmpty(setup.StartWork), Agents: setup.Agents}, Newer: newer},
+		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins), StartWork: slicesx.OrEmpty(setup.StartWork), Agents: setup.Agents, Time: setup.Time}, Newer: newer},
 		raw:  raw, groups: map[siteKey]StatusGroups{},
 	}
 	for _, site := range setup.StatusGroups {
@@ -833,6 +873,13 @@ func validateSetup(setup Setup) (Setup, error) {
 		if rules.set() {
 			out.Agents = &rules
 		}
+	}
+	if setup.Time != nil {
+		settings, err := checkTime(*setup.Time)
+		if err != nil {
+			return Setup{}, err
+		}
+		out.Time = settings
 	}
 	slices.SortFunc(out.StartWork, func(a, b StartWorkDefaults) int {
 		if c := compareSites(a.Tracker, a.Site, b.Tracker, b.Site); c != 0 {
@@ -937,6 +984,47 @@ func checkStartWork(entry StartWorkDefaults, seen map[startWorkKey]bool) (StartW
 	}
 	set := entry.Status != "" || entry.Assign != nil || entry.Branch != "" || entry.NameBranch != nil || entry.Repository != ""
 	return entry, set, nil
+}
+
+// checkTime checks a time section and returns it with each ticket's site
+// as its connection names it: nil when it sets nothing. Refusing epics is
+// the built-in rule: only its off is stored.
+func checkTime(t TimeSettings) (*TimeSettings, error) {
+	for _, held := range []**TimeTicket{&t.Meetings, &t.TimeOff} {
+		if *held == nil {
+			continue
+		}
+		ticket := new(**held)
+		*held = ticket
+		if ticket.Tracker != store.TrackerKindJira {
+			return nil, invalidSetup("%s names a %s ticket, and time is logged on Jira only", sectionTime, truncateID(ticket.Tracker))
+		}
+		key, err := checkSite(ticket.Tracker, ticket.Site, sectionTime, map[siteKey]bool{})
+		if err != nil {
+			return nil, err
+		}
+		ticket.Site = key.site
+		if !isTicketKey(ticket.Key) {
+			return nil, invalidSetup("%s names %q of %s, which is not a ticket key (WEB-1)", sectionTime, truncateID(ticket.Key), key.site)
+		}
+	}
+	if t.NeverEpics != nil && *t.NeverEpics {
+		t.NeverEpics = nil
+	}
+	if t.Meetings == nil && t.TimeOff == nil && t.NeverEpics == nil {
+		return nil, nil
+	}
+	return &t, nil
+}
+
+// isTicketKey is whether key is a ticket key: a tracker project
+// (isTicketProject), a dash and a number with no leading zero.
+func isTicketKey(key string) bool {
+	project, number, ok := strings.Cut(key, "-")
+	if !ok || !isTicketProject(project) || number == "" || number[0] == '0' || len(number) > 18 {
+		return false
+	}
+	return strings.Trim(number, "0123456789") == ""
 }
 
 // isTicketProject is whether project is a ticket key's project, as
