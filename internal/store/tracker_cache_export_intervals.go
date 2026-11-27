@@ -147,8 +147,10 @@ func (src mirrorExportChangeSource) latest(on, kind, column string) string {
 // time, but for one made between the card's read and its history's,
 // which the card's next read moves the update time past; until then the
 // export follows the card's version, as the board does.
+// The earliest instant is never below zero; the condition states an
+// update time above zero too, the index's, so the planner can take it.
 func mirrorExportUpdatedSince(alias string) string {
-	return alias + `.root_id = CAST(?1 AS INTEGER) AND ` + alias + `.updated_at > ` + mirrorExportIntervalsFrom()
+	return alias + `.root_id = CAST(?1 AS INTEGER) AND ` + alias + `.updated_at > 0 AND ` + alias + `.updated_at > ` + mirrorExportIntervalsFrom()
 }
 
 // mirrorExportBoardIssues reads the board's issues as b and i, by key.

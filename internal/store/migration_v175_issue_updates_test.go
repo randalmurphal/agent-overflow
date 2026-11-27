@@ -5,10 +5,11 @@ import (
 	"time"
 )
 
-// v174 indexes each mirror's issues by their update time, over the issues
-// stored before it too. The export's sprint intervals read the issues
-// updated since a time through it (TestMirrorExportSearchesByTheBoard
-// fails on a scan of the issues without it).
+// v175 indexes each mirror's issues by their update time, over the issues
+// stored before it too. The export's intervals read the issues updated
+// since a time through it (TestMirrorExportSearchesByTheBoard); the
+// history-due reads, which do not state its condition, keep their own
+// (TestMirrorHistoryDueReadsCostAPage, TestMirrorStatementsReadByKey).
 func TestIssueUpdatesMigration(t *testing.T) {
 	db := migrateThrough(t, issueUpdatesMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO tracker_connections(id, kind, site, account, created_at) VALUES
@@ -21,7 +22,8 @@ func TestIssueUpdatesMigration(t *testing.T) {
 	if err := applyMigration(db, m); err != nil {
 		t.Fatalf("apply v%d: %v", m.Version, err)
 	}
-	t.Logf("v174 over 20,000 issues: %v", time.Since(began))
+	t.Logf("v175 over 20,000 issues: %v", time.Since(began))
 	assertRows(t, db, `SELECT group_concat(name, ',') FROM pragma_index_info('idx_tracker_cache_issues_updated')`, "root_id,updated_at")
-	assertRows(t, db, `SELECT count(*) FROM tracker_cache_issues INDEXED BY idx_tracker_cache_issues_updated WHERE root_id = 7 AND updated_at > 19990`, "10")
+	assertRows(t, db, `SELECT count(*) FROM tracker_cache_issues INDEXED BY idx_tracker_cache_issues_updated
+		WHERE root_id = 7 AND updated_at > 0 AND updated_at > 19990`, "10")
 }
