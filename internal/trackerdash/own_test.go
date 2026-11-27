@@ -343,6 +343,12 @@ func TestARowCountsTheWidgetsItNames(t *testing.T) {
 	t.Parallel()
 	e := evaluator()
 	b := keeping(teamBoard().board())
+	// A metric that counts each ticket in progress twice, once a row.
+	twice := inProgress
+	twice.Name, twice.Bucket = "w_3", ""
+	twice.SQL = "SELECT id AS ticket FROM tickets WHERE status_group = 'in_progress' UNION ALL SELECT id FROM tickets WHERE status_group = 'in_progress'"
+	b.Own.Metrics["w_3"] = twice
+	b.Own.Dashboards = append(b.Own.Dashboards, Dashboard{ID: "d_2", Title: "Twice", Widgets: []Widget{{ID: "w_3", Metric: "w_3", Form: FormNumber, Width: 3}}})
 	row := Request{Dashboard: builtinSprintsID, TimeZone: "UTC", Widgets: []string{"w_1", "stuck", "gone", "stuck"}}
 	a := mustEvaluate(t, e, b, row)
 	if len(a.Widgets) != 2 || a.Widgets[0].ID != "w_1" || a.Widgets[1].ID != "stuck" {
@@ -359,12 +365,14 @@ func TestARowCountsTheWidgetsItNames(t *testing.T) {
 	for _, c := range []struct {
 		widget string
 		want   int
-	}{{"w_1", 3}, {"stuck", 2}} {
-		d, err := e.Drill(context.Background(), b, DrillRequest{Request: row, Widget: c.widget, IDs: true})
+	}{{"w_1", 3}, {"stuck", 2}, {"w_3", 3}} {
+		tile := row
+		tile.Widgets = []string{c.widget}
+		d, err := e.Drill(context.Background(), b, DrillRequest{Request: tile, Widget: c.widget, IDs: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		rows, err := e.Drill(context.Background(), b, DrillRequest{Request: row, Widget: c.widget})
+		rows, err := e.Drill(context.Background(), b, DrillRequest{Request: tile, Widget: c.widget})
 		if err != nil {
 			t.Fatal(err)
 		}
