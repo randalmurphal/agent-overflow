@@ -521,7 +521,9 @@ backend side. `kill -USR1` (goroutine dump) and the pprof listener
   where a display exists.
 - `AO_HARNESS_OLDER_COMPUTER=1` boots a computer that answers as one on
   v0.0.19 (`olderComputerSurface` in `main_harness.go`): the App methods
-  added since answer `method_not_found`, `ArchiveThread` and `DeleteThread`
+  added since, this build's less those frozen from the tag in
+  `internal/olderrelease` (`make older-release TAG=<tag>` writes them),
+  answer `method_not_found`, `ArchiveThread` and `DeleteThread`
   answer a success with `null`, a settings snapshot names none of the keys
   added since, `agent_owner_op` is an unknown write, and its hello
   advertises `thread-tools.v1` without `thread-tools.v2`. It serves this
