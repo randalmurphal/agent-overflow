@@ -4661,11 +4661,15 @@ describe("the board's summary row", () => {
 
   it('reads nothing for a board that pins no widget', async () => {
     install();
+    const list = setBindingMock('TrackerDashboards', async () => listing([]));
+    const evaluate = setBindingMock('EvaluateTrackerDashboard', async () => answer());
     const view = mount();
     await view.findAllByTestId('issues-card');
+    // The row's module is loaded (beforeAll), so a row would mount within these.
+    for (let i = 0; i < 10; i += 1) await tick();
     expect(view.queryByTestId('board-row')).toBeNull();
-    expect(getBindingMock('TrackerDashboards')?.mock.calls ?? []).toHaveLength(0);
-    expect(getBindingMock('EvaluateTrackerDashboard')?.mock.calls ?? []).toHaveLength(0);
+    expect(list).not.toHaveBeenCalled();
+    expect(evaluate).not.toHaveBeenCalled();
     view.unmount();
   });
 
