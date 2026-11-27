@@ -104,6 +104,17 @@ describe('the charts\' geometry', () => {
     expect(unitScale(17, 'tickets', 'points').ticks.map((t) => [t.value, t.label])).toEqual([[0, '0'], [5, '5'], [10, '10'], [15, '15'], [20, '20']]);
   });
 
+  it('steps a time axis below an hour in whole minutes, so no two ticks read the same', () => {
+    expect(unitScale(60, 'time', 'points').ticks.map((t) => t.label)).toEqual(['0m', '1m']);
+    expect(unitScale(150, 'time', 'points').ticks.map((t) => t.label)).toEqual(['0m', '1m', '2m', '3m']);
+    expect(unitScale(7 * 60, 'time', 'points').ticks.map((t) => t.label)).toEqual(['0m', '2m', '4m', '6m', '8m']);
+    expect(unitScale(20, 'time', 'points').ticks.map((t) => t.label)).toEqual(['0m', '1m']);
+    for (let top = 1; top < 2 * 3600; top += 7) {
+      const labels = unitScale(top, 'time', 'points').ticks.map((t) => t.label);
+      expect(new Set(labels).size, `a top of ${top} s: ${labels.join(', ')}`).toBe(labels.length);
+    }
+  });
+
   it('counts its ticks whatever the top, the largest number included', () => {
     expect(valueScale(1.79e308)).toEqual({ max: 1.79e308, ticks: [0, 1.79e308] });
     expect(valueScale(Number.MAX_VALUE).ticks).toHaveLength(2);
@@ -138,6 +149,9 @@ describe("a number's limit", () => {
     // A number in another unit than its limit's is never past it.
     expect(overLimit({ v: 20 }, 'estimate', 'points', { value: 25, unit: 'tickets' }, 'up')).toBe(false);
     expect(overLimit({ v: 20 }, 'estimate', 'none', { value: 25, unit: 'tickets' }, 'up')).toBe(true);
+    // Logged time is in seconds, as its limit is stored.
+    expect(overLimit({ v: 7200 }, 'time', 'points', { value: 3600, unit: 'seconds' }, '')).toBe(true);
+    expect(overLimit({ v: 1800 }, 'time', 'points', { value: 3600, unit: 'seconds' }, '')).toBe(false);
     expect(overLimit({ v: 15 }, 'estimate', 'time', { value: 25, unit: 'points' }, 'up')).toBe(false);
     expect(overLimit({ v: 15 }, 'estimate', 'time', { value: 25, unit: 'seconds' }, 'up')).toBe(true);
     expect(overLimit({ v: 3 }, 'days', '', { value: 2, unit: 'days' }, 'down')).toBe(true);

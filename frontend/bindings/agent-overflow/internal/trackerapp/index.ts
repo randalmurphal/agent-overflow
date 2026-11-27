@@ -116,7 +116,6 @@ export {
     WorklogDays,
     WorklogDeleteRequest,
     WorklogEditRequest,
-    WorklogRead,
     WorklogRequest,
     WorklogView,
     WriteView

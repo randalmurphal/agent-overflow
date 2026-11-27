@@ -67,7 +67,6 @@
     overLimit,
     pastLimitWords,
     notCountedWords,
-    notReadWords,
     numValue,
     numWords,
     namedSeries,
@@ -80,6 +79,7 @@
   import LineChart from './charts/LineChart.svelte';
   import Sparkline from './charts/Sparkline.svelte';
   import DashboardHow from './DashboardHow.svelte';
+  import DashboardLoggedLine from './DashboardLoggedLine.svelte';
   import TicketListActions, { type TicketListSource } from './TicketListActions.svelte';
 
   interface Props {
@@ -98,8 +98,8 @@
     onTicket: (row: TicketRow) => void;
     /** Where a ticket list's selection is written. */
     tickets: TicketListSource;
-    /** The page's read of your logged time's days not read, which a
-     * widget whose answer lists such days (`unread`) shows. */
+    /** The reads of your logged time, which a widget that counts it
+     * shows (DashboardLoggedLine). */
     logged?: LoggedTimeRead;
     /** The name of the computer that counts the board (How this is
      * counted). */
@@ -353,12 +353,7 @@
         {/if}
       {/if}
 
-      {#if value && !value.error && !value.note && unread > 0 && logged && !logged.reading}
-        <p class="flex flex-wrap items-baseline gap-x-2 text-[0.6875rem] text-fg-muted" data-testid="dashboard-widget-unread">
-          <span>Not known: {notReadWords(unread)} of your logged time.{logged.failure ? ` ${logged.failure}` : ''}</span>
-          <button type="button" class="text-accent hover:underline" data-testid="dashboard-widget-unread-retry" onclick={() => logged?.retry()}>Read again</button>
-        </p>
-      {/if}
+      <DashboardLoggedLine {value} counts={view.how.reads?.includes('worklogs') ?? false} {logged} />
       {#if value && !value.error && view.form !== 'number' && (value.more || value.not_counted)}
         <div class="flex flex-wrap gap-3 text-[0.6875rem]">
           {#if value.more}

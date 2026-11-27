@@ -21,7 +21,8 @@ export {
     TicketRow,
     Unit,
     WidgetValue,
-    WidgetView
+    WidgetView,
+    WorklogState
 } from "./models.js";
 
 export type {

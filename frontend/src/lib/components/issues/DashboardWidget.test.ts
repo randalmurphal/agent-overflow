@@ -276,8 +276,21 @@ describe('your logged time', () => {
     await fireEvent.click(w.getByTestId('dashboard-widget-unread-retry'));
     expect(r.retry).toHaveBeenCalledTimes(1);
     w.unmount();
-    const whole = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue, RANGE, { logged: read({ failure: 'Jira asked to wait' }) });
-    expect(whole.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
+  it('keeps a known number beside why reading it again failed, with Read again', async () => {
+    const r = read({ failure: 'Jira asked to wait.' });
+    const w = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue, RANGE, { logged: r });
+    expect(w.getByTestId('dashboard-number-value').textContent).toBe('1h');
+    expect(w.getByTestId('dashboard-widget-unread').textContent).toContain('Your logged time was not read again: Jira asked to wait.');
+    await fireEvent.click(w.getByTestId('dashboard-widget-unread-retry'));
+    expect(r.retry).toHaveBeenCalledTimes(1);
+    w.unmount();
+    const fine = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue, RANGE, { logged: read() });
+    expect(fine.queryByTestId('dashboard-widget-unread')).toBeNull();
+    fine.unmount();
+    const other = draw(view({}), { id: 'pace', value: { v: 2 } } as WidgetValue, RANGE, { logged: read({ failure: 'Jira asked to wait.' }) });
+    expect(other.queryByTestId('dashboard-widget-unread')).toBeNull();
   });
 
   it('offers Read again for days still not read when no read is out and none failed', async () => {
@@ -295,7 +308,7 @@ describe('your logged time', () => {
   it('says in How this is counted which days of it the page reads', async () => {
     const w = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue);
     await fireEvent.click(w.getByTestId('dashboard-how-toggle'));
-    expect(w.getByTestId('dashboard-how-worklogs').textContent).toBe('It counts your own logged time, and its numbers are known once every day of the last 180 days up to today is read. While it shows, this page reads from the tracker the days not read yet, 31 days a read, and reads the newest 31 days again when the board changes, at most once every 5 minutes; Refresh reads them all again. A day more than 180 days ago is not read, so a number that counts one is not known.');
+    expect(w.getByTestId('dashboard-how-worklogs').textContent).toBe('It counts your own logged time, and its numbers are known once every day of the last 182 days up to today is read. While a widget of it is counted, its computer reads from the tracker the days not read yet, 31 days a read, and the newest 31 days again at most once every 5 minutes; once it starts, it reads them all even if this page closes. After a read fails it reads nothing more on its own until Read again or Refresh, which read every day again. A day before those 182 is not read, so a number that counts one is not known.');
     w.unmount();
     const tickets = draw(view({}), { id: 'pace', value: { v: 2 } } as WidgetValue);
     await fireEvent.click(tickets.getByTestId('dashboard-how-toggle'));

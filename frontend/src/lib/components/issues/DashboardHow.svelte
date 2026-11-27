@@ -30,7 +30,7 @@
     <p>It reads {how.reads.join(', ')}.</p>
   {/if}
   {#if how.reads.includes('worklogs')}
-    <p data-testid="dashboard-how-worklogs">It counts your own logged time, and its numbers are known once every day of the last 180 days up to today is read. While it shows, this page reads from the tracker the days not read yet, 31 days a read, and reads the newest 31 days again when the board changes, at most once every 5 minutes; Refresh reads them all again. A day more than 180 days ago is not read, so a number that counts one is not known.</p>
+    <p data-testid="dashboard-how-worklogs">It counts your own logged time, and its numbers are known once every day of the last 182 days up to today is read. While a widget of it is counted, its computer reads from the tracker the days not read yet, 31 days a read, and the newest 31 days again at most once every 5 minutes; once it starts, it reads them all even if this page closes. After a read fails it reads nothing more on its own until Read again or Refresh, which read every day again. A day before those 182 is not read, so a number that counts one is not known.</p>
   {/if}
   {#if how.reads.includes('threads')}
     <p data-testid="dashboard-how-threads">It counts the threads on {computer} linked to these tickets; a ticket's Work lists those of every attached computer.</p>

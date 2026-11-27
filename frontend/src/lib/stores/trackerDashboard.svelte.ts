@@ -62,7 +62,7 @@
 
 import { untrack } from 'svelte';
 import { SvelteSet } from 'svelte/reactivity';
-import type { BoardTilesView, KeepTarget, LimitChange, WorklogRead } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { BoardTilesView, KeepTarget, LimitChange } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import type {
   Answer,
   DashboardView,
@@ -136,29 +136,18 @@ export interface DrillState {
   readonly error: unknown;
 }
 
-/** The page's reads of your logged time for the widgets that count it
- * (ReadTrackerWorklogDays on the board's computer). */
+/** The reads of your logged time as the answer shown gives them (the
+ * board's computer's, trackerapp/worklog_reads.go), and the person's
+ * Read again. */
 export interface LoggedTimeRead {
-  /** A read of days not read (WidgetValue.unread) is out, or its count
-   * is: the widgets that wait on it say so. */
+  /** The board's computer is reading days: a widget that waits on them
+   * (WidgetValue.unread) says so. */
   readonly reading: boolean;
-  /** Why the last read failed, '' when none failed. Its days are not read
-   * again until the person asks. */
+  /** Why the last read failed, '' when none failed: nothing is read on
+   * its own until the person asks. */
   readonly failure: string;
-  /** Reads every day of the window again, as Read again asks. */
+  /** Reads every day of the window again, as Read again and Refresh ask. */
   retry(): void;
-}
-
-/** Why the page reads your logged time (trackerapp.WorklogRead*): its
- * widgets show, the board changed since the newest days were last read,
- * or the person asked. */
-type LoggedReason = 'shown' | 'changed' | 'person';
-
-const LOGGED_REASON_RANK: Record<LoggedReason, number> = { shown: 0, changed: 1, person: 2 };
-
-/** Today in `zone`, YYYY-MM-DD: the day the dashboard counts to. */
-function dayIn(zone: string): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
 
 export interface TrackerDashboard {
@@ -331,27 +320,12 @@ export function createTrackerDashboard(opts: {
   let drill = $state.raw<DrillState | null>(null);
   let drillGen = 0;
   // Your logged time (trackerdash worklogs.go, trackerapp
-  // worklog_reads.go). The board's computer owns its reads: which days it
-  // reads, never twice on its own, and how often it reads the newest days
-  // again. The page asks while a widget that counts it shows, one call at
-  // a time, and again at once while the answer says there is more:
-  // ReadTrackerWorklogDays after each answer ('changed' when the board
-  // changed since the newest days were last read, else 'shown' while
-  // days are not read), again when the computer says a change may read
-  // then (rereadIn), and 'person' on Refresh or Read again. Each call is
-  // made only while that demand holds: the store alive, the screen shown,
-  // such a widget on the dashboard, the same computer and connection.
-  // The dashboard counts again after a read that read something.
-  let worklogReading = $state(false);
-  let worklogFailure = $state('');
-  let loggedKey = '';
-  // The connection whose reads run now, '' when none does.
-  let pumpingKey = '';
-  let owedReason: LoggedReason | null = null;
-  // The board's changes when the newest days were last read for one.
-  let changesRead = -1;
-  let rereadTimer: ReturnType<typeof setTimeout> | null = null;
-  let destroyed = false;
+  // worklog_reads.go): the board's computer reads it when an evaluation
+  // finds a widget that counts it, and tells the board when a run of reads
+  // ends (TrackerBoardState.changes moves), so the dashboard counts again.
+  // The page asks only for the person: Refresh and Read again
+  // (ReadTrackerWorklogDays). A failure of that call is the page's own.
+  let askFailure = $state('');
 
   const dashboard: DashboardView | null = $derived.by(() => {
     if (dashboards === null || dashboards === 'older') return null;
@@ -404,8 +378,6 @@ export function createTrackerDashboard(opts: {
         answered = { source: s, request: r };
         settledKey = key;
         error = null;
-        worklogReading = false;
-        readLoggedAfter(a);
         // An open drill of this dashboard counted in another unit (the
         // project changed what it counts in) reads its first page again
         // in this answer's: its numbers would be in the old one.
@@ -418,7 +390,6 @@ export function createTrackerDashboard(opts: {
         if (!token.isCurrent()) return;
         settledKey = key;
         error = err;
-        worklogReading = false;
       } finally {
         if (token.isCurrent()) inFlightKey = '';
       }
@@ -464,145 +435,26 @@ export function createTrackerDashboard(opts: {
     recountOnChanges(scheduler, () => opts.source()?.changes ?? -1, opts.shown);
   });
 
-  // The widgets of the dashboard shown, its proposals among them, that
-  // count your logged time.
-  function loggedWidgets(): Set<string> {
-    const ids = new Set<string>();
-    const d = dashboard;
-    if (!d) return ids;
-    const counts = (how: { reads?: string[] | null }) => how.reads?.includes('worklogs') ?? false;
-    for (const w of d.widgets) if (counts(w.how)) ids.add(w.id);
-    if (!ownShown) for (const p of proposals) if (counts(p.view.how)) ids.add(p.view.id);
-    return ids;
-  }
-
-  // The source whose logged time the page reads now: one while the
-  // screen shows and the dashboard shown has a widget that counts it; null
-  // otherwise. A destroyed store reads nothing: each read checks it when
-  // its call answers.
-  function loggedDemand(): DashboardSource | null {
-    if (!opts.shown()) return null;
+  // Reads every day of your logged time again on the board's computer,
+  // then counts again, whose answer says it is reading.
+  async function readLoggedAgain(): Promise<void> {
     const s = opts.source();
-    return s && loggedWidgets().size > 0 ? s : null;
-  }
-
-  function loggedKeyOf(s: DashboardSource): string {
-    return `${s.backend}\n${s.board.connection}`;
-  }
-
-  function clearRereadTimer(): void {
-    if (rereadTimer !== null) clearTimeout(rereadTimer);
-    rereadTimer = null;
-  }
-
-  // Another computer or connection: nothing of the last one's reads holds.
-  function adoptLogged(s: DashboardSource): void {
-    const key = loggedKeyOf(s);
-    if (key === loggedKey) return;
-    loggedKey = key;
-    worklogFailure = '';
-    worklogReading = false;
-    changesRead = -1;
-    owedReason = null;
-    clearRereadTimer();
-  }
-
-  // Whether a widget of answer a counts your logged time, rather than
-  // saying why it cannot.
-  function countsLogged(a: Answer | null): boolean {
-    const ids = loggedWidgets();
-    return a?.widgets.some((w) => ids.has(w.id) && !w.note && !w.error) ?? false;
-  }
-
-  // What answer a asks of your logged time: nothing when no widget of it
-  // counts the time (each says why instead: no time tracking, no verified
-  // account, a page narrowed to another person); the newest days read
-  // again when the board changed since they were and no wait for that is
-  // set; else the days not read.
-  function readLoggedAfter(a: Answer): void {
-    const s = loggedDemand();
-    if (!s || !countsLogged(a)) return;
-    adoptLogged(s);
-    if (changesRead !== s.changes && rereadTimer === null) void readLogged('changed');
-    else if (a.widgets.some((w) => (w.unread?.length ?? 0) > 0)) void readLogged('shown');
-  }
-
-  // Reads for reason, then again while the computer says there is more,
-  // one call at a time for a connection: a call while one runs is owed,
-  // the strongest reason kept, and made after it. Another connection's
-  // reads start at once; the last one's stops at its next answer.
-  async function readLogged(reason: LoggedReason): Promise<void> {
-    const first = loggedDemand();
-    if (!first) return;
-    adoptLogged(first);
-    const key = loggedKey;
-    if (pumpingKey === key) {
-      if (owedReason === null || LOGGED_REASON_RANK[reason] > LOGGED_REASON_RANK[owedReason]) owedReason = reason;
+    if (!s) return;
+    askFailure = '';
+    try {
+      await withBackendTarget(s.backend, () => ReadTrackerWorklogDays(s.board.connection, timeZone()));
+    } catch (err) {
+      askFailure = errString(err);
       return;
     }
-    pumpingKey = key;
-    let read = false;
-    let next: LoggedReason | null = reason;
-    try {
-      while (next !== null) {
-        const s = loggedDemand();
-        if (!s || loggedKeyOf(s) !== key) return;
-        const unread = shownAnswer?.widgets.some((w) => (w.unread?.length ?? 0) > 0) ?? false;
-        if (next === 'shown' && !unread) {
-          next = owedReason;
-          owedReason = null;
-          continue;
-        }
-        const why: LoggedReason = next;
-        if (why === 'person') worklogFailure = '';
-        const changes = s.changes;
-        // Only a read of days not read says so; a known number stays
-        // shown while its days are read again.
-        if (unread) worklogReading = true;
-        let answer: WorklogRead;
-        try {
-          answer = await withBackendTarget(s.backend, () => ReadTrackerWorklogDays(s.board.connection, dayIn(timeZone()), why));
-        } catch (err) {
-          if (!destroyed && loggedKey === key) worklogFailure = errString(err);
-          return;
-        }
-        if (destroyed || loggedKey !== key) return;
-        read ||= answer.read ?? false;
-        if (answer.failure) worklogFailure = answer.failure.message;
-        if (why !== 'shown' && !answer.rereadIn) changesRead = changes;
-        if (answer.rereadIn) {
-          clearRereadTimer();
-          rereadTimer = setTimeout(() => {
-            rereadTimer = null;
-            const s = loggedDemand();
-            if (s && changesRead !== s.changes) void readLogged('changed');
-          }, answer.rereadIn);
-        }
-        next = answer.more ? 'shown' : null;
-        if (next === null && owedReason !== null) {
-          next = owedReason;
-          owedReason = null;
-        }
-      }
-    } finally {
-      if (pumpingKey === key) {
-        pumpingKey = '';
-        owedReason = null;
-        if (!destroyed && loggedKey === key) {
-          // What was read counts once the dashboard counts again, and the
-          // widgets read on until that answer lands.
-          if (read && loggedDemand()) scheduler.request({ immediate: true });
-          else worklogReading = false;
-        }
-      }
-    }
+    scheduler.request({ immediate: true });
   }
 
   const logged: LoggedTimeRead = {
-    get reading() { return worklogReading; },
-    get failure() { return worklogFailure; },
+    get reading() { return shownAnswer?.logged?.reading ?? false; },
+    get failure() { return askFailure || (shownAnswer?.logged?.failure ?? ''); },
     retry() {
-      void readLogged('person');
+      void readLoggedAgain();
     },
   };
 
@@ -744,7 +596,7 @@ export function createTrackerDashboard(opts: {
       listGen += 1;
       scheduler.reset();
       scheduler.request({ immediate: true });
-      if (countsLogged(shownAnswer)) void readLogged('person');
+      if (shownAnswer?.logged) void readLoggedAgain();
     },
     openDrill(target) {
       if (!answered || !shownAnswer) return;
@@ -758,8 +610,6 @@ export function createTrackerDashboard(opts: {
     },
     closeDrill,
     destroy() {
-      destroyed = true;
-      clearRereadTimer();
       closeDrill();
       scheduler.dispose();
       stop();

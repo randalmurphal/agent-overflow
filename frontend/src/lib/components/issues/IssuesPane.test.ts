@@ -4942,6 +4942,31 @@ describe("the board's summary row", () => {
     view.unmount();
   });
 
+  it('says on a pinned tile of your logged time why its read failed beside the number, and that the computer reads it after Read again', async () => {
+    const hours = { id: 'w_2', title: 'Your hours', form: 'number', width: 3, unit: 'time', how: { ...how, reads: ['worklogs'] } };
+    const kept = { ...KEPT, widgets: [...KEPT.widgets, hours] };
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['w_2'] } as Partial<BoardView>) });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' };
+    let next: unknown = { range, estimates: 'points', at: 1, widgets: [{ id: 'w_2', value: { v: 3600 } }], logged: { failure: 'Jira asked to wait.' } };
+    setBindingMock('EvaluateTrackerDashboard', async () => next);
+    const reads = setBindingMock('ReadTrackerWorklogDays', async () => {
+      next = { range, estimates: 'points', at: 2, widgets: [{ id: 'w_2', value: { ur: 2 }, unread: ['2026-11-24', '2026-11-25'] }], logged: { reading: true } };
+    });
+    const view = mount();
+    await view.findByTestId('board-row-chip');
+    await fireEvent.click(view.getByTestId('board-row-toggle'));
+    const [tile] = await view.findAllByTestId('board-row-tile');
+    await waitFor(() => expect(within(tile).getByTestId('dashboard-widget-unread').textContent).toContain('Your logged time was not read again: Jira asked to wait.'));
+    expect(within(tile).getByTestId('board-row-tile-value').textContent).toBe('1h');
+    await fireEvent.click(within(tile).getByTestId('dashboard-widget-unread-retry'));
+    await waitFor(() => expect(within(tile).getByTestId('dashboard-widget-reading').textContent).toBe('Reading your logged time…'));
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(reads.mock.calls[0][0]).toBe('c1');
+    expect(within(tile).queryByTestId('dashboard-widget-unread')).toBeNull();
+    view.unmount();
+  });
+
   it('takes a tile off, adds one from a dashboard, says a full row is full, and asks the agent for a new one', async () => {
     install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['stuck'] } as Partial<BoardView>) });
     setBindingMock('TrackerDashboards', async () => listing());

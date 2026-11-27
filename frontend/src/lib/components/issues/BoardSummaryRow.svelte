@@ -42,6 +42,7 @@
   import { formatAmount, type DashboardUnit } from '../../utils/dashboardAmount';
   import { userFacingError } from '../../utils/userFacingError';
   import { workGate } from './ticketWorkGate';
+  import DashboardLoggedLine from './DashboardLoggedLine.svelte';
 
   interface Props {
     source: DashboardSource;
@@ -251,6 +252,8 @@
                 <span class="text-error" role="alert">{value.error}</span>
               {:else if value.note}
                 <span class="text-fg-muted" data-testid="board-row-tile-note">{value.note}</span>
+              {:else if (value.unread?.length ?? 0) > 0 && store.logged.reading}
+                <span class="text-fg-muted" role="status" data-testid="dashboard-widget-reading">Reading your logged time…</span>
               {:else if w.view.form === 'number'}
                 {@const words = numWords(value.value as Num | undefined, w.view.unit as DashboardUnit, estimates)}
                 <span class="flex items-baseline gap-1"><span class="text-xl font-semibold tabular-nums text-fg" data-testid="board-row-tile-value">{words.amount}</span>{#if words.word}<span class="text-fg-muted">{words.word}</span>{/if}</span>
@@ -276,6 +279,7 @@
                 {/each}
               {/if}
             </button>
+            <DashboardLoggedLine {value} counts={w.view.how.reads?.includes('worklogs') ?? false} logged={store.logged} />
             {#if editing}
               <button
                 type="button"

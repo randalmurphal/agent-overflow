@@ -185,7 +185,6 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   RefreshTrackerWorklogs: async () => ({ worklogs: [] }),
   // A dashboard's logged-time widgets read their days when they show
   // (stores/trackerDashboard): nothing read, nothing more to read.
-  ReadTrackerWorklogDays: async () => ({}),
   // A thread's time draft card reads its call's entries when it shows.
   ThreadTimeEntries: async () => [],
   // A ticket's Work, read when its rail shows (stores/ticketWork): no pull

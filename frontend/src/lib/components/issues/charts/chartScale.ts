@@ -26,17 +26,18 @@ export function valueScale(top: number, count = 4): ValueScale {
   return { max, ticks: Array.from({ length: steps + 1 }, (_, i) => Math.round(i * step * 1e6) / 1e6) };
 }
 
-/** A chart's value axis in the unit its values read in: valueScale's
- * ticks in hours for time (inTime), so a step is a whole 1, 2 or 5 hours
- * or a part of one, each tick labeled as the chart's numbers are. */
+/** A chart's value axis in the unit its values read in, each tick labeled
+ * as the chart's numbers are: for time (inTime), valueScale's ticks in
+ * whole minutes below an hour, which time reads in to the minute, and in
+ * hours from an hour, so no two ticks read the same. */
 export interface UnitScale {
   readonly max: number;
   readonly ticks: readonly { readonly value: number; readonly label: string }[];
 }
 
 export function unitScale(top: number, unit: DashboardUnit, estimates: string): UnitScale {
-  const per = inTime(unit, estimates) ? 3600 : 1;
-  const s = valueScale(top / per);
+  const per = !inTime(unit, estimates) ? 1 : top < 3600 ? 60 : 3600;
+  const s = per === 60 ? valueScale(Math.max(top / per, 1), Math.min(4, Math.max(1, Math.ceil(top / per)))) : valueScale(top / per);
   return { max: s.max * per, ticks: s.ticks.map((t) => ({ value: t * per, label: formatAmount(t * per, unit, estimates) })) };
 }
 

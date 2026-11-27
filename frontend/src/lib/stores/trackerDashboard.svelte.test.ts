@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import type { TrackerDashboardsView } from '../../../bindings/agent-overflow/internal/app/models';
 import type { Answer, DashboardView, DrillAnswer, ProposalView } from '../../../bindings/agent-overflow/internal/trackerdash/models';
-import type { WorklogRead } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import {
   createTrackerDashboard,
   DASHBOARD_CHANGE_INTERVAL_MS,
@@ -640,202 +639,83 @@ describe('your logged time', () => {
   /** A dashboard whose one widget counts your logged time. */
   const LOGGED_VIEW = { ...VIEW, widgets: [{ id: 'w', how: { reads: ['worklogs'] } }] } as unknown as DashboardView;
   /** An answer whose one widget counts your logged time, its days not
-   * read `unread`. */
-  function loggedAnswer(unread: string[] = [], at = 1, more: Record<string, unknown> = {}): Answer {
-    return { ...answerFor('sprints_5', at), widgets: [{ id: 'w', unread, ...more }] } as unknown as Answer;
+   * read `unread`, with the board's computer's reads `logged`. */
+  function loggedAnswer(unread: string[] = [], at = 1, logged: Answer['logged'] = {}): Answer {
+    return { ...answerFor('sprints_5', at), widgets: [{ id: 'w', unread }], logged } as unknown as Answer;
   }
-  const NOT_READ = ['2026-11-24', '2026-11-25'];
 
   /** Opens the store on a dashboard of your logged time and lands `first`. */
-  async function openedLogged(first: Answer, view = LOGGED_VIEW) {
+  async function openedLogged(first: Answer) {
     const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     const evaluate = held<Answer>('EvaluateTrackerDashboard');
-    const reads = held<WorklogRead>('ReadTrackerWorklogDays');
+    const reads = held<void>('ReadTrackerWorklogDays');
     const s = open();
-    list.answer(listed([view]));
+    list.answer(listed([LOGGED_VIEW]));
     await flush();
     evaluate.answer(first);
     await flush();
-    return { s, evaluate, reads };
+    return { s, list, evaluate, reads };
   }
-  const why = (reads: { calls: unknown[][] }) => reads.calls.map((c) => c[2]);
 
-  it('reads the days not read on the board\'s computer while the computer says there is more, says it is reading, then counts again', async () => {
-    const { s, evaluate, reads } = await openedLogged(loggedAnswer(NOT_READ));
-    expect(reads.calls[0]).toEqual(['conn-1', '2026-11-25', 'changed']);
+  it('asks nothing of its own: whether the board\'s computer reads, and why its read failed, are the answer\'s', async () => {
+    const { s, evaluate, reads } = await openedLogged(loggedAnswer(['2026-11-25'], 1, { reading: true }));
+    expect(reads.calls).toHaveLength(0);
     expect(s.logged.reading).toBe(true);
-    for (let i = 0; i < 5; i += 1) {
-      reads.answer({ read: true, more: true });
-      await flush();
-    }
-    reads.answer({ read: true });
-    await flush();
-    expect(why(reads)).toEqual(['changed', 'shown', 'shown', 'shown', 'shown', 'shown']);
-    expect(reads.pins.every((p) => p === 'peer-1')).toBe(true);
-    expect(s.logged.reading).toBe(true);
-    expect(evaluate.calls).toHaveLength(2);
-    evaluate.answer(loggedAnswer([], 2));
-    await flush();
-    expect(s.logged.reading).toBe(false);
-    expect(reads.calls).toHaveLength(6);
-  });
-
-  it('settles a read that leaves days unread with no failure, so the widget offers Read again', async () => {
-    const { s, evaluate, reads } = await openedLogged(loggedAnswer(NOT_READ));
-    reads.answer({ read: true });
-    await flush();
-    evaluate.answer(loggedAnswer(NOT_READ, 2));
-    await flush();
-    expect(why(reads)).toEqual(['changed', 'shown']);
-    reads.answer({});
-    await flush();
-    expect(s.logged.reading).toBe(false);
     expect(s.logged.failure).toBe('');
-    expect(evaluate.calls).toHaveLength(2);
-  });
-
-  it('sends nothing further once the store is destroyed mid-read', async () => {
-    const { s, evaluate, reads } = await openedLogged(loggedAnswer(NOT_READ));
-    s.destroy();
-    store = null;
-    reads.answer({ read: true, more: true });
+    // The computer tells the board when its reads end, which counts again.
+    told();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
     await flush();
-    vi.advanceTimersByTime(DASHBOARD_REFRESH_MS);
-    await flush();
-    expect(reads.calls).toHaveLength(1);
-    expect(evaluate.calls).toHaveLength(1);
-  });
-
-  it('sends nothing further while the screen is hidden, and reads on from its next answer when it shows', async () => {
-    const { s, evaluate, reads } = await openedLogged(loggedAnswer(NOT_READ));
-    shown = false;
-    await flush();
-    reads.answer({ read: true, more: true });
+    evaluate.answer(loggedAnswer(['2026-11-25'], 2, { failure: 'Jira asked to wait' }));
     await flush();
     expect(s.logged.reading).toBe(false);
-    vi.advanceTimersByTime(DASHBOARD_REFRESH_MS);
-    await flush();
-    expect(reads.calls).toHaveLength(1);
-    expect(evaluate.calls).toHaveLength(1);
-    shown = true;
-    await flush();
-    evaluate.answer(loggedAnswer(['2026-11-24'], 2));
-    await flush();
-    expect(why(reads)).toEqual(['changed', 'shown']);
+    expect(s.logged.failure).toBe('Jira asked to wait');
+    expect(reads.calls).toHaveLength(0);
   });
 
-  it('says why a read failed, reads no day again on its own, and Read again asks as the person', async () => {
-    const { s, evaluate, reads } = await openedLogged(loggedAnswer(NOT_READ));
-    reads.answer({ read: true, failure: { kind: 'rate_limited', message: 'Jira asked to wait', at: 1 } as WorklogRead['failure'] });
-    await flush();
-    expect(s.logged.failure).toBe('Jira asked to wait');
-    evaluate.answer(loggedAnswer(NOT_READ, 2));
-    await flush();
-    reads.answer({});
-    await flush();
-    expect(s.logged.failure).toBe('Jira asked to wait');
+  it('reads every day again on Read again, then counts again, whose answer says it reads', async () => {
+    const { s, evaluate, reads } = await openedLogged(loggedAnswer(['2026-11-25'], 1, { failure: 'Jira asked to wait' }));
     s.logged.retry();
     await flush();
-    expect(why(reads)).toEqual(['changed', 'shown', 'person']);
+    expect(reads.calls).toEqual([['conn-1', Intl.DateTimeFormat().resolvedOptions().timeZone]]);
+    expect(reads.pins).toEqual(['peer-1']);
+    expect(evaluate.calls).toHaveLength(1);
+    reads.answer();
+    await flush();
+    expect(evaluate.calls).toHaveLength(2);
+    evaluate.answer(loggedAnswer(['2026-11-25'], 2, { reading: true }));
+    await flush();
+    expect(s.logged.reading).toBe(true);
     expect(s.logged.failure).toBe('');
+  });
+
+  it('says why a Read again the computer could not take failed, until the next', async () => {
+    const { s, reads } = await openedLogged(loggedAnswer(['2026-11-25']));
+    s.logged.retry();
+    await flush();
     reads.fail(new Error('the computer is not connected'));
     await flush();
     expect(s.logged.failure).toBe('the computer is not connected');
-    expect(s.logged.reading).toBe(false);
+    s.logged.retry();
+    await flush();
+    expect(s.logged.failure).toBe('');
   });
 
-  it('reads the newest days again when the board changes, when the computer says it may, and a known number never reads as reading', async () => {
-    const { s, evaluate, reads } = await openedLogged(loggedAnswer());
-    expect(why(reads)).toEqual(['changed']);
-    expect(s.logged.reading).toBe(false);
-    reads.answer({ read: true });
+  it('has Refresh read every day again while a widget counts your logged time, a known number among them, and not otherwise', async () => {
+    const { s, evaluate, reads } = await openedLogged(loggedAnswer([]));
+    s.refresh();
     await flush();
-    expect(s.logged.reading).toBe(false);
+    expect(reads.calls).toHaveLength(1);
+    reads.answer();
     evaluate.answer(loggedAnswer([], 2));
     await flush();
-    expect(reads.calls).toHaveLength(1);
-    source = { ...source!, changes: 1 };
-    await flush();
-    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
-    await flush();
-    evaluate.answer(loggedAnswer([], 3));
-    await flush();
-    expect(why(reads)).toEqual(['changed', 'changed']);
-    reads.answer({ rereadIn: 60_000 });
-    await flush();
-    expect(s.logged.reading).toBe(false);
-    vi.advanceTimersByTime(59_999);
-    await flush();
-    expect(reads.calls).toHaveLength(2);
-    vi.advanceTimersByTime(1);
-    await flush();
-    expect(why(reads)).toEqual(['changed', 'changed', 'changed']);
-    reads.answer({ read: true });
-    await flush();
-    expect(s.logged.reading).toBe(false);
-    expect(evaluate.calls).toHaveLength(4);
-  });
+    s.destroy();
 
-  it('reads nothing when the wait to read the newest days again ends while the screen is hidden', async () => {
-    const { evaluate, reads } = await openedLogged(loggedAnswer());
-    reads.answer({ rereadIn: 60_000 });
+    const plain = await opened();
+    const none = held<void>('ReadTrackerWorklogDays');
+    plain.s.refresh();
     await flush();
-    shown = false;
-    await flush();
-    vi.advanceTimersByTime(60_000);
-    await flush();
-    expect(reads.calls).toHaveLength(1);
-    expect(evaluate.calls).toHaveLength(1);
-  });
-
-  it('reads again as the person on Refresh', async () => {
-    const { s, reads } = await openedLogged(loggedAnswer());
-    reads.answer({ read: true });
-    await flush();
-    s.refresh();
-    await flush();
-    expect(why(reads)).toEqual(['changed', 'person']);
-  });
-
-  it('runs one read at a time: what an answer asks while one is out is asked after it', async () => {
-    const { s, evaluate, reads } = await openedLogged(loggedAnswer(NOT_READ));
-    s.refresh();
-    await flush();
-    evaluate.answer(loggedAnswer(NOT_READ, 2));
-    await flush();
-    expect(reads.calls).toHaveLength(1);
-    reads.answer({ read: true });
-    await flush();
-    expect(why(reads)).toEqual(['changed', 'person']);
-  });
-
-  it('reads nothing for a dashboard with no widget of your logged time, or one whose widget says why it cannot count', async () => {
-    const { reads } = await openedLogged(loggedAnswer(NOT_READ), VIEW);
-    expect(reads.calls).toHaveLength(0);
-    store?.destroy();
-    const other = await openedLogged(loggedAnswer(NOT_READ, 1, { note: 'Only your own logged time is read.' }));
-    expect(other.reads.calls).toHaveLength(0);
-  });
-
-  it('reads another connection\'s days while the last connection\'s read is still out, and that read changes nothing after', async () => {
-    const { s, evaluate, reads } = await openedLogged(loggedAnswer(['2026-11-25']));
-    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
-    expect(reads.calls).toHaveLength(1);
-    source = { backend: 'peer-1', board: { ...testBoard, connection: 'conn-2', board: '2' }, subscription: 'sub-2', changes: 0, dashboards: 0 };
-    await flush();
-    list.answer(listed([LOGGED_VIEW]));
-    await flush();
-    evaluate.answer(loggedAnswer(['2026-11-25'], 3));
-    await flush();
-    expect(reads.calls.map((c) => c[0])).toEqual(['conn-1', 'conn-2']);
-    expect(s.logged.reading).toBe(true);
-    reads.answer({ failure: { kind: 'rate_limited', message: 'Jira asked to wait', at: 1 } as WorklogRead['failure'] });
-    await flush();
-    expect(s.logged.reading).toBe(true);
-    expect(s.logged.failure).toBe('');
-    reads.answer({});
-    await flush();
-    expect(s.logged.reading).toBe(false);
+    expect(none.calls).toHaveLength(0);
   });
 });
 

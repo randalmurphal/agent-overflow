@@ -144,8 +144,10 @@ export function limitSide(good: string): 'above' | 'below' {
 
 /** The unit a widget of `unit` counts in where its answer's estimates
  * are `estimates`, as a limit names it (trackerdash.ValueUnit): tickets,
- * days, points or seconds. `limitFormat` is its inverse. */
+ * days, points or seconds, which logged time (`time`) is in too.
+ * `limitFormat` is its inverse. */
 export function countUnit(unit: DashboardUnit, estimates: string): string {
+  if (unit === 'time') return 'seconds';
   if (unit !== 'estimate') return unit;
   return estimates === 'points' ? 'points' : estimates === 'time' ? 'seconds' : 'tickets';
 }
