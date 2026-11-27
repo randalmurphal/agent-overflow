@@ -1059,7 +1059,10 @@ of the stuck tickets went from 170 ms to 538 ms in that case and takes
 updated in the window by, took 7.2, 6.4 and 6.6 ms to build on a mirror
 of 20,050 issues. A card write of 100 cards took 5.40, 5.24 and 6.00 ms
 with it and 5.64, 5.22 and 5.53 ms without it, no difference beyond the
-runs' spread.
+runs' spread. On the release upgrade corpus (a v0.0.16 database at scale
+0.1, 43,083 items) the mirror is empty when v175 runs, because v167
+empties it: migrating from schema 139 and booting took 1,325 ms through
+v175 and 1,158 ms through v174, one run each.
 
 ## Planning poker add-on
 
