@@ -179,11 +179,11 @@ func trackerSubscriptionCleanupKey(id string) string { return "tracker-subscript
 //ao:scope tracker:read
 //ao:route home
 func (a *App) TrackerBoard(ctx context.Context, subscriptionID string, sections []trackerapp.Section) (trackerapp.BoardView, error) {
-	svc, scope, groups, err := a.trackerSubscriptionBoard(subscriptionID)
+	svc, err := a.trackerService()
 	if err != nil {
 		return trackerapp.BoardView{}, err
 	}
-	out, err := svc.Board(scope, groups, sections)
+	out, err := svc.SubscriptionBoardView(subscriptionID, sections)
 	return out, trackerError(err)
 }
 

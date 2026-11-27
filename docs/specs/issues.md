@@ -327,8 +327,16 @@ is running, it opens no form: Work shows the run's rows and its Start
 work button says the run is going. A dropped card waits where it was
 dropped, dimmed, until its write settles, and is not moved again until
 then. A refusal shows under the card or the ticket when one is in view,
-else in a toast. Not built: the summary row. A sprint on the board is read whole, and while Only mine
-or Search is on every column is read whole, so a board of thousands of
+else in a toast. The summary row: the widgets pinned from the
+dashboards, as chips or tiles, each tile amber past its limit; a tile
+of what holds now, a number or a list, filters the board to
+its tickets with a "Showing only" chip that clears, kept on the Backlog
+and following the tile's count, and any other tile opens its dashboard
+at that widget; the row edited in place (take a tile off, add one from
+the dashboards, or ask the agent, whose proposal Keep pins while the row
+has room); a board that pins nothing shows Add a tile and reads nothing
+for the row until it is pressed. A sprint on the board is read whole, and while Only mine,
+Search or a tile's filter is on every column is read whole, so a board of thousands of
 cards holds them all. A card's state line shows days in the status but not a
 running thread or what blocks it; its parent shows as a chip but is not
 known to be an epic; its type and priority marks are picked by name, not
@@ -339,7 +347,8 @@ avatar.
   expanded into tiles. Its tiles are dashboard widgets pinned to the board,
   at most five. A tile that stands for a set of tickets filters the board
   when clicked. The row is edited in place: remove a tile, add one from a
-  dashboard, or ask the agent for a new one.
+  dashboard, or ask the agent for a new one. A board with no tiles offers
+  Add a tile in the row's place.
 - A card shows type, key, title, epic, labels, priority, points, assignee
   and one state line (a running thread, days in the same status, what
   blocks it). Display chooses which of these show, per board. Type,
@@ -642,12 +651,14 @@ Team or Mine, the range, Ask your agent, edit mode, which removes
 widgets and removes the dashboard with its last one (there is no
 Delete), and the widget an agent proposes, which the person keeps or
 dismisses; a number, bar or cell's tickets, a number's change and trend, narrowing to a person or
-an epic, and selecting rows in a ticket list or a drill to move, assign
+an epic, selecting rows in a ticket list or a drill to move, assign
 or start a thread on them; a sprint board's burndown and its table of
-what each finished sprint committed, added, removed and completed; and
-Stuck's value where the range began. A query reads the board's tickets
-only: pull requests, threads and logged time are not built, nor the
-credit rules in How this is counted, or a number tile's limit.
+what each finished sprint committed, added, removed and completed;
+Stuck's value where the range began; and a number tile's limit and a
+widget's pin to the board's summary row, which an agent's widget may ask
+for too. A query reads the board's tickets only: pull requests, threads
+and logged time are not built, nor the credit rules in How this is
+counted.
 
 - Every board has a built-in dashboard, Overview: its usual pace, days
   from start to done, the tickets stuck now, what was finished per sprint
@@ -743,8 +754,17 @@ credit rules in How this is counted, or a number tile's limit.
   selection. Typed text stays with the tickets it was typed for.
 - An answer to a one-off question appears as a provisional widget. It joins
   the dashboard only when kept.
-- A number tile can carry a limit. Over the limit, the tile is marked on
-  the dashboard and on the board's summary row.
+- A number tile can carry a limit, set from its bell: the side it warns
+  on follows whether up is good news. Over the limit, the tile is marked
+  on the dashboard and on the board's summary row. A limit holds in the
+  unit it was set in: while the project counts the tile in another unit,
+  it shows no limit, and a number counted in another unit than the
+  limit's is never marked. A limit can be below 0, as a signed number
+  sets it; Lower stops at 0. A proposal whose agent asked for a limit is
+  marked by it before Keep, with no control of it.
+- A widget's pin shows it on the board's summary row, at most five; a
+  full row takes no other pin and says so. A proposal whose agent asked
+  for the row says before Keep whether Keep puts it there.
 - Charts are drawn to the widget's width and have hover values. The three
   series colors were checked for contrast and color-blind separation on the
   dark and light surfaces.

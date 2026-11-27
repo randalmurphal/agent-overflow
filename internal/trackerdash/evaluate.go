@@ -100,14 +100,18 @@ type Board struct {
 
 // Request is what one evaluation counts: a dashboard, over a range,
 // narrowed to Mine (the viewer), a person or an epic, with weeks and days
-// in TimeZone (IANA).
+// in TimeZone (IANA). With Widgets, the dashboard is those widgets of the
+// board's dashboards in that order (a board's summary row): the built-in
+// one's, which Dashboard names, and the project's own; a widget the board
+// no longer has is left out, and the proposals are not counted.
 type Request struct {
-	Dashboard string `json:"dashboard"`
-	Range     string `json:"range"`
-	Mine      bool   `json:"mine,omitempty"`
-	Person    string `json:"person,omitempty"`
-	Epic      string `json:"epic,omitempty"`
-	TimeZone  string `json:"time_zone"`
+	Dashboard string   `json:"dashboard"`
+	Range     string   `json:"range"`
+	Mine      bool     `json:"mine,omitempty"`
+	Person    string   `json:"person,omitempty"`
+	Epic      string   `json:"epic,omitempty"`
+	TimeZone  string   `json:"time_zone"`
+	Widgets   []string `json:"widgets,omitempty"`
 }
 
 // How is how a widget's number is counted, from its metric's definition.
@@ -888,7 +892,9 @@ func (o *opened) resolve(b Board, r Request, loc *time.Location) error {
 // dashboardOf is the dashboard r names on b with every metric its
 // widgets and b's proposals draw, by name: a built-in, with the kind of
 // board its ID names, which the board's own kind is checked against once
-// its copy is read (resolve), or one of b.Own's, with no kind.
+// its copy is read (resolve), or one of b.Own's, with no kind. With
+// r.Widgets it is those widgets of the built-in and b.Own's dashboards,
+// with the built-in's kind.
 func dashboardOf(r Request, b Board) (Dashboard, map[string]Metric, *Kind, error) {
 	metrics := maps.Clone(b.Own.Metrics)
 	if metrics == nil {
@@ -898,7 +904,13 @@ func dashboardOf(r Request, b Board) (Dashboard, map[string]Metric, *Kind, error
 		k := Kind{PlansSprints: r.Dashboard == builtinSprintsID, Epics: b.Epics}
 		d, builtins := builtin(k)
 		maps.Copy(metrics, builtins)
+		if r.Widgets != nil {
+			d = Dashboard{ID: d.ID, Title: d.Title, Widgets: picked(r.Widgets, append([]Dashboard{d}, b.Own.Dashboards...))}
+		}
 		return d, metrics, &k, nil
+	}
+	if r.Widgets != nil {
+		return Dashboard{}, nil, nil, refuse("dashboard_request_invalid", "a request that names widgets names the built-in dashboard", nil)
 	}
 	for _, d := range b.Own.Dashboards {
 		if d.ID == r.Dashboard {
@@ -906,6 +918,24 @@ func dashboardOf(r Request, b Board) (Dashboard, map[string]Metric, *Kind, error
 		}
 	}
 	return Dashboard{}, nil, nil, unknownDashboard(r.Dashboard)
+}
+
+// picked is the widgets of ds that ids name, in ids' order, each once;
+// an ID no widget has is left out.
+func picked(ids []string, ds []Dashboard) []Widget {
+	var out []Widget
+	for i, id := range ids {
+		if slices.Contains(ids[:i], id) {
+			continue
+		}
+		for _, d := range ds {
+			if j := slices.IndexFunc(d.Widgets, func(w Widget) bool { return w.ID == id }); j >= 0 {
+				out = append(out, d.Widgets[j])
+				break
+			}
+		}
+	}
+	return out
 }
 
 func unknownDashboard(id string) *Refusal {
@@ -963,10 +993,11 @@ func (o *opened) count(m Metric, r reads) (counted, error) {
 // deadline. What the proposals read or take never reaches the
 // dashboard's widgets, which count first with their tickets' titles; a
 // proposal its evaluation does not count says why in its own place
-// (proposals) instead of failing the answer.
+// (proposals) instead of failing the answer. A request that names its
+// widgets counts only those.
 func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (Answer, error) {
 	a, err := e.dashboard(ctx, b, r)
-	if err != nil || len(b.Own.Proposals) == 0 {
+	if err != nil || len(b.Own.Proposals) == 0 || r.Widgets != nil {
 		return a, err
 	}
 	proposed, err := e.proposals(ctx, b, r)
@@ -1466,12 +1497,14 @@ func (ev *evaluation) ticket(c contribution, m Metric, cols columns, i int) Tick
 // widget that ranks its buckets left out (Rest, what its More opens).
 // Page is the page of drillPage rows; Count is the row count page 0
 // answered, so a later page that finds a different count starts again at
-// page 0.
+// page 0. With IDs the answer names every ticket of the rows (the set a
+// tile filters the board to) and lists no page.
 type DrillRequest struct {
 	Request
 	Widget string     `json:"widget"`
 	Cell   *DrillCell `json:"cell,omitempty"`
 	Rest   bool       `json:"rest,omitempty"`
+	IDs    bool       `json:"ids,omitempty"`
 	Page   int        `json:"page"`
 	Count  int        `json:"count,omitempty"`
 }
@@ -1486,7 +1519,8 @@ type DrillCell struct {
 
 // DrillAnswer is the number and one page of its rows, from one
 // evaluation: Count rows of Tickets tickets, Counted of the rows counted.
-// Reading is as an Answer's.
+// Reading is as an Answer's. Asked for IDs, it holds those tickets' IDs
+// in the drill's order, and no page.
 type DrillAnswer struct {
 	Title     string      `json:"title"`
 	Reading   bool        `json:"reading,omitempty"`
@@ -1500,6 +1534,7 @@ type DrillAnswer struct {
 	Pages     int         `json:"pages"`
 	Restarted bool        `json:"restarted,omitempty"`
 	Rows      []TicketRow `json:"rows"`
+	IDs       []string    `json:"ids,omitempty"`
 	At        int64       `json:"at"`
 }
 
@@ -1624,6 +1659,16 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		}
 	}
 	out.Tickets = len(tickets)
+	if r.IDs {
+		out.IDs = make([]string, 0, len(tickets))
+		for _, row := range rows {
+			if tickets[row.ticket] {
+				out.IDs = append(out.IDs, row.ticket)
+				delete(tickets, row.ticket)
+			}
+		}
+		return out, nil
+	}
 	out.Pages = max(1, (len(rows)+drillPage-1)/drillPage)
 	if r.Page > 0 && (r.Count != out.Count || r.Page >= out.Pages) {
 		out.Page, out.Restarted = 0, true

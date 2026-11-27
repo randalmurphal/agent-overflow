@@ -4468,6 +4468,14 @@ export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
 }
 
 /**
+ * PinTrackerWidget pins a widget of a subscribed board's dashboards to the
+ * end of the board's summary row, at most five, or takes it off.
+ */
+export function PinTrackerWidget(subscriptionID: string, widget: string, pinned: boolean): $CancellablePromise<void> {
+    return $Call.ByID(610896236, subscriptionID, widget, pinned);
+}
+
+/**
  * PostPRComment posts a comment on pr itself, not on a line: a GitHub
  * conversation comment, a GitLab merge request note.
  */
@@ -6485,6 +6493,16 @@ export function SetTrackerSubscriptionVisible(subscriptionID: string, visible: b
 }
 
 /**
+ * SetTrackerWidgetLimit changes the limit of a number widget of a
+ * subscribed board's dashboards, to a value its count answered or by a
+ * step of the stored one (trackerapp.LimitChange), or clears it for nil;
+ * over it, the widget and its tile on the board's summary row are marked.
+ */
+export function SetTrackerWidgetLimit(subscriptionID: string, widget: string, change: trackerapp$0.LimitChange | null): $CancellablePromise<void> {
+    return $Call.ByID(3937459196, subscriptionID, widget, change);
+}
+
+/**
  * SetWSLDistroPreference persists the new distro pick to the
  * launcher's wsl.json. The change applies on the next Windows-side
  * launch; the running backend stays in its current distro for the
@@ -6701,11 +6719,13 @@ export function StartTicketsThread(projectID: string, req: app$0.StartTicketsThr
  * and answers its row: in the project the board subscription was made
  * for, in its checkout, on the provider trackerToolsProvider picks, its
  * draft, unsent, naming the board by its name and site/ID, which the
- * tracker tools' dashboard_widget takes. A failure to seed the draft
+ * tracker tools' dashboard_widget takes. With rowWidget, the words the
+ * person typed in the board's summary row, the draft asks for a widget
+ * that shows them, proposed for the row. A failure to seed the draft
  * deletes the thread. Nothing else is written.
  */
-export function StartTrackerDashboardThread(subscriptionID: string): $CancellablePromise<store$0.Thread> {
-    return $Call.ByID(3031630647, subscriptionID).then(($result: any) => {
+export function StartTrackerDashboardThread(subscriptionID: string, rowWidget: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(3031630647, subscriptionID, rowWidget).then(($result: any) => {
         return $$createType12($result);
     });
 }

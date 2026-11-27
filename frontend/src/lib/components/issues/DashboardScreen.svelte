@@ -4,7 +4,10 @@
   // board's computer from its copy of the board. A toolbar holds the
   // dashboard picker, its range, Team or Mine, the person or epic the page
   // is narrowed to, Ask your agent and, on a dashboard the project keeps,
-  // Edit, which removes widgets; the dashboard goes with its last one. The widgets an
+  // Edit, which removes widgets; the dashboard goes with its last one. A
+  // widget's bell sets a number's limit and its pin puts it on the board's
+  // summary row; under compact those show while editing, which every
+  // dashboard offers for them, or once switched on. The widgets an
   // agent proposed on the board sit above the grid, each with Keep, Dismiss
   // and its thread; nothing joins a dashboard without Keep. Under the
   // widgets sit on a 12-column grid by the screen's width: their own
@@ -14,7 +17,8 @@
   // count does; every widget's numbers are from one answer of the
   // dashboard shown (stores/trackerDashboard.svelte.ts). While a new one
   // is counted the last stays, its numbers dimmed and taking no click, and
-  // says so.
+  // says so. Opened from a tile of the board's summary row, it shows that
+  // tile's widget.
   import { onDestroy } from 'svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import X from '@lucide/svelte/icons/x';
@@ -31,7 +35,7 @@
   import { mountThreadForToolPane } from '../../stores/panes.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
-  import { askAgentAboutDashboards, createTrackerDashboard, type DashboardSource } from '../../stores/trackerDashboard.svelte';
+  import { askAgentAboutDashboards, createTrackerDashboard, takeShownWidget, type DashboardSource } from '../../stores/trackerDashboard.svelte';
   import { FIRST_READ_TEXT } from '../../stores/trackerDashboardModel';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { scopeGrant } from '../../transport/scopes';
@@ -39,12 +43,15 @@
   import { userFacingError } from '../../utils/userFacingError';
   import { workGate } from './ticketWorkGate';
   import DashboardDrill from './DashboardDrill.svelte';
-  import DashboardWidget from './DashboardWidget.svelte';
+  import DashboardWidget, { type TileControls } from './DashboardWidget.svelte';
   import type { TicketListSource } from './TicketListActions.svelte';
   import { setTicketWriteSurface } from './ticketWriteSurface';
 
   interface Props {
     source: DashboardSource | null;
+    /** The widgets the board's project pins to its summary row
+     * (TrackerBoardState.pins); null until the board is read. */
+    pins: readonly string[] | null;
     /** The board's name, which a failed Ask names. */
     boardName: string;
     shown: boolean;
@@ -55,7 +62,7 @@
     counting?: boolean;
   }
 
-  let { source, boardName, shown, compact, computerName, onOpenTicket, counting = $bindable(false) }: Props = $props();
+  let { source, pins, boardName, shown, compact, computerName, onOpenTicket, counting = $bindable(false) }: Props = $props();
 
   const store = createTrackerDashboard({ source: () => source, shown: () => shown });
   // A ticket list's rows say what became of their writes while the
@@ -68,6 +75,21 @@
   export function refresh(): void {
     store.refresh();
   }
+
+  // The widget a tile of the summary row opened this screen at: shown once
+  // its dashboard's first count has settled, answered or failed, and is
+  // laid out, since the widgets above it take their height from it.
+  // svelte-ignore state_referenced_locally
+  let showWidget = source ? takeShownWidget(source.board) : '';
+  let gridEl: HTMLElement | undefined = $state();
+  $effect(() => {
+    const d = store.dashboard;
+    const grid = gridEl;
+    if (!showWidget || !d || !grid || (!store.answer && !store.error) || !d.widgets.some((w) => w.id === showWidget)) return;
+    const id = showWidget;
+    showWidget = '';
+    requestAnimationFrame(() => grid.querySelector<HTMLElement>(`[data-widget-cell="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'start' }));
+  });
 
   /** The screen's width that the grid lays out to. */
   let width = $state(0);
@@ -155,12 +177,38 @@
     editing = false;
   });
 
+  // The limits and the row's size as the list has them; null from a
+  // computer whose release keeps none.
+  const tiles = $derived(store.tiles);
+  function tileOf(w: WidgetView): TileControls | undefined {
+    const t = tiles;
+    if (!t || !pins) return undefined;
+    return {
+      pinned: pins.includes(w.id),
+      rowFull: pins.length >= t.max,
+      max: t.max,
+      busy: store.busy.has(w.id),
+      blocked: editBlocked,
+      onlyOn: compact && !editing,
+      setLimit: (limit) => void act(limit === null ? 'turn the limit off' : 'set the limit', () => store.setLimit(w.id, limit)),
+      setPinned: (on) => void act(on ? 'show the widget on the board row' : 'take the widget off the board row', () => store.pin(w.id, on)),
+    };
+  }
+  // What Keep does with a proposal an agent asked to show on the board's
+  // row; empty for one it did not.
+  function keepPinText(p: ProposalView): string {
+    if (!tiles?.proposed.includes(p.view.id) || !pins) return '';
+    return pins.length >= tiles.max
+      ? `Asked for the board row, which already shows ${tiles.max} tiles: Keep adds it to a dashboard only.`
+      : 'Keep also shows it on the board row.';
+  }
+
   let asking = $state(false);
   async function ask(): Promise<void> {
     if (!source || asking) return;
     asking = true;
     try {
-      await askAgentAboutDashboards(source.backend, source.subscription);
+      await askAgentAboutDashboards(source.backend, source.subscription, '');
     } catch (err) {
       addErrorToast(`Could not start a thread about ${boardName}: ${userFacingError(err)}`, err);
     } finally {
@@ -206,8 +254,8 @@
   }
 </script>
 
-{#snippet widgetCell(w: WidgetView, actions?: import('svelte').Snippet)}
-  <div class="min-w-0" style:grid-column="span {span(w)} / span {span(w)}" data-testid="dashboard-cell-span" data-span={span(w)}>
+{#snippet widgetCell(w: WidgetView, actions?: import('svelte').Snippet, proposed = false)}
+  <div class="min-w-0" style:grid-column="span {span(w)} / span {span(w)}" data-testid="dashboard-cell-span" data-span={span(w)} data-widget-cell={proposed ? undefined : w.id}>
     <DashboardWidget
       view={w}
       value={values.get(w.id)}
@@ -221,6 +269,8 @@
       onTicket={openTicket}
       {tickets}
       {actions}
+      limit={tiles?.limits[w.id] ?? null}
+      tile={proposed ? undefined : tileOf(w)}
     />
   </div>
 {/snippet}
@@ -299,7 +349,7 @@
         {/if}
       {/each}
       <span class="flex-1"></span>
-      {#if store.ownShown}
+      {#if store.ownShown || (compact && tiles)}
         <Button size="xs" variant="ghost" testId="dashboard-edit" pressed={editing} disabled={!!editBlocked} title={editBlocked} onclick={() => { editing = !editing; }}>
           {editing ? 'Done' : 'Edit'}
         </Button>
@@ -326,6 +376,7 @@
     <div class="min-h-0 flex-1 overflow-y-auto" bind:clientWidth={width}>
       <div
         class="grid grid-cols-12 gap-2 p-3"
+        bind:this={gridEl}
         aria-busy={store.counting}
         data-testid="dashboard-grid"
         data-stale={stale}
@@ -343,9 +394,12 @@
                 {/if}
                 <Button size="xs" variant="ghost" testId="dashboard-dismiss" disabled={!!editBlocked || store.busy.has(p.view.id)} title={editBlocked} onclick={() => void act('dismiss the widget', () => store.dismiss(p.view.id))}>Dismiss</Button>
                 <Button size="xs" variant="tinted" testId="dashboard-keep" loading={store.busy.has(p.view.id)} disabled={!!editBlocked} title={editBlocked ?? (store.ownShown ? `Keep it on ${store.dashboard?.title}` : undefined)} onclick={(e) => pressKeep(p, e.currentTarget as HTMLElement)}>{store.ownShown ? 'Keep' : 'Keep…'}</Button>
+                {#if keepPinText(p)}
+                  <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-keep-pin">{keepPinText(p)}</span>
+                {/if}
               </span>
             {/snippet}
-            {@render widgetCell(p.view, proposalActions)}
+            {@render widgetCell(p.view, proposalActions, true)}
           {/each}
           <div class="col-span-12 border-t border-border-subtle"></div>
         {/if}
@@ -353,7 +407,7 @@
           {#snippet editActions()}
             <Button size="xs" variant="danger-ghost" testId="dashboard-remove" disabled={!!editBlocked || store.busy.has(w.id)} title={editBlocked} onclick={() => void act('remove the widget', () => store.removeWidget(w.id))}>Remove</Button>
           {/snippet}
-          {@render widgetCell(w, editing ? editActions : undefined)}
+          {@render widgetCell(w, editing && store.ownShown ? editActions : undefined)}
         {/each}
       </div>
     </div>

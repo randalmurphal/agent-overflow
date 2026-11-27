@@ -178,7 +178,8 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     const project = await boardProject(harness, name('ask'));
     await harness.open(page);
     let screen = await issuesDashboards(page, compact);
-    await expect(screen.getByTestId('dashboard-edit')).toHaveCount(0);
+    // Overview removes nothing; on compact its Edit shows the limits and pins.
+    await expect(screen.getByTestId('dashboard-edit')).toHaveCount(compact ? 1 : 0);
 
     // Ask your agent: a new thread in the board's project, its draft
     // unsent and naming the board.

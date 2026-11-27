@@ -127,7 +127,6 @@ func (a *App) initTrackers() error {
 		CredentialsDir:     filepath.Join(a.configDir, keyfile.DirName),
 		ConfigDir:          a.configDir,
 		SetupChanged:       func() { a.emit(eventchan.TrackerSetupUpdated, nil) },
-		DashboardsChanged:  func() { a.emit(eventchan.TrackerDashboardsUpdated, nil) },
 		Origin:             a.trackerOrigin(),
 		Version:            a.version,
 		Now:                time.Now,

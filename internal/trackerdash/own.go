@@ -111,7 +111,7 @@ func (e *Evaluator) Try(ctx context.Context, b Board, w Widget, m Metric, timeZo
 func Rules() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `A widget is one SQLite SELECT over a copy of the board, whose rows the app reduces and draws.
-widget fields: title; words (1 to %d sentences saying what it counts, shown to the user); sql; reduce; unit; good; bucket; series; form; width.
+widget fields: title; words (1 to %d sentences saying what it counts, shown to the user); sql; reduce; unit; good; bucket; series; form; width; limit; pin.
 The query returns one row per ticket counted, one per bucket for a ticket in several, with columns named from: ticket (required, a tickets.id); value (the row's number, 1 when absent; NULL lists the row as not counted, with its note); bucket (a bar, table row or sprint); series (one of the widget's series); person (whom the row counts for, else the assignee); epic; at (milliseconds: places the row in the range's periods); until (makes the row a state from at until until, NULL: still, counted where it holds); note.
 A query with no at or until, and no sprint or day bucket, counts what is true now.
 :now is now and :since where the range's periods begin, in milliseconds. days(a, b) and working_days(a, b) are the days between two instants; day(a) is its date, YYYY-MM-DD. Date functions, random and JSON functions are not available, and only SELECT reads these tables. A count stops at %v or past %d rows; a state's row counts toward them only if it holds now, where the range begins, or at the end of a period its widgets show.
@@ -120,6 +120,7 @@ unit: tickets, estimate (the board's points, or its time estimates in seconds; e
 bucket: omit for none; period (needs at or until), sprint (a sprints.id), day (the active sprint's working days, needs at or until, no bucket column), person (a people.id), epic (an epics.id), text.
 series: up to %d names, the series column's values; a chart draws up to %d.
 form: number, bars, line (bucket period, sprint or day), table (needs a bucket), list. width: 3, 4, 6, 8 or 12 of 12 columns.
+limit (a number's): the tile turns amber below it when good is up, else above it. pin: true asks that Keep also shows it on the board's summary row.
 `, maxWords, metricDeadline, maxRows, maxSeries, maxChartSeries)
 	b.WriteString(store.MirrorExportSchema)
 	return b.String()

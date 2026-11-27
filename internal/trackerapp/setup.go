@@ -21,6 +21,7 @@ import (
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/trackerdash"
 )
 
 // A project's tracker setup: the per-project choices of the Issues
@@ -48,9 +49,13 @@ import (
 //     by as they changed over time, and by Jira site which tickets are
 //     support (Credit);
 //   - dashboards: by tracker site and board, the dashboards the project
-//     keeps (BoardDashboards). It is not part of Setup: a replace keeps
-//     it as held, and only its own edits write it (dashboard_setup.go), so
-//     a screen that saves the setup it read never carries it.
+//     keeps (BoardDashboards);
+//   - board_tiles: by tracker site and board, the widgets pinned to the
+//     board's summary row and each number widget's limit (BoardTiles).
+//
+// The dashboards and the board tiles are not part of Setup: a replace
+// keeps them as held, and only their own edits write them (editBoard), so
+// a screen that saves the setup it read never carries them.
 //
 // A section this build does not know, or one at a version newer than it
 // reads, is kept byte for byte and written back unchanged by a replace,
@@ -94,6 +99,7 @@ const (
 	sectionEstimates    = "estimates"
 	sectionCredit       = "credit"
 	sectionDashboards   = "dashboards"
+	sectionBoardTiles   = "board_tiles"
 	setupSectionVersion = 1
 )
 
@@ -468,10 +474,18 @@ type heldSetup struct {
 	// raw is every section the file holds that this build does not read,
 	// by name, as its bytes.
 	raw map[string]json.RawMessage
-	// dashboards is the dashboards section, which a replace keeps.
-	dashboards []BoardDashboards
+	// kept is the sections a replace keeps.
+	kept keptSections
 	// groups is each site's status groups.
 	groups map[siteKey]StatusGroups
+}
+
+// keptSections is the sections of the file a replace keeps as held,
+// which only their own edits write (editBoard): the dashboards and the
+// board tiles, each valid.
+type keptSections struct {
+	dashboards []BoardDashboards
+	tiles      []BoardTiles
 }
 
 // ProjectSetup is projectID's tracker setup as it is stored.
@@ -624,9 +638,9 @@ func sameCreditValues(a, b CreditRules) bool {
 // the file.
 func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSave, before, after *heldSetup, err error) {
 	moved := false
-	before, after, err = s.rewriteSetup(slug, func(stored *heldSetup) (Setup, []BoardDashboards, bool) {
+	before, after, err = s.rewriteSetup(slug, func(stored *heldSetup) (Setup, keptSections, bool) {
 		moved = stored.view.Revision != revision
-		return setup, stored.dashboards, !moved
+		return setup, stored.kept, !moved
 	})
 	switch {
 	case err != nil:
@@ -638,14 +652,14 @@ func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSa
 }
 
 // rewriteSetup reads slug's file again under setupMu and writes what
-// change makes of what it holds: the setup and the dashboards, both
+// change makes of what it holds: the setup and the kept sections, all
 // valid, or nothing when change answers false. It returns the held setup
 // before and after, each nil when none is held. After is what the write
 // last saw of the file, which the service holds when it returns, whatever
 // it returns: the file it read, or the setup it wrote; nil when it could
 // not read the file, or its write may or may not have happened, so the
 // next use reads the file.
-func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setup, []BoardDashboards, bool)) (before, after *heldSetup, err error) {
+func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setup, keptSections, bool)) (before, after *heldSetup, err error) {
 	s.setupMu.Lock()
 	defer s.setupMu.Unlock()
 	before = s.setups[slug]
@@ -660,15 +674,15 @@ func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setu
 	if after, err = readSetupFile(path); err != nil {
 		return before, nil, err
 	}
-	setup, dashboards, write := change(after)
+	setup, kept, write := change(after)
 	if !write {
 		return before, after, nil
 	}
-	data, err := encodeSetup(setup, dashboards, after.raw, after.view.Newer)
+	data, err := encodeSetup(setup, kept, after.raw, after.view.Newer)
 	if err != nil {
 		return before, after, err
 	}
-	written, err := heldOf(setup, dashboards, after.raw, after.view.Newer, setupRevision(data))
+	written, err := heldOf(setup, kept, after.raw, after.view.Newer, setupRevision(data))
 	if err != nil {
 		return before, after, err
 	}
@@ -686,48 +700,146 @@ func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setu
 // setupMoved tells what a change of slug's held setup from before to
 // after moves, either nil when none is held: every board subscription of
 // the project on a site whose status groups, support tickets (both in the
-// version) or count of tickets changed reads again, a change of the count has the dashboards read again, and
-// a change of what is stored is told. A side that holds nothing is not
-// known to agree with the other on any site, so every site counts as
-// moved: a board of the project read with groups that may be stale, or
-// failed to read them, reads again.
+// version) or count of tickets changed reads again, one of a board whose
+// pins changed is told them (tellPins), a change of the count has the
+// project's dashboards listed and counted again, and a change of what is
+// stored is told. A side that holds nothing is not known to agree with
+// the other on any site, so every site counts as moved: a board of the
+// project read with groups that may be stale, or failed to read them,
+// reads again, its pins with it.
 func (s *Service) setupMoved(slug string, before, after *heldSetup) {
+	if s.afterSetupWrite != nil {
+		s.afterSetupWrite()
+	}
 	switch {
 	case before == nil && after == nil:
 		return
 	case before != nil && after != nil && before.view.Revision == after.view.Revision:
 		return
 	}
-	s.readBoardsAgain(slug, func(site siteKey) bool {
+	s.readBoardsAgain(slug, func(site siteKey, board tracker.BoardID) bool {
 		if before == nil || after == nil {
 			return true
 		}
 		was, now := before.counting(site), after.counting(site)
 		return was.version != now.version || was.tickets != now.tickets
 	})
-	// A board's dashboards are laid out in the unit the project counts it
-	// in (Dashboards): a change of it has them read again.
+	if before != nil && after != nil {
+		s.tellPins(slug, before, after)
+	}
+	// A board's dashboards are laid out and counted in the unit the
+	// project counts it in (Dashboards): a change of it has every board's
+	// listed and counted again.
 	if before == nil || after == nil || before.view.Setup.Estimates.countsTickets() != after.view.Setup.Estimates.countsTickets() {
-		s.dashboardsChanged()
+		s.tellDashboards(slug, true, func(siteKey, tracker.BoardID) bool { return true })
 	}
 	s.setupChanged()
 }
 
-// readBoardsAgain has every board pump with a handle of project slug on a
-// site moved holds for send ReadAgain.
-func (s *Service) readBoardsAgain(slug string, moved func(siteKey) bool) {
+// tellPins tells every board pump holding a handle of slug's project on a
+// board whose pins changed from before to after the project's pins as
+// the setup holds them when the event is numbered, on the board's event
+// (BoardEvent.Pins), so a subscriber of the project holds them with no
+// read and one of another project on the board holds its own. The pins
+// are read under setupMu inside the hold of subMu that numbers the event,
+// so of two writes that publish in either order the event numbered last
+// carries the pins of the last write: a later write's event carries them,
+// or numbers after this one. No setup held (a write after this one could
+// not tell what it wrote) sends none: that write reads the boards again
+// (setupMoved). A setup's pins are written only by editBoard, which keeps
+// them to the widgets the board has.
+func (s *Service) tellPins(slug string, before, after *heldSetup) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	s.setupMu.Lock()
+	now := s.setups[slug]
+	s.setupMu.Unlock()
+	if now == nil {
+		return
+	}
+	told := map[*boardPump]bool{}
+	for _, h := range s.subs.handles {
+		p := h.board
+		if p == nil || told[p] || h.setup.slug != slug || p.over || p.core.DeadLocked() {
+			continue
+		}
+		board := string(p.scope.Board)
+		if slices.Equal(tilesOf(before.kept.tiles, h.setup.site, board).Pins, tilesOf(after.kept.tiles, h.setup.site, board).Pins) {
+			continue
+		}
+		told[p] = true
+		p.pending.pins = &ProjectPins{Project: h.project, Pins: append([]string{}, tilesOf(now.kept.tiles, h.setup.site, board).Pins...)}
+		p.pending.due = true
+		s.flushBoardLocked(p)
+	}
+}
+
+// tellDashboards tells every board pump holding a handle of slug's
+// project on a board that on picks, on the board's event, that the project's
+// dashboards of the board changed, and with counts that what they count
+// did (BoardEvent.Dashboards).
+func (s *Service) tellDashboards(slug string, counts bool, on func(siteKey, tracker.BoardID) bool) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	told := map[*boardPump]bool{}
 	for _, h := range s.subs.handles {
 		p := h.board
-		if p == nil || told[p] || h.setup.slug != slug || !moved(h.setup.site) || p.over || p.core.DeadLocked() {
+		if p == nil || told[p] || h.setup.slug != slug || !on(h.setup.site, p.scope.Board) || p.over || p.core.DeadLocked() {
+			continue
+		}
+		told[p] = true
+		p.pending.dashboards = &ProjectDashboards{Project: h.project, Counts: counts}
+		p.pending.due = true
+		s.flushBoardLocked(p)
+	}
+}
+
+// boardIs picks board of site, for tellDashboards.
+func boardIs(site siteKey, board string) func(siteKey, tracker.BoardID) bool {
+	return func(st siteKey, b tracker.BoardID) bool { return st == site && string(b) == board }
+}
+
+// readBoardsAgain has every board pump with a handle of project slug on a
+// site and board moved holds for send ReadAgain.
+func (s *Service) readBoardsAgain(slug string, moved func(siteKey, tracker.BoardID) bool) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	told := map[*boardPump]bool{}
+	for _, h := range s.subs.handles {
+		p := h.board
+		if p == nil || told[p] || h.setup.slug != slug || !moved(h.setup.site, p.scope.Board) || p.over || p.core.DeadLocked() {
 			continue
 		}
 		told[p] = true
 		p.pending.add(nil, nil, true)
 		s.flushBoardLocked(p)
 	}
+}
+
+// boardViewOf is board scope as project key reads it (Board): with the
+// status groups the project gives its site, and the widgets the project
+// pins to it.
+func (s *Service) boardViewOf(key setupKey, scope Scope, sections []Section) (BoardView, error) {
+	groups, err := s.boardStatusGroups(key)
+	if err != nil {
+		return BoardView{}, err
+	}
+	view, err := s.Board(scope, groups, sections)
+	if err != nil {
+		return BoardView{}, err
+	}
+	view.Pins, err = s.boardPins(key, string(scope.Board), trackerdash.Kind{PlansSprints: view.PlansSprints, Epics: hasEpics(key.site.tracker)})
+	return view, err
+}
+
+// SubscriptionBoardView is board handle id's board as its project reads
+// it (boardViewOf).
+func (s *Service) SubscriptionBoardView(id string, sections []Section) (BoardView, error) {
+	scope, key, err := s.boardHandle(id)
+	if err != nil {
+		return BoardView{}, err
+	}
+	return s.boardViewOf(key, scope, sections)
 }
 
 // boardStatusGroups is the status groups key's project gives its site,
@@ -789,7 +901,7 @@ func (s *Service) setupPath(slug string) string {
 func readSetupFile(path string) (*heldSetup, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return heldOf(Setup{}, nil, nil, nil, "")
+		return heldOf(Setup{}, keptSections{}, nil, nil, "")
 	}
 	if err != nil {
 		return nil, &SetupFileError{Path: path, Reason: err.Error()}
@@ -866,7 +978,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 		return nil, errors.New("it is not a JSON object of sections")
 	}
 	var setup Setup
-	var dashboards []BoardDashboards
+	var kept keptSections
 	var raw map[string]json.RawMessage
 	var newer []string
 	keep := func(name string, section json.RawMessage) {
@@ -877,7 +989,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(sections)) {
 		section := sections[name]
-		if !slices.Contains([]string{sectionStatusGroups, sectionTicketPins, sectionStartWork, sectionAgents, sectionTime, sectionEstimates, sectionCredit, sectionDashboards}, name) {
+		if !slices.Contains([]string{sectionStatusGroups, sectionTicketPins, sectionStartWork, sectionAgents, sectionTime, sectionEstimates, sectionCredit, sectionDashboards, sectionBoardTiles}, name) {
 			keep(name, section)
 			continue
 		}
@@ -925,7 +1037,12 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 		case sectionDashboards:
 			var s dashboardsV1
 			if err = decodeStrict(section, &s); err == nil {
-				dashboards, err = validateDashboards(s.Boards)
+				kept.dashboards, err = validateDashboards(s.Boards)
+			}
+		case sectionBoardTiles:
+			var s boardTilesV1
+			if err = decodeStrict(section, &s); err == nil {
+				kept.tiles, err = validateBoardTiles(s.Boards)
 			}
 		}
 		if err != nil {
@@ -940,7 +1057,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 		}
 		return nil, err
 	}
-	return heldOf(valid, dashboards, raw, newer, setupRevision(data))
+	return heldOf(valid, kept, raw, newer, setupRevision(data))
 }
 
 // decodeStrict decodes data into v, refusing a field v does not have.
@@ -950,13 +1067,13 @@ func decodeStrict(data []byte, v any) error {
 	return dec.Decode(v)
 }
 
-// encodeSetup is the file of setup, the dashboards and the sections raw
+// encodeSetup is the file of setup, the kept sections and the sections raw
 // keeps: a JSON object of the sections in name order, each kept section
 // as its bytes; nil when it holds no section, which is no file. A section
 // that would replace one a newer version saved (newer, SetupView.Newer)
 // is ErrSetupNewer: this is the one place a section is written, so every
 // section, one added later included, keeps that rule.
-func encodeSetup(setup Setup, dashboards []BoardDashboards, raw map[string]json.RawMessage, newer []string) ([]byte, error) {
+func encodeSetup(setup Setup, kept keptSections, raw map[string]json.RawMessage, newer []string) ([]byte, error) {
 	sections := map[string]json.RawMessage{}
 	for name, section := range raw {
 		sections[name] = section
@@ -1007,8 +1124,13 @@ func encodeSetup(setup Setup, dashboards []BoardDashboards, raw map[string]json.
 			return nil, err
 		}
 	}
-	if len(dashboards) > 0 {
-		if err := add(sectionDashboards, dashboardsV1{Version: setupSectionVersion, Boards: dashboards}); err != nil {
+	if len(kept.dashboards) > 0 {
+		if err := add(sectionDashboards, dashboardsV1{Version: setupSectionVersion, Boards: kept.dashboards}); err != nil {
+			return nil, err
+		}
+	}
+	if len(kept.tiles) > 0 {
+		if err := add(sectionBoardTiles, boardTilesV1{Version: setupSectionVersion, Boards: kept.tiles}); err != nil {
 			return nil, err
 		}
 	}
@@ -1047,13 +1169,13 @@ func setupRevision(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// heldOf is a valid setup and valid dashboards as the service holds
+// heldOf is a valid setup and valid kept sections as the service holds
 // them, with the sections raw keeps (named by newer) and the revision of
 // its file.
 // A section a newer version saved reads as none here; a credit section
 // that is none reads as the default (defaultCredit), whose controls the
 // page shows, unless a newer version saved it.
-func heldOf(setup Setup, dashboards []BoardDashboards, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
+func heldOf(setup Setup, kept keptSections, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
 	credit := setup.Credit
 	if credit == nil && !slices.Contains(newer, sectionCredit) {
 		credit = defaultCredit()
@@ -1061,7 +1183,7 @@ func heldOf(setup Setup, dashboards []BoardDashboards, raw map[string]json.RawMe
 	held := &heldSetup{
 		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins),
 			StartWork: slicesx.OrEmpty(setup.StartWork), Agents: setup.Agents, Time: setup.Time, Estimates: setup.Estimates, Credit: credit}, Newer: newer},
-		raw: raw, dashboards: dashboards, groups: map[siteKey]StatusGroups{},
+		raw: raw, kept: kept, groups: map[siteKey]StatusGroups{},
 	}
 	// What a board read applies on each site: its status groups, and its
 	// support entry while the project counts credit.

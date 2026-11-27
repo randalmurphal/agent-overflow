@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -58,7 +59,7 @@ func TestTrackerToolsProviderPicksOneWhoseAgentsGetTheTools(t *testing.T) {
 	if err != nil || list.Ask != noTrackerToolsProvider || len(list.Dashboards) == 0 {
 		t.Fatalf("the list with no provider: ask %q, %d dashboards, %v", list.Ask, len(list.Dashboards), err)
 	}
-	if _, err := f.a.StartTrackerDashboardThread(f.ctx, f.sub); err == nil || !strings.Contains(err.Error(), noTrackerToolsProvider) {
+	if _, err := f.a.StartTrackerDashboardThread(f.ctx, f.sub, ""); err == nil || !strings.Contains(err.Error(), noTrackerToolsProvider) {
 		t.Fatalf("an Ask with no provider: %v", err)
 	}
 	if threads, err := f.a.store.ListThreadsByProject(f.project); err != nil || len(threads) != 0 {
@@ -82,7 +83,7 @@ func TestDashboardAskMakesADraftNamingTheBoard(t *testing.T) {
 	if _, err := f.a.settings.Update(map[string]any{"claudeBinaryPath": createMockBinary(t, "2.1.284 (Claude Code)"), "codexEnabled": false}); err != nil {
 		t.Fatal(err)
 	}
-	made, err := f.a.StartTrackerDashboardThread(f.ctx, f.sub)
+	made, err := f.a.StartTrackerDashboardThread(f.ctx, f.sub, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,13 +94,21 @@ func TestDashboardAskMakesADraftNamingTheBoard(t *testing.T) {
 	if err != nil || draft.Content != "About the dashboards of the board WEB board (example.atlassian.net/1): " || len(draft.AttachmentIDs) != 0 {
 		t.Fatalf("the Ask's draft = %+v, %v", draft, err)
 	}
+	row, err := f.a.StartTrackerDashboardThread(f.ctx, f.sub, "  reviews waiting on me ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err = f.a.GetDraft(row.ID)
+	if err != nil || draft.Content != "About the dashboards of the board WEB board (example.atlassian.net/1): propose a widget with pin, for the board's summary row, that shows reviews waiting on me" {
+		t.Fatalf("the row's Make draft = %+v, %v", draft, err)
+	}
 
 	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse BEFORE INSERT ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected failure'); END`)
-	if _, err := f.a.StartTrackerDashboardThread(f.ctx, f.sub); err == nil || !strings.Contains(err.Error(), "injected failure") {
+	if _, err := f.a.StartTrackerDashboardThread(f.ctx, f.sub, ""); err == nil || !strings.Contains(err.Error(), "injected failure") {
 		t.Fatalf("an Ask whose draft fails = %v", err)
 	}
-	if threads, err := f.a.store.ListThreadsByProject(f.project); err != nil || len(threads) != 1 || threads[0].ID != made.ID {
-		t.Fatalf("threads after a failed Ask = %+v, %v; want the first alone", threads, err)
+	if threads, err := f.a.store.ListThreadsByProject(f.project); err != nil || len(threads) != 2 || !slices.ContainsFunc(threads, func(th store.Thread) bool { return th.ID == made.ID }) || !slices.ContainsFunc(threads, func(th store.Thread) bool { return th.ID == row.ID }) {
+		t.Fatalf("threads after a failed Ask = %+v, %v; want the two made before it", threads, err)
 	}
 }
 
@@ -109,9 +118,9 @@ func TestDashboardAskNeedsTrackerRead(t *testing.T) {
 	t.Parallel()
 	app := identityApp(t)
 	limited := pairSessionWithScopes(t, app, "thumb-ask", []identity.Scope{identity.ScopeThreadsRead, identity.ScopeThreadsOperate})
-	_, err := app.StartTrackerDashboardThread(callFrom(limited.ID, false), "no-such-subscription")
+	_, err := app.StartTrackerDashboardThread(callFrom(limited.ID, false), "no-such-subscription", "")
 	wantScopeRefusal(t, err, transport.ScopeTrackerRead)
-	if _, err := app.StartTrackerDashboardThread(context.Background(), "no-such-subscription"); err == nil {
+	if _, err := app.StartTrackerDashboardThread(context.Background(), "no-such-subscription", ""); err == nil {
 		t.Fatal("an Ask of no subscription was admitted")
 	}
 }

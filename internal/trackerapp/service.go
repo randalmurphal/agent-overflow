@@ -79,10 +79,6 @@ type Deps struct {
 	// SetupChanged is told after every change of a project's tracker
 	// setup as it is stored (setup.go). It must not block.
 	SetupChanged func()
-	// DashboardsChanged is told after every change of a board's
-	// dashboards: one its project keeps, or a widget proposed on it
-	// (dashboards.go). It must not block.
-	DashboardsChanged func()
 	// Origin says where a connection's client connects.
 	Origin Origin
 	// Version is the app version the clients send in their User-Agent.
@@ -168,18 +164,20 @@ type Service struct {
 	endHalt context.CancelFunc
 
 	// setupMu guards setups, each used project's tracker setup by slug
-	// (setup.go). It is held across the setup file's read and write and
-	// never with another of the service's locks.
+	// (setup.go). It is held across the setup file's read and write, and
+	// is taken last: a pins event reads the setup under it inside subMu
+	// (tellPins), and no other of the service's locks is taken while it
+	// is held.
 	setupMu sync.Mutex
 	setups  map[string]*heldSetup
 
 	// propMu guards proposals, the widgets agents proposed on each
 	// project's boards (dashboards.go). A Keep holds it across its write
-	// of the setup file, so propMu is taken before setupMu and never
-	// while holding setupMu or any other of the service's locks.
-	propMu            sync.Mutex
-	proposals         map[proposalKey][]heldProposal
-	dashboardsChanged func()
+	// of the setup file and tells the board's subscriptions after, so
+	// propMu is taken before setupMu and subMu and never while holding
+	// either or any other of the service's locks.
+	propMu    sync.Mutex
+	proposals map[proposalKey][]heldProposal
 
 	// opMu serializes every change to a connection, from its first store
 	// read to its last write. It is never held across a tracker call.
@@ -214,6 +212,10 @@ type Service struct {
 	// beforePublish, set only by tests, runs in settle between its record
 	// and the publication, where Stop may overtake a settlement.
 	beforePublish func()
+	// afterSetupWrite, set only by tests, runs in setupMoved before it
+	// tells anyone of a setup write, where another write may commit and
+	// be told first.
+	afterSetupWrite func()
 	// afterIdentity, set only by tests, runs in Verify between its
 	// tracker call and its settlement, where other calls may change the
 	// token the client holds.
@@ -256,7 +258,8 @@ type Service struct {
 	// subMu is the one lock of the subscriptions, their pumps and the
 	// linked loop (subscriptions.go). It is held for map and flag work and
 	// for the emit callbacks, never across a store or tracker call; opMu
-	// is taken before it, and mu is never held with it.
+	// is taken before it, setupMu only inside it (tellPins), and mu is
+	// never held with it.
 	subMu sync.Mutex
 	subs  subscriptions
 	// workers joins every pump goroutine and the linked loop; Stop waits
@@ -279,8 +282,6 @@ func New(deps Deps) (*Service, error) {
 		return nil, errors.New("trackerapp: Deps needs CredentialsDir and ConfigDir")
 	case deps.SetupChanged == nil:
 		return nil, errors.New("trackerapp: Deps.SetupChanged is required")
-	case deps.DashboardsChanged == nil:
-		return nil, errors.New("trackerapp: Deps.DashboardsChanged is required")
 	case deps.Version == "":
 		return nil, errors.New("trackerapp: Deps.Version is required for the clients' User-Agent")
 	}
@@ -292,7 +293,7 @@ func New(deps Deps) (*Service, error) {
 	halting, endHalt := context.WithCancel(deps.Life)
 	s := &Service{
 		store: deps.Store, changed: deps.Changed, credentialsDir: deps.CredentialsDir, configDir: deps.ConfigDir,
-		setupChanged: deps.SetupChanged, setups: map[string]*heldSetup{}, dashboardsChanged: deps.DashboardsChanged,
+		setupChanged: deps.SetupChanged, setups: map[string]*heldSetup{},
 		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life, halting: halting, endHalt: endHalt,
 		steady: func() time.Time { return wall.Add(time.Since(mono)) }, steadyFrom: wall.UnixMilli(),
 		clients: map[string]*clients{}, problems: map[string]Problem{},

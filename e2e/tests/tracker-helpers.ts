@@ -213,6 +213,12 @@ export async function editJiraIssue(board: ConnectedBoard, key: string, fields: 
   if (resp.status !== 204) throw new Error(`the fake Jira refused the edit of ${key}: HTTP ${resp.status} ${await resp.text()}`);
 }
 
+/** Moves an issue in the fake Jira by its workflow's `transition`, as a person working in Jira would. */
+export async function moveJiraIssue(board: ConnectedBoard, key: string, transition: string): Promise<void> {
+  const resp = await inJira(board.jiraURL, 'POST', `issue/${key}/transitions`, { transition: { id: transition } });
+  if (resp.status !== 204) throw new Error(`the fake Jira refused the move of ${key}: HTTP ${resp.status} ${await resp.text()}`);
+}
+
 /**
  * Logs `seconds` on `key` in the fake Jira at 09:00 UTC of `day`
  * (YYYY-MM-DD), the seeded user's zone, and answers the worklog's ID.

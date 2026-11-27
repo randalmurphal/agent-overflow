@@ -205,7 +205,8 @@ export class DashboardView {
 /**
  * DrillAnswer is the number and one page of its rows, from one
  * evaluation: Count rows of Tickets tickets, Counted of the rows counted.
- * Reading is as an Answer's.
+ * Reading is as an Answer's. Asked for IDs, it holds those tickets' IDs
+ * in the drill's order, and no page.
  */
 export class DrillAnswer {
     "title": string;
@@ -220,6 +221,7 @@ export class DrillAnswer {
     "pages": number;
     "restarted"?: boolean;
     "rows": TicketRow[];
+    "ids"?: string[];
     "at": number;
 
     /** Creates a new DrillAnswer instance. */
@@ -266,9 +268,13 @@ export class DrillAnswer {
      */
     static createFrom($$source: any = {}): DrillAnswer {
         const $$createField11_0 = $$createType11;
+        const $$createField12_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("rows" in $$parsedSource) {
             $$parsedSource["rows"] = $$createField11_0($$parsedSource["rows"]);
+        }
+        if ("ids" in $$parsedSource) {
+            $$parsedSource["ids"] = $$createField12_0($$parsedSource["ids"]);
         }
         return new DrillAnswer($$parsedSource as Partial<DrillAnswer>);
     }
@@ -311,7 +317,8 @@ export class DrillCell {
  * widget that ranks its buckets left out (Rest, what its More opens).
  * Page is the page of drillPage rows; Count is the row count page 0
  * answered, so a later page that finds a different count starts again at
- * page 0.
+ * page 0. With IDs the answer names every ticket of the rows (the set a
+ * tile filters the board to) and lists no page.
  */
 export class DrillRequest {
     "dashboard": string;
@@ -320,9 +327,11 @@ export class DrillRequest {
     "person"?: string;
     "epic"?: string;
     "time_zone": string;
+    "widgets"?: string[];
     "widget": string;
     "cell"?: DrillCell | null;
     "rest"?: boolean;
+    "ids"?: boolean;
     "page": number;
     "count"?: number;
 
@@ -351,10 +360,14 @@ export class DrillRequest {
      * Creates a new DrillRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): DrillRequest {
-        const $$createField7_0 = $$createType13;
+        const $$createField6_0 = $$createType12;
+        const $$createField8_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("widgets" in $$parsedSource) {
+            $$parsedSource["widgets"] = $$createField6_0($$parsedSource["widgets"]);
+        }
         if ("cell" in $$parsedSource) {
-            $$parsedSource["cell"] = $$createField7_0($$parsedSource["cell"]);
+            $$parsedSource["cell"] = $$createField8_0($$parsedSource["cell"]);
         }
         return new DrillRequest($$parsedSource as Partial<DrillRequest>);
     }
@@ -435,8 +448,8 @@ export class How {
      * Creates a new How instance from a string or object.
      */
     static createFrom($$source: any = {}): How {
-        const $$createField0_0 = $$createType14;
-        const $$createField5_0 = $$createType14;
+        const $$createField0_0 = $$createType12;
+        const $$createField5_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("words" in $$parsedSource) {
             $$parsedSource["words"] = $$createField0_0($$parsedSource["words"]);
@@ -621,7 +634,10 @@ export class RangeView {
 /**
  * Request is what one evaluation counts: a dashboard, over a range,
  * narrowed to Mine (the viewer), a person or an epic, with weeks and days
- * in TimeZone (IANA).
+ * in TimeZone (IANA). With Widgets, the dashboard is those widgets of the
+ * board's dashboards in that order (a board's summary row): the built-in
+ * one's, which Dashboard names, and the project's own; a widget the board
+ * no longer has is left out, and the proposals are not counted.
  */
 export class Request {
     "dashboard": string;
@@ -630,6 +646,7 @@ export class Request {
     "person"?: string;
     "epic"?: string;
     "time_zone": string;
+    "widgets"?: string[];
 
     /** Creates a new Request instance. */
     constructor($$source: Partial<Request> = {}) {
@@ -650,7 +667,11 @@ export class Request {
      * Creates a new Request instance from a string or object.
      */
     static createFrom($$source: any = {}): Request {
+        const $$createField6_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("widgets" in $$parsedSource) {
+            $$parsedSource["widgets"] = $$createField6_0($$parsedSource["widgets"]);
+        }
         return new Request($$parsedSource as Partial<Request>);
     }
 }
@@ -784,7 +805,7 @@ export class WidgetValue {
      */
     static createFrom($$source: any = {}): WidgetValue {
         const $$createField6_0 = $$createType5;
-        const $$createField7_0 = $$createType14;
+        const $$createField7_0 = $$createType12;
         const $$createField8_0 = $$createType18;
         const $$createField9_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -859,7 +880,7 @@ export class WidgetView {
      * Creates a new WidgetView instance from a string or object.
      */
     static createFrom($$source: any = {}): WidgetView {
-        const $$createField9_0 = $$createType14;
+        const $$createField9_0 = $$createType12;
         const $$createField12_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("series" in $$parsedSource) {
@@ -885,9 +906,9 @@ const $$createType8 = WidgetView.createFrom;
 const $$createType9 = $Create.Array($$createType8);
 const $$createType10 = TicketRow.createFrom;
 const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = DrillCell.createFrom;
-const $$createType13 = $Create.Nullable($$createType12);
-const $$createType14 = $Create.Array($Create.Any);
+const $$createType12 = $Create.Array($Create.Any);
+const $$createType13 = DrillCell.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
 const $$createType15 = PeriodView.createFrom;
 const $$createType16 = $Create.Array($$createType15);
 const $$createType17 = BucketValue.createFrom;

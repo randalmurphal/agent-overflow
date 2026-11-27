@@ -345,12 +345,12 @@ func (t trackerToolsAdapter) AddComment(ctx context.Context, connection string, 
 // TryWidget counts an agent's widget as the dashboards count, under the
 // evaluator's own deadline, and answers its refusal as the dashboard
 // methods do (dashboardError).
-func (t trackerToolsAdapter) TryWidget(ctx context.Context, project, connection, board string, w trackerapp.KeptWidget, thread string, show bool) (trackerdash.Tried, error) {
+func (t trackerToolsAdapter) TryWidget(ctx context.Context, project, connection, board string, w trackerapp.KeptWidget, marks trackerapp.TileMarks, thread string, show bool) (trackerdash.Tried, error) {
 	svc, err := t.a.trackerService()
 	if err != nil {
 		return trackerdash.Tried{}, err
 	}
-	out, err := svc.TryWidget(ctx, project, trackerapp.Scope{Connection: connection, Board: tracker.BoardID(board)}, w, thread, show)
+	out, err := svc.TryWidget(ctx, project, trackerapp.Scope{Connection: connection, Board: tracker.BoardID(board)}, w, marks, thread, show)
 	return out, dashboardError(err)
 }
 
