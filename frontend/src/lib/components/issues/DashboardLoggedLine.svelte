@@ -3,13 +3,14 @@
   // Dashboards screen and on the board's summary row alike: the days not
   // read yet once the board's computer stopped reading them, with why the
   // last read failed, and a known number's failed read again; each with
-  // Read again (trackerapp/worklog_reads.go). A list that counts days
-  // older than the logged time kept says so, with nothing to read again.
-  // Nothing while the computer reads, or for a widget whose answer says
-  // why it cannot count.
+  // Read again (trackerapp/worklog_reads.go). A list or a chart that
+  // counts days older than the logged time kept says so, with nothing to
+  // read again; a number that does says it in its own place, and this
+  // line says nothing, since no read can make it known. Nothing while the
+  // computer reads, or for a widget whose answer says why it cannot count.
   import type { WidgetValue } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
   import type { LoggedTimeRead } from '../../stores/trackerDashboard.svelte';
-  import { LOGGED_OLD_TEXT, notReadWords } from '../../stores/trackerDashboardModel';
+  import { LOGGED_OLD_TEXT, notReadWords, type Num } from '../../stores/trackerDashboardModel';
 
   interface Props {
     value: WidgetValue | undefined;
@@ -23,7 +24,7 @@
   const old = $derived(!!value && !value.error && !value.note && counts && !!value.old);
   const said = $derived.by(() => {
     if (old) return `Not known: it counts days ${LOGGED_OLD_TEXT}.`;
-    if (!value || value.error || value.note || !counts || !logged || logged.reading) return '';
+    if (!value || value.error || value.note || !counts || !logged || logged.reading || (value.value as Num | undefined)?.old) return '';
     if (unread > 0) return `Not known: ${notReadWords(unread)} of your logged time.${logged.failure ? ` ${logged.failure}` : ''}`;
     return logged.failure ? `Your logged time was not read again: ${logged.failure}` : '';
   });

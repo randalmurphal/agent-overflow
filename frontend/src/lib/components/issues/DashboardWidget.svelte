@@ -114,6 +114,10 @@
 
   let { view, value, counting = false, range, estimates, stale = false, onDrill, onPerson, onEpic, onTicket, tickets, logged, computer = '', actions, limit = null, tile }: Props = $props();
   const unread = $derived(value?.unread?.length ?? 0);
+  // Rows of your logged time not known whole, which the widget's line
+  // says (DashboardLoggedLine): an empty chart or list of them is not
+  // "nothing".
+  const loggedUnknown = $derived(unread > 0 || !!value?.old);
 
   let showHow = $state(false);
   const unit = $derived(view.unit as DashboardUnit);
@@ -288,7 +292,7 @@
         {/if}
       {:else if view.form === 'bars'}
         {#if (value.buckets ?? []).length === 0}
-          <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">Nothing to count.</p>
+          {#if !loggedUnknown}<p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">Nothing to count.</p>{/if}
         {:else}
           <BarChart title={view.title} buckets={value.buckets ?? []} {series} horizontal={!byPeriod} {unit} {estimates} onPick={pick} onLabel={narrow} />
         {/if}
@@ -296,7 +300,7 @@
         <LineChart title={view.title} buckets={value.buckets ?? []} {series} {unit} {estimates} onPick={pick} pace={view.pace ?? false} />
       {:else if view.form === 'table'}
         {#if (value.buckets ?? []).length === 0}
-          <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">Nothing to count.</p>
+          {#if !loggedUnknown}<p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">Nothing to count.</p>{/if}
         {:else}
           <div class="overflow-x-auto">
             <table class="w-full table-fixed border-collapse text-[0.75rem]" data-testid="dashboard-table">
@@ -337,7 +341,7 @@
         {/if}
       {:else if view.form === 'list'}
         {#if (value.tickets ?? []).length === 0 && !value.not_counted}
-          <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">No tickets.</p>
+          {#if !loggedUnknown}<p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">No tickets.</p>{/if}
         {:else}
           <TicketListActions rows={value.tickets ?? []} source={tickets} variant="widget" listTestId="dashboard-list" rowTestId="dashboard-list-row" {onTicket}>
             {#snippet row(r)}

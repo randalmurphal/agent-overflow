@@ -316,6 +316,29 @@ describe('your logged time', () => {
     expect(whole.queryByTestId('dashboard-widget-unread')).toBeNull();
   });
 
+  it('says an empty chart or list of it is not known while its days are not read, and nothing to count once they are', () => {
+    const r = read();
+    const ranked = view({ id: 'logged', title: 'By assignee', form: 'bars', bucket: 'person', unit: 'time', how: { ...HOW, reads: ['worklogs'] } });
+    const list = view({ id: 'logged', title: 'Logged on', form: 'list', unit: 'time', how: { ...HOW, reads: ['worklogs'] } });
+    for (const [v, empty] of [[ranked, 'Nothing to count.'], [list, 'No tickets.']] as const) {
+      const cold = draw(v, { id: 'logged', unread: ['2026-11-24', '2026-11-25'] } as unknown as WidgetValue, RANGE, { logged: r });
+      expect(cold.queryByTestId('dashboard-widget-empty')).toBeNull();
+      expect(cold.getByTestId('dashboard-widget-unread').textContent).toContain('Not known: 2 days not read of your logged time.');
+      cold.unmount();
+      const read_ = draw(v, { id: 'logged' } as WidgetValue, RANGE, { logged: r });
+      expect(read_.getByTestId('dashboard-widget-empty').textContent).toBe(empty);
+      expect(read_.queryByTestId('dashboard-widget-unread')).toBeNull();
+      read_.unmount();
+    }
+  });
+
+  it('offers no Read again beside a number older than the logged time kept, which says so in its place', () => {
+    const w = draw(logged, { id: 'logged', value: { old: true }, trend: [{ old: true }, { ur: 1 }], unread: ['2026-11-25'] } as unknown as WidgetValue, RANGE, { logged: read({ failure: 'Jira asked to wait.' }) });
+    expect(w.getByTestId('dashboard-number-value').textContent).toBe('Not known');
+    expect(w.getByTestId('dashboard-number-not-read').textContent).toBe('older than the logged time kept');
+    expect(w.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
   it('says in How this is counted which days of it the page reads', async () => {
     const w = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue);
     await fireEvent.click(w.getByTestId('dashboard-how-toggle'));

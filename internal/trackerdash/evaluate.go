@@ -242,9 +242,9 @@ type WidgetValue struct {
 	// Unread is the range's working days of the viewer's logged time the
 	// copy holds no read of, for a metric that reads it (worklogs.go).
 	Unread []string `json:"unread,omitempty"`
-	// Old is a list's whose rows reach a day of the viewer's logged time
-	// older than the copy holds, so it is never whole (worklogs.go); a
-	// number says so in its Num.
+	// Old is a list's or a ranked chart's whose rows reach a day of the
+	// viewer's logged time older than the copy holds, so it is never
+	// whole, even with no rows (worklogs.go); a number says so in its Num.
 	Old bool `json:"old,omitempty"`
 }
 
@@ -550,16 +550,14 @@ type evaluation struct {
 	// readDays is the days of the viewer's (export.Viewer) logged time the
 	// copy holds as read, filled when a metric reads worklogs.
 	readDays map[string]bool
-	// now is the evaluation's instant. loggedFrom is where the copy's
-	// logged time begins: the instant its first day (export.LoggedFrom)
-	// is placed at; lastOld is where the day before it is, the last the
-	// copy never holds. windowDays is the days from loggedFrom up to now
-	// not read, once windowRead (windowUnread). logged counts the numbers
-	// that needed the window (num), so the reads hear of them
-	// (Board.Worklogs) and a widget lists its days (WidgetValue.Unread).
+	// now is the evaluation's instant. keptFrom is the first instant of
+	// the copy's first day of logged time (export.LoggedFrom) in the
+	// request's zone, before which it holds none (reach). windowDays is
+	// the days from it up to now not read, once windowRead
+	// (windowUnread). logged counts the widgets that needed the window
+	// (wantWindow), so the reads hear of them (Board.Worklogs).
 	now        int64
-	loggedFrom int64
-	lastOld    int64
+	keptFrom   int64
 	windowDays []string
 	windowRead bool
 	logged     int
@@ -615,7 +613,7 @@ func (ev *evaluation) fill(ctx context.Context, b Board, relations []string, log
 	if err != nil {
 		return fmt.Errorf("the copy's first day of logged time %q is not a date: %w", export.LoggedFrom, err)
 	}
-	ev.loggedFrom, ev.lastOld = placed(first, ev.loc), placed(first.AddDate(0, 0, -1), ev.loc)
+	ev.keptFrom = placed(first, ev.loc) - 1
 	ev.readDays = map[string]bool{}
 	return tooSlow(ctx, ev.query(ctx, `SELECT day FROM worklog_days`, func(r *sql.Rows) error {
 		var day string
@@ -1230,6 +1228,9 @@ type ranged struct {
 	// holds now (held). compared is false when there is nothing to
 	// compare (the sprint's days).
 	events, state, compared bool
+	// logged is whether the metric reads the viewer's logged time
+	// (needsWindow).
+	logged bool
 	// notCounted is the range's tickets that its rows with no instant
 	// leave not counted (notCounted).
 	notCounted int
@@ -1271,38 +1272,28 @@ func (t taken) sub(rows []contribution) taken {
 // read where they hold.
 func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 	logged := c.p.readsWorklogs()
-	need := func(old bool) cover {
-		switch {
-		case !logged:
-			return coverNone
-		case old:
-			return coverOld
-		}
-		return coverWindow
-	}
-	// A state at t counts the days up to t: none of the copy's before its
-	// first. Rows placed in periods from ps[0] on fall on a day before the
-	// copy's first when the earliest of them begins before that day's
-	// instant, which the copy never holds.
-	at := func(t int64) cover { return need(t < ev.loggedFrom) }
+	// A state at t holds the instant t alone; a period holds the instants
+	// after its start, so rows placed in periods can hold the instant
+	// after the earliest start.
+	at := func(t int64) cover { return ev.reach(logged, t) }
 	from := func(ps []period) cover {
 		first := ps[0].from
 		for _, p := range ps {
 			first = min(first, p.from)
 		}
-		return need(first < ev.lastOld)
+		return ev.reach(logged, first+1)
 	}
 	nothing := func() taken { return taken{none: true} }
 	if !c.p.cols.periodBound(m) {
 		all := func() taken { return taken{rows: c.rows, cover: at(sp.now)} }
-		return &ranged{held: all, whole: all, earlier: nothing, listed: all, of: func(period) taken { return taken{none: true} }}
+		return &ranged{logged: logged, held: all, whole: all, earlier: nothing, listed: all, of: func(period) taken { return taken{none: true} }}
 	}
 	periods, previous := periodsOf(m, sp), sp.previous
 	if m.Bucket == BucketDay {
 		previous = nil
 	}
 	if c.p.cols.state() {
-		g := &ranged{periods: periods, state: true, earlier: nothing}
+		g := &ranged{periods: periods, state: true, logged: logged, earlier: nothing}
 		now := func() taken { return taken{rows: holding(c.rows, sp.now), cover: at(sp.now)} }
 		g.held, g.whole, g.listed = now, now, now
 		if m.Bucket != BucketDay && len(periods) > 0 {
@@ -1351,7 +1342,7 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 		held.cover = from(periods)
 	}
 	return &ranged{
-		periods: periods, events: true, compared: m.Bucket != BucketDay, notCounted: notCounted(unplaced[0]),
+		periods: periods, events: true, compared: m.Bucket != BucketDay, logged: logged, notCounted: notCounted(unplaced[0]),
 		held:    func() taken { return held },
 		whole:   func() taken { return over(periods, unplaced[0]) },
 		earlier: func() taken { return over(previous, unplaced[1]) },
@@ -1517,13 +1508,10 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 	if m.Bucket == BucketDay {
 		out.RangeWords = dayRangeWords(sp.daysLabel)
 	}
-	logged := ev.logged
-	defer func() {
-		if ev.logged > logged {
-			out.Unread = ev.windowUnread()
-		}
-	}()
 	g := ev.inRange(m, c, sp)
+	if g.needsWindow(w, m) {
+		out.Unread = ev.wantWindow()
+	}
 	switch w.Form {
 	case FormNumber:
 		v := ev.num(m.Reduce, g.whole())
@@ -1548,7 +1536,7 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 		}
 	case FormList:
 		t := g.listed()
-		_, out.Old = ev.need(t.cover)
+		_, out.Old = ev.lacks(t.cover)
 		rows := slices.Clone(t.rows)
 		sortDrill(rows, ev.keyOf)
 		out.NotCounted = notCounted(t.rows)
@@ -1588,6 +1576,7 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 		// cells is made, so an answer holds at most limit buckets of the
 		// declared series' cells however many buckets the rows name.
 		t := g.held()
+		_, out.Old = ev.lacks(t.cover)
 		shown, rest, grouped := ev.rank(w, m, t)
 		out.More = len(rest)
 		for _, b := range shown {

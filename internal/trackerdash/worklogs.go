@@ -13,22 +13,25 @@ import (
 //     request's time zone (the export binds both, Fill's loggedThrough),
 //     the window, and says which of them were read; a day not read is not
 //     zero hours.
-//   - One rule decides it, in one place (num), from what the reduction's
-//     rows need (cover), which ranged hands out with every row it holds:
-//     a state at an instant before the first day, or rows placed in a
-//     period that begins before that day's instant, reach a day the copy
-//     never holds and are not known for good (Num.Old); any other rows of
-//     it are not known while a day of the window is not read (Num.UR, the
-//     count), since a row can count in a period other than its day's (a
-//     sprint's tickets, a state that holds from its day on); a period
+//   - Whether a widget needs the window is decided once, by what the
+//     widget is, before any row is looked at (needsWindow): its metric
+//     reads the viewer's logged time, the page can count it (no note) and
+//     its range has something to count for it. Such a widget lists the window's days not read
+//     (WidgetValue.Unread), whatever rows it found, and its evaluation
+//     tells the reads what it needs (Board.Worklogs) and answers their
+//     state (Answer.Logged); the reads are the caller's, so the
+//     evaluation does no I/O for them.
+//   - What a reduction lacks is decided in one place (lacks), from what
+//     its rows reach (cover), which ranged hands out with every row it
+//     holds. Older than kept is one comparison (reach): a reduction whose
+//     interval can hold an instant before the first instant of the copy's
+//     first day reaches a day the copy never holds and is not known for
+//     good (Num.Old; a list's or a ranked chart's WidgetValue.Old); any
+//     other is not known while a day of the window is not read (Num.UR,
+//     the count), since a row can count in a period other than its day's
+//     (a sprint's tickets, a state that holds from its day on). A period
 //     still to come, or a range with no period, takes no row and is not
-//     marked. A widget one of whose numbers needed the window lists its
-//     days not read (WidgetValue.Unread); a list whose rows reach a day
-//     the copy never holds says so (WidgetValue.Old).
-//   - An evaluation in which a number needed the window tells the reads
-//     what it needs (Board.Worklogs) and answers their state
-//     (Answer.Logged); the reads are the caller's, so the evaluation does
-//     no I/O for them.
+//     marked. num is the one place a number is made from them.
 //   - Its rows are the viewer's: a row's person is the viewer unless the
 //     metric names one, so Mine keeps them all, and a page narrowed to
 //     another person says only the viewer's time is read rather than 0.
@@ -99,7 +102,7 @@ func (ev *evaluation) unread(from, to, now int64) []string {
 // an evaluation.
 func (ev *evaluation) windowUnread() []string {
 	if !ev.windowRead {
-		ev.windowDays, ev.windowRead = ev.unread(ev.loggedFrom-1, ev.now, ev.now), true
+		ev.windowDays, ev.windowRead = ev.unread(ev.keptFrom, ev.now, ev.now), true
 	}
 	return ev.windowDays
 }
@@ -107,7 +110,7 @@ func (ev *evaluation) windowUnread() []string {
 // cover is what a reduction's rows need of the viewer's logged time:
 // nothing (a metric that does not read it, a period still to come, a
 // range with no period), every day of the window, or a day before it,
-// which the copy never holds (ranged.inRange decides which).
+// which the copy never holds (reach decides which).
 type cover uint8
 
 const (
@@ -116,7 +119,21 @@ const (
 	coverOld
 )
 
-// num is r over t's rows as a number, not known by what they need of the
+// reach is the cover of rows of a metric that reads the viewer's logged
+// time (logged) whose reduction's interval begins at first, the earliest
+// instant it can hold: a day the copy never holds when first is before
+// the first instant of the copy's first day, else the window.
+func (ev *evaluation) reach(logged bool, first int64) cover {
+	switch {
+	case !logged:
+		return coverNone
+	case first < ev.keptFrom:
+		return coverOld
+	}
+	return coverWindow
+}
+
+// num is r over t's rows as a number, not known by what they lack of the
 // viewer's logged time: the one place a widget's, a drill's or a Try's
 // number is made from a ranged's rows.
 func (ev *evaluation) num(r Reducer, t taken) Num {
@@ -127,7 +144,7 @@ func (ev *evaluation) num(r Reducer, t taken) Num {
 	if r == ReduceAverageOfPeriodSums && t.periods > 0 && n.V != nil {
 		*n.V /= float64(t.periods)
 	}
-	switch unread, old := ev.need(t.cover); {
+	switch unread, old := ev.lacks(t.cover); {
 	case old:
 		return Num{Old: true}
 	case unread > 0:
@@ -136,22 +153,44 @@ func (ev *evaluation) num(r Reducer, t taken) Num {
 	return n
 }
 
-// need is what rows of cover c lack: the window's days not read, or a
-// day before it. Rows that need the window count toward the reads
-// (worklogNeed) and the widget's list of days (WidgetValue.Unread).
-func (ev *evaluation) need(c cover) (unread int, old bool) {
+// lacks is what rows of cover c lack: the window's days not read, or a
+// day before it.
+func (ev *evaluation) lacks(c cover) (unread int, old bool) {
 	switch c {
 	case coverOld:
 		return 0, true
 	case coverWindow:
-		ev.logged++
 		return len(ev.windowUnread()), false
 	}
 	return 0, false
 }
 
+// needsWindow is whether widget w of metric m over g needs the window,
+// by what it is: its metric reads the viewer's logged time and its range
+// has something to count for it. A chart of periods counts nothing over
+// a range with no period, and neither does an event metric's number,
+// list or ranked chart; a state's or a metric's that counts now counts
+// what holds now. The caller has returned a note in its place.
+func (g *ranged) needsWindow(w Widget, m Metric) bool {
+	switch {
+	case !g.logged:
+		return false
+	case g.events, (w.Form == FormBars || w.Form == FormLine || w.Form == FormTable) && !ranks(w, m):
+		return len(g.periods) > 0
+	}
+	return true
+}
+
+// wantWindow notes that a widget needs the window (needsWindow), for
+// the reads (worklogNeed), and is the days of it not read, which the
+// widget lists (WidgetValue.Unread).
+func (ev *evaluation) wantWindow() []string {
+	ev.logged++
+	return ev.windowUnread()
+}
+
 // worklogNeed is what o's evaluation needs of the viewer's logged time,
-// nil when no number of it needed the window.
+// nil when no widget of it needed the window.
 func (o *opened) worklogNeed() *WorklogNeed {
 	if o.ev.logged == 0 {
 		return nil
