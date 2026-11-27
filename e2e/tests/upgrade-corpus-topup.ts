@@ -15,7 +15,7 @@ import type { HarnessApp } from '../src/harness.js';
 import { topUpScenarios, type TopUpScenario } from './upgrade-corpus-config.js';
 import type { CensusGrowth } from './upgrade-corpus-helpers.js';
 import { writePeerSpawns, writeReviewDrafts, writeThreadRequests } from './upgrade-corpus-topup-records.js';
-import { timed } from './upgrade-corpus-tools.js';
+import { dbQuery, timed } from './upgrade-corpus-tools.js';
 import { compactBoundaryLine } from './agent-visibility-helpers.js';
 import { BOARD_ID, JIRA_ACCOUNT, JIRA_SITE, JIRA_TOKEN, SPRINT_ID, seedFakeJira, type TrackerConnection } from './tracker-helpers.js';
 import { awaitToolAnswer, awaitTurnCompleted, plainScenario, threadToolsScenario } from './thread-tools-helpers.js';
@@ -363,6 +363,8 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
 
   threadIds.push(...await step('threadRequests', () => writeThreadRequests(harness, version, nonce)));
   threadIds.push(...(await step('peerSpawns', () => writePeerSpawns(harness, version, nonce))).threadIds);
+  // After the trackers, so a Jira connection is on, and after turns ran.
+  await step('activity', () => recordActivity(harness, threadIds[0]));
 
   // Workflow runs add a thread per phase beside the threads listed here,
   // so the thread counts are floors. The thread-request and peer-spawn
@@ -372,6 +374,24 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     atLeast: { threads: threadIds.length - 1, archived: 1 },
   };
   return { projectId, growth, threadIds, scenarioThreads, workItemId, ms };
+}
+
+/**
+ * A screen's input on threadId, on the desktop and then on the phone, and
+ * the days of the threads whose turns the steps above started, as the
+ * activity recorder writes them at its flush (activity-flush in
+ * HARNESS_TIMING), polled until they are in the database.
+ */
+async function recordActivity(harness: HarnessApp, threadId: string): Promise<void> {
+  await harness.rpc('RecordActivity', threadId, false);
+  await harness.rpc('RecordActivity', threadId, true);
+  const { dbPath } = await harness.rpc<{ dbPath: string }>('HarnessInfo');
+  await expect.poll(async () => {
+    const [written] = await dbQuery<{ desk: number; phone: number; days: number }>(dbPath,
+      `SELECT (SELECT count(*) FROM activity_spans WHERE phone = 0) AS desk, (SELECT count(*) FROM activity_spans WHERE phone = 1) AS phone,
+              (SELECT count(*) FROM thread_days) AS days`);
+    return Math.min(written.desk, written.phone, written.days) > 0;
+  }, { timeout: 30_000, message: 'the recorder wrote a desktop span, a phone span and a thread day' }).toBe(true);
 }
 
 /**
