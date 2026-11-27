@@ -2438,8 +2438,9 @@ pin of a widget that is gone. A limit's change (`LimitChange`) is a
 value, with the `estimates` of the count that answered it, or a step,
 Raise (1) or Lower (-1): the computer moves the limit it stores by one
 step of its unit (`limitStep`: an hour of seconds, half a day, else 1),
-never below 0, and a widget with no limit in its unit now steps from the
-value sent. So the value, its unit and the step have one owner, a press
+and a widget with no limit in its unit now steps from the value sent. A
+value is kept as sent, below 0 too, as a signed count gives; a Lower
+stops at 0 and never lowers a limit at or below it (`stepped`). So the value, its unit and the step have one owner, a press
 before any count lands steps the stored limit in its own unit, and a
 step after another window's write steps from it. They refuse a widget
 the board does not have, a limit on a widget that is not a number or one

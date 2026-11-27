@@ -115,7 +115,7 @@
   }
 
   function over(v: WidgetView, value: WidgetValue | undefined): boolean {
-    return v.form === 'number' && !!value && !value.error && overLimit(value.value as Num | undefined, store.tiles?.limits[v.id]?.value, v.good ?? '');
+    return v.form === 'number' && !!value && !value.error && overLimit(value.value as Num | undefined, v.unit as DashboardUnit, estimates, store.tiles?.limits[v.id], v.good ?? '');
   }
   // A number's words; a list's tickets; nothing for a chart.
   function chipNumber(v: WidgetView, value: WidgetValue | undefined): { amount: string; word: string } | null {
@@ -249,6 +249,8 @@
                 <span class="text-fg-muted">{store.counting ? 'Counting…' : 'Not counted'}</span>
               {:else if value.error}
                 <span class="text-error" role="alert">{value.error}</span>
+              {:else if value.note}
+                <span class="text-fg-muted" data-testid="board-row-tile-note">{value.note}</span>
               {:else if w.view.form === 'number'}
                 {@const words = numWords(value.value as Num | undefined, w.view.unit as DashboardUnit, estimates)}
                 <span class="flex items-baseline gap-1"><span class="text-xl font-semibold tabular-nums text-fg" data-testid="board-row-tile-value">{words.amount}</span>{#if words.word}<span class="text-fg-muted">{words.word}</span>{/if}</span>

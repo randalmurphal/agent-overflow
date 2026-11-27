@@ -106,13 +106,20 @@ describe('the charts\' geometry', () => {
 describe("a number's limit", () => {
   it('warns below it where up is good news, else above it, and not with no limit or no value', () => {
     expect([limitSide('up'), limitSide('down'), limitSide('')]).toEqual(['below', 'above', 'above']);
-    expect(overLimit({ v: 4 }, 3, 'down')).toBe(true);
-    expect(overLimit({ v: 3 }, 3, 'down')).toBe(false);
-    expect(overLimit({ v: 4 }, 3, '')).toBe(true);
-    expect(overLimit({ v: 2 }, 3, 'up')).toBe(true);
-    expect(overLimit({ v: 3 }, 3, 'up')).toBe(false);
-    expect(overLimit({ v: 4 }, null, 'down')).toBe(false);
-    expect(overLimit({ nc: 2 }, 0, 'down')).toBe(false);
+    const three = { value: 3, unit: 'tickets' };
+    expect(overLimit({ v: 4 }, 'tickets', 'points', three, 'down')).toBe(true);
+    expect(overLimit({ v: 3 }, 'tickets', 'points', three, 'down')).toBe(false);
+    expect(overLimit({ v: 4 }, 'tickets', 'points', three, '')).toBe(true);
+    expect(overLimit({ v: 2 }, 'tickets', 'points', three, 'up')).toBe(true);
+    expect(overLimit({ v: 3 }, 'tickets', 'points', three, 'up')).toBe(false);
+    expect(overLimit({ v: 4 }, 'tickets', 'points', null, 'down')).toBe(false);
+    expect(overLimit({ nc: 2 }, 'tickets', 'points', { value: 0, unit: 'tickets' }, 'down')).toBe(false);
+    // A number in another unit than its limit's is never past it.
+    expect(overLimit({ v: 20 }, 'estimate', 'points', { value: 25, unit: 'tickets' }, 'up')).toBe(false);
+    expect(overLimit({ v: 20 }, 'estimate', 'none', { value: 25, unit: 'tickets' }, 'up')).toBe(true);
+    expect(overLimit({ v: 15 }, 'estimate', 'time', { value: 25, unit: 'points' }, 'up')).toBe(false);
+    expect(overLimit({ v: 15 }, 'estimate', 'time', { value: 25, unit: 'seconds' }, 'up')).toBe(true);
+    expect(overLimit({ v: 3 }, 'days', '', { value: 2, unit: 'days' }, 'down')).toBe(true);
   });
 
   it('reads in the unit it was set in, whatever the count is in', () => {

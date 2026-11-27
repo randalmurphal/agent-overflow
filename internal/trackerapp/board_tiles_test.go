@@ -480,6 +480,40 @@ func TestALimitStepsFromTheLimitStored(t *testing.T) {
 // was proposed: a project that changes what it counts in before the Keep
 // keeps the limit in that unit, not applied, until it counts that way
 // again.
+func TestALimitBelowZeroIsKeptAsSetAndOnlyRaised(t *testing.T) {
+	t.Parallel()
+	m, sub := timeDashboardFixture(t)
+	set := func(c LimitChange) {
+		t.Helper()
+		if err := m.svc.SetWidgetLimit(t.Context(), sub, "stuck", &c); err != nil {
+			t.Fatalf("a change of %+v: %v", c, err)
+		}
+	}
+	limit := func() TileLimit { return m.tiles(t, sub).Limits["stuck"] }
+	// A signed count's number, as Turn on sends it.
+	set(*valueIn(-9, "time"))
+	if got := limit(); got != (TileLimit{-9, "tickets"}) {
+		t.Fatalf("Turn on at -9 stored %+v; want -9 as sent", got)
+	}
+	set(LimitChange{Step: 1})
+	if got := limit(); got != (TileLimit{-8, "tickets"}) {
+		t.Fatalf("a Raise of -9 = %+v; want -8", got)
+	}
+	set(LimitChange{Step: -1})
+	if got := limit(); got != (TileLimit{-8, "tickets"}) {
+		t.Fatalf("a Lower of -8 = %+v; want it left as it is", got)
+	}
+	if err := m.svc.SetWidgetLimit(t.Context(), sub, "stuck", nil); err != nil {
+		t.Fatal(err)
+	}
+	c := valueIn(-3, "time")
+	c.Step = 1
+	set(*c)
+	if got := limit(); got != (TileLimit{-2, "tickets"}) {
+		t.Fatalf("a Raise from a count of -3 = %+v; want -2", got)
+	}
+}
+
 func TestKeepStoresAProposalsLimitInTheUnitItWasProposedIn(t *testing.T) {
 	t.Parallel()
 	m, sub := dashboardFixture(t)

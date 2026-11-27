@@ -4902,6 +4902,46 @@ describe("the board's summary row", () => {
     view.unmount();
   });
 
+  it('marks a number past its limit only while the count is in the limit\'s unit', async () => {
+    const pace = { id: 'pace', title: 'Usual pace', form: 'number', width: 3, unit: 'estimate', good: 'up', how };
+    const overview = { ...OVERVIEW, widgets: [...OVERVIEW.widgets, pace] };
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['pace'] } as Partial<BoardView>) });
+    // The list has the limit the project set counting tickets; the count
+    // that is shown still counted points.
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [overview, KEPT], proposals: [], ask: '', tiles: { limits: { pace: { value: 25, unit: 'tickets' } }, proposed: [], max: 5 } }));
+    setBindingMock('EvaluateTrackerDashboard', async () => ({
+      range: { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' }, estimates: 'points', at: 1,
+      widgets: [{ id: 'pace', value: { v: 20 } }],
+    }));
+    const view = mount();
+    const chip = await view.findByTestId('board-row-chip');
+    await waitFor(() => expect(chip.textContent).toContain('20'));
+    expect(chip.dataset.over).toBe('false');
+    await fireEvent.click(view.getByTestId('board-row-toggle'));
+    const [tile] = await view.findAllByTestId('board-row-tile');
+    expect(tile.dataset.over).toBe('false');
+    expect(within(tile).queryByTestId('board-row-over')).toBeNull();
+    view.unmount();
+  });
+
+  it('says why a pinned chart has no result, as its widget does', async () => {
+    const burn = { id: 'burn', title: 'Sprint burndown', form: 'line', width: 6, unit: 'estimate', bucket: 'day', series: ['Remaining'], how };
+    const overview = { ...OVERVIEW, widgets: [...OVERVIEW.widgets, burn] };
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['burn'] } as Partial<BoardView>) });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [overview, KEPT], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    setBindingMock('EvaluateTrackerDashboard', async () => ({
+      range: { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' }, estimates: 'points', at: 1,
+      widgets: [{ id: 'burn', note: 'No sprint is active on this board.' }],
+    }));
+    const view = mount();
+    await view.findByTestId('board-row-chip');
+    await fireEvent.click(view.getByTestId('board-row-toggle'));
+    const [tile] = await view.findAllByTestId('board-row-tile');
+    await waitFor(() => expect(within(tile).getByTestId('board-row-tile-note').textContent).toBe('No sprint is active on this board.'));
+    expect(tile.textContent).not.toContain('Nothing to count');
+    view.unmount();
+  });
+
   it('takes a tile off, adds one from a dashboard, says a full row is full, and asks the agent for a new one', async () => {
     install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['stuck'] } as Partial<BoardView>) });
     setBindingMock('TrackerDashboards', async () => listing());

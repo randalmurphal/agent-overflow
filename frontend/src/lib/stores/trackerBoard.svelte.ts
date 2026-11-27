@@ -144,8 +144,10 @@ export interface TrackerBoardState {
   readonly changes: number;
   /** How many times this project's dashboards of the board changed since
    * the subscribe answered (`TrackerBoardEvent.dashboards`: a widget kept,
-   * dismissed, removed or proposed, a limit, the unit counted in), or a
-   * gap. A surface that lists them reads the list again when it moves. */
+   * dismissed, removed or proposed, a limit, the unit counted in), an
+   * event that said to read the board again (its structure, the unit of
+   * its estimates among it, changed), or a gap. A surface that lists them
+   * reads the list again when it moves. */
   readonly dashboards: number;
   /** The widgets the board's project pins to its summary row, in the
    * row's order: the board's read's (`BoardView.pins`), then each event
@@ -361,7 +363,9 @@ function fold(live: Live, event: TrackerBoardEvent): void {
     live.pinsSeq = event.seq;
   }
   const dashboards = event.dashboards?.project === live.ref.projectId ? event.dashboards : null;
-  if (dashboards) next.dashboards = live.state.dashboards + 1;
+  // A board read again may have changed what its dashboards list, such as
+  // the unit of its estimates that their limits apply in.
+  if (dashboards || event.read_again) next.dashboards = live.state.dashboards + 1;
   const ids = [...(event.changed ?? []), ...(event.removed ?? [])];
   if (event.read_again || event.truncated) live.readAgain = true;
   if (ids.length > 0 || event.read_again || event.truncated || dashboards?.counts) next.changes = live.state.changes + 1;

@@ -269,7 +269,7 @@
       onTicket={openTicket}
       {tickets}
       {actions}
-      limit={proposed ? null : tiles?.limits[w.id] ?? null}
+      limit={tiles?.limits[w.id] ?? null}
       tile={proposed ? undefined : tileOf(w)}
     />
   </div>

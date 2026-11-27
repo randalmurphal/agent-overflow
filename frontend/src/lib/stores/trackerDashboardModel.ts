@@ -127,12 +127,24 @@ export function limitSide(good: string): 'above' | 'below' {
   return good === 'up' ? 'below' : 'above';
 }
 
-/** Whether a number is past its widget's limit on the side `limitSide`
- * names; false with no limit or no value. */
-export function overLimit(value: Num | null | undefined, limit: number | null | undefined, good: string): boolean {
+/** The unit a widget of `unit` counts in where its answer's estimates
+ * are `estimates`, as a limit names it (trackerdash.ValueUnit): tickets,
+ * days, points or seconds. `limitFormat` is its inverse. */
+export function countUnit(unit: DashboardUnit, estimates: string): string {
+  if (unit !== 'estimate') return unit;
+  return estimates === 'points' ? 'points' : estimates === 'time' ? 'seconds' : 'tickets';
+}
+
+/** Whether a number of a widget of `unit`, from an answer whose estimates
+ * are `estimates`, is past the widget's limit on the side `limitSide`
+ * names; false with no limit, no value, or a limit set in another unit
+ * than the number's, such as while a count in the board's former
+ * estimates is still shown. The one comparison, for the Dashboards screen
+ * and the board's row. */
+export function overLimit(value: Num | null | undefined, unit: DashboardUnit, estimates: string, limit: TileLimit | null | undefined, good: string): boolean {
   const v = numValue(value);
-  if (v === null || limit === null || limit === undefined) return false;
-  return limitSide(good) === 'below' ? v < limit : v > limit;
+  if (v === null || !limit || countUnit(unit, estimates) !== limit.unit) return false;
+  return limitSide(good) === 'below' ? v < limit.value : v > limit.value;
 }
 
 /** A limit as the screen's numbers are formatted: the unit it was set in

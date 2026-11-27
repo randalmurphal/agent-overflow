@@ -65,6 +65,18 @@ func limitStep(unit string) float64 {
 	return 1
 }
 
+// stepped is a limit of from in unit moved by step, a Raise (1) or a Lower
+// (-1), by its unit's step. A Lower stops at 0, so it never lowers a limit
+// at or below 0, which only a signed count's number sets; a Raise always
+// moves it. A limit set as a value is kept as it is set.
+func stepped(from float64, step int, unit string) float64 {
+	next := from + float64(step)*limitStep(unit)
+	if step < 0 {
+		next = max(next, min(from, 0))
+	}
+	return next
+}
+
 type boardTilesV1 struct {
 	Version int          `json:"version"`
 	Boards  []BoardTiles `json:"boards"`
@@ -368,7 +380,7 @@ type LimitChange struct {
 // tile and the widget are marked when its number passes it. The limit is
 // in the unit its number is in now: a Value counted in other estimates
 // than the board's now is refused, and a step moves the stored limit
-// from the value it holds when the write is made, never below 0. The
+// from the value it holds when the write is made (stepped). The
 // clients are told the board's dashboards changed, and that nothing they
 // count did.
 func (s *Service) SetWidgetLimit(ctx context.Context, subscription, widget string, change *LimitChange) error {
@@ -403,13 +415,13 @@ func (s *Service) SetWidgetLimit(ctx context.Context, subscription, widget strin
 		var value float64
 		switch {
 		case change.Step != 0 && had && old.Unit == unit:
-			value = old.Value + float64(change.Step)*limitStep(unit)
+			value = stepped(old.Value, change.Step, unit)
 		case change.Value == nil:
 			return dashRefusal("dashboard_limit_start", "this widget has no limit to step from; count it and set one")
 		default:
-			value = *change.Value + float64(change.Step)*limitStep(unit)
+			value = stepped(*change.Value, change.Step, unit)
 		}
-		next := TileLimit{Value: max(0, value), Unit: unit}
+		next := TileLimit{Value: value, Unit: unit}
 		if had && old == next {
 			return errNoEdit
 		}

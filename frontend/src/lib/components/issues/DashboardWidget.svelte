@@ -125,13 +125,14 @@
   const how = $derived(value?.range_words ? { ...view.how, range: value.range_words } : view.how);
   const amount = $derived(numWords(value?.value as Num | undefined, unit, estimates));
   const side = $derived(limitSide(view.good ?? ''));
-  const over = $derived(view.form === 'number' && !value?.error && overLimit(value?.value as Num | undefined, limit?.value, view.good ?? ''));
+  const over = $derived(view.form === 'number' && !value?.error && overLimit(value?.value as Num | undefined, unit, estimates, limit, view.good ?? ''));
 
   // The limit's popover. Its value is the limit, in its own unit, or the
   // number now while none is set. A step moves the limit the computer
   // stores by its unit's step, and with none starts from the number now,
   // as Turn on sets it; with no limit they wait for a count to give that
-  // number, in the estimates it was counted in.
+  // number, in the estimates it was counted in. Lower is off at or below
+  // 0, where the computer's step leaves a limit (trackerapp's stepped).
   let limitAnchor: HTMLElement | undefined = $state();
   let limitOpen = $state(false);
   const now = $derived(value && !value.error ? numValue(value.value as Num | undefined) : null);

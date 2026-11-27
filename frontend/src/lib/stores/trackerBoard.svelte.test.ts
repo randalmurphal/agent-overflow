@@ -919,6 +919,19 @@ describe('the board subscription', () => {
     elsewhere.release();
   });
 
+  it("lists every project's dashboards of the board again when the board is to be read again, as a change of its estimates asks", async () => {
+    install({ view: view([{ section: SPRINT, rows: [row('1', 'a')] }]) });
+    const mine = attachTrackerBoard(REF, true);
+    const other = attachTrackerBoard({ ...REF, projectId: 'p2' }, true);
+    await flush();
+    applyTrackerBoardEvent(event(11, { read_again: true }), HOME_BACKEND);
+    await flush();
+    expect([mine.current?.dashboards, mine.current?.changes]).toEqual([1, 1]);
+    expect([other.current?.dashboards, other.current?.changes]).toEqual([1, 1]);
+    mine.release();
+    other.release();
+  });
+
   it('keeps pins an event told during a full read over the pins the read answers', async () => {
     install({ view: { ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), pins: ['stuck'] } as unknown as BoardView });
     const board = attachTrackerBoard(REF, true);

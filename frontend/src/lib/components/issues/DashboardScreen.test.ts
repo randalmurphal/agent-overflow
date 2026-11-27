@@ -256,7 +256,7 @@ describe("a widget's limit and pin", () => {
   const OVERVIEW = { ...VIEW, widgets: [STUCK, PACE, LIST] } as unknown as DashboardView;
   const ANSWER = {
     range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1,
-    widgets: [{ id: 'stuck', value: { v: 4 } }, { id: 'pace', value: { v: 20 } }, { id: 'stuck_list', tickets: [] }],
+    widgets: [{ id: 'stuck', value: { v: 4 } }, { id: 'pace', value: { v: 20 } }, { id: 'stuck_list', tickets: [] }, { id: 'w_9', value: { v: 7 } }],
   } as unknown as Answer;
   /** The board's pins (its subscription's) and the list's limits and
    * proposals asked for the row. */
@@ -354,6 +354,26 @@ describe("a widget's limit and pin", () => {
     await set({ pins: [], limits: { pace: { value: 25, unit: 'points' } }, proposed: [] });
     expect(pace.dataset.over).toBe('true');
     expect(within(pace).getByTestId('dashboard-limit-toggle').dataset.on).toBe('true');
+  });
+
+  it('marks a number past its limit only while the count is in the limit\'s unit', async () => {
+    // The list has the limit the project set counting tickets; the count
+    // shown still counted points.
+    const { screen } = mount({ pins: [], limits: { pace: { value: 25, unit: 'tickets' } }, proposed: [] });
+    await flush();
+    const pace = cell(screen, 'pace');
+    expect(within(pace).getByTestId('dashboard-limit-toggle').dataset.on).toBe('true');
+    expect(pace.dataset.over).toBe('false');
+    expect(within(pace).queryByTestId('dashboard-over')).toBeNull();
+  });
+
+  it('marks a proposal past the limit its agent asked for, with no control of it', async () => {
+    const { screen } = mount({ pins: [], limits: { w_9: { value: 3, unit: 'tickets' } }, proposed: [] }, { proposals: [PROPOSED] });
+    await flush();
+    const proposal = cell(screen, 'w_9');
+    expect(proposal.dataset.over).toBe('true');
+    expect(within(proposal).getByTestId('dashboard-over').textContent?.trim()).toBe('over your limit of 3 tickets');
+    expect(within(proposal).queryByTestId('dashboard-limit-toggle')).toBeNull();
   });
 
   it('warns below a limit where up is good news', async () => {
