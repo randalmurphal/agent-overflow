@@ -286,8 +286,8 @@ func hasTimeTracking(kind string) bool { return kind == store.TrackerKindJira }
 // from to to, at most worklogSpan days, from the connection's time
 // tracker through the worklogs resource (Service.write with no write),
 // makes them the mirror's, and returns them as the mirror then holds
-// them. It waits its turn among the reads of the author's logged time on
-// the connection (worklog_reads.go) and then always reads. A read that
+// them. It waits its turn among the reads of logged time on the
+// connection (worklog_reads.go) and then always reads. A read that
 // failed is settled as the connection's problem and returned as the
 // answer's Failure. A connection with no time tracking is refused with an
 // error wrapping tracker.ErrUnsupported.
@@ -299,16 +299,15 @@ func (s *Service) RefreshWorklogs(ctx context.Context, id, author, from, to stri
 	if daysBetween(first, last) >= worklogSpan {
 		return WorklogDays{}, fmt.Errorf("%w: a worklog refresh reads at most %d days", ErrInvalidRequest, worklogSpan)
 	}
-	row, err := s.get(id)
-	if err != nil {
+	if _, err := s.get(id); err != nil {
 		return WorklogDays{}, err
 	}
-	t := s.worklogs.of(id, author, row.TimeSourceGen)
-	if err := t.take(ctx); err != nil {
+	gate := s.worklogs.gate(id)
+	if err := gate.take(ctx); err != nil {
 		return WorklogDays{}, err
 	}
 	failure, err := s.readWorklogSpan(ctx, id, author, first, last)
-	t.give()
+	gate.give()
 	if err != nil {
 		return WorklogDays{}, err
 	}
@@ -322,7 +321,7 @@ func (s *Service) RefreshWorklogs(ctx context.Context, id, author, from, to stri
 // readWorklogSpan reads author's worklogs on connection id from first to
 // last (at most worklogSpan days) into the mirror: the failure of a read
 // that failed, settled as the connection's problem, or nil. The caller
-// holds the turn of the author's reads on the connection.
+// holds the turn of the connection's reads of logged time.
 func (s *Service) readWorklogSpan(ctx context.Context, id, author string, first, last tracker.Date) (*FailureView, error) {
 	n := daysBetween(first, last)
 	days := make([]tracker.Resource, 0, n+1)

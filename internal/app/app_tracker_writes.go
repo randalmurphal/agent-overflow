@@ -256,25 +256,21 @@ func (a *App) RefreshTrackerWorklogs(ctx context.Context, connectionID, author, 
 	return out, trackerTimeError(ctx, err)
 }
 
-// ReadTrackerWorklogDays reads, for a board's dashboard whose logged-time
-// widgets show, at most 31 days of the logged time of the connection's
-// verified account that the history window still needs, and answers what
-// it did (trackerapp.Service.ReadWorklogDays). today is the dashboard's
-// day; reason is shown, changed or person. It runs at the default budget,
-// as RefreshTrackerWorklogs does, and makes at most the one read
-// RefreshTrackerWorklogs makes.
+// ReadTrackerWorklogDays is a person's Refresh or Read again of the
+// logged time of the connection's verified account that its boards'
+// dashboards count: every day of the window, to today in timeZone, is read
+// again now, and a failure that stopped the reads is forgotten
+// (trackerapp.Service.ReadWorklogDays). It starts the reads and returns;
+// the boards' event says when they end (BoardEvent.Logged).
 //
 //ao:scope tracker:read
 //ao:route home
-func (a *App) ReadTrackerWorklogDays(ctx context.Context, connectionID, today, reason string) (trackerapp.WorklogRead, error) {
+func (a *App) ReadTrackerWorklogDays(connectionID, timeZone string) error {
 	svc, err := a.trackerService()
 	if err != nil {
-		return trackerapp.WorklogRead{}, err
+		return err
 	}
-	ctx, cancel := a.trackerRun(ctx, "ReadTrackerWorklogDays", "Reading your logged time", trackerSlow)
-	defer cancel()
-	out, err := svc.ReadWorklogDays(ctx, connectionID, today, reason)
-	return out, trackerTimeError(ctx, err)
+	return svc.ReadWorklogDays(connectionID, timeZone)
 }
 
 // trackerTimeError is a worklog read's error with its sentence: the

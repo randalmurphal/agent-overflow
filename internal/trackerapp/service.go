@@ -314,12 +314,13 @@ func New(deps Deps) (*Service, error) {
 	return s, nil
 }
 
-// Stop stops every pump and the linked loop, which cancels their ticks in
-// flight, closes every client, which ends the tracker calls in flight, and
+// Stop stops every pump, the linked loop and the reads of logged time
+// (worklog_reads.go), which cancels their ticks and reads in flight, closes every client, which ends the tracker calls in flight, and
 // waits for the service's calls in flight, its pumps and its loop to
 // return. Subscribers are told nothing. Every later call fails with
 // ErrStopped. Stop may be called more than once.
 func (s *Service) Stop() {
+	s.worklogs.halt()
 	s.haltSubscriptions()
 	for _, c := range s.halt() {
 		c.close()
@@ -386,10 +387,10 @@ func (s *Service) use(row store.TrackerConnection) (*clients, error) {
 // connection takes the Tempo connection that belongs to it along, since
 // a provider made while both were in use holds both clients; the Tempo
 // row is left as it is, and its next use builds a new client. It reports
-// whether a problem was forgotten. The reads of its logged time forget
-// what they tried and owe. The caller holds opMu.
+// whether a problem was forgotten. The reads of its logged time stop and
+// forget what they queued and what failed. The caller holds opMu.
 func (s *Service) stopUsing(id string) bool {
-	s.worklogs.drop(id)
+	s.worklogs.stop(id)
 	s.mu.Lock()
 	_, had := s.problems[id]
 	delete(s.problems, id)

@@ -3,32 +3,106 @@ package trackerapp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"runtime"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/harness/trackerfake"
+	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/trackerdash"
 )
 
-// The reads a dashboard makes of its viewer's logged time
-// (ReadWorklogDays), against the fake Jira site through the real
-// provider, with the service's steady clock on the fake's clock.
+// The reads of the logged time the dashboards count (worklog_reads.go),
+// against the fake Jira site through the real provider, with the
+// service's steady clock on the fake's clock. An evaluation's need is
+// given as the evaluator gives it (Board.Worklogs from worklogsOf), and
+// the end of a run is heard as the page hears it: a board event of the
+// connection's board with Logged set.
 
 // dashTime is a time scenario whose connection is verified as user 1,
-// whose steady clock is the fake's, and whose day is the service's.
+// whose steady clock is the fake's, and which holds a hidden subscription
+// of the connection's board (no reads of its own), whose events tell the
+// end of each run. today is the service's day in UTC.
 func dashTime(t *testing.T) (*timeScenario, string) {
 	t.Helper()
 	s := newTimeScenario(t)
 	s.conn = must[Connection](t)(s.svc.Verify(t.Context(), s.conn.ID))
 	s.svc.useClock(s.svc.now, s.clock.Now)
+	scope := Scope{Connection: s.conn.ID, Board: "1"}
+	s.listBoards(s.conn.ID, scope.Board)
+	must[BoardSubscription](t)(s.svc.SubscribeBoard("boards-"+s.conn.ID, scope, []Section{{Kind: SectionBacklog}}, false, untied))
 	return s, s.svc.now().UTC().Format(time.DateOnly)
 }
 
-// dashRead is one ReadWorklogDays of the scenario's connection, failing
-// the test on an error.
-func (s *timeScenario) dashRead(t *testing.T, today, reason string) WorklogRead {
+// window is the days the dashboards hold of the logged time, to today.
+func (s *timeScenario) window(t *testing.T, today string) []string {
 	t.Helper()
-	return must[WorklogRead](t)(s.svc.ReadWorklogDays(t.Context(), s.conn.ID, today, reason))
+	first := must[tracker.Date](t)(s.svc.loggedFrom())
+	end, err := time.Parse(time.DateOnly, today)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var days []string
+	for d := dayTime(first); !d.After(end); d = d.AddDate(0, 0, 1) {
+		days = append(days, d.Format(time.DateOnly))
+	}
+	return days
+}
+
+// unread is the window's days the mirror holds no read of, as an
+// evaluation finds them.
+func (s *timeScenario) unread(t *testing.T, today string) []string {
+	t.Helper()
+	days := s.window(t, today)
+	got, err := s.st.ReadMirrorWorklogDays(s.conn.ID, "acc-user1", days[0], today)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return slices.DeleteFunc(days, func(d string) bool { _, read := slices.BinarySearch(got.ReadDays, d); return read })
+}
+
+// shown is an evaluation of a dashboard whose widget counts the logged
+// time, today: it tells the reads what it finds not read and answers
+// their state.
+func (s *timeScenario) shown(t *testing.T, today string) trackerdash.WorklogState {
+	t.Helper()
+	return s.shownNeeding(t, trackerdash.WorklogNeed{Unread: s.unread(t, today), Today: today})
+}
+
+func (s *timeScenario) shownNeeding(t *testing.T, need trackerdash.WorklogNeed) trackerdash.WorklogState {
+	t.Helper()
+	row, err := s.st.GetTrackerConnection(s.conn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s.svc.worklogsOf(row)(need)
+}
+
+// told waits until the connection's board was told n ends of runs.
+func (s *timeScenario) told(t *testing.T, n int) {
+	t.Helper()
+	s.events.waitFor(t, fmt.Sprintf("%d ends of the reads of logged time", n), func(boards []BoardEvent, _ []IssueEvent, _ []error) bool {
+		return loggedEnds(boards) >= n
+	})
+}
+
+func loggedEnds(boards []BoardEvent) int {
+	n := 0
+	for _, e := range boards {
+		if e.Logged {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *timeScenario) ends() int {
+	boards, _, _ := s.events.snapshot()
+	return loggedEnds(boards)
 }
 
 // spansSince is the replaces recorded after the first n.
@@ -44,121 +118,92 @@ func (s *timeScenario) spanCount() int {
 	return len(s.gate.spans)
 }
 
-// windowDays is every day the dashboard's reads cover: from the day
-// before the history window's start to today.
-func (s *timeScenario) windowDays(today string) (first string, n int) {
-	start := s.svc.window().UTC().AddDate(0, 0, -1).Truncate(24 * time.Hour)
-	end, _ := time.Parse(time.DateOnly, today)
-	return start.Format(time.DateOnly), int(end.Sub(start)/(24*time.Hour)) + 1
-}
-
-// backfill calls ReadWorklogDays with reason, then again as shown while
-// it answers More, and returns the answers.
-func (s *timeScenario) backfill(t *testing.T, today, reason string) []WorklogRead {
+// refuseOnce has the fake Jira site refuse its next worklog search.
+func (s *timeScenario) refuseOnce(t *testing.T) {
 	t.Helper()
-	var out []WorklogRead
-	for got := s.dashRead(t, today, reason); ; got = s.dashRead(t, today, WorklogReadShown) {
-		out = append(out, got)
-		if !got.More {
-			return out
-		}
-		if len(out) > 20 {
-			t.Fatalf("the reads never end: %+v", out)
-		}
-	}
-}
-
-// A first show reads every day of the window, newest first, 31 days a
-// call, each day once: 6 calls for the 182 days, one tracker read each,
-// and nothing more on the next show. The read days then cover the window.
-func TestADashboardReadsItsWindowOfLoggedTimeOnce(t *testing.T) {
-	t.Parallel()
-	s, today := dashTime(t)
-	first, n := s.windowDays(today)
-	var reads []WorklogRead
-	routes := s.requestsOf(t, func() { reads = s.backfill(t, today, WorklogReadShown) })
-	spans := s.spansSince(0)
-	if want := (n + worklogSpan - 1) / worklogSpan; len(reads) != want || len(spans) != want {
-		t.Fatalf("the first show made %d calls and %d reads (%v) for %d days; want %d", len(reads), len(spans), spans, n, want)
-	}
-	for i, r := range reads {
-		if !r.Read || r.Failure != nil || r.RereadIn != 0 {
-			t.Fatalf("call %d answered %+v", i, r)
-		}
-	}
-	if spans[0] != time.Now().UTC().AddDate(0, 0, 1-worklogSpan).Format(time.DateOnly)+".."+today || !slices.IsSortedFunc(spans, func(a, b string) int { return -cmpString(a, b) }) {
-		t.Fatalf("the reads were %v; want the newest 31 days first, then older", spans)
-	}
-	t.Logf("first show: %d calls, %d requests (%s)", len(reads), total(routes), describe(routes))
-	read, err := s.st.ReadMirrorWorklogReadDays(s.conn.ID, "acc-user1", first, today)
-	if err != nil || len(read) != n {
-		t.Fatalf("the read days are %d of %d, %v", len(read), n, err)
-	}
-	again := s.requestsOf(t, func() {
-		if got := s.dashRead(t, today, WorklogReadShown); got.Read || got.More {
-			t.Fatalf("the next show answered %+v; want nothing read", got)
-		}
-	})
-	if total(again) != 0 {
-		t.Fatalf("the next show made requests: %s", describe(again))
-	}
-}
-
-func cmpString(a, b string) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	}
-	return 0
-}
-
-// A day whose read failed is not read again on its own: the failure is
-// answered with nothing more to read now, a later show reads the older
-// days but not the failed ones, and a person's ask reads them again.
-func TestADashboardReadThatFailedWaitsForAPerson(t *testing.T) {
-	t.Parallel()
-	s, today := dashTime(t)
-	first, n := s.windowDays(today)
-	calls := (n + worklogSpan - 1) / worklogSpan
 	jira := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}
 	if err := s.e.AddFault(trackerfake.Fault{Origin: jira, Route: "POST rest/api/3/search/jql", Kind: trackerfake.FaultRefuse, Times: 1, Status: 400,
 		Body: json.RawMessage(`{"errorMessages":["refused"],"errors":{}}`)}); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.dashRead(t, today, WorklogReadShown); !got.Read || got.More || got.Failure == nil {
-		t.Fatalf("the failed read answered %+v; want its failure and nothing more now", got)
-	}
-	s.backfill(t, today, WorklogReadShown)
+}
+
+// newestSpan is the newest worklogSpan days to today, as a replace
+// records them.
+func newestSpan(today string) string {
+	end, _ := time.Parse(time.DateOnly, today)
+	return end.AddDate(0, 0, 1-worklogSpan).Format(time.DateOnly) + ".." + today
+}
+
+// A first show of a dashboard whose widget counts the logged time reads
+// every day of the window in one run, newest first, 31 days a read, each
+// once, and tells the board once; the next show within 5 minutes reads
+// nothing. The read days then cover the window.
+func TestAShownDashboardReadsItsWindowOfLoggedTimeOnce(t *testing.T) {
+	t.Parallel()
+	s, today := dashTime(t)
+	n := len(s.window(t, today))
+	start := time.Now()
+	routes := s.requestsOf(t, func() {
+		if st := s.shown(t, today); !st.Reading || st.Failure != "" {
+			t.Fatalf("the first show answered %+v; want reading", st)
+		}
+		s.told(t, 1)
+	})
+	took := time.Since(start)
 	spans := s.spansSince(0)
-	if len(spans) != calls-1 || slices.ContainsFunc(spans, func(span string) bool { return span[len(span)-10:] == today }) {
-		t.Fatalf("the later show read %v; want the %d older spans and not the failed one", spans, calls-1)
+	if want := (n + worklogSpan - 1) / worklogSpan; len(spans) != want || total(routes) != want {
+		t.Fatalf("the first show read %v with requests %s for %d days; want %d reads, one request each", spans, describe(routes), n, want)
 	}
-	if read, err := s.st.ReadMirrorWorklogReadDays(s.conn.ID, "acc-user1", today, today); err != nil || len(read) != 0 {
-		t.Fatalf("today reads as read %v, %v", read, err)
+	if spans[0] != newestSpan(today) || !slices.IsSortedFunc(spans, func(a, b string) int { return strings.Compare(b, a) }) {
+		t.Fatalf("the reads were %v; want the newest 31 days first, then older", spans)
 	}
-	if got := s.dashRead(t, today, WorklogReadShown); got.Read || got.More {
-		t.Fatalf("a show after the backfill answered %+v; want the failed days left to a person", got)
+	t.Logf("first show, cold: %d tracker reads, requests %s, %v from the show to the board told", len(spans), describe(routes), took.Round(time.Millisecond))
+	if left := s.unread(t, today); len(left) != 0 {
+		t.Fatalf("days left unread: %v", left)
 	}
-	s.backfill(t, today, WorklogReadPerson)
-	if again := s.spansSince(calls - 1); len(again) != calls || again[0][len(again[0])-10:] != today {
-		t.Fatalf("a person's ask read %v; want the whole window again, newest first", again)
+	again := s.requestsOf(t, func() {
+		if st := s.shown(t, today); st.Reading || st.Failure != "" {
+			t.Fatalf("the next show answered %+v; want nothing to read", st)
+		}
+	})
+	if total(again) != 0 || s.ends() != 1 {
+		t.Fatalf("the next show made requests %s and told the board %d times", describe(again), s.ends())
 	}
-	if read, err := s.st.ReadMirrorWorklogReadDays(s.conn.ID, "acc-user1", first, today); err != nil || len(read) != n {
-		t.Fatalf("after the person's ask the read days are %d of %d, %v", len(read), n, err)
+}
+
+// After an automatic read failed, nothing is read on its own: not the
+// days the evaluations find unread, and not the newest days 5 minutes on,
+// as a board's change would read them. The state says why until a person
+// asks; the person's ask reads the whole window again and clears it.
+func TestAnAutomaticReadThatFailedWaitsForAPerson(t *testing.T) {
+	t.Parallel()
+	s, today := dashTime(t)
+	n := len(s.window(t, today))
+	s.refuseOnce(t)
+	s.shown(t, today)
+	s.told(t, 1)
+	if st := s.shown(t, today); st.Reading || !strings.Contains(st.Failure, "refused") {
+		t.Fatalf("a show after the failure answered %+v; want its failure and no read", st)
 	}
-	// A person's ask whose first read fails ends there: the shows after
-	// it do not go on reading the days it asked for.
-	if err := s.e.AddFault(trackerfake.Fault{Origin: jira, Route: "POST rest/api/3/search/jql", Kind: trackerfake.FaultRefuse, Times: 1, Status: 400,
-		Body: json.RawMessage(`{"errorMessages":["refused"],"errors":{}}`)}); err != nil {
+	s.clock.advance(worklogRereadEvery)
+	routes := s.requestsOf(t, func() {
+		if st := s.shown(t, today); st.Reading || st.Failure == "" {
+			t.Fatalf("a show 5 minutes after the failure answered %+v", st)
+		}
+	})
+	if total(routes) != 0 || s.spanCount() != 0 || s.ends() != 1 {
+		t.Fatalf("after the failure the shows read %v with requests %s", s.spansSince(0), describe(routes))
+	}
+	if err := s.svc.ReadWorklogDays(s.conn.ID, "UTC"); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.dashRead(t, today, WorklogReadPerson); got.Failure == nil || got.More {
-		t.Fatalf("the person's failed ask answered %+v; want its failure and nothing more now", got)
+	if st := s.shown(t, today); !st.Reading || st.Failure != "" {
+		t.Fatalf("a show during the person's read answered %+v; want reading and no failure", st)
 	}
-	if got := s.dashRead(t, today, WorklogReadShown); got.Read || got.More {
-		t.Fatalf("a show after the person's failed ask answered %+v; want nothing read", got)
+	s.told(t, 2)
+	if spans := s.spansSince(0); len(spans) != (n+worklogSpan-1)/worklogSpan || spans[0] != newestSpan(today) {
+		t.Fatalf("the person's ask read %v; want the whole window, newest first", spans)
 	}
 }
 
@@ -185,209 +230,322 @@ func (s *timeScenario) holds(t *testing.T, today, id string) bool {
 	return slices.ContainsFunc(got.Worklogs, func(w WorklogView) bool { return w.ID == id })
 }
 
-// Time logged outside the app on a day of the newest 31 is read when the
-// board changes, at most once per worklogRereadEvery: a change sooner is
-// answered with how long until it may read, and a show reads nothing
-// again. A person's ask reads the whole window again now.
-func TestABoardsChangeReadsTheNewestLoggedTimeAgain(t *testing.T) {
+// Time logged outside the app on a day of the newest 31 is read by the
+// first show once 5 minutes have passed since the newest days were last
+// read, whatever the board did, and by no show sooner. A person's ask
+// reads it at once, with the whole window.
+func TestTheNewestLoggedTimeIsReadAgainEveryFiveMinutes(t *testing.T) {
 	t.Parallel()
 	s, today := dashTime(t)
-	_, n := s.windowDays(today)
-	s.backfill(t, today, WorklogReadShown)
+	n := len(s.window(t, today))
+	s.shown(t, today)
+	s.told(t, 1)
 	mark := s.spanCount()
-	newest := time.Now().UTC().AddDate(0, 0, 1-worklogSpan).Format(time.DateOnly) + ".." + today
 
 	s.logOutside(t, "20009", 3600)
-	if got := s.dashRead(t, today, WorklogReadShown); got.Read || got.More || !s.holdsNot(t, today, "20009") {
-		t.Fatalf("a show answered %+v; want no read of days already read", got)
-	}
-	if got := s.dashRead(t, today, WorklogReadChanged); !got.Read || got.More || got.Failure != nil || !s.holds(t, today, "20009") {
-		t.Fatalf("the board's change answered %+v; want the newest days read and worklog 20009 held", got)
-	}
-	if spans := s.spansSince(mark); !slices.Equal(spans, []string{newest}) {
-		t.Fatalf("the board's change read %v; want %s", spans, newest)
-	}
-
-	s.logOutside(t, "20010", 1800)
 	s.clock.advance(worklogRereadEvery - time.Minute)
-	routes := s.requestsOf(t, func() {
-		got := s.dashRead(t, today, WorklogReadChanged)
-		if got.Read || got.More || got.RereadIn != time.Minute.Milliseconds() {
-			t.Fatalf("a change 4 minutes later answered %+v; want no read and 60000 ms to wait", got)
-		}
-	})
-	if total(routes) != 0 || s.holds(t, today, "20010") {
-		t.Fatalf("a change 4 minutes later made requests %s", describe(routes))
+	if st := s.shown(t, today); st.Reading || s.holds(t, today, "20009") {
+		t.Fatalf("a show 4 minutes later answered %+v; want no read", st)
 	}
 	s.clock.advance(time.Minute)
-	if got := s.dashRead(t, today, WorklogReadChanged); !got.Read || !s.holds(t, today, "20010") {
-		t.Fatalf("a change 5 minutes later answered %+v; want worklog 20010 read", got)
+	if st := s.shown(t, today); !st.Reading {
+		t.Fatalf("a show 5 minutes later answered %+v; want the newest days read", st)
+	}
+	s.told(t, 2)
+	if spans := s.spansSince(mark); !slices.Equal(spans, []string{newestSpan(today)}) || !s.holds(t, today, "20009") {
+		t.Fatalf("5 minutes later the show read %v; want %s with worklog 20009", spans, newestSpan(today))
 	}
 
-	s.logOutside(t, "20011", 900)
+	s.logOutside(t, "20010", 900)
 	mark = s.spanCount()
-	s.backfill(t, today, WorklogReadPerson)
-	if spans := s.spansSince(mark); len(spans) != (n+worklogSpan-1)/worklogSpan || spans[0] != newest || !s.holds(t, today, "20011") {
-		t.Fatalf("a person's ask right after a change read %v; want the whole window, newest first", spans)
+	if err := s.svc.ReadWorklogDays(s.conn.ID, "UTC"); err != nil {
+		t.Fatal(err)
+	}
+	s.told(t, 3)
+	if spans := s.spansSince(mark); len(spans) != (n+worklogSpan-1)/worklogSpan || spans[0] != newestSpan(today) || !s.holds(t, today, "20010") {
+		t.Fatalf("a person's ask right after read %v; want the whole window, newest first", spans)
+	}
+	if st := s.shown(t, today); st.Reading {
+		t.Fatalf("a show right after the person's ask answered %+v; want no read", st)
 	}
 }
 
-func (s *timeScenario) holdsNot(t *testing.T, today, id string) bool {
-	t.Helper()
-	return !s.holds(t, today, id)
-}
-
-// The dashboard's reads and RefreshWorklogs of one connection take turns:
-// a read that starts while another is between its tracker answer and its
-// store waits for it, so a second dashboard read reads the next days
-// rather than the same ones, and a refresh lands after it.
-func TestTheReadsOfOnesLoggedTimeTakeTurns(t *testing.T) {
+// A show while a read is in flight, which finds that read's days not read
+// yet, does not queue them again: the first show's run reads each day
+// once.
+func TestAShowDuringAReadQueuesNotItsDays(t *testing.T) {
 	t.Parallel()
 	s, today := dashTime(t)
+	n := len(s.window(t, today))
 	arrived, release := make(chan struct{}), make(chan struct{})
-	t.Cleanup(func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
-	})
+	var once sync.Once
+	let := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(let)
 	s.gate.mu.Lock()
 	s.gate.gate = func() {
 		close(arrived)
 		<-release
 	}
 	s.gate.mu.Unlock()
-	type answer struct {
-		what string
-		err  error
-	}
-	done := make(chan answer, 3)
-	go func() {
-		_, err := s.svc.ReadWorklogDays(t.Context(), s.conn.ID, today, WorklogReadShown)
-		done <- answer{"the first read", err}
-	}()
+	s.shown(t, today)
 	select {
 	case <-arrived:
 	case <-time.After(gateWait):
 		t.Fatal("the first read never reached its store")
 	}
-	go func() {
-		_, err := s.svc.ReadWorklogDays(t.Context(), s.conn.ID, today, WorklogReadShown)
-		done <- answer{"the second read", err}
-	}()
-	go func() {
-		_, err := s.svc.RefreshWorklogs(t.Context(), s.conn.ID, "acc-user1", s.from, s.to)
-		done <- answer{"the refresh", err}
-	}()
-	// Neither answers while the first holds the turn; a second that did
-	// not wait would answer at once.
-	select {
-	case a := <-done:
-		t.Fatalf("%s answered (%v) while the first read held its turn", a.what, a.err)
-	case <-time.After(time.Second):
+	if st := s.shown(t, today); !st.Reading {
+		t.Fatalf("a show during the read answered %+v", st)
 	}
-	close(release)
-	for range 3 {
-		select {
-		case a := <-done:
-			if a.err != nil {
-				t.Fatalf("%s: %v", a.what, a.err)
-			}
-		case <-time.After(gateWait):
-			t.Fatal("a read never answered after the first was released")
-		}
-	}
-	spans := s.spansSince(0)
-	newest := time.Now().UTC().AddDate(0, 0, 1-worklogSpan).Format(time.DateOnly) + ".." + today
-	if len(spans) != 3 || spans[0] != newest || !slices.Contains(spans, s.from+".."+s.to) || slices.Index(spans[1:], newest) >= 0 {
-		t.Fatalf("the reads stored %v; want %s once, the next older days and the refresh", spans, newest)
+	let()
+	s.told(t, 1)
+	if spans := s.spansSince(0); len(spans) != (n+worklogSpan-1)/worklogSpan {
+		t.Fatalf("the run read %v; want each day once", spans)
 	}
 }
 
-// What the reads tried and owe goes with the connection: turned off and
-// on, its days are read again on their own, the failed ones included.
-func TestTurningAConnectionOffForgetsItsDashboardReads(t *testing.T) {
+// One hour of a dashboard shown with the logged time read, on the fake
+// clock: counted every 10 minutes (the page's recount, the board idle),
+// the newest days are read 6 times; counted every 5 s (a busy board), 12.
+func TestAnHourOfAShownDashboardReadsTheNewestDaysAtMostTwelveTimes(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  string
+		every time.Duration
+		want  int
+	}{{"idle", 10 * time.Minute, 6}, {"busy", 5 * time.Second, 12}} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s, today := dashTime(t)
+			s.shown(t, today)
+			s.told(t, 1)
+			mark, told := s.spanCount(), 1
+			routes := s.requestsOf(t, func() {
+				for at := c.every; at <= time.Hour; at += c.every {
+					s.clock.advance(c.every)
+					if st := s.shownNeeding(t, trackerdash.WorklogNeed{Today: today}); st.Reading {
+						told++
+						s.told(t, told)
+					}
+				}
+			})
+			spans := s.spansSince(mark)
+			if len(spans) != c.want || total(routes) != c.want {
+				t.Fatalf("an hour %s read %d spans with requests %s; want %d", c.name, len(spans), describe(routes), c.want)
+			}
+			t.Logf("an hour %s, counted every %v: %d tracker reads, requests %s", c.name, c.every, len(spans), describe(routes))
+		})
+	}
+}
+
+// A person's Refresh reads every day of the window, the newest first,
+// whatever the dashboard shows: one call, 6 tracker reads.
+func TestARefreshReadsTheWholeWindowAgain(t *testing.T) {
 	t.Parallel()
 	s, today := dashTime(t)
-	_, n := s.windowDays(today)
-	jira := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}
-	if err := s.e.AddFault(trackerfake.Fault{Origin: jira, Route: "POST rest/api/3/search/jql", Kind: trackerfake.FaultRefuse, Times: 1, Status: 400,
-		Body: json.RawMessage(`{"errorMessages":["refused"],"errors":{}}`)}); err != nil {
-		t.Fatal(err)
-	}
-	if got := s.dashRead(t, today, WorklogReadShown); got.Failure == nil {
-		t.Fatalf("the read answered %+v; want its failure", got)
-	}
-	must[Connection](t)(s.svc.SetEnabled(s.conn.ID, false))
-	s.svc.worklogs.mu.Lock()
-	_, kept := s.svc.worklogs.byID[s.conn.ID]
-	s.svc.worklogs.mu.Unlock()
-	if kept {
-		t.Fatal("the connection turned off kept its reads' record")
-	}
-	must[Connection](t)(s.svc.SetEnabled(s.conn.ID, true))
+	n := len(s.window(t, today))
+	s.shown(t, today)
+	s.told(t, 1)
 	mark := s.spanCount()
-	s.backfill(t, today, WorklogReadShown)
-	if spans := s.spansSince(mark); len(spans) != (n+worklogSpan-1)/worklogSpan || spans[0][len(spans[0])-10:] != today {
+	start := time.Now()
+	routes := s.requestsOf(t, func() {
+		if err := s.svc.ReadWorklogDays(s.conn.ID, "UTC"); err != nil {
+			t.Fatal(err)
+		}
+		s.told(t, 2)
+	})
+	if spans := s.spansSince(mark); len(spans) != (n+worklogSpan-1)/worklogSpan || total(routes) != len(spans) {
+		t.Fatalf("Refresh read %v with requests %s", spans, describe(routes))
+	}
+	t.Logf("Refresh: 1 call, %d tracker reads, requests %s, %v to the board told", (n+worklogSpan-1)/worklogSpan, describe(routes), time.Since(start).Round(time.Millisecond))
+}
+
+// The reads of one connection take one turn, which nothing replaces: while
+// a run's read is held between its answer and its store, a change of the
+// time source (Tempo added) starts the reads over, and the new run, a
+// refresh of another author and one of the viewer's all wait for the
+// held read; the turn is the same before and after. The other author's
+// refresh leaves the viewer's reads as they were: a show after it reads
+// nothing.
+func TestTheReadsOfLoggedTimeTakeOneTurn(t *testing.T) {
+	t.Parallel()
+	s, today := dashTime(t)
+	gate := s.svc.worklogs.gate(s.conn.ID)
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	let := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	s.gate.mu.Lock()
+	s.gate.gate = func() {
+		close(arrived)
+		<-release
+	}
+	s.gate.mu.Unlock()
+	s.shown(t, today)
+	select {
+	case <-arrived:
+	case <-time.After(gateWait):
+		t.Fatal("the first read never reached its store")
+	}
+	s.addTempoOn(t)
+	if st := s.shown(t, today); !st.Reading {
+		t.Fatalf("a show under Tempo answered %+v; want its reads started", st)
+	}
+	done := make(chan string, 2)
+	for _, author := range []string{"acc-user2", "acc-user1"} {
+		go func() {
+			if _, err := s.svc.RefreshWorklogs(t.Context(), s.conn.ID, author, s.from, s.to); err != nil {
+				t.Errorf("%s's refresh: %v", author, err)
+			}
+			done <- author
+		}()
+	}
+	select {
+	case a := <-done:
+		t.Fatalf("%s's refresh answered while the first read held the turn", a)
+	case <-time.After(time.Second):
+	}
+	if got := s.spanCount(); got != 1 {
+		t.Fatalf("%d reads stored while the first held the turn: %v", got, s.spansSince(0))
+	}
+	let()
+	for range 2 {
+		select {
+		case <-done:
+		case <-time.After(gateWait):
+			t.Fatal("a refresh never answered after the first read was released")
+		}
+	}
+	s.told(t, 1)
+	if again := s.svc.worklogs.gate(s.conn.ID); again != gate {
+		t.Fatal("the connection's turn was replaced")
+	}
+	if st := s.shown(t, today); st.Reading {
+		t.Fatalf("a show after the other author's refresh answered %+v; want nothing read", st)
+	}
+}
+
+// Turning a connection off stops its run and forgets its reads but the
+// turn: a failure is forgotten, and once it is on again a show reads the
+// window again on its own.
+func TestTurningAConnectionOffForgetsItsReads(t *testing.T) {
+	t.Parallel()
+	s, today := dashTime(t)
+	n := len(s.window(t, today))
+	s.refuseOnce(t)
+	s.shown(t, today)
+	s.told(t, 1)
+	gate := s.svc.worklogs.gate(s.conn.ID)
+	must[Connection](t)(s.svc.SetEnabled(s.conn.ID, false))
+	must[Connection](t)(s.svc.SetEnabled(s.conn.ID, true))
+	// Turned off, the connection's board subscription ended; the page
+	// subscribes again.
+	must[BoardSubscription](t)(s.svc.SubscribeBoard("boards-"+s.conn.ID, Scope{Connection: s.conn.ID, Board: "1"}, []Section{{Kind: SectionBacklog}}, false, untied))
+	if st := s.shown(t, today); !st.Reading || st.Failure != "" {
+		t.Fatalf("a show after off and on answered %+v; want the reads started again", st)
+	}
+	if s.svc.worklogs.gate(s.conn.ID) != gate {
+		t.Fatal("off and on replaced the connection's turn")
+	}
+	s.told(t, 2)
+	if spans := s.spansSince(0); len(spans) != (n+worklogSpan-1)/worklogSpan || spans[0] != newestSpan(today) {
 		t.Fatalf("after off and on the show read %v; want the whole window, the failed days first", spans)
 	}
 }
 
-// A read is refused before anything is read for a reason it does not
-// know, a day that is today in no time zone, and an account the
-// connection has not verified.
-func TestADashboardReadIsRefusedWhatItCannotRead(t *testing.T) {
+// A person's read is refused before anything is read for a time zone that
+// is none and an account the connection has not verified.
+func TestAPersonsReadIsRefusedWhatItCannotRead(t *testing.T) {
 	t.Parallel()
-	s, today := dashTime(t)
-	for what, call := range map[string]func() error{
-		"an unknown reason": func() error { _, err := s.svc.ReadWorklogDays(t.Context(), s.conn.ID, today, "later"); return err },
-		"two days ahead": func() error {
-			_, err := s.svc.ReadWorklogDays(t.Context(), s.conn.ID, time.Now().UTC().AddDate(0, 0, 2).Format(time.DateOnly), WorklogReadShown)
-			return err
-		},
-		"two days behind": func() error {
-			_, err := s.svc.ReadWorklogDays(t.Context(), s.conn.ID, time.Now().UTC().AddDate(0, 0, -2).Format(time.DateOnly), WorklogReadShown)
-			return err
-		},
-	} {
-		if err := call(); !errors.Is(err, ErrInvalidRequest) {
-			t.Errorf("%s: %v; want ErrInvalidRequest", what, err)
-		}
-	}
-	for _, d := range []int{-1, 1} {
-		if _, err := s.svc.ReadWorklogDays(t.Context(), s.conn.ID, time.Now().UTC().AddDate(0, 0, d).Format(time.DateOnly), WorklogReadChanged); err != nil {
-			t.Errorf("a day %d from the service's: %v", d, err)
+	s, _ := dashTime(t)
+	for _, zone := range []string{"", "Mars/Olympus"} {
+		if err := s.svc.ReadWorklogDays(s.conn.ID, zone); !errors.Is(err, ErrInvalidRequest) {
+			t.Errorf("zone %q: %v; want ErrInvalidRequest", zone, err)
 		}
 	}
 	s.writeToken(s.conn, "another-token")
-	if _, err := s.svc.ReadWorklogDays(t.Context(), s.conn.ID, today, WorklogReadShown); !errors.Is(err, ErrUnverified) {
+	if err := s.svc.ReadWorklogDays(s.conn.ID, "UTC"); !errors.Is(err, ErrUnverified) {
 		t.Errorf("another token than the verified one: %v; want ErrUnverified", err)
 	}
-	if s.spanCount() != 2 {
+	if s.spanCount() != 0 {
 		t.Errorf("the refused reads stored %v", s.spansSince(0))
 	}
 }
 
-// What the reads tried goes with the time source: once Tempo becomes the
-// connection's, its days are all read again on their own, the ones whose
-// read from Jira failed included.
-func TestAnotherTimeSourceStartsTheDashboardReadsOver(t *testing.T) {
+// Stopping the service in the middle of a run waits for the read it is
+// in, then the run ends: nothing more is read, no failure is logged, and
+// no goroutine of it is left once Stop returns.
+func TestStoppingTheServiceMidRunJoinsItsReads(t *testing.T) {
 	t.Parallel()
 	s, today := dashTime(t)
-	_, n := s.windowDays(today)
-	jira := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}
-	if err := s.e.AddFault(trackerfake.Fault{Origin: jira, Route: "POST rest/api/3/search/jql", Kind: trackerfake.FaultRefuse, Times: 1, Status: 400,
-		Body: json.RawMessage(`{"errorMessages":["refused"],"errors":{}}`)}); err != nil {
+	var mu sync.Mutex
+	var logged []string
+	s.svc.logf = func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	let := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	s.gate.mu.Lock()
+	s.gate.gate = func() {
+		close(arrived)
+		<-release
+	}
+	s.gate.mu.Unlock()
+	s.shown(t, today)
+	select {
+	case <-arrived:
+	case <-time.After(gateWait):
+		t.Fatal("the first read never reached its store")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		s.svc.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while the run's read was in flight")
+	case <-time.After(time.Second):
+	}
+	let()
+	select {
+	case <-stopped:
+	case <-time.After(gateWait):
+		t.Fatal("Stop never returned")
+	}
+	if got := s.spanCount(); got != 1 {
+		t.Fatalf("the run read %v after Stop", s.spansSince(0))
+	}
+	buf := make([]byte, 1<<20)
+	if stacks := string(buf[:runtime.Stack(buf, true)]); strings.Contains(stacks, fmt.Sprintf("(*Service).runWorklogs(%p", s.svc)) {
+		t.Fatal("a run of the reads outlived Stop")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, line := range logged {
+		if strings.Contains(line, "logged time") {
+			t.Errorf("Stop logged %q", line)
+		}
+	}
+}
+
+// An agent's widget of logged time (TryWidget, dashboard_widget) starts
+// the reads as a shown dashboard does.
+func TestAnAgentsWidgetOfLoggedTimeStartsTheReads(t *testing.T) {
+	t.Parallel()
+	s, _ := dashTime(t)
+	scope := Scope{Connection: s.conn.ID, Board: "1"}
+	s.syncBoard(t, scope)
+	w := KeptWidget{ID: "w_1", Form: "number", Width: 3, Metric: trackerdash.Metric{Name: "w_1", Title: "Your hours", Words: []string{"Your logged time."},
+		SQL: `SELECT ticket, seconds AS value FROM worklogs`, Reduce: trackerdash.ReduceSum, Unit: trackerdash.UnitTime}}
+	if _, err := s.svc.TryWidget(t.Context(), "boards-"+s.conn.ID, scope, w, TileMarks{}, "thread-1", false); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.dashRead(t, today, WorklogReadShown); got.Failure == nil {
-		t.Fatalf("the read answered %+v; want its failure", got)
-	}
-	s.addTempoOn(t)
-	mark := s.spanCount()
-	s.backfill(t, today, WorklogReadShown)
-	if spans := s.spansSince(mark); len(spans) != (n+worklogSpan-1)/worklogSpan || spans[0][len(spans[0])-10:] != today {
-		t.Fatalf("after Tempo was added the show read %v; want the whole window, the failed days first", spans)
+	s.told(t, 1)
+	if s.spanCount() == 0 {
+		t.Fatal("the agent's widget read nothing")
 	}
 }
