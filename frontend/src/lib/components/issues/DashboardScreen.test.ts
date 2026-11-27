@@ -258,26 +258,31 @@ describe('your logged time', () => {
     widgets: [{ ...widget('w_1', 'Your hours'), unit: 'time', how: { words: [], counts: '', range: '', rules: '', sql: '', reads: ['tickets', 'threads', 'worklogs'] } }],
   } as unknown as DashboardView;
   const answer = (value: object, unread?: string[]) => ({
-    range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1, viewer: 'acc-1', widgets: [{ id: 'w_1', value, unread }],
+    range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1, widgets: [{ id: 'w_1', value, unread }],
   }) as unknown as Answer;
 
   it('says it is reading, then why a read failed with Read again, which reads the days again; How names the computer whose threads it counts', async () => {
     setBindingMock('TrackerDashboards', async () => listed([LOGGED]));
     setBindingMock('EvaluateTrackerDashboard', async () => answer({ ur: 1 }, ['2026-11-25']));
+    // The first read is held; the computer answers each later one at
+    // once with nothing more to read.
     let fail: (read: object) => void = () => {};
     const reads: unknown[][] = [];
-    setBindingMock('RefreshTrackerWorklogs', (...args: unknown[]) => { reads.push(args); return new Promise((resolve) => { fail = resolve; }); });
+    setBindingMock('ReadTrackerWorklogDays', (...args: unknown[]) => {
+      reads.push(args);
+      return reads.length === 1 ? new Promise((resolve) => { fail = resolve; }) : Promise.resolve({});
+    });
     const screen = render(DashboardScreen, { props: { source: SOURCE, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
     unmount = screen.unmount;
     await flush();
     expect(screen.getByTestId('dashboard-widget-reading').textContent).toBe('Reading your logged time…');
-    fail({ worklogs: [], failure: { kind: 'rate_limited', message: 'Jira asked to wait.', at: 1 } });
+    fail({ read: true, failure: { kind: 'rate_limited', message: 'Jira asked to wait.', at: 1 } });
     await flush();
     expect(screen.getByTestId('dashboard-number-not-read').textContent).toBe('1 day not read');
     expect(screen.getByTestId('dashboard-widget-unread').textContent).toContain('Not known: 1 day not read of your logged time. Jira asked to wait.');
     await fireEvent.click(screen.getByTestId('dashboard-widget-unread-retry'));
     await flush();
-    expect(reads.map((r) => r.slice(0, 4))).toEqual([['conn-1', 'acc-1', '2026-11-25', '2026-11-25'], ['conn-1', 'acc-1', '2026-11-25', '2026-11-25']]);
+    expect(reads.map((r) => [r[0], r[2]])).toEqual([['conn-1', 'changed'], ['conn-1', 'shown'], ['conn-1', 'person']]);
     await fireEvent.click(screen.getByTestId('dashboard-how-toggle'));
     expect(screen.getByTestId('dashboard-how-threads').textContent).toContain('the threads on Laptop');
   });

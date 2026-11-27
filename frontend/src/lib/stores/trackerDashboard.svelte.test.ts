@@ -691,9 +691,9 @@ describe('your logged time', () => {
     const { s, evaluate, reads } = await openedLogged(loggedAnswer(NOT_READ));
     shown = false;
     await flush();
-    expect(s.logged.reading).toBe(false);
     reads.answer({ read: true, more: true });
     await flush();
+    expect(s.logged.reading).toBe(false);
     vi.advanceTimersByTime(DASHBOARD_REFRESH_MS);
     await flush();
     expect(reads.calls).toHaveLength(1);
