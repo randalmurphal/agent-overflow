@@ -21,10 +21,12 @@
 // work…, which opens the ticket with its form, whose run shows in the
 // ticket's Work, also when the ticket was read before it opens (on compact
 // in the Details it opens); a Backlog row's menu has the same Ask and
-// Start work…. Work's forge search lists, once each, what names the key
-// by title, by the start of its branch and by a branch the forge or this
-// computer has, on GitHub and GitLab, a stored row with its CI, and on
-// Refresh the forge's change; a failed search says its kind, a rate
+// Start work…. Work lists the pull request history the app read of a
+// board's project's repository, a stored row once with its CI, with no
+// search; Work's forge search, of a repository whose history the app does
+// not keep, lists, once each, what names the key by title, by the start
+// of its branch and by a branch the forge or this computer has, on GitHub
+// and GitLab, and on Refresh the forge's change; a failed search says its kind, a rate
 // limit with when to retry and Retry, and a login to fix with none; a
 // row's menu opens it on the forge, in a connected browser in that
 // browser.
@@ -198,18 +200,26 @@ const SEARCH_PULLS: ForgePull[] = [
   { number: 507, title: 'Unrelated', body: 'Follows WEB-1.', author: 'alice', headRef: 'unrelated' },
 ];
 
-/** A project that lists the WEB board, a checkout of `repo` on the fake
- * `forge` with branches feature/WEB-1-host and web-1-new, and the forge
- * seeded with `pulls`. */
+/** A checkout of `repo` on the fake `forge` with branches
+ * feature/WEB-1-host and web-1-new and a thread linked to WEB-1, and the
+ * forge seeded with `pulls`; a plain project lists the WEB board. Work
+ * covers the checkout for its linked thread, and searches its repository
+ * by the key: the app keeps the pull request history only of the
+ * repositories of projects that list a board (tracker-backend.md), and
+ * this one lists none. */
 async function searchProject(
   harness: HarnessApp, name: string, pulls: ForgePull[] = SEARCH_PULLS, forge: 'github' | 'gitlab' = 'github',
   jira?: (repo: string) => ExtraJira,
 ): Promise<{ projectId: string; repo: string }> {
   const repo = `ao-e2e/${name}-${Date.now().toString(36)}`;
   await seedFakeJira(harness, jira?.(repo));
-  const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: { commits: [{ message: 'init', files: { 'README.md': '# Web\n' } }] } }] });
-  const { projectId, path } = seed.projects[0];
-  await connectFakeJira(harness, projectId);
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [
+    { name, repo: { commits: [{ message: 'init', files: { 'README.md': '# Web\n' } }] }, threads: [{ title: 'WEB-1 work', turns: [{ userText: 'WEB-1 work', items: [{ kind: 'assistant_text', summary: 'done' }] }] }] },
+    { name: `${name}-board`, repo: { commits: [{ message: 'init', files: { 'README.md': '# Board\n' } }] } },
+  ] });
+  const [{ projectId, path, threadIds: [linked] }, board] = seed.projects;
+  const { site } = await connectFakeJira(harness, board.projectId);
+  await harness.rpc('SetThreadTicket', linked, { kind: 'jira', site, issueId: WEB1 });
   await seedForge(harness, [{ forge, project: repo, pulls }]);
   harnessGit(harness, path, 'branch', 'feature/WEB-1-host');
   harnessGit(harness, path, 'branch', 'web-1-new');
@@ -294,7 +304,7 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
     await expect.poll(opens).toEqual([`https://github.com/${repo}/pull/502`]);
   });
 
-  test('a pull request the Pull requests page stored and the forge search finds is listed once, with its CI', async ({ page }) => {
+  test('Work lists the pull request history the app read of a board\'s project, a stored row once with its CI, and searches nothing', async ({ page }) => {
     test.setTimeout(150_000);
     const harness = await launchPullsHarness();
     try {
@@ -304,12 +314,14 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
       });
       const { projectId, path } = seed.projects[0];
       await connectFakeJira(harness, projectId);
+      // Updated after WEB-1 was made, as a pull request that names it is.
+      const hourAgo = new Date(Date.now() - 3600_000).toISOString();
       const repo: ForgeRepo = {
         forge: 'github',
         project: `ao-e2e/work-once-${compact ? 'compact' : 'desktop'}-${Date.now().toString(36)}`,
         pulls: [
-          { number: 601, title: 'WEB-1 Retry the cursor read', author: 'alice', authorName: 'Alice Ng', ci: { jobs: [{ name: 'unit', status: 'success' }] } },
-          { number: 602, title: 'WEB-1 First try', author: 'alice', headRef: 'first-try', state: 'merged' },
+          { number: 601, title: 'WEB-1 Retry the cursor read', author: 'alice', authorName: 'Alice Ng', createdAt: hourAgo, ci: { jobs: [{ name: 'unit', status: 'success' }] } },
+          { number: 602, title: 'WEB-1 First try', author: 'alice', headRef: 'first-try', state: 'merged', createdAt: hourAgo },
         ],
       };
       await publishPullRequest(harness, path, repo, { 'src/cursor.ts': 'export const cursor = 1;\n' });
@@ -322,12 +334,15 @@ export function registerTicketWorkFlow({ compact }: WorkSurface): void {
         await page.getByTestId('compact-back').tap();
         await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'list');
       }
+      // The linked round that follows the client's first reads reads the
+      // repository's history, the project listing the board.
+      await expect.poll(async () => (await forgeOps(harness, 'PullHistory')).length, { timeout: 60_000 }).toBeGreaterThan(0);
       const { work } = await openWork(page, WEB1, compact);
-      await expect.poll(async () => (await forgeOps(harness, 'PullsByKey')).length, { timeout: 30_000 }).toBe(1);
       await expect(work.getByTestId('ticket-work-searching')).toHaveCount(0, { timeout: 30_000 });
-      // 601 once, the stored row with its CI; 602 only the search finds.
+      // 601 once, the stored row with its CI; 602 only the history holds.
       await expect.poll(() => pullRows(work)).toEqual(['#601 open', '#602 merged']);
       await expect(work.getByTestId('ticket-work-pull').nth(0)).toContainText('CI passed');
+      expect(await forgeOps(harness, 'PullsByKey')).toEqual([]);
     } finally {
       await harness.close();
     }
