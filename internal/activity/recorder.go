@@ -19,12 +19,17 @@
 //     is the recorder's Status until a flush writes again.
 //   - The recorder owns the prune of what it measured: once a day, the
 //     spans and thread days older than Keep, and nothing else.
-//   - Days answers the person's minutes per day, never the spans.
+//   - Days answers the person's time per day, never the spans: what was
+//     written and what is still in memory, each instant counted once.
 package activity
 
 import (
+	"cmp"
+	"fmt"
 	"log"
+	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,7 +53,7 @@ const maxUnwritten = 1000
 type Store interface {
 	SaveActivitySpans(spans []store.ActivitySpan) ([]int64, error)
 	PruneActivity(beforeMs int64, beforeDay string) (spans, days int64, err error)
-	ActivitySpans(fromMs, toMs int64) ([]store.ActivityRow, error)
+	ActivitySpans(fromMs, toMs int64) ([]store.ActivitySpan, error)
 	ThreadDays(from, to string) ([]store.ThreadDay, error)
 }
 
@@ -227,14 +232,21 @@ func (r *Recorder) Flush() {
 	var write []*span
 	for _, s := range r.open {
 		s.EndMs = max(s.StartMs, min(s.last+r.window, now))
+	}
+	for _, s := range append(slices.Collect(maps.Values(r.open)), r.closed...) {
 		if s.ID == 0 || s.EndMs != s.saved {
 			write = append(write, s)
 		}
 	}
-	write = append(write, r.closed...)
 	spans := make([]store.ActivitySpan, len(write))
 	for i, s := range write {
 		spans[i] = s.ActivitySpan
+	}
+	// The closed spans this flush settles; a span that closes while it
+	// writes waits for the next.
+	taken := make(map[*span]bool, len(r.closed))
+	for _, s := range r.closed {
+		taken[s] = true
 	}
 	r.mu.Unlock()
 
@@ -258,9 +270,9 @@ func (r *Recorder) Flush() {
 		for i, s := range write {
 			s.ID, s.saved = ids[i], spans[i].EndMs
 		}
-		// What a write did not take (no Jira connection on) is not kept:
-		// a closed span is done either way.
-		r.closed = slices.DeleteFunc(r.closed, func(s *span) bool { return slices.Contains(write, s) })
+		// A closed span is done once written, and one a write did not
+		// take (no Jira connection on) is not kept.
+		r.closed = slices.DeleteFunc(r.closed, func(s *span) bool { return taken[s] })
 		r.status = Status{}
 	}
 	after := r.status
@@ -287,5 +299,127 @@ func (r *Recorder) Flush() {
 		r.mu.Lock()
 		r.pruned = day
 		r.mu.Unlock()
+	}
+}
+
+// Day is what the recorder measured of one local day: the time with
+// input, the part of it in the compact layout, the part on each focused
+// thread ("" for none), and the threads that started a turn that day.
+type Day struct {
+	Day     string
+	Active  time.Duration
+	Phone   time.Duration
+	Threads map[string]time.Duration
+	Ran     []string
+}
+
+// Days is what the recorder measured of each local day from from to to,
+// both YYYY-MM-DD and included, for the days that hold any. Where spans
+// of two connections overlap, each instant counts once, on the span that
+// started later: the screen the person turned to.
+func (r *Recorder) Days(from, to string) ([]Day, error) {
+	first, err := time.ParseInLocation(time.DateOnly, from, time.Local)
+	if err != nil {
+		return nil, fmt.Errorf("activity: days from %q: %w", from, err)
+	}
+	last, err := time.ParseInLocation(time.DateOnly, to, time.Local)
+	if err != nil {
+		return nil, fmt.Errorf("activity: days to %q: %w", to, err)
+	}
+	end := last.AddDate(0, 0, 1)
+	stored, err := r.st.ActivitySpans(first.UnixMilli(), end.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	ran, err := r.st.ThreadDays(from, to)
+	if err != nil {
+		return nil, err
+	}
+	spans := r.withUnwritten(stored)
+	byDay := map[string]*Day{}
+	day := func(name string) *Day {
+		d := byDay[name]
+		if d == nil {
+			d = &Day{Day: name, Threads: map[string]time.Duration{}}
+			byDay[name] = d
+		}
+		return d
+	}
+	count(spans, first.UnixMilli(), end.UnixMilli(), func(s store.ActivitySpan, from, to int64) {
+		// The local days the stretch reaches, each its own part.
+		for from < to {
+			t := time.UnixMilli(from)
+			y, m, dd := t.Date()
+			next := min(to, time.Date(y, m, dd+1, 0, 0, 0, 0, time.Local).UnixMilli())
+			d := day(t.Format(time.DateOnly))
+			part := time.Duration(next-from) * time.Millisecond
+			d.Active += part
+			if s.Phone {
+				d.Phone += part
+			}
+			d.Threads[s.ThreadID] += part
+			from = next
+		}
+	})
+	for _, td := range ran {
+		d := day(td.Day)
+		d.Ran = append(d.Ran, td.ThreadID)
+	}
+	out := make([]Day, 0, len(byDay))
+	for _, d := range byDay {
+		out = append(out, *d)
+	}
+	slices.SortFunc(out, func(a, b Day) int { return strings.Compare(a.Day, b.Day) })
+	return out, nil
+}
+
+// withUnwritten is stored with what the recorder holds that it has not
+// written: an open span as it ends now, and a span written before by its
+// end as the recorder holds it.
+func (r *Recorder) withUnwritten(stored []store.ActivitySpan) []store.ActivitySpan {
+	now := r.now().UnixMilli()
+	r.mu.Lock()
+	held := make([]store.ActivitySpan, 0, len(r.open)+len(r.closed))
+	for _, s := range r.open {
+		sp := s.ActivitySpan
+		sp.EndMs = max(sp.StartMs, min(s.last+r.window, now))
+		held = append(held, sp)
+	}
+	for _, s := range r.closed {
+		held = append(held, s.ActivitySpan)
+	}
+	r.mu.Unlock()
+	out := slices.DeleteFunc(slices.Clone(stored), func(st store.ActivitySpan) bool {
+		return slices.ContainsFunc(held, func(h store.ActivitySpan) bool { return h.ID != 0 && h.ID == st.ID })
+	})
+	return append(out, held...)
+}
+
+// count calls each for every stretch of from to to that spans cover, with
+// the span it counts on: of the spans that cover it, the one that started
+// last.
+func count(spans []store.ActivitySpan, from, to int64, each func(s store.ActivitySpan, from, to int64)) {
+	spans = slices.Clone(spans)
+	slices.SortStableFunc(spans, func(a, b store.ActivitySpan) int { return cmp.Compare(a.StartMs, b.StartMs) })
+	edges := make([]int64, 0, 2*len(spans))
+	for _, s := range spans {
+		edges = append(edges, max(from, s.StartMs), min(to, s.EndMs))
+	}
+	slices.Sort(edges)
+	edges = slices.Compact(edges)
+	// covering holds the spans that cover the stretch from the edge on, in
+	// the order they started.
+	var covering []store.ActivitySpan
+	next := 0
+	for i := 0; i+1 < len(edges); i++ {
+		a, b := edges[i], edges[i+1]
+		for next < len(spans) && spans[next].StartMs <= a {
+			covering = append(covering, spans[next])
+			next++
+		}
+		covering = slices.DeleteFunc(covering, func(s store.ActivitySpan) bool { return s.EndMs <= a })
+		if len(covering) > 0 && a < b {
+			each(covering[len(covering)-1], a, b)
+		}
 	}
 }

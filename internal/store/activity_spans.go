@@ -70,41 +70,28 @@ func (s *Store) SaveActivitySpans(spans []ActivitySpan) ([]int64, error) {
 	return ids, nil
 }
 
-// ActivityRow is a span of a read, with the Jira ticket its thread is
-// linked to now (none for a thread with no Jira link, or none at all).
-type ActivityRow struct {
-	ThreadID string
-	Phone    bool
-	StartMs  int64
-	EndMs    int64
-	Site     string
-	IssueID  string
-	IssueKey string
-}
-
 // activitySpansSQL reads the spans that reach ?1 to ?2 (Unix ms), by
 // start: a span starts at most MaxActivitySpanMs before what it reaches,
 // so the start index bounds the read on both sides.
-var activitySpansSQL = `SELECT s.thread_id, s.phone, s.start_ms, s.end_ms, coalesce(t.site, ''), coalesce(t.issue_id, ''), coalesce(t.issue_key, '')
- FROM activity_spans s LEFT JOIN thread_tickets t ON t.thread_id = s.thread_id AND t.kind = 'jira'
- WHERE s.start_ms >= ?1 - ` + strconv.Itoa(MaxActivitySpanMs) + ` AND s.start_ms < ?2 AND s.end_ms > ?1
- ORDER BY s.start_ms, s.id`
+var activitySpansSQL = `SELECT id, thread_id, phone, start_ms, end_ms FROM activity_spans
+ WHERE start_ms >= ?1 - ` + strconv.Itoa(MaxActivitySpanMs) + ` AND start_ms < ?2 AND end_ms > ?1
+ ORDER BY start_ms, id`
 
 // ActivitySpans are the spans that reach fromMs to toMs, by start.
-func (s *Store) ActivitySpans(fromMs, toMs int64) ([]ActivityRow, error) {
+func (s *Store) ActivitySpans(fromMs, toMs int64) ([]ActivitySpan, error) {
 	rows, err := s.reader().Query(activitySpansSQL, fromMs, toMs)
 	if err != nil {
 		return nil, fmt.Errorf("store: activity spans: %w", err)
 	}
-	var out []ActivityRow
+	var out []ActivitySpan
 	for rows.Next() {
-		var r ActivityRow
+		var sp ActivitySpan
 		var phone int
-		if err := rows.Scan(&r.ThreadID, &phone, &r.StartMs, &r.EndMs, &r.Site, &r.IssueID, &r.IssueKey); err != nil {
+		if err := rows.Scan(&sp.ID, &sp.ThreadID, &phone, &sp.StartMs, &sp.EndMs); err != nil {
 			return nil, errors.Join(fmt.Errorf("store: scan activity span: %w", err), rows.Close())
 		}
-		r.Phone = phone == 1
-		out = append(out, r)
+		sp.Phone = phone == 1
+		out = append(out, sp)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("store: activity spans: %w", err)
@@ -112,19 +99,13 @@ func (s *Store) ActivitySpans(fromMs, toMs int64) ([]ActivityRow, error) {
 	return out, nil
 }
 
-// ThreadDay is a thread that started a turn on Day, with the Jira ticket
-// it is linked to now (none when it has no Jira link).
+// ThreadDay is a thread that started a turn on Day.
 type ThreadDay struct {
 	Day      string
 	ThreadID string
-	Site     string
-	IssueID  string
-	IssueKey string
 }
 
-var threadDaysSQL = `SELECT d.day, d.thread_id, coalesce(t.site, ''), coalesce(t.issue_id, ''), coalesce(t.issue_key, '')
- FROM thread_days d LEFT JOIN thread_tickets t ON t.thread_id = d.thread_id AND t.kind = 'jira'
- WHERE d.day >= ?1 AND d.day <= ?2 ORDER BY d.day, d.thread_id`
+var threadDaysSQL = `SELECT day, thread_id FROM thread_days WHERE day >= ?1 AND day <= ?2 ORDER BY day, thread_id`
 
 // ThreadDays are the threads that started a turn from day from to day to,
 // both YYYY-MM-DD and included, by day.
@@ -136,7 +117,7 @@ func (s *Store) ThreadDays(from, to string) ([]ThreadDay, error) {
 	var out []ThreadDay
 	for rows.Next() {
 		var d ThreadDay
-		if err := rows.Scan(&d.Day, &d.ThreadID, &d.Site, &d.IssueID, &d.IssueKey); err != nil {
+		if err := rows.Scan(&d.Day, &d.ThreadID); err != nil {
 			return nil, errors.Join(fmt.Errorf("store: scan thread day: %w", err), rows.Close())
 		}
 		out = append(out, d)

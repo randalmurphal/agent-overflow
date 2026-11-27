@@ -27,8 +27,8 @@ func TestActivityMigration(t *testing.T) {
 	}
 }
 
-// activityStore is a store with thread t1 linked to Jira WEB-1 and t2 to
-// nothing, and a Jira connection on when jira.
+// activityStore is a store with threads t1 and t2, and a Jira connection
+// on when jira.
 func activityStore(t *testing.T, jira bool) *Store {
 	t.Helper()
 	s := newTestStore(t)
@@ -42,7 +42,6 @@ func activityStore(t *testing.T, jira bool) *Store {
 			t.Fatal(err)
 		}
 	}
-	mustExec(t, s.db, `INSERT INTO thread_tickets(thread_id, kind, site, issue_id, issue_key, origin, linked_at) VALUES ('t1', 'jira', 'example.atlassian.net', '10101', 'WEB-1', 'manual', 1)`)
 	if jira {
 		if _, err := s.CreateTrackerConnection(NewTrackerConnection{Kind: TrackerKindJira, Site: "example.atlassian.net", Account: "user1@example.com", CreatedAt: 1}); err != nil {
 			t.Fatal(err)
@@ -52,9 +51,8 @@ func activityStore(t *testing.T, jira bool) *Store {
 }
 
 // A span is inserted while a Jira connection is on and its end moves on
-// a later save; a read of a range answers the spans that reach it, with
-// the Jira ticket of their thread, through the start index bounded on
-// both sides. With no Jira connection on, nothing is inserted.
+// a later save; a read of a range answers the spans that reach it,
+// through the start index bounded on both sides. With no Jira connection on, nothing is inserted.
 func TestActivitySpansAreSavedAndRead(t *testing.T) {
 	t.Parallel()
 	s := activityStore(t, true)
@@ -76,9 +74,9 @@ func TestActivitySpansAreSavedAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []ActivityRow{
-		{ThreadID: "t1", StartMs: day, EndMs: day + 90*60_000, Site: "example.atlassian.net", IssueID: "10101", IssueKey: "WEB-1"},
-		{ThreadID: "t2", Phone: true, StartMs: day + 2*h, EndMs: day + 3*h},
+	want := []ActivitySpan{
+		{ID: ids[0], ThreadID: "t1", StartMs: day, EndMs: day + 90*60_000},
+		{ID: ids[1], ThreadID: "t2", Phone: true, StartMs: day + 2*h, EndMs: day + 3*h},
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("read %+v\nwant %+v", got, want)
@@ -107,7 +105,7 @@ func TestActivitySpansAreSavedAndRead(t *testing.T) {
 // A turn start names its thread on its local day, once, while a Jira
 // connection is on; a second turn of the thread that day writes no other
 // row, and with no Jira connection on no day is named. The days read by
-// day with the thread's Jira ticket.
+// day.
 func TestATurnStartNamesItsThreadsDay(t *testing.T) {
 	t.Parallel()
 	s := activityStore(t, true)
@@ -125,14 +123,11 @@ func TestATurnStartNamesItsThreadsDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []ThreadDay{
-		{Day: "2026-11-24", ThreadID: "t1", Site: "example.atlassian.net", IssueID: "10101", IssueKey: "WEB-1"},
-		{Day: "2026-11-25", ThreadID: "t2"},
-	}
+	want := []ThreadDay{{Day: "2026-11-24", ThreadID: "t1"}, {Day: "2026-11-25", ThreadID: "t2"}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("thread days %+v\nwant %+v", got, want)
 	}
-	if plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+threadDaysSQL, "2026-11-24", "2026-11-25"); !strings.Contains(plan, "SEARCH d USING PRIMARY KEY (day>? AND day<?)") {
+	if plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+threadDaysSQL, "2026-11-24", "2026-11-25"); !strings.Contains(plan, "SEARCH thread_days USING PRIMARY KEY (day>? AND day<?)") {
 		t.Errorf("the thread day read plans %s; want the key's day range", plan)
 	}
 	// A turn whose insert fails names no day.
