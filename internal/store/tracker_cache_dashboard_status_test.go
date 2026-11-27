@@ -118,8 +118,9 @@ func TestStartToDoneCountsWhatTheHistoryShows(t *testing.T) {
 
 // A count copies what its metrics read, through a real export of a board
 // whose tickets have changes: no built-in reads the changes, so neither
-// the Overview's copy nor a Stuck drill's holds any, and the drill asks
-// for the relations its metric and the rows' labels read, no sprint's.
+// the Overview's copy nor a Stuck drill's holds any (the status intervals
+// are filled without copying them), and the drill asks for the relations
+// its metric and the rows' labels read, no sprint's.
 func TestACountCopiesWhatItsMetricsRead(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
@@ -146,7 +147,7 @@ func TestACountCopiesWhatItsMetricsRead(t *testing.T) {
 	if !reflect.DeepEqual(changes, []int{0, 0}) || slices.Contains(asked[0], "changes") {
 		t.Fatalf("the copies held %v changes, the Overview asked for %v; want none copied", changes, asked[0])
 	}
-	if want := []string{"epics", "people", "statuses", "tickets"}; !reflect.DeepEqual(asked[1], want) {
+	if want := []string{"epics", "people", "status_intervals", "statuses", "tickets"}; !reflect.DeepEqual(asked[1], want) {
 		t.Fatalf("the Stuck drill asked for %v; want %v", asked[1], want)
 	}
 }
