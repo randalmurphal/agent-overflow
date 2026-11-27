@@ -5019,6 +5019,19 @@ describe("the board's summary row", () => {
     view.unmount();
   });
 
+  it('says a pinned list of your logged time that counts days older than those kept is not known', async () => {
+    const logged = { id: 'w_3', title: 'Tickets I logged time on', form: 'list', width: 6, unit: 'time', bucket: 'period', how: { ...how, reads: ['worklogs'] } };
+    const kept = { ...KEPT, widgets: [...KEPT.widgets, logged] };
+    install({ view: { ...sprintBoard([row('1', 'a', 's1')]), plan: [], pins: ['w_3'] } as unknown as BoardView });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'sprints_10', label: 'Last 10 sprints', periods: [], previous: '' };
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [{ id: 'w_3', tickets: [{ row: 0, key: 'WEB-1', title: 'One' }], old: true }] }));
+    const view = mount();
+    const chip = await view.findByTestId('board-row-chip');
+    await waitFor(() => expect(chip.textContent?.replace(/\s+/g, ' ').trim()).toBe('Not known · Tickets I logged time on'));
+    view.unmount();
+  });
+
   it('takes a tile off, adds one from a dashboard, says a full row is full, and asks the agent for a new one', async () => {
     install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['stuck'] } as Partial<BoardView>) });
     setBindingMock('TrackerDashboards', async () => listing());

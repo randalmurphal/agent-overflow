@@ -502,11 +502,12 @@ export class Name {
 /**
  * Num is one number a widget shows: a value, none (nothing to reduce:
  * the median of no rows), not known (no row counted and NC rows not
- * counted, or UR days of the viewer's logged time it counts not read), or
- * a gap (the mirror cannot answer: a previous range it holds too few
- * sprints for). NC is the tickets the metric could not count beside the
- * value. On the wire: {"v":3}, {"v":3,"nc":2}, {}, {"nc":2}, {"ur":4}
- * or {"gap":true}.
+ * counted, UR days of the viewer's logged time it counts not read, or Old:
+ * it counts days of that time older than the copy keeps, which nothing
+ * reads; worklogs.go), or a gap (the mirror cannot answer: a previous
+ * range it holds too few sprints for). NC is the tickets the metric could
+ * not count beside the value. On the wire: {"v":3}, {"v":3,"nc":2}, {},
+ * {"nc":2}, {"ur":4}, {"old":true} or {"gap":true}.
  */
 export type Num = any;
 
@@ -812,6 +813,13 @@ export class WidgetValue {
      * copy holds no read of, for a metric that reads it (worklogs.go).
      */
     "unread"?: string[];
+
+    /**
+     * Old is a list's whose rows reach a day of the viewer's logged time
+     * older than the copy holds, so it is never whole (worklogs.go); a
+     * number says so in its Num.
+     */
+    "old"?: boolean;
 
     /** Creates a new WidgetValue instance. */
     constructor($$source: Partial<WidgetValue> = {}) {

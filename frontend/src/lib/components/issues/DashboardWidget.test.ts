@@ -305,6 +305,17 @@ describe('your logged time', () => {
     expect(reading.queryByTestId('dashboard-widget-unread')).toBeNull();
   });
 
+  it('says a list that counts days older than the logged time kept is not known, with nothing to read again', () => {
+    const list = view({ id: 'logged', title: 'Logged on', form: 'list', unit: 'time', how: { ...HOW, reads: ['worklogs'] } });
+    const old = { id: 'logged', tickets: [{ row: 0, key: 'WEB-1', title: 'One' }], old: true } as unknown as WidgetValue;
+    const w = draw(list, old, RANGE, { logged: read({ failure: 'Jira asked to wait.' }) });
+    expect(w.getByTestId('dashboard-widget-unread').textContent?.trim()).toBe('Not known: it counts days older than the logged time kept.');
+    expect(w.queryByTestId('dashboard-widget-unread-retry')).toBeNull();
+    w.unmount();
+    const whole = draw(list, { ...old, old: undefined } as unknown as WidgetValue, RANGE, { logged: read() });
+    expect(whole.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
   it('says in How this is counted which days of it the page reads', async () => {
     const w = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue);
     await fireEvent.click(w.getByTestId('dashboard-how-toggle'));

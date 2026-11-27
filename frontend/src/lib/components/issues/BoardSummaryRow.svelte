@@ -130,7 +130,9 @@
     if (v.form === 'number') return numWords(value.value as Num | undefined, v.unit as DashboardUnit, estimates);
     if (v.form === 'list') {
       // A list of your logged time is not known while its days are not
-      // all read (WidgetValue.unread).
+      // all read (WidgetValue.unread), and never when it counts days older
+      // than those kept (WidgetValue.old).
+      if (value.old) return numWords({ old: true }, v.unit as DashboardUnit, estimates);
       if (value.unread?.length) return numWords({ ur: value.unread.length }, v.unit as DashboardUnit, estimates);
       const n = (value.tickets?.length ?? 0) + (value.more ?? 0);
       return { amount: String(n), word: n === 1 ? 'ticket' : 'tickets' };
