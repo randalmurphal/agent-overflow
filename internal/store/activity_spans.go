@@ -5,13 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"time"
 )
 
 // The activity the recorder measured (migration v174): spans of the
 // person's input and the days each thread started a turn. Only
-// internal/activity writes spans and prunes both tables; InsertTurn writes
-// the thread days.
+// internal/activity writes and prunes them.
 
 // MaxActivitySpanMs is the longest span the recorder writes: it closes a
 // span this long and opens the next, so a read of a range finds every
@@ -34,23 +32,31 @@ type ActivitySpan struct {
 var insertActivitySpanSQL = `INSERT INTO activity_spans(thread_id, phone, start_ms, end_ms)
  SELECT ?1, ?2, ?3, ?4 WHERE ` + jiraOnSQL + ` RETURNING id`
 
-// SaveActivitySpans writes spans in one transaction: it inserts each with
-// ID 0, while a Jira connection is on, and moves the end of each with an
-// ID. It returns each span's ID in spans' order, 0 for one not inserted
-// because no Jira connection is on.
-func (s *Store) SaveActivitySpans(spans []ActivitySpan) ([]int64, error) {
+var insertThreadDaySQL = `INSERT OR IGNORE INTO thread_days(day, thread_id) SELECT ?1, ?2 WHERE ` + jiraOnSQL
+
+// SaveActivity writes spans and days in one transaction, while a Jira
+// connection is on: it inserts each span with ID 0 and moves the end of
+// each with an ID, and names each day's thread once. It returns each
+// span's ID in spans' order, 0 for one not inserted because no Jira
+// connection is on.
+func (s *Store) SaveActivity(spans []ActivitySpan, days []ThreadDay) ([]int64, error) {
 	ids := make([]int64, len(spans))
-	if len(spans) == 0 {
+	if len(spans) == 0 && len(days) == 0 {
 		return ids, nil
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("store: save activity spans: %w", err)
+		return nil, fmt.Errorf("store: save activity: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	for _, d := range days {
+		if _, err := tx.Exec(insertThreadDaySQL, d.Day, d.ThreadID); err != nil {
+			return nil, fmt.Errorf("store: save the day %s of thread %s: %w", d.Day, d.ThreadID, err)
+		}
+	}
 	for i, sp := range spans {
 		if sp.EndMs < sp.StartMs || sp.EndMs-sp.StartMs > MaxActivitySpanMs {
-			return nil, fmt.Errorf("store: save activity spans: span %d to %d is not 0 to %d ms long", sp.StartMs, sp.EndMs, MaxActivitySpanMs)
+			return nil, fmt.Errorf("store: save activity: span %d to %d is not 0 to %d ms long", sp.StartMs, sp.EndMs, MaxActivitySpanMs)
 		}
 		if sp.ID != 0 {
 			if _, err := tx.Exec(`UPDATE activity_spans SET end_ms = ?2 WHERE id = ?1`, sp.ID, sp.EndMs); err != nil {
@@ -65,7 +71,7 @@ func (s *Store) SaveActivitySpans(spans []ActivitySpan) ([]int64, error) {
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: save activity spans: %w", err)
+		return nil, fmt.Errorf("store: save activity: %w", err)
 	}
 	return ids, nil
 }
@@ -155,7 +161,3 @@ func (s *Store) PruneActivity(beforeMs int64, beforeDay string) (spans, days int
 	}
 	return spans, days, nil
 }
-
-// localDay is the local date of a Unix millisecond time, as the thread
-// days and the time draft name days.
-func localDay(ms int64) string { return time.UnixMilli(ms).Format(time.DateOnly) }

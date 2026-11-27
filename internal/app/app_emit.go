@@ -76,6 +76,9 @@ func (a *App) emitKeyed(name eventchan.Channel, data any) string {
 	// The marks of which turns are ticks come first: the notification tap
 	// reads them (app_agent_wakes.go).
 	a.tapAgentWakeTurns(name, data)
+	// A turn start names its thread's day for the time draft
+	// (app_activity.go); the recorder writes it at its next flush.
+	a.tapActivityTurns(name, data)
 	// The OS-notification mapping taps the same funnel: four moments are
 	// worth interrupting a person for and all four are announced here
 	// (app_notification_mapping.go). It projects and queues; it never

@@ -2,6 +2,7 @@ package activity
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +21,8 @@ type fakeStore struct {
 	spans map[int64]store.ActivitySpan
 	days  []store.ThreadDay
 	saves [][]store.ActivitySpan
+	// daySaves are the thread days each save was given.
+	daySaves [][]store.ThreadDay
 	// during runs inside each save, without the lock.
 	during func()
 	prunes [][2]any
@@ -28,15 +31,21 @@ type fakeStore struct {
 
 func newFakeStore() *fakeStore { return &fakeStore{jira: true, spans: map[int64]store.ActivitySpan{}} }
 
-func (f *fakeStore) SaveActivitySpans(spans []store.ActivitySpan) ([]int64, error) {
+func (f *fakeStore) SaveActivity(spans []store.ActivitySpan, days []store.ThreadDay) ([]int64, error) {
 	if f.during != nil {
 		f.during()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.saves = append(f.saves, slices.Clone(spans))
+	f.daySaves = append(f.daySaves, slices.Clone(days))
 	if f.fail != nil {
 		return nil, f.fail
+	}
+	for _, d := range days {
+		if f.jira && !slices.Contains(f.days, d) {
+			f.days = append(f.days, d)
+		}
 	}
 	ids := make([]int64, len(spans))
 	for i, sp := range spans {
@@ -414,5 +423,63 @@ func TestASpanIsTiedToItsConnection(t *testing.T) {
 	}
 	if len(r.open) != 0 {
 		t.Fatalf("a refused tie opened %d spans", len(r.open))
+	}
+}
+
+// A turn start is held until the flush, which writes its thread's day
+// once; Days answers it before then. A failed flush keeps it and says
+// since its turn; with no Jira connection on it is dropped; a failing
+// recorder holds at most maxUnwritten.
+func TestTurnStartsAreWrittenAtTheFlush(t *testing.T) {
+	t.Parallel()
+	r, f, c, _ := recorder(t)
+	r.Ran("t1", ms(nine))
+	r.Ran("t1", ms(nine.Add(time.Hour)))
+	r.Ran("t2", ms(nine.Add(24*time.Hour)))
+	if len(f.days) != 0 {
+		t.Fatalf("a turn start wrote %+v before the flush", f.days)
+	}
+	days, err := r.Days("2026-11-24", "2026-11-25")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 2 || !slices.Equal(days[0].Ran, []string{"t1"}) || !slices.Equal(days[1].Ran, []string{"t2"}) {
+		t.Fatalf("before the flush the days are %+v; want t1 Tuesday and t2 Wednesday", days)
+	}
+	f.fail = errors.New("disk I/O error")
+	c.add(time.Minute)
+	r.Flush()
+	if st := r.Status(); st.Since != ms(nine) {
+		t.Fatalf("a failed flush of turn starts says %+v; want since 09:00", st)
+	}
+	f.fail = nil
+	r.Flush()
+	want := []store.ThreadDay{{Day: "2026-11-24", ThreadID: "t1"}, {Day: "2026-11-25", ThreadID: "t2"}}
+	got := slices.Clone(f.days)
+	slices.SortFunc(got, func(a, b store.ThreadDay) int { return strings.Compare(a.Day, b.Day) })
+	if !slices.Equal(got, want) || r.Status().Since != 0 {
+		t.Fatalf("the flush wrote %+v, status %+v; want %+v", got, r.Status(), want)
+	}
+	r.Flush()
+	if last := f.daySaves[len(f.daySaves)-1]; len(last) != 0 {
+		t.Fatalf("a flush after the days were written wrote %+v again", last)
+	}
+
+	off, fo, _, _ := recorder(t)
+	fo.jira = false
+	off.Ran("t1", ms(nine))
+	off.Flush()
+	if len(fo.days) != 0 || len(off.ran) != 0 {
+		t.Fatalf("with no Jira connection wrote %+v and kept %d", fo.days, len(off.ran))
+	}
+
+	failing, ff, _, _ := recorder(t)
+	ff.fail = errors.New("disk full")
+	for i := range maxUnwritten + 10 {
+		failing.Ran(fmt.Sprintf("t%d", i), ms(nine))
+	}
+	failing.Flush()
+	if len(failing.ran) != maxUnwritten {
+		t.Fatalf("a failing recorder holds %d thread days; want %d", len(failing.ran), maxUnwritten)
 	}
 }

@@ -10,10 +10,11 @@
 //     of the last one extends it. A span ends at its last report plus
 //     Window, or sooner: at the next report on another thread, at the
 //     connection's end (End), or at the flush that finds it idle.
-//   - Nothing is written per report. One flush every FlushEvery writes
-//     what changed (a span inserted once, its end moved after), and Close
-//     flushes once more. Only while a Jira connection is on is a span
-//     inserted (store.SaveActivitySpans); a span no write took is dropped.
+//   - Nothing is written per report or per turn start. One flush every
+//     FlushEvery writes what changed (a span inserted once, its end moved
+//     after) and the days of the threads that started a turn since (Ran),
+//     and Close flushes once more. Only while a Jira connection is on is
+//     anything written (store.SaveActivity); what no write took is dropped.
 //   - A flush that fails keeps what it could not write for the next one,
 //     at most maxUnwritten closed spans, and the earliest time not written
 //     is the recorder's Status until a flush writes again.
@@ -45,13 +46,14 @@ const FlushEvery = 5 * time.Minute
 // Keep is how long the measured activity is kept.
 const Keep = 92 * 24 * time.Hour
 
-// maxUnwritten bounds the closed spans a failing recorder keeps for its
-// next flush; past it the oldest go, and Status still says since when.
+// maxUnwritten bounds the closed spans, and the thread days, a failing
+// recorder keeps for its next flush; past it the oldest spans and the
+// newest days go, and Status still says since when.
 const maxUnwritten = 1000
 
 // Store is what the recorder writes and reads.
 type Store interface {
-	SaveActivitySpans(spans []store.ActivitySpan) ([]int64, error)
+	SaveActivity(spans []store.ActivitySpan, days []store.ThreadDay) ([]int64, error)
 	PruneActivity(beforeMs int64, beforeDay string) (spans, days int64, err error)
 	ActivitySpans(fromMs, toMs int64) ([]store.ActivitySpan, error)
 	ThreadDays(from, to string) ([]store.ThreadDay, error)
@@ -97,6 +99,9 @@ type Recorder struct {
 	mu      sync.Mutex
 	open    map[string]*span
 	closed  []*span
+	// ran is the thread days not yet written, each with its earliest turn
+	// start (Unix ms).
+	ran     map[store.ThreadDay]int64
 	status  Status
 	pruned  string
 	started bool
@@ -109,7 +114,7 @@ type Recorder struct {
 // New is a recorder of st that flushes once Start runs.
 func New(st Store, cfg Config) *Recorder {
 	r := &Recorder{st: st, now: cfg.Now, window: int64(cfg.Window / time.Millisecond), flushEvery: cfg.FlushEvery, changed: cfg.Changed,
-		open: map[string]*span{}, stop: make(chan struct{}), done: make(chan struct{})}
+		open: map[string]*span{}, ran: map[store.ThreadDay]int64{}, stop: make(chan struct{}), done: make(chan struct{})}
 	if r.now == nil {
 		r.now = time.Now
 	}
@@ -201,6 +206,21 @@ func (r *Recorder) Report(conn, thread string, phone bool, tie func(end func()) 
 	return nil
 }
 
+// Ran is a turn start of thread at atMs: the thread is among those that
+// started a turn on that local day. The next flush writes it.
+func (r *Recorder) Ran(thread string, atMs int64) {
+	day := store.ThreadDay{Day: time.UnixMilli(atMs).Format(time.DateOnly), ThreadID: thread}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch at, ok := r.ran[day]; {
+	case r.stopped:
+	case ok:
+		r.ran[day] = min(at, atMs)
+	case len(r.ran) < maxUnwritten:
+		r.ran[day] = atMs
+	}
+}
+
 // End is connection conn's end: its open span ends now.
 func (r *Recorder) End(conn string) {
 	now := r.now().UnixMilli()
@@ -263,25 +283,33 @@ func (r *Recorder) Flush() {
 	for i, s := range write {
 		spans[i] = s.ActivitySpan
 	}
-	// The closed spans this flush settles; a span that closes while it
-	// writes waits for the next.
+	// The closed spans and thread days this flush settles; what comes
+	// while it writes waits for the next.
 	taken := make(map[*span]bool, len(r.closed))
 	for _, s := range r.closed {
 		taken[s] = true
 	}
+	days := slices.Collect(maps.Keys(r.ran))
 	r.mu.Unlock()
 
-	ids, err := r.st.SaveActivitySpans(spans)
+	ids, err := r.st.SaveActivity(spans, days)
 
 	r.mu.Lock()
 	before := r.status
 	if err != nil {
 		since := r.status.Since
+		froms := make([]int64, 0, len(write)+len(days))
 		for _, s := range write {
 			from := s.StartMs
 			if s.ID != 0 {
 				from = s.saved
 			}
+			froms = append(froms, from)
+		}
+		for _, d := range days {
+			froms = append(froms, r.ran[d])
+		}
+		for _, from := range froms {
 			if since == 0 || from < since {
 				since = from
 			}
@@ -292,8 +320,11 @@ func (r *Recorder) Flush() {
 			s.ID, s.saved = ids[i], spans[i].EndMs
 		}
 		// A closed span is done once written, and one a write did not
-		// take (no Jira connection on) is not kept.
+		// take (no Jira connection on) is not kept; so is a thread day.
 		r.closed = slices.DeleteFunc(r.closed, func(s *span) bool { return taken[s] })
+		for _, d := range days {
+			delete(r.ran, d)
+		}
 		r.status = Status{}
 	}
 	after := r.status
@@ -356,7 +387,7 @@ func (r *Recorder) Days(from, to string) ([]Day, error) {
 	if err != nil {
 		return nil, err
 	}
-	spans := r.withUnwritten(stored)
+	spans, ran := r.withUnwritten(stored, ran, from, to)
 	byDay := map[string]*Day{}
 	day := func(name string) *Day {
 		d := byDay[name]
@@ -394,10 +425,11 @@ func (r *Recorder) Days(from, to string) ([]Day, error) {
 	return out, nil
 }
 
-// withUnwritten is stored with what the recorder holds that it has not
-// written: an open span as it ends now, and a span written before by its
-// end as the recorder holds it.
-func (r *Recorder) withUnwritten(stored []store.ActivitySpan) []store.ActivitySpan {
+// withUnwritten is stored and ran with what the recorder holds that it
+// has not written: an open span as it ends now, a span written before by
+// its end as the recorder holds it, and the thread days from from to to
+// not yet written, each once.
+func (r *Recorder) withUnwritten(stored []store.ActivitySpan, ran []store.ThreadDay, from, to string) ([]store.ActivitySpan, []store.ThreadDay) {
 	now := r.now().UnixMilli()
 	r.mu.Lock()
 	held := make([]store.ActivitySpan, 0, len(r.open)+len(r.closed))
@@ -409,11 +441,16 @@ func (r *Recorder) withUnwritten(stored []store.ActivitySpan) []store.ActivitySp
 	for _, s := range r.closed {
 		held = append(held, s.ActivitySpan)
 	}
+	for d := range r.ran {
+		if d.Day >= from && d.Day <= to && !slices.Contains(ran, d) {
+			ran = append(ran, d)
+		}
+	}
 	r.mu.Unlock()
 	out := slices.DeleteFunc(slices.Clone(stored), func(st store.ActivitySpan) bool {
 		return slices.ContainsFunc(held, func(h store.ActivitySpan) bool { return h.ID != 0 && h.ID == st.ID })
 	})
-	return append(out, held...)
+	return append(out, held...), ran
 }
 
 // count calls each for every stretch of from to to that spans cover, with

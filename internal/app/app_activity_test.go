@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,9 +13,11 @@ import (
 	"time"
 
 	"agent-overflow/internal/activity"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 )
 
 // activityClock is a settable clock for an App's recorder.
@@ -165,5 +168,22 @@ func TestTrackerToolsActivityReadsTheDaysAndTheirCommits(t *testing.T) {
 	}
 	if len(got.CommitsUnread) != 1 || !strings.HasPrefix(got.CommitsUnread[0], "Gone: ") {
 		t.Fatalf("the unread repositories are %q; want Gone's", got.CommitsUnread)
+	}
+}
+
+// A turn start the app emits names its thread's day for the time draft,
+// and another frame names none.
+func TestATurnStartNamesItsThreadsDay(t *testing.T) {
+	t.Parallel()
+	a := activityApp(t, nil)
+	at := time.Date(2026, 11, 24, 9, 0, 0, 0, time.Local).UnixMilli()
+	a.emit(eventchan.ProviderTurnStarted, triage.TurnStartedEvent{ThreadID: "t1", TurnIndex: 0, StartedAt: at})
+	a.emit(eventchan.ProviderTurnCompleted, triage.TurnCompletedEvent{ThreadID: "t2", TurnIndex: 0})
+	days, err := a.activity.Days("2026-11-24", "2026-11-24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 1 || !slices.Equal(days[0].Ran, []string{"t1"}) {
+		t.Fatalf("the days are %+v; want t1's turn on Tuesday", days)
 	}
 }

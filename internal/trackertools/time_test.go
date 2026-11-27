@@ -341,24 +341,26 @@ func TestTimeDraftAnswersWithAReceipt(t *testing.T) {
 // logged time: the active minutes and the phone's share when there is
 // any, the minutes on each Jira ticket the focused threads are linked to
 // with a ticket only a turn touched named without minutes, at most
-// commitsShown commits and how many more, and the recording gap while
-// there is one; a day with nothing measured carries none of it, and a
-// failed read of the activity fails the call.
+// commitsShown commits and how many more, the recording gap while there
+// is one, and each repository whose commits could not be read; a day with
+// nothing measured carries none of it, and a failed read of the activity
+// fails the call.
 func TestTimeReadAnswersTheMeasuredDay(t *testing.T) {
 	t.Parallel()
 	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, time: map[string]trackerapp.WorklogDays{timeJira.ID: {}},
 		links: map[string]trackerapp.JiraTicket{
-			"t1": {Site: timeJira.Site, Key: "WEB-1"}, "t2": {Site: timeJira.Site, Key: "WEB-2"}, "t4": {Site: timeJira.Site, Key: "WEB-4"},
+			"t1": {Site: timeJira.Site, Key: "WEB-3"}, "t2": {Site: timeJira.Site, Key: "WEB-2"}, "t4": {Site: timeJira.Site, Key: "WEB-4"},
 		}}
-	day := activity.Day{Day: "2026-11-24", Active: 125*time.Minute + 20*time.Second, Phone: 30 * time.Minute, Threads: map[string]time.Duration{
-		"t1": 90*time.Minute + 20*time.Second, "t2": 10 * time.Minute, "t3": 20 * time.Minute, "": 5 * time.Minute,
+	day := activity.Day{Day: "2026-11-24", Active: 124*time.Minute + 40*time.Second, Phone: 30 * time.Minute, Threads: map[string]time.Duration{
+		"t1": 89*time.Minute + 40*time.Second, "t2": 10 * time.Minute, "t3": 20 * time.Minute, "": 5 * time.Minute,
 	}, Ran: []string{"t1", "t4"}}
 	var commits []Commit
 	for i := range commitsShown + 2 {
 		commits = append(commits, Commit{At: time.Date(2026, 11, 24, 9, i, 0, 0, time.Local), Subject: fmt.Sprintf("Change %d", i)})
 	}
 	gap := time.Date(2026, 11, 25, 14, 5, 0, 0, time.Local)
-	h := &fakeHost{activity: ActivityDays{Days: []ActivityDay{{Day: day, Commits: commits}}, Gap: gap.UnixMilli()}}
+	h := &fakeHost{activity: ActivityDays{Days: []ActivityDay{{Day: day, Commits: commits}}, Gap: gap.UnixMilli(),
+		CommitsUnread: []string{"Shop: git log in /src/shop failed: fatal: bad object HEAD"}}}
 	answer, err := timeCall(t, timeServer(f, h), "time_read", map[string]any{"from": "2026-11-24", "to": "2026-11-25"})
 	if err != nil {
 		t.Fatal(err)
@@ -367,11 +369,17 @@ func TestTimeReadAnswersTheMeasuredDay(t *testing.T) {
 	for i := range commitsShown {
 		lines = append(lines, fmt.Sprintf(`{"at":"09:%02d","subject":"Change %d"}`, i, i))
 	}
-	want := `{"days":[{"day":"2026-11-24","logged":[],"active":125,"phone":30,"tickets":[{"key":"WEB-1","minutes":90},{"key":"WEB-2","minutes":10},{"key":"WEB-4"}],` +
-		`"commits":[` + strings.Join(lines, ",") + `],"commits_more":2},{"day":"2026-11-25","logged":[]}],"activity_gap":"since 2026-11-25 14:05"}`
+	want := `{"days":[{"day":"2026-11-24","logged":[],"active":125,"phone":30,"tickets":[{"key":"WEB-3","minutes":90},{"key":"WEB-2","minutes":10},{"key":"WEB-4"}],` +
+		`"commits":[` + strings.Join(lines, ",") + `],"commits_more":2},{"day":"2026-11-25","logged":[]}],"activity_gap":"since 2026-11-25 14:05",` +
+		`"commits_unread":["Shop: git log in /src/shop failed: fatal: bad object HEAD"]}`
 	if answer != want {
 		t.Fatalf("time_read = %s\nwant %s", answer, want)
 	}
+	f.linksErr = errors.New("database is locked")
+	if _, err := timeCall(t, timeServer(f, h), "time_read", map[string]any{"from": "2026-11-24", "to": "2026-11-25"}); err == nil || !strings.Contains(err.Error(), "database is locked") {
+		t.Fatalf("a failed read of the threads' tickets answered %v", err)
+	}
+	f.linksErr = nil
 	h.activityErr = errors.New("disk I/O error")
 	if _, err := timeCall(t, timeServer(f, h), "time_read", map[string]any{"from": "2026-11-24", "to": "2026-11-25"}); err == nil || !strings.Contains(err.Error(), "disk I/O error") {
 		t.Fatalf("a failed activity read answered %v", err)

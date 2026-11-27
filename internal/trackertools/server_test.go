@@ -75,8 +75,10 @@ type fakeTracker struct {
 	openErr map[string]error
 	// links are the Jira tickets threads are linked to.
 	links map[string]trackerapp.JiraTicket
-	post  func(connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error)
-	posts []string
+	// linksErr fails ThreadJiraTickets.
+	linksErr error
+	post     func(connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error)
+	posts    []string
 	// postCtx is each post's context error as the post began.
 	postCtx []error
 }
@@ -294,6 +296,9 @@ func (f *fakeTracker) TicketSources() ([]trackerapp.TicketSource, error) { retur
 
 func (f *fakeTracker) ThreadJiraTickets(threadIDs []string) (map[string]trackerapp.JiraTicket, error) {
 	f.asked = append(f.asked, "thread tickets "+strings.Join(threadIDs, " "))
+	if f.linksErr != nil {
+		return nil, f.linksErr
+	}
 	out := map[string]trackerapp.JiraTicket{}
 	for _, id := range threadIDs {
 		if t, ok := f.links[id]; ok {

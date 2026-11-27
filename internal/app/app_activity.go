@@ -15,13 +15,14 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/trackertools"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 )
 
 // The activity recorder's app side (internal/activity): the screens'
 // reports of input, tied to their connections; the recorder's status
 // and its change event, for the Time screen; and its start and close.
 // Only this computer's person is recorded (ownScreen), and only while a
-// Jira connection is on is anything written (store.SaveActivitySpans).
+// Jira connection is on is anything written (store.SaveActivity).
 
 // maxFocusedThreadBytes bounds a report's thread id: ids are UUIDs.
 const maxFocusedThreadBytes = 128
@@ -32,6 +33,18 @@ func (a *App) initActivity() {
 	cfg := a.activityTiming
 	cfg.Changed = func(s activity.Status) { a.emit(eventchan.ActivityRecording, s) }
 	a.activity = activity.New(a.store, cfg)
+}
+
+// tapActivityTurns tells the recorder of each turn start, which costs the
+// emit a map write: the day is written at the recorder's next flush. An
+// App built without the recorder (a test of another part) records none.
+func (a *App) tapActivityTurns(name eventchan.Channel, data any) {
+	if name != eventchan.ProviderTurnStarted || a.activity == nil {
+		return
+	}
+	if event, ok := data.(triage.TurnStartedEvent); ok {
+		a.activity.Ran(event.ThreadID, event.StartedAt)
+	}
 }
 
 // startActivity starts the recorder's flushes.

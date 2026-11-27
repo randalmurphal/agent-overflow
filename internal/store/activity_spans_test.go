@@ -58,16 +58,16 @@ func TestActivitySpansAreSavedAndRead(t *testing.T) {
 	s := activityStore(t, true)
 	const h = 3_600_000
 	day := int64(1_795_000_000_000)
-	ids, err := s.SaveActivitySpans([]ActivitySpan{
+	ids, err := s.SaveActivity([]ActivitySpan{
 		{ThreadID: "t1", StartMs: day, EndMs: day + h},
 		{ThreadID: "t2", Phone: true, StartMs: day + 2*h, EndMs: day + 3*h},
 		{StartMs: day - MaxActivitySpanMs - 1, EndMs: day - 1},
 		{ThreadID: "t1", StartMs: day + 30*h, EndMs: day + 31*h},
-	})
+	}, nil)
 	if err != nil || len(ids) != 4 || slices.Contains(ids, 0) {
 		t.Fatalf("saved %v, %v", ids, err)
 	}
-	if _, err := s.SaveActivitySpans([]ActivitySpan{{ID: ids[0], ThreadID: "t1", StartMs: day, EndMs: day + 90*60_000}}); err != nil {
+	if _, err := s.SaveActivity([]ActivitySpan{{ID: ids[0], ThreadID: "t1", StartMs: day, EndMs: day + 90*60_000}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.ActivitySpans(day, day+24*h)
@@ -88,12 +88,12 @@ func TestActivitySpansAreSavedAndRead(t *testing.T) {
 	if !strings.Contains(plan, "idx_activity_spans_start (start_ms>? AND start_ms<?)") {
 		t.Errorf("the span read plans %s; want the start index bounded on both sides", plan)
 	}
-	if _, err := s.SaveActivitySpans([]ActivitySpan{{StartMs: day, EndMs: day + MaxActivitySpanMs + 1}}); err == nil {
+	if _, err := s.SaveActivity([]ActivitySpan{{StartMs: day, EndMs: day + MaxActivitySpanMs + 1}}, nil); err == nil {
 		t.Error("a span longer than a day was saved")
 	}
 
 	off := activityStore(t, false)
-	ids, err = off.SaveActivitySpans([]ActivitySpan{{ThreadID: "t1", StartMs: day, EndMs: day + h}})
+	ids, err = off.SaveActivity([]ActivitySpan{{ThreadID: "t1", StartMs: day, EndMs: day + h}}, nil)
 	if err != nil || !slices.Equal(ids, []int64{0}) {
 		t.Fatalf("with no Jira connection saved %v, %v; want nothing", ids, err)
 	}
@@ -102,21 +102,19 @@ func TestActivitySpansAreSavedAndRead(t *testing.T) {
 	}
 }
 
-// A turn start names its thread on its local day, once, while a Jira
-// connection is on; a second turn of the thread that day writes no other
-// row, and with no Jira connection on no day is named. The days read by
-// day.
-func TestATurnStartNamesItsThreadsDay(t *testing.T) {
+// A saved day names its thread once, while a Jira connection is on: a
+// second save of the thread that day writes no other row, and with no
+// Jira connection on no day is named. The days read by day, through the
+// key's day range.
+func TestSavedDaysNameEachThreadOnce(t *testing.T) {
 	t.Parallel()
 	s := activityStore(t, true)
-	at := time.Date(2026, 11, 24, 9, 0, 0, 0, time.Local).UnixMilli()
-	for i, turn := range []Turn{
-		{TurnID: "a", ThreadID: "t1", TurnIndex: 0, StartedAt: at},
-		{TurnID: "b", ThreadID: "t1", TurnIndex: 1, StartedAt: at + 3_600_000},
-		{TurnID: "c", ThreadID: "t2", TurnIndex: 0, StartedAt: at + 24*3_600_000},
+	for _, days := range [][]ThreadDay{
+		{{Day: "2026-11-24", ThreadID: "t1"}},
+		{{Day: "2026-11-24", ThreadID: "t1"}, {Day: "2026-11-25", ThreadID: "t2"}},
 	} {
-		if err := s.InsertTurn(turn); err != nil {
-			t.Fatalf("turn %d: %v", i, err)
+		if _, err := s.SaveActivity(nil, days); err != nil {
+			t.Fatal(err)
 		}
 	}
 	got, err := s.ThreadDays("2026-11-24", "2026-11-25")
@@ -130,20 +128,20 @@ func TestATurnStartNamesItsThreadsDay(t *testing.T) {
 	if plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+threadDaysSQL, "2026-11-24", "2026-11-25"); !strings.Contains(plan, "SEARCH thread_days USING PRIMARY KEY (day>? AND day<?)") {
 		t.Errorf("the thread day read plans %s; want the key's day range", plan)
 	}
-	// A turn whose insert fails names no day.
-	if err := s.InsertTurn(Turn{TurnID: "a", ThreadID: "t2", TurnIndex: 5, StartedAt: at}); err == nil {
-		t.Fatal("a turn ID twice was inserted")
+	// A save that fails writes neither its days nor its spans.
+	if _, err := s.SaveActivity([]ActivitySpan{{StartMs: 10, EndMs: 9}}, []ThreadDay{{Day: "2026-11-26", ThreadID: "t1"}}); err == nil {
+		t.Fatal("a span that ends before it starts was saved")
 	}
-	if got, _ := s.ThreadDays("2026-11-24", "2026-11-24"); len(got) != 1 {
-		t.Fatalf("a failed turn insert named a day: %+v", got)
+	if got, _ := s.ThreadDays("2026-11-26", "2026-11-26"); len(got) != 0 {
+		t.Fatalf("a failed save named a day: %+v", got)
 	}
 
 	off := activityStore(t, false)
-	if err := off.InsertTurn(Turn{TurnID: "a", ThreadID: "t1", StartedAt: at}); err != nil {
+	if _, err := off.SaveActivity(nil, []ThreadDay{{Day: "2026-11-24", ThreadID: "t1"}}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := off.ThreadDays("2026-11-24", "2026-11-24"); len(got) != 0 {
-		t.Fatalf("with no Jira connection the turn named %+v", got)
+		t.Fatalf("with no Jira connection the save named %+v", got)
 	}
 }
 
@@ -153,7 +151,7 @@ func TestThePruneDeletesOnlyOldActivity(t *testing.T) {
 	t.Parallel()
 	s := activityStore(t, true)
 	day := int64(1_795_000_000_000)
-	if _, err := s.SaveActivitySpans([]ActivitySpan{{StartMs: day - 10, EndMs: day}, {StartMs: day, EndMs: day + 10}}); err != nil {
+	if _, err := s.SaveActivity([]ActivitySpan{{StartMs: day - 10, EndMs: day}, {StartMs: day, EndMs: day + 10}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	mustExec(t, s.db, `INSERT INTO thread_days(day, thread_id) VALUES ('2026-08-01', 't1'), ('2026-08-02', 't1')`)
@@ -186,10 +184,7 @@ func TestARestoreKeepsTheRecordedActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	day := int64(1_795_000_000_000)
-	if _, err := st.SaveActivitySpans([]ActivitySpan{{ThreadID: "t1", StartMs: day, EndMs: day + 60_000}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.InsertTurn(Turn{TurnID: "after", ThreadID: "t1", TurnIndex: 9, StartedAt: day}); err != nil {
+	if _, err := st.SaveActivity([]ActivitySpan{{ThreadID: "t1", StartMs: day, EndMs: day + 60_000}}, []ThreadDay{{Day: "2026-11-24", ThreadID: "t1"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.RestoreFrom(snap); err != nil {
@@ -198,7 +193,7 @@ func TestARestoreKeepsTheRecordedActivity(t *testing.T) {
 	if got, err := st.ActivitySpans(day, day+60_000); err != nil || len(got) != 1 {
 		t.Fatalf("after the restore the spans are %+v, %v", got, err)
 	}
-	if got, err := st.ThreadDays(localDay(day), localDay(day)); err != nil || len(got) != 1 {
+	if got, err := st.ThreadDays("2026-11-24", "2026-11-24"); err != nil || len(got) != 1 {
 		t.Fatalf("after the restore the thread days are %+v, %v", got, err)
 	}
 }

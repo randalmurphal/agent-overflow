@@ -44,6 +44,13 @@ func newTrackerTestAppOn(t *testing.T, st *store.Store, configure func(*App)) *A
 		t.Fatal(err)
 	}
 	t.Cleanup(a.trackers.Stop)
+	// Start builds the recorder beside the trackers (app_startup.go).
+	a.initActivity()
+	t.Cleanup(func() {
+		if err := a.activity.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	return a
 }
 
