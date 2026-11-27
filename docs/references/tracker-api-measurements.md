@@ -1139,41 +1139,79 @@ member done at its completion and changed inside its sprint, and 520
 tickets with evidence (two comments and two worklogs by three people
 each); at 20,000 the other members are read with no evidence. The rules
 are 10% for 2 of commented and logged time, and 4 hours a point. With
-no row estimated, every row is a support ticket. Same machine and
-SQLite as above; times are the median of 5 runs, VM steps exact.
+no row estimated, every row is a support ticket, which credit counts by
+its time alone. Credit off is a project that counts none, so it names
+no support tickets either. Same machine and SQLite as above; times are
+the median of 5 runs, VM steps exact. The test fails when the totals
+with credit on take more than twice the VM steps of credit off, or the
+pace more than the steps below.
 
 The export's `credit` fill:
 
 | Board | Rows | Bytes | VM steps | Best time |
 |---|---|---|---|---|
-| 2,000, estimated | 520 finished, 1,560 review | 131,072 | 564,534 | 14.3 ms |
-| 2,000, none estimated | 520 finished, 1,560 review, 1,040 support | 192,512 | 760,086 | 20.5 ms |
-| 20,000, estimated | 5,200 finished, 1,560 review | 323,584 | 2,423,574 | 89.9 ms |
-| 20,000, none estimated | 5,200 finished, 1,560 review, 1,040 support | 376,832 | 2,801,646 | 99.9 ms |
-| 20,000, a board without sprints, every done ticket | 8,000 finished, 660 review | 360,448 | 3,471,780 | 113.7 ms |
+| 2,000, estimated | 520 finished, 1,560 review | 167,936 | 618,674 | 11.9 ms |
+| 2,000, none estimated | 1,040 support | 73,728 | 384,131 | 8.8 ms |
+| 20,000, estimated | 5,200 finished, 1,560 review | 364,544 | 2,805,314 | 89.0 ms |
+| 20,000, none estimated | 1,040 support | 73,728 | 1,583,291 | 65.0 ms |
+| 20,000, a board without sprints, every done ticket | 8,000 finished, 660 review | 385,024 | 4,105,700 | 120.7 ms |
 
-The tickets fill of the same copy takes 654,994 steps (11.5 ms) at 2,000
-and 6,544,594 (128 ms) at 20,000.
+The tickets fill of the same copy takes 654,994 steps (11.4 ms) at 2,000
+and 6,544,594 (125 ms) at 20,000.
 
 The Backlog's totals (`CountMirrorSections`, the pace's 5 closed sprints
 included), credit off and on:
 
 | Board | Off | On |
 |---|---|---|
-| 2,000, estimated | 207,027 steps, 4.8 ms | 320,129 steps, 7.0 ms |
-| 2,000, none estimated | 274,841 steps, 7.5 ms | 419,561 steps, 10.7 ms |
-| 20,000, estimated | 2,018,727 steps, 65.4 ms | 2,379,329 steps, 92.6 ms |
-| 20,000, none estimated | 2,696,741 steps, 92.4 ms | 3,107,861 steps, 106.0 ms |
-| 5 boards of 4,000, estimated | 408,332 steps, 11.4 ms | 548,935 steps, 16.1 ms |
+| 2,000, estimated | 207,027 steps, 4.1 ms | 321,833 steps, 6.3 ms |
+| 2,000, none estimated | 192,827 steps, 3.9 ms | 325,509 steps, 6.9 ms |
+| 20,000, estimated | 2,018,727 steps, 58.8 ms | 2,449,433 steps, 73.6 ms |
+| 20,000, none estimated | 1,876,727 steps, 58.0 ms | 2,827,509 steps, 102.5 ms |
+| 5 boards of 4,000, estimated | 408,332 steps, 9.9 ms | 558,239 steps, 14.1 ms |
+| 5 boards of 4,000, none estimated | 379,932 steps, 10.1 ms | 603,515 steps, 17.0 ms |
 
-The pace alone takes 129,290 steps (5.1 ms) off and 489,892 (20.3 ms)
-on at 20,000, estimated.
+With none estimated, most of the difference is the support rule telling
+each row of the sections, which a project counting no credit does not
+apply: 820,000 of the 950,000 steps at 20,000.
+
+The pace alone, credit off and on:
+
+| Board | Off | On |
+|---|---|---|
+| 2,000, estimated | 14,090 steps | 128,896 steps, 2.2 ms |
+| 2,000, none estimated | 13,890 steps | 64,558 steps, 1.2 ms |
+| 20,000, estimated | 129,290 steps, 5.8 ms | 559,996 steps, 21.7 ms |
+| 20,000, none estimated | 127,290 steps, 5.2 ms | 258,058 steps, 9.9 ms |
+| 5 boards of 4,000, estimated | 26,891 steps | 176,798 steps, 4.4 ms |
+| 5 boards of 4,000, none estimated | 26,491 steps | 86,060 steps, 3.0 ms |
+
+Of the pace with credit at 20,000, estimated (1,000 finished members in
+its 5 sprints), measured part by part: reading the members takes about
+127,500 steps, when each moved to done 98,000, its rule, owner and
+whether its evidence is read 119,000, its review and support rows
+142,000, and the sums over them the rest.
 
 The evidence listing's arm for a board without sprints walks the root's
 issues updated in the window. With every issue of the root changed in
-it, the upper bound, a listing with every source read takes 1,038,558
-steps (34.2 ms) at 20,000 and 699,360 (24.2 ms) for one board of five
-of 4,000; with none read it stops at its first page, 25,788 steps.
+it, the upper bound, a listing with every source read takes 1,070,560
+steps (33.7 ms) at 20,000 and 705,762 (22.2 ms) for one board of five
+of 4,000; with none read it stops at its first page, 27,800 steps.
+
+A board read that writes every card of a board again at a later update
+time, in pages of 100, with and without the trigger that moves the
+totals when a card passes its evidence receipt
+(`trg_tracker_cache_credit_card_moved`):
+
+| Board | Receipts | Without the trigger | With it |
+|---|---|---|---|
+| 20,000 | every card's, passed | 139,653,797 steps, 3.94 s | 141,513,796 steps, 3.97 s |
+| 20,000 | none | 99,554,197 steps, 3.31 s | 99,874,197 steps, 3.16 s |
+| 2,000 | every card's, passed | 3,165,377 steps, 158 ms | 3,351,376 steps, 212 ms |
+| 2,000 | none | 2,755,417 steps, 150 ms | 2,787,417 steps, 156 ms |
+
+The trigger costs 93 steps a card whose receipt it passes and 16 a card
+with none; the times differ by less than their spread.
 
 ## Planning poker add-on
 
