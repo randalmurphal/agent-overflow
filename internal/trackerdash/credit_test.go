@@ -23,15 +23,16 @@ func creditBoard(estimates string) *fixture {
 	f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", assignee: "u1", points: "5", created: ago(20)}).member("s6", "t1", true)
 	f.ticket(ticket{id: "t2", key: "WEB-2", status: "5", group: "done", assignee: "u2", points: "3", created: ago(20)}).member("s6", "t2", true)
 	f.ticket(ticket{id: "t3", key: "WEB-3", status: "1", group: "todo", created: ago(20)})
-	row := func(ticket, kind, person, value, share, did string, qualified, hours, note string) {
-		f.exec(`INSERT INTO credit(sprint, at, ticket, kind, person, value, share, points, review_share, review_need, did, qualified, hours, hours_per_point, note)
-			VALUES ('s6', %d, '%s', '%s', %s, %s, %s, NULL, 10, 2, %s, %s, %s, 4, %s)`, ago(2), ticket, kind, quote(person), value, share, quote(did), qualified, hours, quote(note))
+	row := func(ticket, kind, person, points, value, share, did string, qualified, hours, note string) {
+		f.exec(`INSERT INTO credit(sprint, at, ticket, kind, person, value, share, points, review_share, review_need, review_kinds, did, qualified, hours,
+			hours_per_point, note) VALUES ('s6', %d, '%s', '%s', %s, %s, %s, %s, 10, 2, 'commented, logged time', %s, %s, %s, 4, %s)`,
+			ago(2), ticket, kind, quote(person), value, share, points, quote(did), qualified, hours, quote(note))
 	}
-	row("t1", "finished", "u1", "5", "1", "", "NULL", "NULL", "")
-	row("t1", "review", "u2", "0.5", "0.1", "commented, logged time", "1", "NULL", "")
-	row("t2", "finished", "u2", "3", "1", "", "NULL", "NULL", "")
-	row("t2", "review", "", "NULL", "NULL", "", "NULL", "NULL", "who worked on it is not read yet")
-	row("t3", "support", "u2", "0.5", "0.5", "", "NULL", "2", "")
+	row("t1", "finished", "u1", "5", "5", "1", "", "NULL", "NULL", "")
+	row("t1", "review", "u2", "5", "0.5", "0.1", "commented, logged time", "1", "NULL", "")
+	row("t2", "finished", "u2", "3", "3", "1", "", "NULL", "NULL", "")
+	row("t2", "review", "", "3", "NULL", "NULL", "", "NULL", "NULL", "who worked on it is not read yet")
+	row("t3", "support", "u2", "NULL", "0.5", "0.5", "", "NULL", "2", "")
 	return f
 }
 
@@ -95,7 +96,7 @@ func TestThePacesDrillSaysHowCreditWasCounted(t *testing.T) {
 	want := []string{
 		"WEB-1 | Finished tickets | User 1 | 5 | true | ",
 		"WEB-2 | Finished tickets | User 2 | 3 | true | ",
-		"WEB-1 | Review credit | User 2 | 0.5 | true | 10% for commented, logged time",
+		"WEB-1 | Review credit | User 2 | 0.5 | true | 10% of 5 points for commented, logged time",
 		"WEB-3 | Support credit | User 2 | 0.5 | true | 2h ÷ 4 = 0.5",
 		"WEB-2 | Review credit |  | - | false | who worked on it is not read yet",
 	}
@@ -179,6 +180,60 @@ func TestTheWeeksPaceCountsCreditByWeek(t *testing.T) {
 	}
 	if words := strings.Join(list.Dashboards[0].Widgets[0].How.Words, " "); !strings.Contains(words, "A review counts in the week its ticket finished, whenever it was left") {
 		t.Fatalf("How this is counted: %s", words)
+	}
+}
+
+// A review row's note gives its arithmetic: the share of the ticket's
+// estimate in the board's estimates, or of a ticket on a board without
+// them, and what the reviewer did; one that did not qualify, the kinds
+// the rule counts and how many it needs. On a board without sprints a
+// review whose ticket's finish is not known keeps why it is not read.
+func TestACreditRowsNoteGivesItsArithmetic(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name, estimates string
+		sprints         bool
+		at, points      string
+		value, did      string
+		qualified, note string
+		want            string
+	}{
+		{"points", "points", true, "%d", "5", "0.5", "commented, logged time", "1", "NULL", "10% of 5 points for commented, logged time"},
+		{"time", "time", true, "%d", "7200", "720", "commented", "1", "NULL", "10% of 2h for commented"},
+		{"none", "none", true, "%d", "NULL", "0.1", "logged time", "1", "'approvals are not read yet'", "10% of a ticket for logged time · approvals are not read yet"},
+		{"not qualified", "points", true, "%d", "5", "0", "commented", "0", "NULL", "no credit: commented; needs 2 of commented, logged time"},
+		{"weeks, finish and evidence unknown", "points", false, "NULL", "5", "NULL", "", "NULL", "'who worked on it is not read yet'",
+			"when it finished is not known · who worked on it is not read yet"},
+	} {
+		f := newFixture(c.sprints, c.estimates).person("u1", "User 1").person("u2", "User 2").status("5", "Done", "done")
+		f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", assignee: "u1", created: ago(20), updated: ago(1)})
+		sprint, r := "NULL", Request{Dashboard: builtinWeeksID, Range: RangeWeeks2, TimeZone: "UTC"}
+		if c.sprints {
+			f.sprint("s1", "WEB Sprint 1", "closed", ago(10), ago(2), 1).member("s1", "t1", true)
+			sprint, r = "'s1'", utcSprints5
+		}
+		at := c.at
+		if at == "%d" {
+			at = fmt.Sprint(ago(3))
+		}
+		person := "'u2'"
+		if c.value == "NULL" {
+			person = "NULL"
+		}
+		f.exec(`INSERT INTO credit(sprint, at, ticket, kind, person, value, share, points, review_share, review_need, review_kinds, did, qualified, hours,
+			hours_per_point, note) VALUES (%s, %s, 't1', 'review', %s, %s, %s, %s, 10, 2, 'commented, logged time', %s, %s, NULL, NULL, %s)`,
+			sprint, at, person, c.value, c.value, c.points, quote(c.did), c.qualified, c.note)
+		d, err := evaluator().Drill(context.Background(), creditOn(f), DrillRequest{Request: r, Widget: "pace"})
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var notes []string
+		for _, row := range d.Rows {
+			notes = append(notes, row.Note)
+		}
+		if len(notes) != 1 || notes[0] != c.want {
+			t.Errorf("%s: notes %q; want %q", c.name, notes, c.want)
+		}
 	}
 }
 

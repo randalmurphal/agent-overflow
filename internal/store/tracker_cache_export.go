@@ -170,12 +170,12 @@ CREATE TABLE main.sprint_intervals(sprint TEXT NOT NULL, ticket TEXT NOT NULL, p
   PRIMARY KEY (sprint, ticket, from_at)) WITHOUT ROWID;
 -- credit: empty unless the project counts credit. kind finished: a finished ticket, for its assignee when it moved to done (at);
 -- review: each other person who acted on it (did: commented, approved, logged time), counted review_share percent of points when
--- that is review_need kinds of action the rule counts (qualified 1), else 0; support: time logged on a support ticket, hours,
+-- that is review_need of the kinds of action the rule counts (review_kinds, named as did names them; qualified 1), else 0; support: time logged on a support ticket, hours,
 -- counted a point a hours_per_point. sprint: the sprint it counts in (NULL on a board without sprints, where at places it; support's
 -- at is the worklog's start there). value: in board.estimates (seconds for time); share: the same in tickets (1 a finished ticket).
 -- value NULL: not counted, note says why; a ticket whose evidence is not read has one such review or support row and no person.
 CREATE TABLE main.credit(sprint TEXT, at INTEGER, ticket TEXT NOT NULL, kind TEXT NOT NULL, person TEXT, value REAL, share REAL, points REAL,
-  review_share INTEGER, review_need INTEGER, did TEXT, qualified INTEGER, hours REAL, hours_per_point INTEGER, note TEXT);
+  review_share INTEGER, review_need INTEGER, review_kinds TEXT, did TEXT, qualified INTEGER, hours REAL, hours_per_point INTEGER, note TEXT);
 `
 
 // mirrorExportSchemaName is the attached file's schema name.

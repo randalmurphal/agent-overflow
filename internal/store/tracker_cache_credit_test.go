@@ -138,6 +138,30 @@ func TestMirrorCreditCountsFinishedReviewAndSupport(t *testing.T) {
 	}
 }
 
+// Each review row names the kinds of action its rule counts, as did names
+// what the reviewer did, so a row that did not qualify can say what would
+// have: the unread row of its ticket too. No other row names any.
+func TestAReviewRowNamesTheKindsItsRuleCounts(t *testing.T) {
+	t.Parallel()
+	s, root := creditFixture(t)
+	for _, c := range []struct {
+		approved bool
+		want     []string
+	}{
+		{false, []string{"finished -", "review commented, logged time", "support -"}},
+		{true, []string{"finished -", "review commented, approved, logged time", "support -"}},
+	} {
+		conn := exportConn(t)
+		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", creditRegroup(t, creditRules(c.approved)), []string{"credit"}, 0,
+			time.Now().UnixMilli(), CardShapeForTest); err != nil || !ok {
+			t.Fatalf("export: %v, %v", ok, err)
+		}
+		if got := exportRows(t, conn, `SELECT DISTINCT kind || ' ' || coalesce(review_kinds, '-') FROM main.credit ORDER BY 1`); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("approvals counted %t: kinds %q; want %q", c.approved, got, c.want)
+		}
+	}
+}
+
 // With credit, the Backlog's pace adds each sprint's credit to what it
 // finished: the review and support credit in the board's estimate and in
 // tickets, and the tickets whose credit is not read; what it finished is
