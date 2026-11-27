@@ -33,7 +33,7 @@
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import { readFrontendValue, writeFrontendValue } from '../../stores/frontendStorage';
   import { addErrorToast } from '../../stores/toast.svelte';
-  import { askAgentAboutDashboards, createTrackerDashboard, rowRequest, type DashboardSource, type TrackerDashboard } from '../../stores/trackerDashboard.svelte';
+  import { askAgentAboutDashboards, createTrackerDashboard, pickDashboardNext, rowRequest, type DashboardSource, type TrackerDashboard } from '../../stores/trackerDashboard.svelte';
   import { limitSide, numValue, numWords, overLimit, type Num } from '../../stores/trackerDashboardModel';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { scopeGrant } from '../../transport/scopes';
@@ -47,11 +47,11 @@
     /** The widget the board is filtered to; '' for none. */
     filteredTo: string;
     onFilter: (tile: TicketSetTile | null) => void;
-    /** Opens the board's Dashboards screen on `dashboard`. */
-    onOpenDashboard: (dashboard: string) => void;
+    /** Switches the pane to the Dashboards screen. */
+    onOpenDashboards: () => void;
   }
 
-  let { source, shown, filteredTo, onFilter, onOpenDashboard }: Props = $props();
+  let { source, shown, filteredTo, onFilter, onOpenDashboards }: Props = $props();
 
   const OPEN_KEY = 'issues-board-row-open';
   const ROW_MAX = 5;
@@ -93,7 +93,8 @@
     if (filters(w.view) && builtin) {
       onFilter(filteredTo === w.view.id ? null : { widget: w.view.id, title: w.view.title, request: rowRequest(builtin, [w.view.id]) });
     } else {
-      onOpenDashboard(w.dashboard.id);
+      pickDashboardNext(source.board, w.dashboard.id);
+      onOpenDashboards();
     }
   }
   function pressTitle(v: WidgetView): string {

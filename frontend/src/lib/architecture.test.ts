@@ -437,6 +437,7 @@ const ISSUES_LAZY_MODULES = [
   'lib/stores/ticketWork.svelte.ts',
   'lib/stores/trackerDashboard.svelte.ts',
   'lib/stores/trackerDashboardModel.ts',
+  'lib/stores/boardTicketSet.svelte.ts',
   'lib/stores/trackerSetup.svelte.ts',
   'lib/utils/timeSpent.ts',
   'lib/utils/ticketBranch.ts',
@@ -1234,7 +1235,7 @@ describe('architecture', () => {
     ).toEqual([]);
   });
 
-  it('keeps the Dashboards screen out of the board\'s chunk: it loads on the first switch to Dashboards', () => {
+  it('keeps the Dashboards screen and the summary row out of the board\'s chunk: they load on first use', () => {
     const graph = staticGraph(join(SRC_ROOT, 'lib', 'components', 'issues', 'IssuesPane.svelte'));
     expect(graph.reached('lib/components/issues/BoardScreen.svelte'), 'the walk reaches the board').toBe(true);
     const dashboards = [
@@ -1242,10 +1243,12 @@ describe('architecture', () => {
       'lib/stores/trackerDashboard.svelte.ts',
       'lib/stores/trackerDashboardModel.ts',
       'lib/components/issues/charts/BarChart.svelte',
+      'lib/components/issues/BoardSummaryRow.svelte',
+      'lib/stores/boardTicketSet.svelte.ts',
     ];
     expect(
       dashboards.filter(graph.reached).map(graph.chain),
-      'The Dashboards screen is in the board\'s chunk. IssuesPane.svelte loads it with a dynamic import on the first switch to Dashboards.',
+      'The Dashboards screen, the summary row or its filter is in the board\'s chunk. IssuesPane.svelte loads the screen on the first switch to Dashboards, the row for the first board that pins a widget, and the filter with the first tile picked.',
     ).toEqual([]);
   });
 

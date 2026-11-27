@@ -118,8 +118,8 @@
     type IssuesScreen,
   } from '../../stores/issuesPane.svelte';
   import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
-  import { createBoardTicketSet } from '../../stores/boardTicketSet.svelte';
-  import { pickDashboardNext } from '../../stores/trackerDashboard.svelte';
+  import type { BoardTicketSet, TicketSetTile } from '../../stores/boardTicketSet.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import {
     isBoardChoiceOpenable,
     readTrackerBoardChoices,
@@ -271,23 +271,41 @@
     saveOnlyMine(on);
   }
   // The tickets a summary row tile filters the board to, on the Board and
-  // the Backlog; no filter until its first read lands.
-  const ticketSet = createBoardTicketSet({ source: () => dashboardSource, shown: () => selection.boardShown });
-  onDestroy(() => ticketSet.destroy());
-  const filter: CardFilter = $derived({ mine: onlyMine ? me : null, words: searchWords(query), only: ticketSet.tile ? ticketSet.ids : null });
+  // the Backlog; no filter until its first read lands. Its store loads with
+  // the first tile picked, from the row's chunk.
+  let ticketSet = $state.raw<BoardTicketSet | null>(null);
+  let ticketSetLoad: Promise<BoardTicketSet> | null = null;
+  let paneGone = false;
+  function pickTicketSet(tile: TicketSetTile | null): void {
+    if (ticketSet || !tile) {
+      ticketSet?.pick(tile);
+      return;
+    }
+    ticketSetLoad ??= import('../../stores/boardTicketSet.svelte').then((m) => {
+      const made = m.createBoardTicketSet({ source: () => dashboardSource, shown: () => selection.boardShown });
+      if (paneGone) made.destroy();
+      else ticketSet = made;
+      return made;
+    });
+    ticketSetLoad.then((made) => { if (!paneGone) made.pick(tile); }, (err: unknown) => {
+      ticketSetLoad = null;
+      addErrorToast(`Could not filter the board to ${tile.title}: ${err instanceof Error ? err.message : String(err)}`, err);
+    });
+  }
+  onDestroy(() => {
+    paneGone = true;
+    ticketSet?.destroy();
+  });
+  const filter: CardFilter = $derived({ mine: onlyMine ? me : null, words: searchWords(query), only: ticketSet?.tile ? ticketSet.ids : null });
   let ticketSetFailure: CapturedError | null = $state(null);
   let ticketSetFailureOf: unknown = null;
   $effect(() => {
-    const err = ticketSet.error;
+    const err = ticketSet?.error ?? null;
     if (err === ticketSetFailureOf) return;
     ticketSetFailureOf = err;
     ticketSetFailure = err ? captureError(err, { context: 'Could not read the tickets the board is filtered to' }) : null;
   });
-  function openDashboard(dashboard: string): void {
-    if (!board) return;
-    pickDashboardNext(board, dashboard);
-    selection.setScreen('dashboards');
-  }
+
   const matchCount = $derived.by(() => {
     if (!showsBoard(screen) || !held || !filtering(filter)) return 0;
     let n = 0;
@@ -401,17 +419,18 @@
 </script>
 
 {#snippet ticketSetChip()}
-  {#if ticketSet.tile}
+  {#if ticketSet?.tile}
+    {@const set = ticketSet}
     {@const tile = ticketSet.tile}
     <div class="flex items-center gap-2 px-3 pt-2 text-[0.75rem]" data-testid="issues-ticket-set">
       <span class="inline-flex h-7 min-w-0 items-center gap-2 rounded-[var(--radius-control)] border border-accent bg-accent/15 pl-2.5 pr-1 text-fg-muted compact:h-8">
         <Icon icon={Funnel} size={13} strokeWidth={2} class="shrink-0" />
-        {#if ticketSet.ids}
-          <span class="truncate" data-testid="issues-ticket-set-text">Showing only <b class="font-semibold text-fg">{tile.title}</b> · {ticketSet.ids.size === 1 ? '1 ticket' : `${ticketSet.ids.size} tickets`}</span>
+        {#if set.ids}
+          <span class="truncate" data-testid="issues-ticket-set-text">Showing only <b class="font-semibold text-fg">{tile.title}</b> · {set.ids.size === 1 ? '1 ticket' : `${set.ids.size} tickets`}</span>
         {:else}
           <span class="truncate" data-testid="issues-ticket-set-text">Finding the tickets of <b class="font-semibold text-fg">{tile.title}</b>…</span>
         {/if}
-        <IconButton label="Show every ticket" size="xs" variant="tint" testId="issues-ticket-set-clear" onClick={() => ticketSet.pick(null)}>
+        <IconButton label="Show every ticket" size="xs" variant="tint" testId="issues-ticket-set-clear" onClick={() => set.pick(null)}>
           {#snippet children()}<Icon icon={X} size={12} strokeWidth={2.25} />{/snippet}
         </IconButton>
       </span>
@@ -661,9 +680,9 @@
             <mod.default
               source={rowSource}
               shown={selection.boardShown}
-              filteredTo={ticketSet.tile?.widget ?? ''}
-              onFilter={(tile) => ticketSet.pick(tile)}
-              onOpenDashboard={openDashboard}
+              filteredTo={ticketSet?.tile?.widget ?? ''}
+              onFilter={pickTicketSet}
+              onOpenDashboards={() => selection.setScreen('dashboards')}
             />
           {:catch err}
             <p class="border-b border-border-subtle px-3 py-1.5 text-xs text-error" role="alert" data-testid="board-row-load-error">The board's summary row could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
