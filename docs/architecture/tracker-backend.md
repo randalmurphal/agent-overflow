@@ -2780,7 +2780,8 @@ The rules are the comments at the top of
   period still to come, or a range with no period, takes no row and is
   not marked. A weekend's day is a day like any other. A widget one of
   whose numbers needed the window lists its days not read
-  (`WidgetValue.Unread`).
+  (`WidgetValue.Unread`); a list whose rows reach a day the copy never
+  holds says so (`WidgetValue.Old`).
 - The evaluator makes no tracker request: an evaluation (or an agent's
   Try) in which a widget counted logged time calls `Board.Worklogs` once
   with the days it found not read and today, and puts the answer, whether

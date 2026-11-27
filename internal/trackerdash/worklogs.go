@@ -23,7 +23,8 @@ import (
 //     sprint's tickets, a state that holds from its day on); a period
 //     still to come, or a range with no period, takes no row and is not
 //     marked. A widget one of whose numbers needed the window lists its
-//     days not read (WidgetValue.Unread).
+//     days not read (WidgetValue.Unread); a list whose rows reach a day
+//     the copy never holds says so (WidgetValue.Old).
 //   - An evaluation in which a number needed the window tells the reads
 //     what it needs (Board.Worklogs) and answers their state
 //     (Answer.Logged); the reads are the caller's, so the evaluation does

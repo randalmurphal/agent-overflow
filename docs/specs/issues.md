@@ -705,8 +705,10 @@ the credit rules in How this is counted.
   compared: 3 days of the range before are not read." One that counts a
   period that began before those days, or what held before them, reads
   "Not known" for good and says it is older than the logged time kept,
-  with nothing to read; a comparison says "Not compared: the range
-  before is older than the logged time kept." A day still to come, and a
+  with nothing to read; a list of such a period shows its tickets and
+  says "Not known: it counts days older than the logged time kept.", and
+  a comparison says "Not compared: the range before is older than the
+  logged time kept." A day still to come, and a
   widget counted by sprint over a range with no sprint, read nothing. A
   pinned list of it reads "Not known" on its chip while its days are not
   all read, and filters the board by nothing then: the board shows every
