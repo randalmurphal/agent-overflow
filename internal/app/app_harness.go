@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"time"
 
@@ -432,6 +433,11 @@ func (h *harnessHost) ResetTrackerConnections() error {
 		if err := h.app.trackers.Remove(c.ID); err != nil && !errors.Is(err, trackerapp.ErrNotFound) {
 			errs = append(errs, fmt.Errorf("remove tracker connection %s: %w", c.ID, err))
 		}
+	}
+	// With no Jira connection the recorder is off and has written what it
+	// held; the activity it recorded goes too, so the next test reads none.
+	if _, _, err := h.app.store.PruneActivity(math.MaxInt64, "9999-12-31"); err != nil {
+		errs = append(errs, fmt.Errorf("clear the recorded activity: %w", err))
 	}
 	return errors.Join(errs...)
 }

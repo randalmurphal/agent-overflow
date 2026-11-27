@@ -1420,6 +1420,7 @@ import {
   ProjectTrackerBoards as ProjectTrackerBoardsRaw,
   TrackerDashboards as TrackerDashboardsRaw,
   SearchTicketWork as SearchTicketWorkRaw,
+  RecordActivity as RecordActivityRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import type { TrackerConnection as TrackerConnectionRow, TicketWork as TicketWorkAnswer, TrackerDashboardsView } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { BoardChoice as TrackerBoardChoiceRow } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
@@ -1644,6 +1645,13 @@ export function TrackerDashboards(subscriptionId: string): Promise<TrackerDashbo
  * whose Work read answers alone. */
 export function SearchTicketWork(connectionId: string, issueId: string): Promise<TicketWorkAnswer | null> {
   return orOlder(() => SearchTicketWorkRaw(connectionId, issueId), () => null);
+}
+
+/** Input on this screen now, on the thread its focused pane shows, to
+ * every attached computer (stores/activityRecorder.ts); a computer
+ * without the recorder takes nothing. */
+export function RecordActivity(focused: string, phone: boolean, sinceInputMs: number): Promise<void> {
+  return orOlder(() => RecordActivityRaw(focused, phone, sinceInputMs), () => undefined);
 }
 
 /** The boards a project lists; none on a computer without trackers. */

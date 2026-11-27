@@ -69,7 +69,7 @@ const BOOTSTRAP_PREFIX = '__AO_HARNESS__:';
 // routes' per-peer budget (internal/transport/ratelimit.go). A spec that
 // needs product timing passes an empty AO_HARNESS_TIMING in `env`; one that
 // needs a further interval passes `harnessTiming({...})`.
-export const HARNESS_TIMING = 'pairing-probe=500ms,thread-poll=250ms,transfer-retry=250ms,pr-update-retry=250ms,pr-ci-live=250ms,pr-ci-follow=250ms,pr-ci-log-wait=500ms,wake-floor=1s,watch-failure-window=3s,usage-probe-gap=250ms';
+export const HARNESS_TIMING = 'pairing-probe=500ms,thread-poll=250ms,transfer-retry=250ms,pr-update-retry=250ms,pr-ci-live=250ms,pr-ci-follow=250ms,pr-ci-log-wait=500ms,wake-floor=1s,watch-failure-window=3s,usage-probe-gap=250ms,activity-flush=1s';
 
 /**
  * The AO_HARNESS_TIMING launch environment with `overrides` over

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/activity"
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/dictation"
@@ -137,6 +138,10 @@ type IsolationConfig struct {
 	// write or time post waits for the person, so a spec sees a wait end
 	// without waiting out fifteen minutes. Zero keeps the product wait.
 	TrackerApprovalWait time.Duration
+	// ActivityFlush replaces activity.FlushEvery, how often the recorder
+	// writes, so a spec sees a span written without waiting out minutes.
+	// Zero keeps the product value.
+	ActivityFlush time.Duration
 	// OmitOwnerOps makes this computer answer agent_owner_op as a build
 	// before owner operations does, an unknown write call, so a paired
 	// spawner's archive or delete names it as running an older version.
@@ -195,6 +200,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.wakeRetryBaseOverride = config.ThreadWakeRetryBase
 	a.agentSettledWindowOverride = config.AgentSettledWindow
 	a.trackerMCP.approvals.wait = config.TrackerApprovalWait
+	a.activityTiming = activity.Config{FlushEvery: config.ActivityFlush}
 	// Unset keeps what the App has: a test fixture's own budget.
 	if config.ProviderEventDrainStall > 0 {
 		a.providerEvents.drainStall = config.ProviderEventDrainStall

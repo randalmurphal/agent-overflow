@@ -382,6 +382,7 @@ var connectionTieChecks = map[string]func(*testing.T) connectionTie{
 		})
 	},
 	"ThreadOwnerChanges": ownerChangesConnectionTie,
+	"RecordActivity":     activityConnectionTie,
 }
 
 // TestArmedResourcesFollowTheirConnection runs checkConnectionTie over

@@ -99,6 +99,36 @@ func (s *Service) LinkedTicket(threadID string) (_ LinkedTicket, ok bool, _ erro
 	return LinkedTicket{Connection: id, Site: siteName(link.Ticket.Site), Issue: link.Ticket.IssueID, Key: link.IssueKey}, true, nil
 }
 
+// JiraTicket is the Jira ticket a thread is linked to, as answers name
+// it: its site as a person names it and the key the link last saw.
+type JiraTicket struct {
+	Site string
+	Key  string
+}
+
+// ThreadJiraTickets are the Jira tickets the threads threadIDs names are
+// linked to, by thread, in one store read: a thread with no link, a
+// Linear link, or one this computer does not own has no entry. It reads
+// links only, so a link whose site has no connection on still names its
+// ticket.
+func (s *Service) ThreadJiraTickets(threadIDs []string) (map[string]JiraTicket, error) {
+	if err := s.enter(); err != nil {
+		return nil, err
+	}
+	defer s.leave()
+	links, err := s.store.ListThreadTickets(threadIDs)
+	if err != nil {
+		return nil, fmt.Errorf("trackerapp: the tickets of %d threads: %w", len(threadIDs), err)
+	}
+	out := make(map[string]JiraTicket, len(links))
+	for id, link := range links {
+		if link.Ticket.Kind == store.TrackerKindJira {
+			out[id] = JiraTicket{Site: siteName(link.Ticket.Site), Key: link.IssueKey}
+		}
+	}
+	return out, nil
+}
+
 // LinkThread links thread threadID to ticket, replacing the link it had,
 // with origin (store.TicketOrigin*). It reads through the connection of
 // this computer that store TicketConnection names, and links the card

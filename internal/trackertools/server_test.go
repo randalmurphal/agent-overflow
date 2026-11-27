@@ -73,8 +73,12 @@ type fakeTracker struct {
 	open map[string][]trackerapp.TimeEntryView
 	// openErr refuses a connection's read of its open entries.
 	openErr map[string]error
-	post    func(connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error)
-	posts   []string
+	// links are the Jira tickets threads are linked to.
+	links map[string]trackerapp.JiraTicket
+	// linksErr fails ThreadJiraTickets.
+	linksErr error
+	post     func(connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error)
+	posts    []string
 	// postCtx is each post's context error as the post began.
 	postCtx []error
 }
@@ -238,9 +242,16 @@ type fakeHost struct {
 	boards  []ListedBoard
 	// ended are the sessions the host no longer holds.
 	ended map[string]bool
+	// activity is what Activity answers, and activityErr its failure.
+	activity    ActivityDays
+	activityErr error
 	// time and timeErr answer TimeSettings.
 	time    trackerapp.TimeSettings
 	timeErr error
+}
+
+func (h *fakeHost) Activity(context.Context, string, string) (ActivityDays, error) {
+	return h.activity, h.activityErr
 }
 
 func (h *fakeHost) WritePolicy(string) (WritePolicy, error) {
@@ -289,6 +300,20 @@ func (h *fakeHost) Boards(string) (string, []ListedBoard, error) {
 func (h *fakeHost) Live(_, session string) bool { return !h.ended[session] }
 
 func (f *fakeTracker) TicketSources() ([]trackerapp.TicketSource, error) { return f.sources, nil }
+
+func (f *fakeTracker) ThreadJiraTickets(threadIDs []string) (map[string]trackerapp.JiraTicket, error) {
+	f.asked = append(f.asked, "thread tickets "+strings.Join(threadIDs, " "))
+	if f.linksErr != nil {
+		return nil, f.linksErr
+	}
+	out := map[string]trackerapp.JiraTicket{}
+	for _, id := range threadIDs {
+		if t, ok := f.links[id]; ok {
+			out[id] = t
+		}
+	}
+	return out, nil
+}
 
 func (f *fakeTracker) LinkedTicket(string) (trackerapp.LinkedTicket, bool, error) {
 	if f.linkErr != nil {
