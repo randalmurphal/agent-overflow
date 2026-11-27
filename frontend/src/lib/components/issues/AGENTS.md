@@ -205,8 +205,9 @@ board methods, events and the patch read in
   list gives them, the one answer the screen draws and the one evaluation
   in flight, the range and Team or
   Mine saved for the next screen, the person or epic narrowed to, the
-  one drill open, and the reads of the days of your logged time a shown
-  widget lists as not read. It counts again on the board's changes
+  one drill open, and its asks of the board's computer to read your
+  logged time while a widget of it shows (the computer owns which days,
+  `trackerapp/worklog_reads.go`). It counts again on the board's changes
   (`TrackerBoardState.changes`), at most once every 5 s, and every 10
   minutes; its rules are at the top of the store.
   `stores/trackerDashboardModel.ts` is the pure part: how a number reads
