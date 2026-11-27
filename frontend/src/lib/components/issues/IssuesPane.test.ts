@@ -29,6 +29,7 @@ import { registerIssuesCommands } from '../../stores/issuesCommands';
 import { clearCommandRegistry, runCommand, type CommandContext } from '../../stores/commandRegistry.svelte';
 import { hiddenCardFields, requestTicketOpen, requestTimeOpen, setTicketPlacement, takePaneOpenRequest } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
+import { refreshTrackerSetup } from '../../stores/trackerSetup.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { detachBackend } from '../../transport/backends';
@@ -3260,6 +3261,57 @@ describe("the ticket's attachments, links, poker, estimate and logged time", () 
       expect(await within(screen).findByTestId('ticket-poker-votes')).toBeInTheDocument();
       await fireEvent.click(fold);
       await waitFor(() => expect(follow).toHaveBeenLastCalledWith('ticket-1-1', false));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('offers no planning poker on a project that turned it off, asking nothing, and on again shows no votes from before', async () => {
+    project('p1', 'alpha', 1);
+    install();
+    installTicket();
+    const support = setBindingMock('TrackerPokerSupport', async () => ({ available: true }));
+    const voted = { loaded: true, revealed: true, votes: [{ voter: { id: 'u2', name: 'User 2' }, value: 5 }], read_at: 1 } as unknown as PokerView;
+    const answers: Array<(view: PokerView) => void> = [];
+    const follow = setBindingMock('FollowTrackerPoker', (_id: string, on: boolean) => (on ? new Promise<PokerView>((resolve) => { answers.push(resolve); }) : Promise.resolve(voted)));
+    const setup = (poker?: boolean) => ({ revision: `r${String(poker)}`, setup: { status_groups: [], ticket_pins: [], start_work: [], ...(poker === false ? { estimates: { poker: false } } : {}) } });
+    setBindingMock('ProjectTrackerSetup', async () => setup(false));
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(private report: (entries: Array<{ isIntersecting: boolean }>) => void) {}
+      observe(): void {
+        this.report([{ isIntersecting: true }]);
+      }
+      disconnect(): void {}
+    });
+    try {
+      const view = mount();
+      const screen = await openCard(view, '1');
+      await within(screen).findByTestId('ticket-activity');
+      await tick();
+      expect(within(screen).queryByTestId('ticket-poker-section')).toBeNull();
+      expect(support).not.toHaveBeenCalled();
+
+      // On: the section shows, and its votes follow.
+      setBindingMock('ProjectTrackerSetup', async () => setup());
+      await refreshTrackerSetup('p1');
+      await fireEvent.click(await within(screen).findByTestId('ticket-poker-fold'));
+      await waitFor(() => expect(answers).toHaveLength(1));
+      answers[0]!(voted);
+      expect(await within(screen).findByTestId('ticket-poker-vote')).toBeInTheDocument();
+
+      // Off: the section goes and the votes stop being followed.
+      setBindingMock('ProjectTrackerSetup', async () => setup(false));
+      await refreshTrackerSetup('p1');
+      await waitFor(() => expect(within(screen).queryByTestId('ticket-poker-section')).toBeNull());
+      await waitFor(() => expect(follow).toHaveBeenLastCalledWith('ticket-1-1', false));
+
+      // On again: the section is open as it was left, and shows no vote
+      // until the follow answers.
+      setBindingMock('ProjectTrackerSetup', async () => setup());
+      await refreshTrackerSetup('p1');
+      await waitFor(() => expect(answers).toHaveLength(2));
+      expect(await within(screen).findByTestId('ticket-poker')).toBeInTheDocument();
+      expect(within(screen).queryByTestId('ticket-poker-vote')).toBeNull();
     } finally {
       vi.unstubAllGlobals();
     }
