@@ -51,7 +51,9 @@
   // The groups by the series and heading their rows carry; headings show
   // once the rows are in more than one group.
   const groupKey = (series: string | undefined, heading: string | undefined) => `${series ?? ''}\u0000${heading ?? ''}`;
-  const groups = $derived(new Map((answer?.groups ?? []).map((g): [string, DrillGroup] => [groupKey(g.series, g.heading), g])));
+  const groups = $derived(
+    new Map((answer?.groups ?? []).map((g: DrillGroup) => [groupKey(g.series, g.heading), { rows: g.rows, words: numWords(g.value as Num, unit, answer?.estimates ?? '') }])),
+  );
   const grouped = $derived(groups.size > 1);
   const groupOf = (row: TicketRow) => groupKey(row.series, row.heading);
 
@@ -87,7 +89,7 @@
       <TicketListActions rows={answer.rows} source={tickets} variant="drill" listTestId="dashboard-drill-rows" rowTestId="dashboard-drill-row" {onTicket} onThread={onClose} groupOf={grouped ? groupOf : undefined}>
         {#snippet group(r)}
           {@const g = groups.get(groupOf(r))}
-          {@const words = g ? numWords(g.value as Num, unit, answer.estimates) : null}
+          {@const words = g?.words}
           <div class="flex flex-wrap items-baseline gap-x-2 text-[0.6875rem] text-fg-muted" data-testid="dashboard-drill-group">
             <span class="font-medium text-fg" data-testid="dashboard-drill-group-name">{[r.series, r.heading].filter(Boolean).join(' · ') || 'Other'}</span>
             {#if g}<span data-testid="dashboard-drill-group-rows">{g.rows === 1 ? '1 row' : `${g.rows} rows`}</span>{/if}
