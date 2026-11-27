@@ -187,8 +187,10 @@ async function pickRange(page: Page, screen: Locator, id: string, compact: boole
 /**
  * Sprint 1's burndown on the seeded board. At its start WEB-20 (3
  * points), WEB-21 (2) and WEB-22 (5) were open, and WEB-1 and WEB-2 count
- * no estimate: 10 points, the even pace's start. Today WEB-21 is done: 8
- * points so far. Start opens the tickets it counted.
+ * no estimate: 10 points, the even pace's start. Today WEB-21 is done: on a
+ * working day, 8 points so far; on a Saturday or Sunday, which is no
+ * sprint day, no point is so far and the last working day's still counts
+ * 10. Start opens the tickets it counted.
  */
 async function expectBurndown(page: Page, screen: Locator, compact: boolean): Promise<void> {
   const burndown = widget(screen, 'burndown');
@@ -199,7 +201,13 @@ async function expectBurndown(page: Page, screen: Locator, compact: boolean): Pr
   else await start.hover();
   await expect(burndown.getByTestId('dashboard-hover')).toContainText('Start, 10 points left');
   await expect(burndown.getByTestId('dashboard-hover-pace')).toHaveText('On pace would be 10 points');
-  await expect(burndown.locator('[data-testid="dashboard-point"][aria-label$="(so far)"]')).toHaveAttribute('aria-label', /, 8 points left \(so far\)$/);
+  const today = burndown.locator('[data-testid="dashboard-point"][aria-label$="(so far)"]');
+  if (await page.evaluate(() => [0, 6].includes(new Date().getDay()))) {
+    await expect(today).toHaveCount(0);
+    await expect(burndown.locator('[data-testid="dashboard-point"][aria-label$=" left"]').last()).toHaveAttribute('aria-label', /, 10 points left$/);
+  } else {
+    await expect(today).toHaveAttribute('aria-label', /, 8 points left \(so far\)$/);
+  }
   await press(burndown.getByTestId('dashboard-how-toggle'), compact);
   await expect(burndown.getByTestId('dashboard-how')).toContainText('It counts Sprint 1 at its start and at the end of each working day');
   await press(burndown.getByTestId('dashboard-how-toggle'), compact);

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/store"
 )
@@ -233,5 +234,27 @@ func TestOnlyTheBurndownDrawsAPaceAndOnlyTheSprintTableHasNoTotal(t *testing.T) 
 	tried, err := evaluator().Try(context.Background(), burnBoard("points").board(), Widget{Form: FormLine, Width: 6}, m, "UTC")
 	if err != nil || tried.View.Pace || tried.View.Overlap {
 		t.Fatalf("an agent's day line: %+v, %v", tried.View, err)
+	}
+}
+
+// On a Saturday the sprint has no day so far: Friday is the last day
+// counted, and Monday the next one to come.
+func TestASaturdayIsNoSprintDay(t *testing.T) {
+	t.Parallel()
+	saturday := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	ps, _, note := sprintDays([]sprintRow{{id: "b1", name: "WEB Sprint 9", state: "active", startAt: utc(11, 23, 9), endAt: utc(12, 4, 17)}}, saturday, time.UTC)
+	var got []string
+	for _, p := range ps {
+		l := p.label
+		switch {
+		case p.partial:
+			l += " so far"
+		case p.future:
+			l += " to come"
+		}
+		got = append(got, l)
+	}
+	if want := "Start Nov 23 Nov 24 Nov 25 Nov 26 Nov 27 Nov 30 to come Dec 1 to come Dec 2 to come Dec 3 to come Dec 4 to come"; note != "" || strings.Join(got, " ") != want {
+		t.Fatalf("days on a Saturday = %q, %q; want %q", strings.Join(got, " "), note, want)
 	}
 }
