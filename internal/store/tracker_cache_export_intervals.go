@@ -25,9 +25,10 @@ import (
 //     before the latest status change. Where the history and the card
 //     disagree (a history read behind the card), the stretch after the
 //     latest change has no interval: it is not known. A ticket whose
-//     status now began at or before the earliest instant has its interval
-//     now alone, which covers every instant a count can ask; its history
-//     is not read.
+//     status now began at or before the earliest instant, or that was
+//     last updated then (mirrorExportUpdatedSince), has its interval now
+//     alone, which covers every instant a count can ask; its history is
+//     not read.
 //   - A sprint interval is a stretch a ticket spent in one of the board's
 //     sprints with one estimate of the board: the sprint sets the history
 //     holds (the first change's from-set from the history's start, each
@@ -138,6 +139,18 @@ func (src mirrorExportChangeSource) latest(on, kind, column string) string {
 	return `(SELECT x.` + column + ` FROM ` + src.ofKind(on, "x", kind) + ` ORDER BY x.seq DESC LIMIT 1)`
 }
 
+// mirrorExportUpdatedSince is the condition that issue alias of the root
+// was updated after the earliest instant: by its update time
+// (idx_tracker_cache_issues_updated). The intervals read the history of
+// no other issue. A history is read for the card's update time
+// (mirrorHistoryDue), so the changes it holds are at or before that
+// time, but for one made between the card's read and its history's,
+// which the card's next read moves the update time past; until then the
+// export follows the card's version, as the board does.
+func mirrorExportUpdatedSince(alias string) string {
+	return alias + `.root_id = CAST(?1 AS INTEGER) AND ` + alias + `.updated_at > ` + mirrorExportIntervalsFrom()
+}
+
 // mirrorExportBoardIssues reads the board's issues as b and i, by key.
 const mirrorExportBoardIssues = `tracker_cache_board_issues b
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id`
@@ -161,8 +174,9 @@ func (src mirrorExportChangeSource) statusIntervalsSQL() string {
 	from := mirrorExportIntervalsFrom()
 	return `WITH ri AS MATERIALIZED (
 	    SELECT i.root_id, i.issue_id, i.history_gen, ` + mirrorExportHistoryStart + ` AS start
-	    FROM ` + mirrorExportBoardIssues + `
-	    WHERE ` + mirrorExportOnBoard + ` AND NOT (i.status_since > 0 AND i.status_since <= ` + from + `))
+	    FROM tracker_cache_issues i
+	    CROSS JOIN tracker_cache_board_issues b ON b.root_id = i.root_id AND b.issue_id = i.issue_id AND b.board_id = ?2
+	    WHERE ` + mirrorExportUpdatedSince("i") + ` AND NOT (i.status_since > 0 AND i.status_since <= ` + from + `))
 	  INSERT INTO main.status_intervals(ticket, status, from_at, to_at)
 	  SELECT ri.issue_id, c.t, c.at, n.at
 	  FROM ri CROSS JOIN ` + src.changes("ri", MirrorChangeStatus, false) + ` CROSS JOIN ` + src.next("ri", MirrorChangeStatus) + `
@@ -198,7 +212,7 @@ func (src mirrorExportChangeSource) sprintIntervalsSQL() string {
 	    SELECT m.issue_id, 1 AS member FROM main.sprints sp
 	    CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = CAST(?1 AS INTEGER) AND m.sprint_id = sp.id
 	    UNION
-	    SELECT u.issue_id, 0 FROM tracker_cache_issues u WHERE u.root_id = CAST(?1 AS INTEGER) AND u.updated_at > ` + from + `),
+	    SELECT u.issue_id, 0 FROM tracker_cache_issues u WHERE ` + mirrorExportUpdatedSince("u") + `),
 	  ri AS MATERIALIZED (
 	    SELECT i.root_id, i.issue_id, i.history_gen, ` + mirrorExportHistoryStart + ` AS start,
 	      iif(CAST(?5 AS INTEGER) = 1, ` + mirrorRowEstimate("CAST(?4 AS INTEGER)") + `, NULL) AS estimate
