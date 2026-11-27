@@ -104,6 +104,11 @@ func (p *Provider) IssueTypes(context.Context, tracker.ProjectID) ([]tracker.Iss
 	return nil, nil
 }
 
+// ProjectIssueTypes is none: Linear issues have no type.
+func (p *Provider) ProjectIssueTypes(context.Context, tracker.ProjectID) ([]tracker.IssueType, error) {
+	return nil, nil
+}
+
 // Boards is the team's one board, whose ID is the team's; none for a
 // team the key cannot see.
 func (p *Provider) Boards(ctx context.Context, project tracker.ProjectID) ([]tracker.Board, error) {
