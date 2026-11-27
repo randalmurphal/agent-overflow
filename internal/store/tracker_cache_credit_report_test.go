@@ -14,9 +14,11 @@ type creditReadColumn struct{ table, column string }
 
 // creditReadColumns is every column of a table keyed by issue that the
 // credit fragment reads, as its SQL names them: each table it reads under
-// an alias, and each alias.column of a table with an issue_id column. It
-// reads the statement, so a column credit starts reading is listed here
-// with no edit.
+// an alias, and each alias.column of a table with an issue_id column,
+// but for its key columns, which change only as rows come and go (the
+// test's check of each write's credit rows covers those). It reads the
+// statement, so a column credit starts reading is listed here with no
+// edit.
 func creditReadColumns(t *testing.T, s *Store) []creditReadColumn {
 	t.Helper()
 	with, rows := mirrorCreditSQL(mirrorExportCreditParams, "", func(string) string { return "1" }, true)
@@ -36,12 +38,16 @@ func creditReadColumns(t *testing.T, s *Store) []creditReadColumn {
 		if err != nil || len(cols) == 0 {
 			t.Fatalf("columns of %s: %v, %v", table, cols, err)
 		}
+		keys, err := queryIDs(s.db, `SELECT name FROM pragma_table_info(?) WHERE pk > 0`, table)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !cols["issue_id"] {
 			continue
 		}
 		for _, m := range regexp.MustCompile(`\b`+regexp.QuoteMeta(alias)+`\.([a-z_][a-z0-9_]*)\b`).FindAllStringSubmatch(text, -1) {
 			c := creditReadColumn{table, m[1]}
-			if m[1] == "root_id" || m[1] == "issue_id" || !cols[m[1]] || seen[c] {
+			if !cols[m[1]] || slices.Contains(keys, m[1]) || seen[c] {
 				continue
 			}
 			seen[c] = true
@@ -81,19 +87,23 @@ func issueColumnValues(t *testing.T, s *Store, root int64, issue string, cols []
 // Every write that changes what credit counts of a ticket names the
 // ticket in its report, which the sync passes to the boards holding it:
 // for each column of the ticket's rows that credit reads, a write here
-// changes it, and each write that changed the ticket's credit rows
-// reported the ticket. A column credit starts reading fails until a
-// write that changes it is added, and then until its writer reports it.
+// changes it on a row the ticket held already, and each write that
+// changed the ticket's credit rows reported the ticket. A column credit
+// starts reading fails until a write that changes it is added, and then
+// until its writer reports it.
 func TestEveryWriteThatChangesATicketsCreditReportsIt(t *testing.T) {
 	t.Parallel()
 	s, root := creditFixture(t)
 	regroup := creditRegroup(t, creditRules(false))
 	cols := creditReadColumns(t, s)
-	card := func(updated int64) func() bool {
+	card := func(updated int64, edit ...func(*MirrorRow)) func() bool {
 		return func() bool {
 			r := sectionRow("10007", "10007", "10001", 3, "20")
 			r.Card.UpdatedAt, r.Card.ResolvedAt, r.Card.AssigneeID = updated, 400, "acc-user2"
 			r.Card.Data = []byte(fmt.Sprintf(`{"summary":"edited %d"}`, updated))
+			for _, e := range edit {
+				e(&r)
+			}
 			ch := mustWriteRowPage(t, s, root, webPage("10", r), nil)
 			return slices.Contains(ch.Cards, "10007") || slices.Contains(ch.Rows, "10007")
 		}
@@ -139,6 +149,28 @@ func TestEveryWriteThatChangesATicketsCreditReportsIt(t *testing.T) {
 		}
 		return w.Tickets[0].CardChanged || w.Tickets[0].StatusChanged
 	}
+	// reset is a read of the board whose estimate field changed, which
+	// tells the board to read again (a structure change): its rows'
+	// estimates count again as each is read after it.
+	reset := func() bool {
+		st := webStructure()
+		st.Board.EstimateField, st.ReadAt, st.Complete = "customfield_2", mirrorReadAt(46), true
+		w, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w.Changed
+	}
+	// reread is the ticket's row read again, as it was, after the reset.
+	reread := func() bool {
+		r := sectionRow("10007", "10007", "1", 5, "21")
+		r.Card.UpdatedAt, r.Card.AssigneeID, r.Card.TypeID, r.Card.Labels = 1100, "acc-user3", "10004", []string{"support"}
+		r.Card.Data = []byte(`{"summary":"edited 1100"}`)
+		page := webPage("10", r)
+		page.ReadAt = mirrorReadAt(47)
+		ch := mustWriteRowPage(t, s, root, page, nil)
+		return slices.Contains(ch.Cards, "10007") || slices.Contains(ch.Rows, "10007")
+	}
 	long := longHistory("10007", clearMirrorChunk+1, 1)
 	changed := map[creditReadColumn]bool{}
 	for _, step := range []struct {
@@ -159,6 +191,12 @@ func TestEveryWriteThatChangesATicketsCreditReportsIt(t *testing.T) {
 		{"its evidence is read for the edit", acts(43, nil, comments(1000), worklogs(1000, 0))},
 		{"its history is known only from after its finish", history(44, MirrorHistory{Changes: changes[1:], CompleteFrom: 500})},
 		{"its history is read again, long", history(45, long)},
+		{"everything credit reads of its card changes", card(1100, func(r *MirrorRow) {
+			r.Card.StatusID, r.Card.AssigneeID, r.Card.ResolvedAt, r.Card.TypeID, r.Card.Labels = "1", "acc-user3", 0, "10004", []string{"support"}
+			r.Card.Sprints, r.Estimate = []string{"21"}, new(5.0)
+		})},
+		{"the board's estimate field changes", reset},
+		{"its row is read again after it", reread},
 	} {
 		beforeCols := issueColumnValues(t, s, root, "10007", cols)
 		beforeRows, _ := creditOf(t, s, root, regroup)
@@ -166,7 +204,7 @@ func TestEveryWriteThatChangesATicketsCreditReportsIt(t *testing.T) {
 		afterCols := issueColumnValues(t, s, root, "10007", cols)
 		afterRows, _ := creditOf(t, s, root, regroup)
 		for _, c := range cols {
-			if beforeCols[c] != afterCols[c] {
+			if beforeCols[c] != "" && beforeCols[c] != afterCols[c] {
 				changed[c] = true
 			}
 		}
