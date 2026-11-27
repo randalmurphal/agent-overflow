@@ -416,11 +416,12 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     return ids;
   }
 
-  // The source whose logged time the page reads now: one while the store
-  // lives, the screen shows and the dashboard shown has a widget that
-  // counts it; null otherwise.
+  // The source whose logged time the page reads now: one while the
+  // screen shows and the dashboard shown has a widget that counts it; null
+  // otherwise. A destroyed store reads nothing: each read checks it when
+  // its call answers.
   function loggedDemand(): DashboardSource | null {
-    if (destroyed || !opts.shown()) return null;
+    if (!opts.shown()) return null;
     const s = opts.source();
     return s && loggedWidgets().size > 0 ? s : null;
   }
