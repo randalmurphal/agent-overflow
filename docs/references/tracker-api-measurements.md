@@ -919,9 +919,11 @@ steps a ticket. Each column read costs 9 steps a ticket,
 which is why the fill does not decode them for every count. The times
 of these runs spread more than the columns cost.
 
-A join SQLite drops from the plan copies nothing: `SELECT DISTINCT
+A join SQLite drops from the program copies nothing: `SELECT DISTINCT
 t.id AS ticket FROM tickets t LEFT JOIN changes c ON c.ticket = t.id`
-copies what a query of tickets alone does. Copying the history it does
+copies what a query of tickets alone does. A read the program holds and
+never runs is still copied: the same join of changes grouped by ticket
+first keeps its materialization, and copies the history. Copying the history it does
 not read would add 24,160,468 VM steps at 20,000 issues (the changes,
 the statuses and the people they name; 202, 64 and 110 ms in one run),
 and labels 1,340,026. Reading a metric's plan costs 48 to 91 µs for

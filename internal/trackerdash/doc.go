@@ -34,7 +34,10 @@
 //     relations and the columns filled only when asked
 //     (store.MirrorExportColumns) it reads, the columns of a USING or
 //     NATURAL join included, and nothing a join SQLite drops, a shadowing
-//     CTE or an unread * names. Every count reads tickets, which the
+//     CTE or an unread * names. The reading is exact for the program
+//     SQLite emits, and that program can hold reads it never runs (a
+//     grouped join whose only use SQLite removed, a CASE WHEN 0 branch),
+//     which the count asks for too. Every count reads tickets, which the
 //     wrapper looks each row's ticket up in. A program the reader cannot
 //     attribute refuses the widget.
 //   - A metric's SQL is one statement (oneStatement): it cannot close the

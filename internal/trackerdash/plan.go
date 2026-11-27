@@ -18,7 +18,11 @@ import (
 // no statistics), so it is the plan the count runs on the filled copy:
 // a join SQLite drops is not read, the columns of a USING or NATURAL
 // join's condition are, and a CTE that shadows a relation's name reads
-// what the CTE reads. That one result is what the copy is filled with and
+// what the CTE reads. The reading is exact for the program SQLite emits,
+// and that program can hold reads it never runs: a grouped join whose
+// only use SQLite removed keeps its materialization, and a CASE WHEN 0
+// branch its code. Those are asked for as well; nothing works out which
+// instructions run. That one result is what the copy is filled with and
 // what How this is counted names; the wrapper's own lookup of each row's
 // ticket makes every count read tickets.
 //
@@ -56,7 +60,6 @@ type layout struct {
 func (s *session) readLayout(ctx context.Context) error {
 	l := &layout{roots: map[int64]string{}, columns: map[string][]string{}}
 	trees := map[string][]int64{}
-	keyed := map[string]string{} // a WITHOUT ROWID relation's key index
 	err := s.query(ctx, `SELECT type, name, tbl_name, rootpage FROM main.sqlite_schema WHERE rootpage > 0`, func(scan func(...any) error) error {
 		var typ, name, table string
 		var root int64
@@ -65,9 +68,6 @@ func (s *session) readLayout(ctx context.Context) error {
 		}
 		if !exportTables[table] {
 			return fmt.Errorf("the copy's schema holds %s %s, which is none of the export's relations", typ, name)
-		}
-		if typ == "index" {
-			keyed[table] = name
 		}
 		if !slices.Contains(trees[table], root) {
 			trees[table] = append(trees[table], root)
@@ -82,9 +82,16 @@ func (s *session) readLayout(ctx context.Context) error {
 		if len(trees[table]) != 1 {
 			return fmt.Errorf("relation %s is stored in %d b-trees; a count reads its columns from one", table, len(trees[table]))
 		}
-		q, arg := `SELECT name, 0 FROM pragma_table_info(?) ORDER BY cid`, table
-		if index, ok := keyed[table]; ok {
-			q, arg = `SELECT name, key FROM pragma_index_xinfo(?) ORDER BY seqno`, index
+		// A WITHOUT ROWID relation is stored as its key, whose columns come
+		// first in its rows (its key index's xinfo, which the catalog lists
+		// no row of); a rowid one in declaration order, its key a b-tree of
+		// its own, which the count of b-trees refuses.
+		q := `SELECT x.name, x.key FROM pragma_index_list(?1) i JOIN pragma_index_xinfo(i.name) x
+		  WHERE i.origin = 'pk' ORDER BY x.seqno`
+		if wr, err := s.withoutRowid(ctx, table); err != nil {
+			return fmt.Errorf("read the layout of %s: %w", table, err)
+		} else if !wr {
+			q = `SELECT name, 0 FROM pragma_table_info(?1) ORDER BY cid`
 		}
 		err := s.query(ctx, q, func(scan func(...any) error) error {
 			var name string
@@ -97,13 +104,20 @@ func (s *session) readLayout(ctx context.Context) error {
 			}
 			l.columns[table] = append(l.columns[table], name)
 			return nil
-		}, arg)
+		}, table)
 		if err != nil {
 			return fmt.Errorf("read the layout of %s: %w", table, err)
 		}
 	}
 	s.layout = l
 	return nil
+}
+
+// withoutRowid is whether relation table of main is WITHOUT ROWID.
+func (s *session) withoutRowid(ctx context.Context, table string) (bool, error) {
+	var wr bool
+	err := s.conn.QueryRowContext(ctx, `SELECT wr FROM pragma_table_list(?) WHERE schema = 'main'`, table).Scan(&wr)
+	return wr, err
 }
 
 // query runs q with args on s's connection and calls row for each row.

@@ -79,6 +79,11 @@ func TestADashboardCountCopiesWhatItsQueryReads(t *testing.T) {
 		{"an index hint", `SELECT ticket FROM sprint_tickets INDEXED BY sqlite_autoindex_sprint_tickets_1 WHERE sprint = '21'`, "", []string{"sprint_tickets", "tickets"}, nil, 2},
 		{"an index hint on tickets", `SELECT id AS ticket FROM tickets INDEXED BY sqlite_autoindex_tickets_1`, "", []string{"tickets"}, nil, 3},
 		{"a bare rowid, the board's", `SELECT t.id AS ticket FROM board, tickets t WHERE rowid > 0`, "", []string{"board", "tickets"}, nil, 3},
+		// The known limit: the program SQLite emits can hold reads it never
+		// runs. A grouped join whose only use SQLite removed keeps its
+		// materialization in the program, so the count asks for changes.
+		{"known limit: a grouped join SQLite never runs", `WITH enriched AS (SELECT t.id, c.newest FROM tickets t LEFT JOIN (SELECT ticket, max(at) AS newest FROM changes GROUP BY ticket) c ON c.ticket = t.id) SELECT DISTINCT id AS ticket FROM enriched`, "", []string{"changes", "tickets"}, nil, 3},
+		{"the same grouped join, read", `WITH enriched AS (SELECT t.id, c.newest FROM tickets t LEFT JOIN (SELECT ticket, max(at) AS newest FROM changes GROUP BY ticket) c ON c.ticket = t.id) SELECT DISTINCT id AS ticket FROM enriched WHERE newest IS NOT NULL`, "", []string{"changes", "tickets"}, nil, 1},
 		{"people beside a CTE named c", `WITH c AS (SELECT id AS ticket FROM tickets WHERE open = 1) SELECT ticket FROM c WHERE (SELECT count(*) FROM people) = 1`, "", []string{"people", "tickets"}, nil, 2},
 	}
 	try := func(t *testing.T, m trackerdash.Metric, fill func([]string) []string) (trackerdash.Tried, []string) {

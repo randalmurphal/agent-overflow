@@ -2351,7 +2351,11 @@ it a `Column` reads. The copy has no statistics, so the plan is the one
 the count runs on the filled copy: a join SQLite drops reads nothing,
 a USING or NATURAL join's condition reads its columns, a CTE that
 shadows a relation's name reads what the CTE reads, and a `*` SQLite
-never reads asks for nothing. That one result is what the count copies
+never reads asks for nothing. The reading is exact for the program
+SQLite emits, and that program can hold reads it never runs: a grouped
+join whose only use SQLite removed keeps its materialization, and a
+`CASE WHEN 0` branch its code, so the count asks for those relations
+too. That one result is what the count copies
 and what "How this is counted" names (`How.Reads`); every count lists
 tickets, which the wrapper looks each row's ticket up in. A column of
 `MirrorExportColumns` is decoded only when the plan reads it. Every
