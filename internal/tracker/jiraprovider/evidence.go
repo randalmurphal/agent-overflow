@@ -158,21 +158,21 @@ func (e *evidence) failAll(issue string, err error) {
 }
 
 // add records acts, those from bound, as source of issue read whole for
-// its update updated: those of a person's account (an atlassian one),
-// each author named once. An act whose author Jira named with no account
-// type fails the source instead, since whether a person made it is not
-// known.
+// its update updated: those of a person's account (person), each author
+// named once. An act whose author is not known to be a person or not
+// fails the source instead.
 func (e *evidence) add(issue string, source tracker.EvidenceSource, updated time.Time, acts []jira.Act, bound time.Time) {
 	kept := make([]tracker.Act, 0, len(acts))
 	for _, a := range acts {
-		switch {
-		case a.At.Before(bound) || a.Author == nil:
+		if a.At.Before(bound) || a.Author == nil {
 			continue
-		case a.Author.AccountType == "":
-			e.fail(issue, source, fmt.Errorf("issue %s: Jira named no account type for %s, the author of %s %s, so whether a person made it is not known",
-				issue, a.Author.AccountID, sourceNoun(source), a.ID))
+		}
+		counts, err := person(issue, source, a.ID, a.Author)
+		if err != nil {
+			e.fail(issue, source, err)
 			return
-		case a.Author.AccountType != "atlassian":
+		}
+		if !counts {
 			continue
 		}
 		if !e.named[a.Author.AccountID] {
@@ -182,6 +182,18 @@ func (e *evidence) add(issue string, source tracker.EvidenceSource, updated time
 		kept = append(kept, tracker.Act{ID: a.ID, Author: tracker.UserID(a.Author.AccountID), At: a.At, Spent: a.Spent})
 	}
 	e.out.Read = append(e.out.Read, tracker.SourceEvidence{Issue: tracker.IssueID(issue), Source: source, Updated: updated, Acts: kept})
+}
+
+// person is whether an act's author is a person, whose acts count: an
+// atlassian account is, an app's or a customer's is not. An author Jira
+// named with no account type is an error, since whether a person made
+// act of source on issue is not known.
+func person(issue string, source tracker.EvidenceSource, act string, author *jira.User) (bool, error) {
+	if author.AccountType == "" {
+		return false, fmt.Errorf("issue %s: Jira named no account type for %s, the author of %s %s, so whether a person made it is not known",
+			issue, author.AccountID, sourceNoun(source), act)
+	}
+	return author.AccountType == "atlassian", nil
 }
 
 // sourceNoun names one act of source.
@@ -198,9 +210,10 @@ func sourceNoun(source tracker.EvidenceSource) string {
 // before its bound is dropped before its author is looked up. Each
 // author is looked up once a call, through the client's user cache: one
 // Jira withholds fails the worklogs of each issue it logged on, naming
-// the permission a lookup needs. A worklog Tempo gave no UTC start is
-// placed on its author's clock, and fails its issue's worklogs when Jira
-// shows no time zone for the author.
+// the permission a lookup needs. A worklog whose author is not a person
+// (person) is left out before it is placed, and one Tempo gave no UTC
+// start is placed on its author's clock, and fails its issue's worklogs
+// when Jira shows no time zone for the author.
 func (p *Provider) tempoWorklogs(ctx context.Context, tc *tempo.Client, e *evidence, read []jira.IssueActs) error {
 	byBound := map[time.Time][]int64{}
 	var bounds []time.Time
@@ -242,6 +255,14 @@ func (p *Provider) tempoWorklogs(ctx context.Context, tc *tempo.Client, e *evide
 				}
 				e.fail(issue, tracker.EvidenceWorklogs, fmt.Errorf("issue %s: Jira did not show who logged Tempo worklog %d: looking up a person needs Jira's Browse users and groups permission: %w",
 					issue, w.ID, err))
+				continue
+			}
+			counts, err := person(issue, tracker.EvidenceWorklogs, decimal(w.ID), author)
+			if err != nil {
+				e.fail(issue, tracker.EvidenceWorklogs, err)
+				continue
+			}
+			if !counts {
 				continue
 			}
 			at := w.StartUTC
