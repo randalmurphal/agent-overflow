@@ -43,7 +43,7 @@ function setupWith(estimates: Setup['estimates'], credit: Credit = NO_CREDIT): S
 /** The credit a save stores, as the computer stamps it while no sprint
  * has completed: a newest snapshot with no time replaces the one before
  * it and takes its time. */
-function stamped(credit: Credit | undefined): Credit | undefined {
+function stamped(credit: Credit | null | undefined): Credit | null | undefined {
   if (!credit) return credit;
   const out = credit.rules.slice();
   const newest = out[out.length - 1];
