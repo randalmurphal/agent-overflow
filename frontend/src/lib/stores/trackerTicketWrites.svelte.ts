@@ -176,8 +176,9 @@ export interface TicketWrite {
 
 // Each ticket's writes by target, one box per ticket, so a write wakes the
 // readers of its own ticket only (a Board card reads one box for every
-// target it draws). A box is made by the ticket's first write and kept,
-// empty once its writes settle, while the page lives.
+// target it draws). A box is made by the ticket's first write and dropped
+// once it holds none, so a session of writes to many tickets (a list's
+// selection moved) keeps nothing of a ticket whose writes settled.
 const NO_WRITES: ReadonlyMap<string, TicketWrite> = new Map();
 const writes = createKeyedSignalRegistry<ReadonlyMap<string, TicketWrite>>(NO_WRITES);
 
@@ -187,7 +188,14 @@ function putWrite(ticket: string, target: string, write: TicketWrite | null): vo
   const next = new Map(held);
   if (write) next.set(target, write);
   else next.delete(target);
-  writes.set(ticket, next.size === 0 ? NO_WRITES : next);
+  if (next.size === 0) writes.drop(ticket);
+  else writes.set(ticket, next);
+}
+
+/** How many tickets hold a write or a kept outcome now; for tests of what
+ * the store retains. */
+export function ticketWriteBoxCountForTest(): number {
+  return [...writes.keys()].length;
 }
 
 function heldWrite(ticket: string, target: string): TicketWrite | undefined {
