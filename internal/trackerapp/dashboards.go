@@ -184,7 +184,7 @@ func (s *Service) ownOf(key setupKey, board tracker.BoardID, proposals bool) (tr
 		own.Metrics[w.ID] = m
 		return trackerdash.Widget{ID: w.ID, Metric: w.ID, Form: w.Form, Width: w.Width}
 	}
-	for _, d := range dashboardsOf(held.dashboards, key.site, string(board)) {
+	for _, d := range dashboardsOf(held.kept.dashboards, key.site, string(board)) {
 		out := trackerdash.Dashboard{ID: d.ID, Title: d.Title}
 		for _, w := range d.Widgets {
 			out.Widgets = append(out.Widgets, add(w))
@@ -248,16 +248,17 @@ func (s *Service) keepLocked(pk proposalKey, key setupKey, board, proposal strin
 		return dashRefusal("dashboard_proposal_gone", "this proposed widget is no longer on the board: it was kept or dismissed in another window, or the app restarted; ask the agent to propose it again")
 	}
 	widget := s.proposals[pk][i].widget
-	_, err := s.editDashboards(key.slug, key.site, board, func(kept []KeptDashboard) ([]KeptDashboard, error) {
+	_, err := s.editBoard(key.slug, key.site, board, func(b *boardKept) error {
 		if to.Dashboard == "" {
-			return append(kept, KeptDashboard{ID: id, Title: strings.TrimSpace(to.Title), Widgets: []KeptWidget{widget}}), nil
+			b.dashboards = append(b.dashboards, KeptDashboard{ID: id, Title: strings.TrimSpace(to.Title), Widgets: []KeptWidget{widget}})
+		} else {
+			j := slices.IndexFunc(b.dashboards, func(d KeptDashboard) bool { return d.ID == to.Dashboard })
+			if j < 0 {
+				return dashRefusal("dashboard_gone", "that dashboard is gone; keep the widget on another dashboard or a new one")
+			}
+			b.dashboards[j].Widgets = append(b.dashboards[j].Widgets, widget)
 		}
-		j := slices.IndexFunc(kept, func(d KeptDashboard) bool { return d.ID == to.Dashboard })
-		if j < 0 {
-			return nil, dashRefusal("dashboard_gone", "that dashboard is gone; keep the widget on another dashboard or a new one")
-		}
-		kept[j].Widgets = append(kept[j].Widgets, widget)
-		return kept, nil
+		return nil
 	})
 	if err != nil {
 		return err
@@ -300,16 +301,19 @@ func (s *Service) RemoveWidget(subscription, dashboard, widget string) error {
 	if err != nil {
 		return err
 	}
-	changed, err := s.editDashboards(key.slug, key.site, string(scope.Board), func(kept []KeptDashboard) ([]KeptDashboard, error) {
-		j := slices.IndexFunc(kept, func(d KeptDashboard) bool { return d.ID == dashboard })
-		if j < 0 || !slices.ContainsFunc(kept[j].Widgets, func(w KeptWidget) bool { return w.ID == widget }) {
-			return nil, errNoEdit
+	changed, err := s.editBoard(key.slug, key.site, string(scope.Board), func(b *boardKept) error {
+		j := slices.IndexFunc(b.dashboards, func(d KeptDashboard) bool { return d.ID == dashboard })
+		if j < 0 || !slices.ContainsFunc(b.dashboards[j].Widgets, func(w KeptWidget) bool { return w.ID == widget }) {
+			return errNoEdit
 		}
-		kept[j].Widgets = slices.DeleteFunc(kept[j].Widgets, func(w KeptWidget) bool { return w.ID == widget })
-		if len(kept[j].Widgets) == 0 {
-			kept = slices.Delete(kept, j, j+1)
+		b.dashboards[j].Widgets = slices.DeleteFunc(b.dashboards[j].Widgets, func(w KeptWidget) bool { return w.ID == widget })
+		if len(b.dashboards[j].Widgets) == 0 {
+			b.dashboards = slices.Delete(b.dashboards, j, j+1)
 		}
-		return kept, nil
+		// Its tile and its limit go with it.
+		b.tiles.Pins = slices.DeleteFunc(b.tiles.Pins, func(id string) bool { return id == widget })
+		delete(b.tiles.Limits, widget)
+		return nil
 	})
 	if changed {
 		s.dashboardsChanged()

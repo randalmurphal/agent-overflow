@@ -15,8 +15,8 @@ import (
 // (setup.go), by tracker site and board, each dashboard a title and its
 // widgets, each widget drawing a metric of its own. The section is not
 // part of Setup, so a replace keeps it as held; it is written only by
-// editDashboards, which reads the file again under setupMu as a replace
-// does. Only the file's bound (setupMaxBytes) bounds how many there are.
+// editBoard, with the board's tiles (board_tiles.go), which reads the file
+// again under setupMu as a replace does. Only the file's bound (setupMaxBytes) bounds how many there are.
 // A widget's metric is checked when it is counted, as a built-in's is, so
 // one that no longer validates shows its failure on its widget and leaves
 // the rest of the setup readable.
@@ -170,35 +170,47 @@ func dashboardsOf(stored []BoardDashboards, site siteKey, board string) []KeptDa
 // errNoEdit is an edit that changes nothing: what it removes is gone.
 var errNoEdit = errors.New("trackerapp: the dashboards hold nothing to change")
 
-// editDashboards replaces the dashboards slug's project keeps for board
-// of site with what edit makes of them, reading the file again and
-// writing it under setupMu as a replace does (rewriteSetup). edit gets a
-// copy it may change; errNoEdit writes nothing and is no failure, and
-// answers changed false. Whoever holds the setup is told it moved
-// (setupMoved); the caller tells the dashboards' clients, once its whole
-// change is made.
-func (s *Service) editDashboards(slug string, site siteKey, board string, edit func([]KeptDashboard) ([]KeptDashboard, error)) (changed bool, err error) {
+// boardKept is what a project keeps for one board in the kept sections:
+// its dashboards and its summary row's tiles.
+type boardKept struct {
+	dashboards []KeptDashboard
+	tiles      BoardTiles
+}
+
+// editBoard replaces what slug's project keeps for board of site with
+// what edit makes of it, reading the file again and writing it under
+// setupMu as a replace does (rewriteSetup). edit gets a copy it may
+// change; errNoEdit writes nothing and is no failure, and answers changed
+// false. Whoever holds the setup is told it moved (setupMoved), so a
+// board whose pins changed reads again; the caller tells the dashboards'
+// clients, once its whole change is made.
+func (s *Service) editBoard(slug string, site siteKey, board string, edit func(*boardKept) error) (changed bool, err error) {
 	var editErr error
 	var before, after *heldSetup
-	before, after, err = s.rewriteSetup(slug, func(stored *heldSetup) (Setup, []BoardDashboards, bool) {
-		next := slices.Clone(stored.dashboards)
-		i := slices.IndexFunc(next, func(b BoardDashboards) bool {
-			return b.Tracker == site.tracker && b.Site == site.site && b.Board == board
-		})
-		var kept []KeptDashboard
-		if i >= 0 {
-			kept = cloneDashboards(next[i].Dashboards)
+	before, after, err = s.rewriteSetup(slug, func(stored *heldSetup) (Setup, keptSections, bool) {
+		b := boardKept{
+			dashboards: cloneDashboards(dashboardsOf(stored.kept.dashboards, site, board)),
+			tiles:      cloneTiles(tilesOf(stored.kept.tiles, site, board)),
 		}
-		if kept, editErr = edit(kept); editErr != nil {
-			return Setup{}, nil, false
+		if editErr = edit(&b); editErr != nil {
+			return Setup{}, keptSections{}, false
 		}
-		if i >= 0 {
-			next[i].Dashboards = kept
-		} else {
-			next = append(next, BoardDashboards{Tracker: site.tracker, Site: site.site, Board: board, Dashboards: kept})
+		next := keptSections{
+			dashboards: slices.DeleteFunc(slices.Clone(stored.kept.dashboards), func(d BoardDashboards) bool {
+				return d.Tracker == site.tracker && d.Site == site.site && d.Board == board
+			}),
+			tiles: slices.DeleteFunc(slices.Clone(stored.kept.tiles), func(t BoardTiles) bool {
+				return t.Tracker == site.tracker && t.Site == site.site && t.Board == board
+			}),
 		}
-		if next, editErr = validateDashboards(next); editErr != nil {
-			return Setup{}, nil, false
+		next.dashboards = append(next.dashboards, BoardDashboards{Tracker: site.tracker, Site: site.site, Board: board, Dashboards: b.dashboards})
+		b.tiles.Tracker, b.tiles.Site, b.tiles.Board = site.tracker, site.site, board
+		next.tiles = append(next.tiles, b.tiles)
+		if next.dashboards, editErr = validateDashboards(next.dashboards); editErr != nil {
+			return Setup{}, keptSections{}, false
+		}
+		if next.tiles, editErr = validateBoardTiles(next.tiles); editErr != nil {
+			return Setup{}, keptSections{}, false
 		}
 		return stored.view.Setup, next, true
 	})
