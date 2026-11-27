@@ -435,8 +435,9 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"MintTrackerAttachmentUploadTicket", "MintTrackerAttachmentDownloadTicket",
 		"SaveTrackerAttachment", "TrackerLinkTypes", "LinkTrackerIssues", "UnlinkTrackerIssues", "TrackerPokerSupport",
 		"FollowTrackerPoker", "TrackerPoker", "VoteTrackerPoker", "RevealTrackerPoker", "ClearTrackerPokerVotes",
-		"SetThreadTicket", "ClearThreadTicket", "ThreadsForTicket", "GetTicketWork", "StartTicketThread",
-		"TrackerDashboards", "EvaluateTrackerDashboard", "TrackerDashboardDrill",
+		"SetThreadTicket", "ClearThreadTicket", "ThreadsForTicket", "GetTicketWork", "SearchTicketWork", "StartTicketThread",
+		"TrackerDashboards", "EvaluateTrackerDashboard", "TrackerDashboardDrill", "ProjectTrackerSiteFields",
+		"ThreadTimeEntries", "EditTrackerTimeEntry", "RemoveTrackerTimeEntries", "PostTrackerTimeEntries",
 	} {
 		absent[name] = true
 	}
