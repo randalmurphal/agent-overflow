@@ -208,9 +208,11 @@ export async function closeTicket(pane: Locator, compact: boolean): Promise<void
   await expect(pane.getByTestId('ticket-screen')).toHaveCount(0);
 }
 
-/** The rail of the ticket's fields; a narrow ticket opens it from Details. */
+/** The rail of the ticket's fields; a narrow ticket opens it from Details,
+ * which a compact ticket shows once its detail is read. */
 export async function openRail(ticket: Locator, compact: boolean): Promise<Locator> {
   const details = ticket.getByTestId('ticket-details');
+  if (compact) await expect(details).toBeVisible({ timeout: 15_000 });
   if (await details.isVisible() && (await details.getAttribute('aria-expanded')) !== 'true') await press(details, compact);
   const rail = ticket.getByTestId('ticket-rail');
   await expect(rail).toBeVisible();
