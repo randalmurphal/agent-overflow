@@ -33,7 +33,9 @@
 //     columns a plan uses (probe.go), so the copy holds every relation
 //     and every column filled only when asked (store.MirrorExportColumns)
 //     that the statement reads, the columns of a USING or NATURAL join
-//     included, and nothing a shadowing CTE or an unread * names.
+//     included, and nothing a shadowing CTE or an unread * names. It
+//     can only ask for more: an unread LEFT JOIN on a whole unique key,
+//     which SQLite drops from the real plan, still names its table.
 //   - A metric's SQL is one statement (oneStatement): it cannot close the
 //     wrapper's parenthesis or add a statement. The wrapper produces the
 //     whole result in SQLite's first step, which a canceled context
