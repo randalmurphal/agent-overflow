@@ -59,6 +59,7 @@ func TestParseHarnessTimingRefusesWhatTheDestinationCannotHold(t *testing.T) {
 		"wake-floor":         {unit: time.Second},
 		"unreachable-settle": {max: (1<<31 - 1) * time.Millisecond, unit: time.Millisecond},
 		"agent-row-linger":   {max: (1<<31 - 1) * time.Millisecond, unit: time.Millisecond},
+		"activity-report":    {max: (1<<31 - 1) * time.Millisecond, unit: time.Millisecond},
 	}
 	for _, timer := range harnessTimers {
 		want := bounds[timer.name]
@@ -197,6 +198,7 @@ var harnessTimerOwners = map[string]string{
 	"activity-flush":        "Isolation.ActivityFlush",
 	"unreachable-settle":    "page unreachable-settle",
 	"agent-row-linger":      "page agent-row-linger",
+	"activity-report":       "page activity-report",
 }
 
 // Set alone through the boot's own path (parseHarnessTiming, then
