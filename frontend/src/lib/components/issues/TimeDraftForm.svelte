@@ -43,10 +43,11 @@
     return { entry: e, ticket: { issue: e.issue ?? '', key: e.key ?? '', title: e.title ?? '' }, time: formatTimeSpent(e.minutes * 60), reason: e.reason };
   }
   // svelte-ignore state_referenced_locally
-  let seed = $state.raw<Seed>(seedOf(entry));
-  let ticket = $state<TimeOfferView>(seed.ticket);
-  let timeText = $state(seed.time);
-  let reason = $state(seed.reason);
+  const opened = seedOf(entry);
+  let seed = $state.raw<Seed>(opened);
+  let ticket = $state<TimeOfferView>(opened.ticket);
+  let timeText = $state(opened.time);
+  let reason = $state(opened.reason);
   // Another window changed the entry since the form showed it.
   const moved = $derived(entry.id === seed.entry.id && entry.revision !== seed.entry.revision);
 
