@@ -177,10 +177,31 @@ export async function sendWrite(
   try {
     return writeOutcome(await withBackendTarget(backend, send), subject);
   } catch (err) {
-    const known = failure?.(err);
-    if (known) return known;
-    return isTransportClassError(err)
-      ? { kind: 'lost', message: lostWriteSentence(computer, subject) }
-      : { kind: 'failed', error: err };
+    return sendFailure(err, computer, subject, failure);
+  }
+}
+
+// What a send's failure means: the caller's reading of it, else a lost
+// answer for a transport failure, else the failure itself.
+function sendFailure(err: unknown, computer: string, subject: WriteSubject, failure?: (err: unknown) => WriteOutcome | null): WriteOutcome {
+  const known = failure?.(err);
+  if (known) return known;
+  return isTransportClassError(err) ? { kind: 'lost', message: lostWriteSentence(computer, subject) } : { kind: 'failed', error: err };
+}
+
+/** Sends a call that answers something other than a write's view (an
+ * agent's time draft change) once on `backend`, as `sendWrite` does: its
+ * answer, or what its failure means. */
+export async function sendCall<T>(
+  backend: string,
+  computer: string,
+  subject: WriteSubject,
+  send: () => Promise<T>,
+  failure?: (err: unknown) => WriteOutcome | null,
+): Promise<{ readonly ok: true; readonly value: T } | { readonly ok: false; readonly outcome: WriteOutcome }> {
+  try {
+    return { ok: true, value: await withBackendTarget(backend, send) };
+  } catch (err) {
+    return { ok: false, outcome: sendFailure(err, computer, subject, failure) };
   }
 }

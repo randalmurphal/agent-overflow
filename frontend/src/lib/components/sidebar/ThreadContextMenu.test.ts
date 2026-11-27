@@ -27,7 +27,7 @@ import {
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
 import type { ThreadTicketLink } from '../../../../bindings/agent-overflow/internal/store/models';
-import { takeTicketOpenRequest } from '../../stores/issuesPane.svelte';
+import { takePaneOpenRequest } from '../../stores/issuesPane.svelte';
 import { closeThreadTicketFinder, threadTicketFinding } from '../../stores/threadTicketLinks.svelte';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { entryRecordForTest, setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
@@ -1272,7 +1272,7 @@ describe('<ThreadContextMenu> the linked ticket', () => {
   });
 
   afterEach(() => {
-    takeTicketOpenRequest();
+    takePaneOpenRequest();
     resetToLocalPage();
   });
 
@@ -1315,7 +1315,7 @@ describe('<ThreadContextMenu> the linked ticket', () => {
   it('opens the ticket in the Issues pane', async () => {
     const { baseElement } = renderMenu(makeThread({ ticketLink, projectId: 'project-1' }));
     await fireEvent.click(row(baseElement, 'thread-menu-ticket-open'));
-    await waitFor(() => expect(takeTicketOpenRequest()?.ref).toMatchObject({ connection: 'conn-1', issue: '10001' }));
+    await waitFor(() => expect(takePaneOpenRequest()).toMatchObject({ ref: { connection: 'conn-1', issue: '10001' } }));
   });
 
   it('removes the link and applies the row the computer answers', async () => {

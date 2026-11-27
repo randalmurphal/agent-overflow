@@ -159,10 +159,20 @@ board methods, events and the patch read in
   are written at the top of the store. `stores/trackerTimeModel.ts` is
   the pure part: the days of a week, what a day's total leaves out, and
   the By ticket rows (`weekTickets`, derived only while By ticket or the
-  form reads them).
+  form reads them), and the agent's draft as the week, a day and a card
+  show it (`weekShape`, `cardDays`, `cardState`). The week's read holds
+  the draft; the week reads it again on `tracker:time_entries_updated`.
+- `stores/trackerTimeDraft.svelte.ts` holds the entries of each
+  `time_draft` call whose card a thread shows (`ThreadTimeEntries`), read
+  on the thread's computer, again on a frame naming the thread, a gap or
+  a reconnect, and dropped with the card. The card
+  (`TimeDraftCard.svelte`, loaded by `chat/NotificationRow.svelte` on
+  the call's row) and the Time screen draw a draft with the same
+  components (`TimeDraftEntry`, `TimeDraftQuestion`, `TimeDraftForm`,
+  `TimeDraftApprove`, `TimeDraftDiscard`).
 - `stores/trackerTimeWrites.svelte.ts` makes the Time screen's writes
-  (log, change, delete), one pending write per entry or per ticket and
-  day, and holds each outcome, with a toast for one that settles after
+  (log, change, delete, and a draft's change, removal and approval),
+  one pending write per entry or per ticket and day, and holds each outcome, with a toast for one that settles after
   its form and entry are gone. It does not import the weeks: the weeks'
   store takes what a write asks of them (`takeWorklogWrites`), so a
   surface that only logs time loads no week.
@@ -199,7 +209,8 @@ board methods, events and the patch read in
   and its change mark. The charts (`charts/`) draw to their measured
   width from `charts/chartScale.ts`.
 - `stores/ticketOpen.ts` is the one opener of a ticket from outside the
-  pane (a thread's linked ticket, a pull request's ticket chip); it is in
+  pane (a thread's linked ticket, a pull request's ticket chip), and of
+  the Time screen at a week (a draft card's Review in Time); it is in
   the startup graph and reaches the pane's stores through one dynamic
   import.
 

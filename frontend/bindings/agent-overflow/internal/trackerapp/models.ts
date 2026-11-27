@@ -3735,7 +3735,9 @@ export class TimeEntryRefView {
 /**
  * TimeEntryView is one entry of the draft. By is agent or person, who
  * last wrote it; State is drafted, sent, posted, unknown or left_out;
- * Refusal is why its last post did not log it.
+ * Refusal is why its last post did not log it, and for an unknown entry
+ * what the app says of it (mayHaveBeenLogged), which a screen shows as it
+ * is.
  */
 export class TimeEntryView {
     "id": number;

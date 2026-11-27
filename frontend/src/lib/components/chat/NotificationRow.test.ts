@@ -260,3 +260,22 @@ describe('<NotificationRow> tracker write', () => {
     expect(rows[0]!.querySelector('button')?.getAttribute('title')).toBe('Open WEB-12');
   });
 });
+
+describe('<NotificationRow> time draft', () => {
+  it('mounts the call\'s card under the row, skipped by in-thread find', async () => {
+    const { findByTestId, getByTestId } = render(NotificationRow, {
+      props: { item: makeNotification({ kind: 'time_draft', call: 'call-1', connection: 'conn-1', days: ['2026-11-11'] }, 'Drafted time for Wed Nov 11') },
+    });
+    expect(getByTestId('notification-row').textContent).toContain('Drafted time for Wed Nov 11');
+    const card = await findByTestId('time-draft-card');
+    expect(card.dataset.call).toBe('call-1');
+    expect(card.hasAttribute('data-find-skip')).toBe(true);
+  });
+
+  it('mounts no card for a row that names no call', () => {
+    const { queryByTestId } = render(NotificationRow, {
+      props: { item: makeNotification({ kind: 'time_draft', connection: 'conn-1', days: [] }, 'Drafted time') },
+    });
+    expect(queryByTestId('time-draft-card-loading')).toBeNull();
+  });
+});

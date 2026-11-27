@@ -3,7 +3,7 @@
 Status: product rulings and screen designs recorded 2026-11-15. Built:
 the connections and a project's board list, in Settings > Issues
 (Connections, Boards, Status groups, Fields, Starting work, Agents),
-and the Issues pane with its Board and Backlog
+and the Issues pane with its Board, Backlog and Time
 screens, opened from the tool row's Issues entry, and the Ticket screen,
 opened from a card or a row, from a thread's linked ticket or from a pull
 request's ticket chip; a thread's ticket link, in the sidebar and the
@@ -11,8 +11,8 @@ thread header, and the Dashboards screen. The other screens are not
 built; the [Board](#board),
 [Backlog](#backlog-and-sprint-planning), [Ticket](#ticket),
 [Dashboards](#dashboards),
-[Tickets, pull requests and branches](#tickets-pull-requests-and-branches)
-and [Thread link](#thread-link) sections say what of them is. A
+[Tickets, pull requests and branches](#tickets-pull-requests-and-branches),
+[Thread link](#thread-link) and [Time](#time) sections say what of them is. A
 project's status groups are set in Settings > Issues > Status groups, its
 ticket pins in Settings > Issues > Fields or on the ticket, its Start work
 defaults in Settings > Issues > Starting work or from the Start work form,
@@ -712,6 +712,36 @@ counted, selecting rows in a ticket list, or a number tile's limit.
   hours, and anyone who acted but did not qualify.
 
 ### Time
+
+Status: built: the person's own logged time on the connection of the
+board the pane shows, a week at a time, By day and By ticket, logged,
+changed and deleted by hand from a cell, a day or an entry; and an
+agent's draft (`time_draft`), shown and approved as the bullets below
+say. Not built: points on a support ticket's entry.
+
+The week's draft shows dashed under each day's logged time in By day,
+with each day's approval, and in its tickets' cells in By ticket, where
+the questions are a last Not placed row. A banner above the week says
+what the agents drafted in it, with Discard and the approval of the
+whole week shown. The drafting thread's card shows the call's entries by
+day, with each day's approval, the call's, Discard and Review in Time,
+which opens Time at the draft's week, over the board the pane shows when
+it is of the entries' connection and otherwise the first board of that
+connection. The week and the card follow an agent's draft, a
+person's change and a post without a reload, on the computer the thread
+runs on, a paired one included. Discard asks once.
+
+An approval says what posted, what did not, and why, in the tracker's
+words. A day's approval skips an entry whose ticket has had time logged
+on that day since the draft, and says so; Log alone posts it. A day with
+an open question posts its entries and leaves the question open. An
+entry whose post may have landed (its outcome unknown) shows that state
+and the sentence of what to do, with Remove and, on Time, Log by hand: a
+log form filled from the entry, after whose save the entry is removed.
+It never offers a way to post it again. A question answered with a
+ticket whose entry that day is still drafted adds its time to that
+entry; the question's text becomes part of the entry's reason, which is
+the worklog's description once posted.
 
 - By day shows the week as five columns. Each entry shows its ticket, its
   hours and the reason for them. By ticket shows a grid of tickets against

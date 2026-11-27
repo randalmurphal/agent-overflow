@@ -19,7 +19,7 @@ import { forgetProject, noteProject } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { REMOTE_BACKEND_UUID, resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import type { Project } from '../types/models';
-import { takeTicketOpenRequest } from './issuesPane.svelte';
+import { takePaneOpenRequest } from './issuesPane.svelte';
 import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import { getThreadById, prependThread, removeThread } from './threads.svelte';
 import { getToasts, removeToast } from './toast.svelte';
@@ -52,7 +52,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  takeTicketOpenRequest();
+  takePaneOpenRequest();
   removeThread('thread-1');
   resetToLocalPage();
 });
@@ -61,7 +61,8 @@ describe('openLinkedTicket', () => {
   it('opens the Issues pane beside the thread and asks it for the ticket, over the thread\'s project\'s boards', async () => {
     await openLinkedTicket(linkedThread());
     expect(getPaneLayoutItems().map((item) => item.kind)).toEqual(['thread', 'issues']);
-    const request = takeTicketOpenRequest();
+    const request = takePaneOpenRequest();
+    if (request && 'time' in request) throw new Error('the pane was asked for a week, not the ticket');
     expect(request?.ref).toEqual({ backend: expect.any(String), connection: 'conn-1', issue: '10001' });
     expect(request?.seed).toEqual({ key: 'WEB-1', title: 'Retry cursor returns no rows', card: null });
     expect(request?.project).toBe('project-1');
@@ -77,7 +78,7 @@ describe('openLinkedTicket', () => {
     await openLinkedTicket(thread);
     expect(toastTexts()).toEqual([sentence]);
     expect(getPaneLayoutItems().map((item) => item.kind)).toEqual(['thread']);
-    expect(takeTicketOpenRequest()).toBeNull();
+    expect(takePaneOpenRequest()).toBeNull();
   });
 
   it('leaves no request behind when this page may not open Issues', async () => {
@@ -85,12 +86,12 @@ describe('openLinkedTicket', () => {
     await openLinkedTicket(linkedThread());
     expect(toastTexts()).toHaveLength(1);
     expect(toastTexts()[0]).toMatch(/^WEB-1 cannot open: .*tracker:read/);
-    expect(takeTicketOpenRequest()).toBeNull();
+    expect(takePaneOpenRequest()).toBeNull();
   });
 
   it('says so when no board of its site is listed, and when the boards could not be read', async () => {
     await openLinkedTicket(linkedThread());
-    const request = takeTicketOpenRequest()!;
+    const request = takePaneOpenRequest()!;
     request.unplaced(null);
     request.unplaced({ report: { reason: 'the computer answered 500' } } as CapturedError);
     expect(toastTexts()).toEqual([
@@ -196,7 +197,7 @@ describe('linking a New thread', () => {
     findThreadTicket(thread, undefined);
     expect(threadTicketFinding()).toBeNull();
     await openLinkedTicket(thread);
-    expect(takeTicketOpenRequest()).toBeNull();
+    expect(takePaneOpenRequest()).toBeNull();
     expect(toastTexts()).toEqual([
       'Agent Overflow cannot tell which computer holds this thread, so it cannot be linked to a ticket.',
       'Agent Overflow cannot tell which computer holds this thread, so WEB-1 cannot open.',

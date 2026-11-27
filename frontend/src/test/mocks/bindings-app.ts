@@ -181,6 +181,8 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // person's time answers (trackerapp Service.Worklogs).
   TrackerWorklogs: async (_connection: string, _author: string, from: string, to: string) => ({ worklogs: [], unread: daysFromTo(from, to) }),
   RefreshTrackerWorklogs: async () => ({ worklogs: [] }),
+  // A thread's time draft card reads its call's entries when it shows.
+  ThreadTimeEntries: async () => [],
   // A ticket's Work, read when its rail shows (stores/ticketWork): no pull
   // request or branch names it, as a computer with no stored pull requests
   // and no branch of its key answers (app_ticket_work.go GetTicketWork).
@@ -1217,9 +1219,9 @@ export const DeleteTrackerWorklog = dispatch('DeleteTrackerWorklog');
 export const TrackerWorklogs = dispatch('TrackerWorklogs');
 export const RefreshTrackerWorklogs = dispatch('RefreshTrackerWorklogs');
 export const ThreadTimeEntries = dispatch('ThreadTimeEntries');
-export const PostTrackerTimeEntries = dispatch('PostTrackerTimeEntries');
 export const EditTrackerTimeEntry = dispatch('EditTrackerTimeEntry');
 export const RemoveTrackerTimeEntries = dispatch('RemoveTrackerTimeEntries');
+export const PostTrackerTimeEntries = dispatch('PostTrackerTimeEntries');
 export const TrackerPokerSupport = dispatch('TrackerPokerSupport');
 export const FollowTrackerPoker = dispatch('FollowTrackerPoker');
 export const TrackerPoker = dispatch('TrackerPoker');

@@ -707,6 +707,13 @@ export {
   AddTrackerWorklog,
   EditTrackerWorklog,
   DeleteTrackerWorklog,
+  // An agent's time draft: a call's entries, and the person's changes,
+  // removals and approvals of entries (stores/trackerTimeDraft.svelte.ts,
+  // stores/trackerTimeWrites.svelte.ts).
+  ThreadTimeEntries,
+  EditTrackerTimeEntry,
+  RemoveTrackerTimeEntries,
+  PostTrackerTimeEntries,
   // The tickets a person finds by key or by words (components/issues/TicketFinder.svelte).
   TrackerLookup,
   TrackerSearch,

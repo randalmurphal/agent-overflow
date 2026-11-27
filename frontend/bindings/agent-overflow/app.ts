@@ -6983,12 +6983,12 @@ export function ThreadOwnerRecovery(launch: string, key: app$0.OwnerPageKey): $C
 }
 
 /**
- * ThreadTimeEntries are the time entries the thread's agent drafted that
- * still exist, with their state now, on every connection of this
- * computer.
+ * ThreadTimeEntries are the time entries that one time_draft call of the
+ * thread's agent drafted that still exist, with their state now, on every
+ * connection of this computer: what the call's timeline row shows.
  */
-export function ThreadTimeEntries(threadID: string): $CancellablePromise<trackerapp$0.TimeEntryView[]> {
-    return $Call.ByID(2477644032, threadID).then(($result: any) => {
+export function ThreadTimeEntries(threadID: string, callID: string): $CancellablePromise<trackerapp$0.TimeEntryView[]> {
+    return $Call.ByID(2477644032, threadID, callID).then(($result: any) => {
         return $$createType246($result);
     });
 }
