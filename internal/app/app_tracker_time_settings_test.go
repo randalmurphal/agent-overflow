@@ -53,7 +53,7 @@ func TestTheTimeToolsFollowTheProjectsTimeSettings(t *testing.T) {
 
 	text, isError = trackerMCPStreamedCall(t, f.a, endpoint, "time_draft", map[string]any{"entries": []map[string]any{{"day": today, "key": "WEB-404", "hours": 1, "reason": "Standup"}}})
 	if want := "[tracker_not_found] WEB-404, this project's meetings ticket in Settings > Issues > Time, cannot be found on example.atlassian.net, or this connection cannot see it. " +
-		"Ask the user which ticket: leave out key, and offer a ticket of example.atlassian.net when no other entry has a key there. Tell them to choose another meetings ticket in those settings."; !isError || text != want {
+		"Ask the user which ticket: leave out key, and with more than one Jira connection on, offer a ticket of example.atlassian.net unless another entry has a key there. Tell them to choose another meetings ticket in those settings."; !isError || text != want {
 		t.Fatalf("a draft on the gone meetings ticket = %s (error %v)\nwant %s", text, isError, want)
 	}
 

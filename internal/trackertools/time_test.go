@@ -382,30 +382,36 @@ func TestTimeDraftSaysASettingsTicketThatIsGone(t *testing.T) {
 	}
 	_, err := timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{entry("WEB-1"), entry("ops-1")}})
 	refused(t, err, CodeNotFound, "OPS-1, this project's meetings ticket in Settings > Issues > Time, cannot be found on example.atlassian.net, or this connection cannot see it. "+
-		"Ask the user which ticket: leave out key, and offer a ticket of example.atlassian.net when no other entry has a key there. Tell them to choose another meetings ticket in those settings.")
+		"Ask the user which ticket: leave out key, and with more than one Jira connection on, offer a ticket of example.atlassian.net unless another entry has a key there. Tell them to choose another meetings ticket in those settings.")
 	_, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "hours": 8, "reason": "Holiday", "offer": []string{"OPS-2"}}}})
 	refused(t, err, CodeNotFound, "OPS-2, this project's time-off ticket in Settings > Issues > Time, cannot be found on example.atlassian.net, or this connection cannot see it. "+
-		"Ask the user which ticket: leave out key, and offer a ticket of example.atlassian.net when no other entry has a key there. Tell them to choose another time-off ticket in those settings.")
+		"Ask the user which ticket: leave out key, and with more than one Jira connection on, offer a ticket of example.atlassian.net unless another entry has a key there. Tell them to choose another time-off ticket in those settings.")
 	_, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{entry("WEB-99")}})
 	refused(t, err, CodeNotFound, "No ticket WEB-99 on example.atlassian.net.")
 	if len(f.drafts) != 0 {
 		t.Fatalf("a refused draft reached the draft: %v", f.drafts)
 	}
 
+	// With one Jira connection on, the advice's question with no key and
+	// no offer drafts.
+	f.draft = func(string, trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) {
+		return trackerapp.TimeDraftView{}, nil
+	}
+	if _, err := timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "hours": 8, "reason": "Holiday"}}}); err != nil || len(f.drafts) != 1 {
+		t.Fatalf("the question the advice asks for on one connection: %v, drafts %v", err, f.drafts)
+	}
+
 	// With two Jira connections on, a day's only entry on the gone
 	// time-off ticket follows the advice: a question offering a ticket of
 	// the site, which drafts.
 	f.sources = []trackerapp.TicketSource{timeJira, timeJira2}
-	f.draft = func(string, trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) {
-		return trackerapp.TimeDraftView{}, nil
-	}
 	holiday := map[string]any{"day": "2026-11-24", "hours": 8, "reason": "Holiday"}
 	_, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "key": "example.atlassian.net/OPS-2", "hours": 8, "reason": "Holiday"}}})
-	if code, message, _ := errorsx.PublicDetails(err); code != CodeNotFound || !strings.Contains(message, "offer a ticket of example.atlassian.net when no other entry has a key there") {
+	if code, message, _ := errorsx.PublicDetails(err); code != CodeNotFound || !strings.Contains(message, "with more than one Jira connection on, offer a ticket of example.atlassian.net unless another entry has a key there") {
 		t.Fatalf("the gone time-off ticket with two connections on: %v", err)
 	}
 	holiday["offer"] = []string{"example.atlassian.net/WEB-1"}
-	if _, err := timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{holiday}}); err != nil || len(f.drafts) != 1 {
+	if _, err := timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{holiday}}); err != nil || len(f.drafts) != 2 {
 		t.Fatalf("the question the advice asks for: %v, drafts %v", err, f.drafts)
 	}
 }
