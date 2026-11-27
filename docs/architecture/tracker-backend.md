@@ -1225,10 +1225,15 @@ and writes share:
     or removes.
   - A read never narrows a receipt's coverage: its worklogs are read
     from the earlier of the need and the receipt's start.
-  - A write that changes what is read of a ticket (a new receipt, a
-    changed coverage, an act added, changed or removed) advances the
-    `totals_revision` of each board holding it, once a board per
-    transaction, since the pace counts credit from it.
+  - Every write that changes what credit counts advances the
+    `totals_revision` of each board holding the ticket, once a board per
+    transaction, and tells those boards through the change funnel
+    (`Changes.Evidence`), since the pace counts credit from it: a new
+    receipt, a changed coverage, an act added, changed or removed, the
+    first failed read since a good one, and a card update that passes a
+    receipt (`trg_tracker_cache_credit_card_moved`). A time source turned
+    on, off, added or removed advances them on every board of the parent
+    connection's root, and the parent's boards read again.
 
   A unit reads at most 4 batches of 50 a tick and reports More while the
   listing has more. A source that failed for its ticket alone is stored
@@ -1236,7 +1241,11 @@ and writes share:
   tick reaches the tickets behind it; the tick's attempts reach the
   linked loop's failure report as a count with the first reason. A read
   that fails for every ticket stores what it read before the failure,
-  then fails the tick. Each read is stored with the update it was for,
+  then fails the tick, and the unit records the failure's reason on the
+  root (`RecordMirrorEvidenceOutcome`, `tracker_cache_roots.evidence_failure`)
+  until a run completes; a failure of the whole read marks no ticket's
+  source failed. A ticket's source whose read failed after a good one is
+  not counted from then, with the reason. Each read is stored with the update it was for,
   replaced per ticket and source, its authors in the first transaction;
   a read that began no later than the stored one is superseded. Under a
   time source change the read's comments are stored and its worklogs
@@ -2738,15 +2747,20 @@ A project that counts credit passes its rules in the board read's
 regrouping (`MirrorRegroup.WithCredit`), and one SQL fragment counts it
 (`store/tracker_cache_credit.go`, whose comment holds the rules): the
 export's `credit` relation and the store's pace both read it, so they
-count alike. Each row is a finished ticket for the person it was
-assigned to when it finished, a review for each other person who acted
-on it, or support time for its author, with the rule values its note
-needs. A ticket whose evidence is not read for its card has one row not
-counted, with no person, so a person's page lists it too
-(`evaluation.keep`). The built-in dashboard's pace and its finished bars
-then count three series: finished tickets, review credit and support
-credit. While such a row is listed and the linked tick's last evidence
-read failed, the answer says why (`Answer.Evidence`). A project that
+count alike. Credit applies only on a site whose tracker reads evidence
+(`Capabilities.Evidence`, `trackerapp.capabilitiesOf`). Each row is a
+finished ticket for the person it was assigned to when it finished, a
+review for each other person who acted on it, or support time for its
+author, with the rule values its note needs; a support ticket counts by
+its time alone. Acts after the evaluation's clock count nowhere. A
+ticket whose evidence is not read for its card has one row not counted,
+with no person, so a person's page lists it too (`evaluation.keep`). The
+built-in dashboard's pace and its finished bars then count three
+series: finished tickets, review credit and support credit. While such
+a row is in a widget's range and the evidence unit's last whole read
+failed, the answer says why (`Answer.Evidence`, `EvidenceSentence`). A
+metric by sprint holds only the rows of the sprints its widgets read,
+so other sprints' rows do not count against the row limit. A project that
 counts no credit binds no rules, its `credit` relation is empty, and
 its pace runs the statement it ran before credit
 (`TestAPaceWithoutCreditRunsTodaysStatement`). Its costs at 2,000 and

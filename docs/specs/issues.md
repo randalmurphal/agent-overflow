@@ -788,8 +788,15 @@ with credit.
   approved, logged time. The share, the number and the actions are
   settings.
 - Opening a credited number lists each finished ticket, each review with
-  its arithmetic and what the reviewer did, each support ticket with its
-  hours, and anyone who acted but did not qualify.
+  its arithmetic ("10% of 5 points for commented, logged time"), each
+  support ticket with its hours, and anyone who acted but did not
+  qualify, with the actions the rule counts and how many it needs.
+- Support time counts in the sprint whose dates hold it; time logged
+  between sprints counts in the next sprint to start, a planned sprint
+  with dates included. Credit counts only on a Jira site.
+- A ticket whose credit is not read yet is listed and not counted. While
+  one is in view and the last read of who worked on the tickets failed,
+  the dashboard says so with the reason.
 
 ### Time
 
