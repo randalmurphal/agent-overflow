@@ -779,7 +779,8 @@ describe('what a form or a confirmation acts on', () => {
     await fireEvent.click(within(form).getByTestId('time-draft-form-log'));
     expect(edit).toHaveBeenCalledWith('c1', { id: 11, revision: 2 }, { hours: 2 });
     await view.rerender(OTHER_BOARD);
-    await waitFor(() => expect(body().queryByTestId('time-draft-form')).toBeNull());
+    // Gone with the switch itself, not when its anchor is found gone.
+    expect(body().queryByTestId('time-draft-form')).toBeNull();
     changed(drafted(11, '2026-11-11', 120, { revision: 3 }));
     await waitFor(() => expect(post).toHaveBeenCalled());
     expect(post.mock.calls).toEqual([['c1', { entries: [{ id: 11, revision: 3 }], alone: true }]]);
@@ -812,7 +813,8 @@ describe('what a form or a confirmation acts on', () => {
     await fireEvent.click(within(await body().findByTestId('worklog-form')).getByTestId('worklog-form-save'));
     expect(add).toHaveBeenCalledWith('c1', expect.objectContaining({ issue: '10001', day: '2026-11-11' }));
     await view.rerender(OTHER_BOARD);
-    await waitFor(() => expect(body().queryByTestId('worklog-form')).toBeNull());
+    // Gone with the switch itself, not when its anchor is found gone.
+    expect(body().queryByTestId('worklog-form')).toBeNull();
     added(APPLIED);
     await waitFor(() => expect(remove).toHaveBeenCalled());
     expect(remove.mock.calls).toEqual([['c1', [{ id: 15, revision: 2 }]]]);
