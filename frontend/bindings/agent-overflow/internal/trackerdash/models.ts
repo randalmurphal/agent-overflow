@@ -815,9 +815,9 @@ export class WidgetValue {
     "unread"?: string[];
 
     /**
-     * Old is a list's whose rows reach a day of the viewer's logged time
-     * older than the copy holds, so it is never whole (worklogs.go); a
-     * number says so in its Num.
+     * Old is a list's or a ranked chart's whose rows reach a day of the
+     * viewer's logged time older than the copy holds, so it is never
+     * whole, even with no rows (worklogs.go); a number says so in its Num.
      */
     "old"?: boolean;
 
