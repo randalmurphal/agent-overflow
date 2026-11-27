@@ -2306,9 +2306,10 @@ people (the assignees, and the people the changes name when those are
 copied), epics, sprints and their members, the tickets' changes, what
 each sprint finished and the tickets' labels. A ticket's type and
 priority names (`MirrorExportColumns`) and its labels come from its card
-blob, whose shape trackerapp passes (`MirrorCardShape`, from `cardBlob`);
-each name is decoded only when a count asks for its column, and a blob of
-another version gives none. Linear has no issue types, so its type is
+blob, whose shape trackerapp passes (`MirrorCardShape`, from the json
+tags of `cardBlob`); the tickets fill decodes a name only when a count
+asks for its column and selects NULL otherwise, its text chosen once per
+export, and a blob of another version gives none. Linear has no issue types, so its type is
 NULL. A count names the relations it reads, and each
 fill names the relations it reads from the copy, so a fill's needs are
 filled first; `board` and `sprints` are always filled, since the range
@@ -2323,11 +2324,16 @@ whether the board's first sync has reconciled
 drill carry `reading`, and the range before is not compared. A board
 unlisted and listed again starts over.
 
-The relations a count reads are its metrics': each metric's prepare
-records the relations it reads (`How.Reads`) and the columns of
-`MirrorExportColumns` among its reads, once per dashboard kind
-on an empty sealed session, and a count asks for those of the widgets it
-counts and the tickets, statuses, people and epics its answer names. No
+The relations a count reads are its metrics': each metric's statement
+reads the relations its text names (`How.Reads`), in any quoted form,
+and a column of `MirrorExportColumns` when the text names it, has a `*`
+or joins NATURAL. The copy has no views or triggers and its catalog is
+denied, so a statement reads nothing its text does not name; a name that
+is an alias, a string or a CTE's asks for more than it reads, never
+less. SQLite's authorizer is not the source: it reports no read of a
+USING or NATURAL join's columns. Built-in metrics are worked out once
+per dashboard kind, and a count asks for those of the widgets it counts
+and the tickets, statuses, people and epics its answer names. No
 built-in metric reads `changes`, so none copies them.
 
 ### Metrics
@@ -2597,7 +2603,7 @@ tickets each number could not count, how many rows its query returned
 and the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 4,590 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 4,656 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a

@@ -51,11 +51,29 @@ import (
 // of the database it fills.
 var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epics", "sprints", "sprint_tickets", "changes", "sprint_finished", "labels"}
 
-// MirrorExportColumns are the columns of the export filled only when an
-// export asks for them by name (relation.column), as it asks for a
-// relation: each is decoded from the ticket's card blob, which a count
-// that reads none of them never decodes.
-var MirrorExportColumns = []string{"tickets.type", "tickets.priority"}
+// mirrorExportCardColumns are the tickets' columns decoded from the card
+// blob, in the tickets fill's order: each one's name in the export
+// (relation.column) and the member of the blob that holds it. An export
+// fills one only when asked for it by that name, as it is asked for a
+// relation, and selects NULL for it otherwise (mirrorExportFill.text),
+// so a count that reads none of them decodes no blob.
+var mirrorExportCardColumns = []struct {
+	name   string
+	member func(MirrorCardShape) string
+}{
+	{"tickets.type", func(c MirrorCardShape) string { return c.Type }},
+	{"tickets.priority", func(c MirrorCardShape) string { return c.Priority }},
+}
+
+// MirrorExportColumns are the names of mirrorExportCardColumns, the
+// columns an export fills only when asked for them.
+var MirrorExportColumns = func() []string {
+	names := make([]string, len(mirrorExportCardColumns))
+	for i, c := range mirrorExportCardColumns {
+		names[i] = c.name
+	}
+	return names
+}()
 
 // MirrorCardShape is where a card blob (MirrorCard.Data) holds what the
 // export decodes from it, as the blob's owner writes it: the version a
@@ -69,10 +87,19 @@ type MirrorCardShape struct {
 	LabelID, LabelName                    string
 }
 
-// args is the shape as the fills bind it, ?8 to ?14 (mirrorExportFills).
+// mirrorExportCardArg is the parameter of the first column of
+// mirrorExportCardColumns, the others following in order (args).
+const mirrorExportCardArg = 11
+
+// args is the shape as the fills bind it, ?6 to ?10 and then a member
+// path for each column of mirrorExportCardColumns (mirrorExportFills).
 func (c MirrorCardShape) args() []any {
 	path := func(member string) string { return "$." + member }
-	return []any{c.Version, path(c.VersionMember), path(c.Type), path(c.Priority), path(c.Labels), path(c.LabelID), path(c.LabelName)}
+	args := []any{c.Version, path(c.VersionMember), path(c.Labels), path(c.LabelID), path(c.LabelName)}
+	for _, column := range mirrorExportCardColumns {
+		args = append(args, path(column.member(c)))
+	}
+	return args
 }
 
 // MirrorExportSchema is the export's relations, whose comments say what
@@ -160,26 +187,58 @@ func mirrorExportStatusesSQL(insert, x string) string {
 }
 
 // mirrorExportCardSQL is the member at path p of issue i's card blob,
-// NULL when it is empty or the blob is not of the shape's version (?8 at
-// ?9). The blob is read as text: SQLite reads a BLOB argument as JSONB.
+// NULL when it is empty or the blob is not of the shape's version (?6 at
+// ?7). The blob is read as text: SQLite reads a BLOB argument as JSONB.
 func mirrorExportCardSQL(p string) string {
-	return `iif(json_extract(CAST(i.data AS TEXT), ?9) = CAST(?8 AS INTEGER), nullif(json_extract(CAST(i.data AS TEXT), ` + p + `), ''), NULL)`
+	return `iif(json_extract(CAST(i.data AS TEXT), ?7) = CAST(?6 AS INTEGER), nullif(json_extract(CAST(i.data AS TEXT), ` + p + `), ''), NULL)`
+}
+
+// mirrorExportCardNames is the tickets fill's insert list's names of
+// mirrorExportCardColumns, each after a comma.
+func mirrorExportCardNames() string {
+	var b strings.Builder
+	for _, c := range mirrorExportCardColumns {
+		_, column, _ := strings.Cut(c.name, ".")
+		b.WriteString(", " + column)
+	}
+	return b.String()
 }
 
 // mirrorExportFill is one statement of the export: the relation it fills
 // (a fill of another relation's rows is that relation's, as the statuses
 // and people its changes name are the changes'), and the relations of the
-// copy it reads, which the export fills first.
+// copy it reads, which the export fills first. A fill whose select list
+// ends with mirrorExportCardColumns has the text after them in afterCard.
 type mirrorExportFill struct {
-	relation, name, sql string
-	needs               []string
+	relation, name, sql, afterCard string
+	needs                          []string
+}
+
+// text is the fill's statement in an export of relations: sql, and for a
+// fill with card columns each column of mirrorExportCardColumns decoded
+// when relations names it and NULL otherwise, then afterCard.
+func (f mirrorExportFill) text(relations map[string]bool) string {
+	if f.afterCard == "" {
+		return f.sql
+	}
+	var b strings.Builder
+	b.WriteString(f.sql)
+	for i, c := range mirrorExportCardColumns {
+		b.WriteString(", ")
+		if relations[c.name] {
+			b.WriteString(mirrorExportCardSQL("?" + strconv.Itoa(mirrorExportCardArg+i)))
+		} else {
+			b.WriteString("NULL")
+		}
+	}
+	b.WriteString(f.afterCard)
+	return b.String()
 }
 
 // mirrorExportFills are the fill statements in order: ?1 root, ?2 board,
 // ?3 the regrouping (a JSON object, '{}' for none), ?4 the board's
-// estimate reset, ?5 whether the board has an estimate (0 or 1), ?6 and
-// ?7 whether the export asked for tickets.type and tickets.priority (0
-// or 1), and ?8 to ?14 the card blob's shape (MirrorCardShape.args). Each
+// estimate reset, ?5 whether the board has an estimate (0 or 1), and from
+// ?6 the card blob's shape (MirrorCardShape.args). Each
 // names the snapshot's tables by main and the file's unqualified: the
 // snapshot names none of the file's tables. An export runs those of the
 // relations asked for and the relations they need (mirrorExportRelations).
@@ -189,7 +248,7 @@ var mirrorExportFills = []mirrorExportFill{
 		strconv.Itoa(MirrorEstimateTime) + ` THEN 'time' ELSE 'none' END
 	  FROM tracker_cache_boards b WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`},
 	{relation: "tickets", name: "tickets", sql: `INSERT INTO main.tickets(id, key, title, type_level, status, status_group, assignee, parent, epic,
-	    created_at, updated_at, resolved_at, status_since, points, history_from, started_known, started_at, done_at, open, counts, type, priority)
+	    created_at, updated_at, resolved_at, status_since, points, history_from, started_known, started_at, done_at, open, counts` + mirrorExportCardNames() + `)
 	  SELECT i.issue_id, i.issue_key, i.title, i.type_level, nullif(i.status_id, ''),
 	    ` + mirrorRegroupedGroupNameSQL(`coalesce((SELECT o.value FROM json_each(?3) o WHERE o.key = i.status_id),
 	      (SELECT st.status_group FROM tracker_cache_statuses st WHERE st.root_id = i.root_id AND st.status_id = i.status_id))`) + `,
@@ -201,8 +260,7 @@ var mirrorExportFills = []mirrorExportFill{
 	    iif(` + mirrorExportStartKnownSQL + `, 1, 0),
 	    iif(` + mirrorExportStartKnownSQL + `, ` + mirrorExportStatusChangeSQL("min", mirrorGroupStatusesSQL("?3", MirrorGroupInProgress)) + `, NULL),
 	    iif(i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `), ` + mirrorExportStatusChangeSQL("max", mirrorDoneStatusesSQL("?3")) + `, NULL),
-	    iif(` + mirrorRegroupedNotDone("?3") + `, 1, 0), iif(` + mirrorLeftOut("?3") + `, 0, 1),
-	    iif(CAST(?6 AS INTEGER) = 1, ` + mirrorExportCardSQL("?10") + `, NULL), iif(CAST(?7 AS INTEGER) = 1, ` + mirrorExportCardSQL("?11") + `, NULL)
+	    iif(` + mirrorRegroupedNotDone("?3") + `, 1, 0), iif(` + mirrorLeftOut("?3") + `, 0, 1)`, afterCard: `
 	  FROM tracker_cache_board_issues b
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
 	  LEFT JOIN tracker_cache_parents n ON n.root_id = i.root_id AND n.issue_id = i.parent_id AND i.parent_id <> ''
@@ -253,11 +311,11 @@ var mirrorExportFills = []mirrorExportFill{
 	// A label is named by its name, else its ID; OR IGNORE keeps one row of
 	// a name a ticket has twice and skips a label with neither.
 	{relation: "labels", name: "labels", sql: `INSERT OR IGNORE INTO main.labels(ticket, name)
-	  SELECT i.issue_id, coalesce(nullif(json_extract(l.value, ?14), ''), nullif(json_extract(l.value, ?13), ''))
+	  SELECT i.issue_id, coalesce(nullif(json_extract(l.value, ?10), ''), nullif(json_extract(l.value, ?9), ''))
 	  FROM tracker_cache_board_issues b
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
-	  CROSS JOIN json_each(CAST(i.data AS TEXT), ?12) l
-	  WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND json_extract(CAST(i.data AS TEXT), ?9) = CAST(?8 AS INTEGER)`},
+	  CROSS JOIN json_each(CAST(i.data AS TEXT), ?8) l
+	  WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND json_extract(CAST(i.data AS TEXT), ?7) = CAST(?6 AS INTEGER)`},
 	{relation: "people", name: "people", needs: []string{"tickets"}, sql: `INSERT INTO main.people(id, name)
 	  SELECT u.user_id, u.name FROM (SELECT DISTINCT assignee AS id FROM main.tickets WHERE assignee IS NOT NULL) x
 	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
@@ -391,12 +449,12 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	if err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: read board %s to export it: %w", boardID, err)
 	}
-	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, relations, card)
+	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, card)
 	for _, fill := range mirrorExportFills {
 		if !relations[fill.relation] {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, fill.sql, args...); err != nil {
+		if _, err := tx.ExecContext(ctx, fill.text(relations), args...); err != nil {
 			return MirrorExport{}, false, fmt.Errorf("store: export board %s's %s: %w", boardID, fill.name, err)
 		}
 	}
@@ -407,19 +465,17 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	return export, true, nil
 }
 
-// mirrorExportArgs is what the fills bind, ?1 to ?14 (mirrorExportFills).
-func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, relations map[string]bool, card MirrorCardShape) []any {
+// mirrorExportArgs is what the fills bind (mirrorExportFills).
+func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, card MirrorCardShape) []any {
 	groups := regroup.statuses
 	if groups == "" {
 		groups = "{}"
 	}
-	flag := func(on bool) int {
-		if on {
-			return 1
-		}
-		return 0
+	hasEstimate := 0
+	if estimated {
+		hasEstimate = 1
 	}
-	return append([]any{rootID, boardID, groups, resetAt, flag(estimated), flag(relations["tickets.type"]), flag(relations["tickets.priority"])}, card.args()...)
+	return append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...)
 }
 
 // mirrorExportURI is the read-only URI of the database file at path.

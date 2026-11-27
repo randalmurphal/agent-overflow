@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
+	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -81,10 +83,29 @@ type cardBlob struct {
 }
 
 // cardShape is where cardBlob holds what a dashboard's copy of a board
-// reads from it (store.MirrorCardShape): each member as cardBlob's tags
-// and choiceBlob's name it.
-var cardShape = store.MirrorCardShape{Version: cardBlobVersion, VersionMember: "v", Type: "type_name", Priority: "priority_name",
-	Labels: "labels", LabelID: "id", LabelName: "name"}
+// reads from it (store.MirrorCardShape): each member named by the json
+// tag of its field of cardBlob or choiceBlob.
+var cardShape = store.MirrorCardShape{
+	Version:       cardBlobVersion,
+	VersionMember: jsonMember[cardBlob]("V"),
+	Type:          jsonMember[cardBlob]("TypeName"),
+	Priority:      jsonMember[cardBlob]("Priority"),
+	Labels:        jsonMember[cardBlob]("Labels"),
+	LabelID:       jsonMember[choiceBlob]("ID"),
+	LabelName:     jsonMember[choiceBlob]("Name"),
+}
+
+// jsonMember is the JSON member that field of T encodes to, as its json
+// tag names it. It panics when T has no such field or the tag no name,
+// which every test of this package runs into at its start.
+func jsonMember[T any](field string) string {
+	f, ok := reflect.TypeFor[T]().FieldByName(field)
+	name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+	if !ok || name == "" || name == "-" {
+		panic(fmt.Sprintf("trackerapp: %v has no field %s with a json member name", reflect.TypeFor[T](), field))
+	}
+	return name
+}
 
 // mirrorCard is c as the store holds it. Its sprints are sorted, as the
 // store reads them back.

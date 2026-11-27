@@ -21,24 +21,40 @@ import (
 // kind trackerdash hands the export.
 func exportConn(t *testing.T) *sql.Conn {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file::memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	conn, err := db.Conn(context.Background())
+	conn, closeConn, err := newExportConn()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := conn.Close(); err != nil {
-			t.Errorf("close the export's connection: %v", err)
-		}
-		if err := db.Close(); err != nil {
-			t.Errorf("close the export's database: %v", err)
+		if err := closeConn(); err != nil {
+			t.Error(err)
 		}
 	})
 	return conn
+}
+
+// newExportConn is exportConn for a caller that closes it, with the close
+// of the connection and its database.
+func newExportConn() (*sql.Conn, func() error, error) {
+	db, err := sql.Open("sqlite", "file::memory:")
+	if err != nil {
+		return nil, nil, err
+	}
+	db.SetMaxOpenConns(1)
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return nil, nil, errors.Join(err, db.Close())
+	}
+	return conn, func() error {
+		var errs []error
+		if err := conn.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close the export's connection: %w", err))
+		}
+		if err := db.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close the export's database: %w", err))
+		}
+		return errors.Join(errs...)
+	}, nil
 }
 
 func exportRows(t *testing.T, conn *sql.Conn, query string) []string {
@@ -218,7 +234,7 @@ func TestMirrorExportSearchesByTheBoard(t *testing.T) {
 	}
 	plans := append([]mirrorExportFill{{name: "board state", sql: mirrorExportBoardSQL}}, mirrorExportFills...)
 	for _, fill := range plans {
-		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.sql, mirrorExportArgs(1, "10", MirrorRegroup{}, 0, true, everyExportColumn(), CardShapeForTest)...)
+		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.text(everyExportColumn()), mirrorExportArgs(1, "10", MirrorRegroup{}, 0, true, CardShapeForTest)...)
 		if err != nil {
 			t.Fatalf("plan %s: %v", fill.name, err)
 		}
@@ -392,6 +408,15 @@ func TestMirrorExportDecodesTypesPrioritiesAndLabelsWhenAsked(t *testing.T) {
 	if tickets, _ := read("tickets.type"); !reflect.DeepEqual(tickets, []string{"10001|Bug|-", "10002|-|-", "10003|-|-", "10005|-|-"}) {
 		t.Errorf("asked for the type: tickets %v; want the type alone, of version 2 blobs", tickets)
 	}
+	if tickets, _ := read("tickets.priority"); !reflect.DeepEqual(tickets, []string{"10001|-|High", "10002|-|-", "10003|-|-", "10005|-|-"}) {
+		t.Errorf("asked for the priority: tickets %v; want the priority alone, of version 2 blobs", tickets)
+	}
+	// A fill asked for no column selects NULL for each, decoding no blob.
+	for _, fill := range mirrorExportFills {
+		if text := fill.text(map[string]bool{"tickets": true}); fill.relation == "tickets" && strings.Contains(text, "json_extract") {
+			t.Errorf("the %s fill asked for no column decodes the blob:\n%s", fill.name, text)
+		}
+	}
 	tickets, labels := read("tickets.type", "tickets.priority", "labels")
 	if want := []string{"10001|Bug|High", "10002|-|-", "10003|-|-", "10005|-|-"}; !reflect.DeepEqual(tickets, want) {
 		t.Errorf("asked for both: tickets %v; want %v", tickets, want)
@@ -424,12 +449,12 @@ func TestMirrorExportReadsEachRowOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, everyExportColumn(), CardShapeForTest))
+	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, CardShapeForTest))
 	steps := map[string]int{}
 	err := conn.Raw(func(dc any) error {
 		prep := dc.(driver.ConnPrepareContext)
 		for _, fill := range mirrorExportFills {
-			stmt, err := prep.PrepareContext(ctx, fill.sql)
+			stmt, err := prep.PrepareContext(ctx, fill.text(everyExportColumn()))
 			if err != nil {
 				return fmt.Errorf("prepare %s: %w", fill.name, err)
 			}
@@ -490,23 +515,47 @@ func TestMirrorExportFillsAtScale(t *testing.T) {
 func exportFillsAtScale(t *testing.T, n int) {
 	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: n, parents: true})
 	ctx := context.Background()
-	var conn *sql.Conn
-	// Each fill with no column of MirrorExportColumns asked for, then with
-	// every one asked for, as a count whose query reads them asks.
-	for _, asked := range []map[string]bool{{}, everyExportColumn()} {
-		args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, asked, CardShapeForTest))
+	// A ticket's epic is its parent when the fixture names the parent an
+	// epic, else its parent's epic: a sub-task counts under its story's.
+	epicOf := map[string]string{}
+	epics := map[string]bool{}
+	under := 0
+	for i := range n {
+		c := benchParented(benchRow(0, i, 0), 0, i).Card
+		epic := epicOf[c.ParentID]
+		if c.ParentName != nil && c.ParentName.TypeLevel == 1 {
+			epic = c.ParentID
+		}
+		if epic != "" {
+			epicOf[c.IssueID], epics[epic] = epic, true
+			under++
+		}
+	}
+	wantEpics := fmt.Sprintf("%d|%d", under, len(epics))
+	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, CardShapeForTest))
+	// Each fill with no column of MirrorExportColumns asked for, with one,
+	// and with every one, as a count whose query names them asks.
+	for _, asked := range []struct {
+		label   string
+		columns map[string]bool
+	}{{"no column", map[string]bool{}}, {"type", map[string]bool{"tickets.type": true}}, {"every column", everyExportColumn()}} {
 		steps, best := map[string]int{}, map[string]time.Duration{}
-		for range 5 {
-			conn = exportConn(t)
+		// sample fills one copy and checks it, closing it before the next.
+		sample := func() (err error) {
+			conn, closeConn, err := newExportConn()
+			if err != nil {
+				return err
+			}
+			defer func() { err = errors.Join(err, closeConn()) }()
 			for _, q := range []string{MirrorExportSchema, `ATTACH '` + mirrorExportURI(s.path) + `' AS ` + mirrorExportSchemaName} {
 				if _, err := conn.ExecContext(ctx, q); err != nil {
-					t.Fatal(err)
+					return err
 				}
 			}
-			err := conn.Raw(func(dc any) error {
+			err = conn.Raw(func(dc any) error {
 				prep := dc.(driver.ConnPrepareContext)
 				for _, fill := range mirrorExportFills {
-					stmt, err := prep.PrepareContext(ctx, fill.sql)
+					stmt, err := prep.PrepareContext(ctx, fill.text(asked.columns))
 					if err != nil {
 						return fmt.Errorf("prepare %s: %w", fill.name, err)
 					}
@@ -529,35 +578,31 @@ func exportFillsAtScale(t *testing.T, n int) {
 				return nil
 			})
 			if err != nil {
+				return err
+			}
+			count := func(column string) int {
+				if asked.columns[column] {
+					return n
+				}
+				return 0
+			}
+			got := exportRows(t, conn, `SELECT count(type) || '|' || count(priority) || '|' || (SELECT count(*) FROM labels) FROM tickets`)
+			if want := fmt.Sprintf("%d|%d|%d", count("tickets.type"), count("tickets.priority"), 2*n); got[0] != want {
+				t.Errorf("%d issues, %s asked: tickets with a type|with a priority|labels = %s; want %s", n, asked.label, got[0], want)
+			}
+			got = exportRows(t, conn, `SELECT (SELECT count(*) FROM tickets WHERE epic IS NOT NULL) || '|' || (SELECT count(*) FROM epics)`)
+			if got[0] != wantEpics {
+				t.Errorf("%d issues: tickets under an epic|epics = %s; want %s", n, got[0], wantEpics)
+			}
+			return nil
+		}
+		for range 5 {
+			if err := sample(); err != nil {
 				t.Fatal(err)
 			}
 		}
 		for _, fill := range mirrorExportFills {
-			t.Logf("%d issues, columns asked %v, %-26s %10d steps, %5d a row, best %v", n, len(asked) > 0, fill.name, steps[fill.name], steps[fill.name]/n, best[fill.name].Round(time.Microsecond))
+			t.Logf("%d issues, %-12s %-26s %10d steps, %5d a row, best %v", n, asked.label, fill.name, steps[fill.name], steps[fill.name]/n, best[fill.name].Round(time.Microsecond))
 		}
-		got := exportRows(t, conn, `SELECT count(type) || '|' || count(priority) || '|' || (SELECT count(*) FROM labels) FROM tickets`)
-		if want := map[bool]string{false: "0|0|", true: fmt.Sprintf("%d|%d|", n, n)}[len(asked) > 0] + strconv.Itoa(2*n); got[0] != want {
-			t.Errorf("%d issues, columns asked %v: tickets with a type|with a priority|labels = %s; want %s", n, len(asked) > 0, got[0], want)
-		}
-	}
-	// A ticket's epic is its parent when the fixture names the parent an
-	// epic, else its parent's epic: a sub-task counts under its story's.
-	epicOf := map[string]string{}
-	epics := map[string]bool{}
-	under := 0
-	for i := range n {
-		c := benchParented(benchRow(0, i, 0), 0, i).Card
-		epic := epicOf[c.ParentID]
-		if c.ParentName != nil && c.ParentName.TypeLevel == 1 {
-			epic = c.ParentID
-		}
-		if epic != "" {
-			epicOf[c.IssueID], epics[epic] = epic, true
-			under++
-		}
-	}
-	got := exportRows(t, conn, `SELECT (SELECT count(*) FROM tickets WHERE epic IS NOT NULL) || '|' || (SELECT count(*) FROM epics)`)
-	if want := fmt.Sprintf("%d|%d", under, len(epics)); got[0] != want {
-		t.Errorf("%d issues: tickets under an epic|epics = %s; want %s", n, got[0], want)
 	}
 }

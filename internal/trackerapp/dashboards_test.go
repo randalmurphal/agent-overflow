@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"encoding/json"
 	"errors"
 	"maps"
 	"os"
@@ -58,6 +59,76 @@ func TestAWidgetReadsTypesPrioritiesAndLabelsAsTheReadGaveThem(t *testing.T) {
 	if want := map[string]string{"10001": "Bug|High|frontend,lbl-9", "10002": "-|-|-"}; !maps.Equal(got, want) {
 		t.Fatalf("type|priority|labels by ticket = %v; want %v", got, want)
 	}
+}
+
+// A widget that reads a type, a priority or labels through a join's
+// USING or NATURAL counts what its ON twin counts: tried alone, kept on
+// one dashboard beside the others, and drilled, each copy filled with what
+// its query reads. The board holds one Bug, High, labeled ticket of three.
+func TestAJoinCountsTheSameUsingNaturalOrOn(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	bug := row("10001", 1_799_000_000_000, "a")
+	bug.Card.Type = tracker.IssueType{ID: "10004", Name: "Bug"}
+	bug.Card.Priority = tracker.Choice{ID: "2", Name: "High"}
+	bug.Card.Labels = []tracker.Choice{{ID: "frontend", Name: "frontend"}}
+	task := row("10002", 1_799_000_000_000, "b")
+	task.Card.Type = tracker.IssueType{ID: "10003", Name: "Task"}
+	task.Card.Priority = tracker.Choice{ID: "3", Name: "Low"}
+	m.tracks([]tracker.Row{bug, task, row("10003", 1_799_000_000_000, "c")})
+	sub := m.subscribeShown(t, m.project()).ID
+	queries := map[string]string{
+		"type USING":       `WITH kinds(type) AS (VALUES ('Bug')) SELECT t.id AS ticket FROM tickets t JOIN kinds USING(type)`,
+		"type ON":          `WITH kinds(k) AS (VALUES ('Bug')) SELECT t.id AS ticket FROM tickets t JOIN kinds ON kinds.k = t.type`,
+		"priority NATURAL": `WITH w(priority) AS (VALUES ('High')) SELECT id AS ticket FROM tickets NATURAL JOIN w`,
+		"priority ON":      `WITH w(p) AS (VALUES ('High')) SELECT t.id AS ticket FROM tickets t JOIN w ON w.p = t.priority`,
+		"labels USING":     `WITH c AS (SELECT id AS ticket FROM tickets) SELECT c.ticket FROM c JOIN labels USING(ticket)`,
+		"labels ON":        `SELECT t.id AS ticket FROM tickets t JOIN labels l ON l.ticket = t.id`,
+	}
+	names := slices.Sorted(maps.Keys(queries))
+	widgets := map[string]string{} // widget ID to its query's name
+	dashboard := ""
+	for _, name := range names {
+		w := openTickets()
+		w.Metric.Title, w.Metric.SQL = name, queries[name]
+		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, "thread-1", true)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := numText(t, tried.Value.Value); got != `{"v":1}` {
+			t.Errorf("%s tried: %s; want 1", name, got)
+		}
+		target := KeepTarget{Dashboard: dashboard}
+		if dashboard == "" {
+			target = KeepTarget{Title: "Joins"}
+		}
+		if dashboard, err = m.svc.KeepProposal(sub, tried.View.ID, target); err != nil {
+			t.Fatalf("keep %s: %v", name, err)
+		}
+		widgets[tried.View.ID] = name
+	}
+	for _, v := range m.evaluate(t, sub, dashboard).Widgets {
+		if got := numText(t, v.Value); got != `{"v":1}` {
+			t.Errorf("%s kept: %s; want 1", widgets[v.ID], got)
+		}
+		d, err := m.svc.DashboardDrill(t.Context(), sub, trackerdash.DrillRequest{Request: trackerdash.Request{Dashboard: dashboard, TimeZone: "UTC"}, Widget: v.ID})
+		if err != nil {
+			t.Fatalf("drill %s: %v", widgets[v.ID], err)
+		}
+		if got := numText(t, &d.Value); got != `{"v":1}` || len(d.Rows) != 1 || d.Rows[0].ID != "10001" {
+			t.Errorf("%s drilled: %s, rows %+v; want 1, 10001", widgets[v.ID], got, d.Rows)
+		}
+	}
+}
+
+// numText is n as the wire writes it, "null" for none.
+func numText(t *testing.T, n *trackerdash.Num) string {
+	t.Helper()
+	data, err := json.Marshal(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 // propose shows w on the fixture's board for thread-1 and answers its
