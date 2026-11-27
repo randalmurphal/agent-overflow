@@ -18,6 +18,7 @@ import {
   appendPage,
   applyBoardPatch,
   cardMatches,
+  filtering,
   cardURL,
   columnWith,
   columnsReached,
@@ -209,6 +210,14 @@ describe('Only mine and Search', () => {
     expect(cardMatches(card, { mine: null, words: searchWords('  EXPORT   reliability ') })).toBe(true);
     expect(cardMatches(card, { mine: null, words: searchWords('web-1 bug user') })).toBe(true);
     expect(cardMatches(card, { mine: null, words: searchWords('export missing') })).toBe(false);
+  });
+
+  it("keeps only a tile's tickets while a tile filters the board, with Only mine and Search on top", () => {
+    expect(filtering({ mine: null, words: [], only: new Set<string>() })).toBe(true);
+    expect(filtering({ mine: null, words: [], only: null })).toBe(false);
+    expect(cardMatches(card, { mine: null, words: [], only: new Set(['1']) })).toBe(true);
+    expect(cardMatches(card, { mine: null, words: [], only: new Set(['2']) })).toBe(false);
+    expect(cardMatches(card, { mine: 'acc-user2', words: [], only: new Set(['1']) })).toBe(false);
   });
 });
 

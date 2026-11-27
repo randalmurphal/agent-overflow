@@ -1,3 +1,26 @@
+<script lang="ts" module>
+  import type { LimitChange } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+
+  /** What the header's bell and pin set, through the board's computer. */
+  export interface TileControls {
+    readonly pinned: boolean;
+    /** The board's row is full, so it takes no other pin. */
+    readonly rowFull: boolean;
+    /** How many widgets the board's row holds. */
+    readonly max: number;
+    /** A change of this widget is out. */
+    readonly busy: boolean;
+    /** Why a change takes no press; undefined when it does. */
+    readonly blocked?: string;
+    /** Only the controls switched on show (compact, out of edit mode). */
+    readonly onlyOn: boolean;
+    /** Changes the limit (trackerapp.LimitChange), or turns it off with
+     * null. */
+    setLimit(change: LimitChange | null): void;
+    setPinned(pinned: boolean): void;
+  }
+</script>
+
 <script lang="ts">
   // One widget of a dashboard (docs/specs/issues.md, "Dashboards"), drawn
   // in its form from its numbers in the screen's one answer: a number with
@@ -11,12 +34,18 @@
   // proposal's Keep and Dismiss, edit mode's Remove), which wraps inside
   // the widget however narrow it is. While its numbers are of a request
   // no longer asked (stale), they are dimmed and take no click; the title,
-  // How this is counted and the actions do.
+  // How this is counted and the actions do. A number past its limit is
+  // marked amber and says so. The header's bell sets the limit and its
+  // pin puts the widget on the board's summary row (`tile`); under compact
+  // only those switched on show, until the dashboard is edited.
   import type { Snippet } from 'svelte';
   import ArrowDownRight from '@lucide/svelte/icons/arrow-down-right';
   import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
+  import Bell from '@lucide/svelte/icons/bell';
   import Info from '@lucide/svelte/icons/info';
   import Minus from '@lucide/svelte/icons/minus';
+  import Pin from '@lucide/svelte/icons/pin';
+  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import type {
     BucketValue,
     Name,
@@ -25,16 +54,26 @@
     WidgetValue,
     WidgetView,
   } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
+  import type { TileLimit } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import Icon from '../primitives/Icon.svelte';
+  import Popover from '../primitives/Popover.svelte';
+  import Button from '../primitives/Button.svelte';
   import {
     changeMark,
     formatNum,
+    limitFormat,
+    limitSide,
+    limitWords,
+    overLimit,
+    pastLimitWords,
     notCountedWords,
     numValue,
     numWords,
+    namedSeries,
+    showsTotal,
     type Num,
   } from '../../stores/trackerDashboardModel';
-  import { formatAmount, type DashboardUnit } from '../../utils/dashboardAmount';
+  import { formatAmount, unitWord, type DashboardUnit } from '../../utils/dashboardAmount';
   import type { DrillTarget } from '../../stores/trackerDashboard.svelte';
   import BarChart from './charts/BarChart.svelte';
   import LineChart from './charts/LineChart.svelte';
@@ -59,17 +98,20 @@
     /** Where a ticket list's selection is written. */
     tickets: TicketListSource;
     actions?: Snippet;
+    /** A number widget's limit, in the unit it applies in; null for none. */
+    limit?: TileLimit | null;
+    /** The bell and the pin; none from a computer whose release keeps no
+     * tiles. */
+    tile?: TileControls;
   }
 
-  let { view, value, counting = false, range, estimates, stale = false, onDrill, onPerson, onEpic, onTicket, tickets, actions }: Props = $props();
+  let { view, value, counting = false, range, estimates, stale = false, onDrill, onPerson, onEpic, onTicket, tickets, actions, limit = null, tile }: Props = $props();
 
   let showHow = $state(false);
   const unit = $derived(view.unit as DashboardUnit);
   const series = $derived(value?.series ?? view.series ?? ['']);
-  const named = $derived(series.length > 1 || (series[0] ?? '') !== '');
-  // A table of named series adds them up, unless its metric's series
-  // overlap (a ticket counting in several), as the sprint table's do.
-  const total = $derived(named && !view.overlap);
+  const named = $derived(namedSeries(series));
+  const total = $derived(showsTotal(view, series));
   const byPeriod = $derived(view.bucket === 'period' || view.bucket === 'sprint');
   // A widget that counts now has no earlier value to compare with, whatever
   // its answer holds. A state's previous value is what held where the range
@@ -82,6 +124,28 @@
   // listing could not name it.
   const how = $derived(value?.range_words ? { ...view.how, range: value.range_words } : view.how);
   const amount = $derived(numWords(value?.value as Num | undefined, unit, estimates));
+  const side = $derived(limitSide(view.good ?? ''));
+  const over = $derived(view.form === 'number' && !value?.error && overLimit(value?.value as Num | undefined, unit, estimates, limit, view.good ?? ''));
+
+  // The limit's popover. Its value is the limit, in its own unit, or the
+  // number now while none is set. A step moves the limit the computer
+  // stores by its unit's step, and with none starts from the number now,
+  // as Turn on sets it; with no limit they wait for a count to give that
+  // number, in the estimates it was counted in. Lower is off at or below
+  // 0, where the computer's step leaves a limit (trackerapp's stepped).
+  let limitAnchor: HTMLElement | undefined = $state();
+  let limitOpen = $state(false);
+  const now = $derived(value && !value.error ? numValue(value.value as Num | undefined) : null);
+  const limitShown = $derived(limit ? { value: limit.value, ...limitFormat(limit) } : { value: now ?? 0, unit, estimates });
+  function step(by: number): void {
+    tile?.setLimit(limit ? { step: by } : { step: by, value: now, estimates });
+  }
+  // What the limit's popover reads of the controls, in one value, so no
+  // expression of it reads `tile` beside another value as it goes.
+  const limitOff = $derived(!tile || !!tile.blocked || tile.busy || (!limit && now === null));
+  const limitNote = $derived(limit === null ? 'No limit is set.' : `The tile turns amber${tile?.pinned ? ', here and on the board row' : ''}.`);
+  const bellShown = $derived(!!tile && view.form === 'number' && (!tile.onlyOn || limit !== null));
+  const pinShown = $derived(!!tile && (!tile.onlyOn || tile.pinned));
 
   function pick(bucket: BucketValue, s: string): void {
     onDrill({ widget: view.id, cell: { bucket: bucket.key, series: s } });
@@ -101,10 +165,11 @@
 </script>
 
 <section
-  class="flex min-w-0 flex-col gap-2 rounded-[var(--radius-card)] border border-border-subtle bg-surface-0 p-3"
+  class="flex min-w-0 flex-col gap-2 rounded-[var(--radius-card)] border bg-surface-0 p-3 {over ? 'border-warning/50' : 'border-border-subtle'}"
   data-testid="dashboard-widget"
   data-widget={view.id}
   data-form={view.form}
+  data-over={over}
   aria-label={view.title}
 >
   <header class="flex items-start gap-2">
@@ -123,6 +188,38 @@
     >
       <Icon icon={Info} size={13} strokeWidth={2} />
     </button>
+    {#if bellShown && tile}
+      <span class="inline-flex shrink-0" bind:this={limitAnchor}>
+        <button
+          type="button"
+          class="inline-flex size-5 items-center justify-center rounded-[var(--radius-control)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:size-8 {limit !== null ? 'bg-accent text-accent-fg' : 'text-fg-muted hover:bg-surface-1 hover:text-fg'}"
+          aria-haspopup="dialog"
+          aria-expanded={limitOpen}
+          aria-label={limit !== null ? `Warns ${side} ${limitWords(limit)}` : 'Warn me at a limit'}
+          title={limit !== null ? `Warns ${side} ${limitWords(limit)}` : 'Warn me at a limit'}
+          data-testid="dashboard-limit-toggle"
+          data-on={limit !== null}
+          onclick={() => { limitOpen = !limitOpen; }}
+        >
+          <Icon icon={Bell} size={13} strokeWidth={2} />
+        </button>
+      </span>
+    {/if}
+    {#if pinShown && tile}
+      {@const pinBlocked = tile.blocked ?? (!tile.pinned && tile.rowFull ? `The board's row already shows ${tile.max} tiles. Take one off to pin this one.` : undefined)}
+      <button
+        type="button"
+        class="inline-flex size-5 shrink-0 items-center justify-center rounded-[var(--radius-control)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50 compact:size-8 {tile.pinned ? 'bg-accent text-accent-fg' : 'text-fg-muted hover:bg-surface-1 hover:text-fg'}"
+        aria-pressed={tile.pinned}
+        aria-label={tile.pinned ? 'Take off the board row' : 'Show on the board row'}
+        title={pinBlocked ?? (tile.pinned ? 'Take off the board row' : 'Show on the board row')}
+        disabled={!!pinBlocked || tile.busy}
+        data-testid="dashboard-pin"
+        onclick={() => tile.setPinned(!tile.pinned)}
+      >
+        <Icon icon={Pin} size={13} strokeWidth={2} />
+      </button>
+    {/if}
   </header>
   {#if actions}
     <div class="flex flex-wrap items-center gap-1" data-testid="dashboard-widget-actions">{@render actions()}</div>
@@ -152,6 +249,12 @@
           </span>
           {#if amount.notCounted}
             <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-number-not-counted">{amount.notCounted}</span>
+          {/if}
+          {#if over && limit !== null}
+            <span class="inline-flex items-center gap-1 text-[0.6875rem] text-fg-muted" data-testid="dashboard-over">
+              <Icon icon={TriangleAlert} size={12} strokeWidth={2.25} class="shrink-0 text-warning" />
+              <span>{pastLimitWords(limit, view.good ?? '')}</span>
+            </span>
           {/if}
           {#if mark?.kind === 'change'}
             <span
@@ -250,3 +353,19 @@
     </div>
   {/if}
 </section>
+{#if tile}
+  <Popover anchor={limitAnchor} open={limitOpen} onClose={() => { limitOpen = false; }} placement="bottom-end" ariaLabel="Limit">
+    <div class="flex w-[280px] flex-col gap-2 rounded-[var(--radius-card)] border border-border-subtle bg-surface-1 p-3 text-[0.75rem] shadow-menu compact:w-full" data-testid="dashboard-limit">
+      <h4 class="font-medium text-fg">Warn me when this is {side}</h4>
+      <div class="flex items-center gap-2">
+        <Button size="xs" variant="ghost" testId="dashboard-limit-lower" title="Lower" disabled={limitOff || limitShown.value <= 0} onclick={() => step(-1)}>−</Button>
+        <b class="tabular-nums text-fg" data-testid="dashboard-limit-value">{formatAmount(limitShown.value, limitShown.unit, limitShown.estimates)}</b>
+        <Button size="xs" variant="ghost" testId="dashboard-limit-raise" title="Raise" disabled={limitOff} onclick={() => step(1)}>+</Button>
+        <span class="text-fg-muted">{unitWord(limitShown.value, limitShown.unit, limitShown.estimates)}</span>
+        <span class="flex-1"></span>
+        <Button size="xs" variant="tinted" testId="dashboard-limit-switch" title={tile?.blocked} disabled={limitOff} onclick={() => tile?.setLimit(limit !== null ? null : { value: now, estimates })}>{limit !== null ? 'Turn off' : 'Turn on'}</Button>
+      </div>
+      <p class="text-fg-muted" data-testid="dashboard-limit-note">{limitNote}</p>
+    </div>
+  </Popover>
+{/if}

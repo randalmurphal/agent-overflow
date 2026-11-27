@@ -1193,6 +1193,8 @@ export const TrackerDashboardDrill = dispatch('TrackerDashboardDrill');
 export const KeepTrackerWidget = dispatch('KeepTrackerWidget');
 export const DismissTrackerWidget = dispatch('DismissTrackerWidget');
 export const RemoveTrackerWidget = dispatch('RemoveTrackerWidget');
+export const SetTrackerWidgetLimit = dispatch('SetTrackerWidgetLimit');
+export const PinTrackerWidget = dispatch('PinTrackerWidget');
 export const StartTrackerDashboardThread = dispatch('StartTrackerDashboardThread');
 
 export const SubscribeTrackerTicket = dispatch('SubscribeTrackerTicket');

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
@@ -17,18 +18,22 @@ import (
 // keeps, and the widgets agents proposed on it (trackerapp/dashboards.go).
 // trackerdash evaluates them in a copy of the board it makes for each
 // call, so nothing outlives a call; the wire shapes are trackerdash's own.
-// tracker:dashboards_updated tells every client of this computer that a
-// board's dashboards changed.
+// A change of a board's dashboards is told on the board's event
+// (trackerapp.BoardEvent.Dashboards) to its subscribers of the project.
 
 // TrackerDashboardsView is what a subscribed board's Dashboards screen
 // lays out: the dashboards it offers, the built-in first, each with its
 // ranges and its widgets' layout and How this is counted, and the widgets
-// agents proposed on the board with their threads (trackerdash.Listing).
-// Ask is why Ask your agent cannot start a thread on this computer, ""
-// when it can (trackerToolsProvider).
+// agents proposed on the board with their threads (trackerdash.Listing),
+// and the board's summary row: the number widgets' limits that apply, the
+// proposals Keep pins and how many tiles the row shows
+// (trackerapp.BoardTilesView); its pins are the board subscription's
+// (BoardView.Pins). Ask is why Ask your agent cannot start a thread
+// on this computer, "" when it can (trackerToolsProvider).
 type TrackerDashboardsView struct {
 	Dashboards []trackerdash.DashboardView `json:"dashboards"`
 	Proposals  []trackerdash.ProposalView  `json:"proposals"`
+	Tiles      trackerapp.BoardTilesView   `json:"tiles"`
 	Ask        string                      `json:"ask"`
 }
 
@@ -43,11 +48,11 @@ func (a *App) TrackerDashboards(ctx context.Context, subscriptionID string) (Tra
 	if err != nil {
 		return TrackerDashboardsView{}, err
 	}
-	list, err := svc.Dashboards(ctx, subscriptionID)
+	list, tiles, err := svc.Dashboards(ctx, subscriptionID)
 	if err != nil {
 		return TrackerDashboardsView{}, dashboardError(err)
 	}
-	out := TrackerDashboardsView{Dashboards: list.Dashboards, Proposals: list.Proposals}
+	out := TrackerDashboardsView{Dashboards: list.Dashboards, Proposals: list.Proposals, Tiles: tiles}
 	if a.trackerToolsProvider(ctx) == "" {
 		out.Ask = noTrackerToolsProvider
 	}
@@ -81,12 +86,14 @@ func (a *App) trackerToolsProvider(ctx context.Context) string {
 // and answers its row: in the project the board subscription was made
 // for, in its checkout, on the provider trackerToolsProvider picks, its
 // draft, unsent, naming the board by its name and site/ID, which the
-// tracker tools' dashboard_widget takes. A failure to seed the draft
+// tracker tools' dashboard_widget takes. With rowWidget, the words the
+// person typed in the board's summary row, the draft asks for a widget
+// that shows them, proposed for the row. A failure to seed the draft
 // deletes the thread. Nothing else is written.
 //
 //ao:scope threads:operate
 //ao:route home
-func (a *App) StartTrackerDashboardThread(ctx context.Context, subscriptionID string) (store.Thread, error) {
+func (a *App) StartTrackerDashboardThread(ctx context.Context, subscriptionID, rowWidget string) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
 	}
@@ -113,16 +120,21 @@ func (a *App) StartTrackerDashboardThread(ctx context.Context, subscriptionID st
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("start dashboard thread: %w", err)
 	}
-	if err := a.SaveDraft(ctx, thread.ID, dashboardAskSeed(board), nil, nil, nil); err != nil {
+	if err := a.SaveDraft(ctx, thread.ID, dashboardAskSeed(board, rowWidget), nil, nil, nil); err != nil {
 		return store.Thread{}, errors.Join(fmt.Errorf("start dashboard thread: seed the draft: %w", err), a.rollBackCreatedThread("start dashboard thread", project, thread, cut))
 	}
 	return a.store.GetThread(thread.ID)
 }
 
 // dashboardAskSeed is the draft Ask your agent leaves for the person to
-// finish and send.
-func dashboardAskSeed(b trackerapp.DashboardAskBoard) string {
-	return fmt.Sprintf("About the dashboards of the board %s (%s): ", b.Name, b.Handle)
+// finish and send, asking for a widget for the board's summary row that
+// shows rowWidget when it is not empty.
+func dashboardAskSeed(b trackerapp.DashboardAskBoard, rowWidget string) string {
+	seed := fmt.Sprintf("About the dashboards of the board %s (%s): ", b.Name, b.Handle)
+	if w := strings.TrimSpace(rowWidget); w != "" {
+		seed += "propose a widget with pin, for the board's summary row, that shows " + w
+	}
+	return seed
 }
 
 // EvaluateTrackerDashboard counts one dashboard of a subscribed board over
@@ -195,6 +207,34 @@ func (a *App) RemoveTrackerWidget(ctx context.Context, subscriptionID, dashboard
 		return err
 	}
 	return dashboardError(svc.RemoveWidget(subscriptionID, dashboard, widget))
+}
+
+// SetTrackerWidgetLimit changes the limit of a number widget of a
+// subscribed board's dashboards, to a value its count answered or by a
+// step of the stored one (trackerapp.LimitChange), or clears it for nil;
+// over it, the widget and its tile on the board's summary row are marked.
+//
+//ao:scope tracker:operate
+//ao:route home
+func (a *App) SetTrackerWidgetLimit(ctx context.Context, subscriptionID, widget string, change *trackerapp.LimitChange) error {
+	svc, err := a.trackerService()
+	if err != nil {
+		return err
+	}
+	return dashboardError(svc.SetWidgetLimit(ctx, subscriptionID, widget, change))
+}
+
+// PinTrackerWidget pins a widget of a subscribed board's dashboards to the
+// end of the board's summary row, at most five, or takes it off.
+//
+//ao:scope tracker:operate
+//ao:route home
+func (a *App) PinTrackerWidget(ctx context.Context, subscriptionID, widget string, pinned bool) error {
+	svc, err := a.trackerService()
+	if err != nil {
+		return err
+	}
+	return dashboardError(svc.PinWidget(ctx, subscriptionID, widget, pinned))
 }
 
 // dashboardError is err with the evaluator's refusal as its public code

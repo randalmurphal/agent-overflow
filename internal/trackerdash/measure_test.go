@@ -1,7 +1,11 @@
 package trackerdash
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"os"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,5 +81,46 @@ func TestHostileQuerySpill(t *testing.T) {
 	}
 	if closed.Goroutines > before.Goroutines {
 		t.Errorf("%d goroutines after the session closed, %d before it", closed.Goroutines, before.Goroutines)
+	}
+}
+
+// What a tile's set of 5,000 tickets costs: a board of 5,000 tickets all
+// stuck, drilled for their IDs as a tile's filter asks, once with Jira's
+// IDs (numbers) and once with Linear's (UUIDs). It logs the answer's
+// JSON bytes, the rows the metric returned and the time the drill took.
+//
+//	AO_TRACKER_SCALE=5000 make go-test GO_TEST_PKGS=./internal/trackerdash \
+//	  GO_TEST_FLAGS="-count=1 -v -run TestATicketSetsCost"
+func TestATicketSetsCost(t *testing.T) {
+	n, _ := strconv.Atoi(os.Getenv("AO_TRACKER_SCALE"))
+	if n <= 0 {
+		t.Skip("AO_TRACKER_SCALE names no sizes")
+	}
+	for _, shape := range []struct {
+		name string
+		id   func(i int) string
+	}{
+		{"Jira", func(i int) string { return strconv.Itoa(10000 + i) }},
+		{"Linear", func(i int) string { return fmt.Sprintf("%08x-0000-4000-8000-%012x", i, i) }},
+	} {
+		f := sprintBoard()
+		for i := range n {
+			f.ticket(ticket{id: shape.id(i), key: fmt.Sprintf("WEB-%d", i), status: "3", group: "in_progress", assignee: "u1", created: ago(20), since: ago(5)})
+		}
+		e := evaluator()
+		start := time.Now()
+		d, err := e.Drill(context.Background(), f.board(), DrillRequest{Request: Request{Dashboard: builtinSprintsID, TimeZone: "UTC", Widgets: []string{"stuck"}}, Widget: "stuck", IDs: true})
+		took := time.Since(start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := json.Marshal(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("%s: %d tickets, %d rows returned, answer %d bytes (%.1f a ticket), drilled in %v", shape.name, len(d.IDs), d.Count, len(body), float64(len(body))/float64(len(d.IDs)), took.Round(time.Millisecond))
+		if len(d.IDs) != n {
+			t.Fatalf("%d IDs; want %d", len(d.IDs), n)
+		}
 	}
 }

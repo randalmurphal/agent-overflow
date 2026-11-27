@@ -137,10 +137,23 @@ export interface TrackerBoardState {
    * dashboard's); empty until the subscribe answers. */
   readonly subscription: string;
   /** How many times the board changed since the subscribe answered: an
-   * event that named rows, said to read again or told the board's first
-   * reconcile, or a gap. A surface that reads the board its own way (a
+   * event that named rows, said to read again, told the board's first
+   * reconcile or told a change of what this project's dashboards of the
+   * board count, or a gap. A surface that reads the board its own way (a
    * dashboard) reads again when it moves. */
   readonly changes: number;
+  /** How many times this project's dashboards of the board changed since
+   * the subscribe answered (`TrackerBoardEvent.dashboards`: a widget kept,
+   * dismissed, removed or proposed, a limit, the unit counted in), an
+   * event that said to read the board again (its structure, the unit of
+   * its estimates among it, changed), or a gap. A surface that lists them
+   * reads the list again when it moves. */
+  readonly dashboards: number;
+  /** The widgets the board's project pins to its summary row, in the
+   * row's order: the board's read's (`BoardView.pins`), then each event
+   * that tells the project's pins (`TrackerBoardEvent.pins`), which reads
+   * nothing; empty for none, and null until the board is read. */
+  readonly pins: readonly string[] | null;
 }
 
 interface Live {
@@ -181,6 +194,9 @@ interface Live {
   /** A sync told has carried the board's reconcile: its first read has
    * finished. */
   reconciled: boolean;
+  /** The sequence of the last event that told this project's pins: a full
+   * read begun before it does not take its pins back. */
+  pinsSeq: number;
 }
 
 /** Event IDs past which a patch is not read (trackerapp maxEventIssues). */
@@ -191,7 +207,7 @@ const NO_SECTION_ERRORS: ReadonlyMap<string, unknown> = new Map();
 
 const FIRST_STATE: TrackerBoardState = {
   held: null, failure: null, readAt: 0, ended: false, paging: NO_SECTIONS, sectionErrors: NO_SECTION_ERRORS,
-  refreshing: false, refreshNotice: null, readError: null, subscription: '', changes: 0,
+  refreshing: false, refreshNotice: null, readError: null, subscription: '', changes: 0, dashboards: 0, pins: null,
 };
 
 // The subscribe refusals that hold until the board's lists change: the
@@ -257,7 +273,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
     state: FIRST_STATE,
     pending: new Set(), readAgain: false, retryHeld: false, wantPage: new Set(), staleAt: -1,
-    intern: createRowInterner(), running: null, voted: visibleOf(key), settled: [], reading: false, reconciled: false,
+    intern: createRowInterner(), running: null, voted: visibleOf(key), settled: [], reading: false, reconciled: false, pinsSeq: 0,
   };
   lives.set(key, live);
   signal.addEventListener('abort', () => {
@@ -298,6 +314,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
     failure: answer.failure ?? null,
     readAt: view?.sync.read_at ?? 0,
     subscription: id,
+    pins: view ? view.pins ?? [] : null,
   };
   const early = live.joining ?? [];
   live.joining = null;
@@ -339,9 +356,19 @@ function fold(live: Live, event: TrackerBoardEvent): void {
     settleWaiters(live);
     return;
   }
+  // The pins of this board's project; another project's pins of the same
+  // board are not this subscription's.
+  if (event.pins && event.pins.project === live.ref.projectId) {
+    next.pins = event.pins.pins ?? [];
+    live.pinsSeq = event.seq;
+  }
+  const dashboards = event.dashboards?.project === live.ref.projectId ? event.dashboards : null;
+  // A board read again may have changed what its dashboards list, such as
+  // the unit of its estimates that their limits apply in.
+  if (dashboards || event.read_again) next.dashboards = live.state.dashboards + 1;
   const ids = [...(event.changed ?? []), ...(event.removed ?? [])];
   if (event.read_again || event.truncated) live.readAgain = true;
-  if (ids.length > 0 || event.read_again || event.truncated) next.changes = live.state.changes + 1;
+  if (ids.length > 0 || event.read_again || event.truncated || dashboards?.counts) next.changes = live.state.changes + 1;
   releaseRetries(live, next);
   for (const id of ids) live.pending.add(id);
   if (live.pending.size > MAX_PATCH_IDS) {
@@ -368,14 +395,15 @@ function applyTrackerBoardEvent(event: TrackerBoardEvent, backend: BackendKey): 
 }
 
 /** A gap on `tracker:board_updated`: every board of the computer reads
- * whole again. Answers the settling of those reads, or undefined when no
- * board of the computer is held. */
+ * whole again, and what reads it its own way reads again, its dashboards
+ * listed and counted. Answers the settling of the boards' reads, or
+ * undefined when no board of the computer is held. */
 function resyncTrackerBoardsAfterGap(backend: BackendKey): Promise<void> | undefined {
   const runs: Promise<void>[] = [];
   for (const live of lives.values()) {
     if (live.ref.backend !== backend || !live.id || live.state.ended) continue;
     live.readAgain = true;
-    const next: StateChange = { changes: live.state.changes + 1 };
+    const next: StateChange = { changes: live.state.changes + 1, dashboards: live.state.dashboards + 1 };
     releaseRetries(live, next);
     update(live, next);
     runs.push(drain(live));
@@ -513,7 +541,9 @@ async function readWhole(live: Live): Promise<void> {
   const sync = live.seq === seq
     ? { failure: view.sync.failure ?? null, readAt: view.sync.read_at || live.state.readAt }
     : {};
-  update(live, { held, ...sync, readError: null });
+  // Pins an event told after the read began are newer than the read's.
+  const pins = live.pinsSeq > seq ? {} : { pins: view.pins ?? [] };
+  update(live, { held, ...sync, ...pins, readError: null });
 }
 
 async function readPatch(live: Live, held: HeldBoard): Promise<void> {

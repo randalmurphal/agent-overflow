@@ -18,8 +18,10 @@ import (
 // dismisses one. A proposal is held here, in memory, by project and
 // board, at most maxProposals, and is gone when the app stops; nothing
 // joins a dashboard without the person's Keep. Every change of either
-// tells the clients (Deps.DashboardsChanged), which read the board's
-// dashboards again.
+// tells the board's subscriptions of the project, on the board's event,
+// that its dashboards changed and whether what they count did
+// (tellDashboards): a limit changes how a number is drawn, not the
+// number.
 
 // maxProposals is how many proposed widgets a board holds for a project.
 const maxProposals = 5
@@ -31,44 +33,50 @@ type proposalKey struct {
 	board tracker.BoardID
 }
 
-// heldProposal is one proposed widget and the thread that proposed it.
+// heldProposal is one proposed widget, the thread that proposed it, and
+// what the agent asked for its tile (TileMarks): its limit in the unit
+// the widget's number was in when it was proposed, nil for none, and
+// whether Keep pins it.
 type heldProposal struct {
 	widget KeptWidget
 	thread string
+	limit  *TileLimit
+	pin    bool
+}
+
+// TileMarks is what an agent asks for the tile of a widget it proposes:
+// the limit of a number widget, nil for none, and whether Keep pins it to
+// the board's summary row.
+type TileMarks struct {
+	Limit *float64
+	Pin   bool
 }
 
 // Dashboards is what the board subscription shows: the built-in
 // dashboard its kind (whether it plans sprints, whether its tracker has
 // epics) picks, the project's own, and the widgets agents proposed on the
 // board, laid out with the unit the project counts the board in
-// (StatusGroups.unit). It counts nothing.
-func (s *Service) Dashboards(ctx context.Context, subscription string) (trackerdash.Listing, error) {
+// (StatusGroups.unit), with the limits of the board's summary row as the
+// project keeps them and the agents asked for them (tilesView). It counts
+// nothing.
+func (s *Service) Dashboards(ctx context.Context, subscription string) (trackerdash.Listing, BoardTilesView, error) {
 	scope, key, err := s.boardHandle(subscription)
 	if err != nil {
-		return trackerdash.Listing{}, err
+		return trackerdash.Listing{}, BoardTilesView{}, err
 	}
-	groups, err := s.boardStatusGroups(key)
+	tb, err := s.tileBoardOf(scope, key)
 	if err != nil {
-		return trackerdash.Listing{}, err
+		return trackerdash.Listing{}, BoardTilesView{}, err
 	}
 	own, err := s.ownOf(key, scope.Board, true)
 	if err != nil {
-		return trackerdash.Listing{}, err
+		return trackerdash.Listing{}, BoardTilesView{}, err
 	}
-	root, err := s.readRoot(scope.Connection)
+	l, err := s.dash.Dashboards(ctx, tb.kind, tb.estimateUnit, own.Own)
 	if err != nil {
-		return trackerdash.Listing{}, err
+		return trackerdash.Listing{}, BoardTilesView{}, err
 	}
-	defer s.leave()
-	st, ok, err := s.store.GetMirrorBoard(root, string(scope.Board))
-	switch {
-	case err != nil:
-		return trackerdash.Listing{}, fmt.Errorf("trackerapp: read board %s from the mirror: %w", scope.Board, err)
-	case !ok:
-		return trackerdash.Listing{}, fmt.Errorf("%w: board %s", ErrNotMirrored, scope.Board)
-	}
-	return s.dash.Dashboards(ctx, trackerdash.Kind{PlansSprints: st.Board.PlansSprints, Epics: hasEpics(key.site.tracker), Credit: groups.credit},
-		int(groups.unit(tracker.EstimateUnit(st.Board.EstimateUnit))), own)
+	return l, tilesView(own.tiles, tileWidgets(tb.kind, own.kept), tb.estimateUnit, own.proposed, l), nil
 }
 
 // DashboardAskBoard is a board as Ask your agent names it: the project
@@ -106,7 +114,7 @@ func (s *Service) DashboardAsk(subscription string) (DashboardAskBoard, error) {
 // widgets proposed on the board, read with the status groups its project
 // gives it.
 func (s *Service) EvaluateDashboard(ctx context.Context, subscription string, r trackerdash.Request) (trackerdash.Answer, error) {
-	b, err := s.subscribedBoard(subscription)
+	b, err := s.subscribedBoard(subscription, r)
 	if err != nil {
 		return trackerdash.Answer{}, err
 	}
@@ -117,7 +125,7 @@ func (s *Service) EvaluateDashboard(ctx context.Context, subscription string, r 
 // DashboardDrill is the rows behind one number of a dashboard of the
 // board subscription, from an evaluation of their own.
 func (s *Service) DashboardDrill(ctx context.Context, subscription string, r trackerdash.DrillRequest) (trackerdash.DrillAnswer, error) {
-	b, err := s.subscribedBoard(subscription)
+	b, err := s.subscribedBoard(subscription, r.Request)
 	if err != nil {
 		return trackerdash.DrillAnswer{}, err
 	}
@@ -125,10 +133,15 @@ func (s *Service) DashboardDrill(ctx context.Context, subscription string, r tra
 	return s.dash.Drill(ctx, b, r)
 }
 
-// subscribedBoard is the board subscription as an evaluation reads it,
-// with its project's dashboards and the proposals on it. The caller
-// leaves the service when the evaluation returns.
-func (s *Service) subscribedBoard(subscription string) (trackerdash.Board, error) {
+// subscribedBoard is the board subscription as an evaluation of r reads
+// it, with its project's dashboards and the proposals on it. A request
+// that names widgets counts a summary row's, at most maxPins, whether it
+// is a count's or a drill's. The caller leaves the service when the
+// evaluation returns.
+func (s *Service) subscribedBoard(subscription string, r trackerdash.Request) (trackerdash.Board, error) {
+	if len(r.Widgets) > maxPins {
+		return trackerdash.Board{}, fmt.Errorf("%w: a summary row counts at most %d widgets, not %d", ErrInvalidRequest, maxPins, len(r.Widgets))
+	}
 	scope, key, err := s.boardHandle(subscription)
 	if err != nil {
 		return trackerdash.Board{}, err
@@ -142,7 +155,7 @@ func (s *Service) subscribedBoard(subscription string) (trackerdash.Board, error
 		return trackerdash.Board{}, err
 	}
 	b, err := s.dashboardBoard(scope, groups)
-	b.Own = own
+	b.Own = own.Own
 	return b, err
 }
 
@@ -186,10 +199,20 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 	return b, nil
 }
 
+// boardOwn is what a project keeps for a board as an evaluation reads it
+// (trackerdash.Own), with its dashboards and tiles as kept and, with
+// proposals, the proposals as held.
+type boardOwn struct {
+	trackerdash.Own
+	kept     []KeptDashboard
+	tiles    BoardTiles
+	proposed []heldProposal
+}
+
 // ownOf is what key's project keeps for board, and with proposals what
 // agents proposed on it. With proposals it reads both under propMu, as a
 // Keep changes them, so a widget a Keep moves is found in one of them.
-func (s *Service) ownOf(key setupKey, board tracker.BoardID, proposals bool) (trackerdash.Own, error) {
+func (s *Service) ownOf(key setupKey, board tracker.BoardID, proposals bool) (boardOwn, error) {
 	if proposals {
 		s.propMu.Lock()
 		defer s.propMu.Unlock()
@@ -198,7 +221,7 @@ func (s *Service) ownOf(key setupKey, board tracker.BoardID, proposals bool) (tr
 	held, err := s.heldSetupLocked(key.slug)
 	s.setupMu.Unlock()
 	if err != nil {
-		return trackerdash.Own{}, err
+		return boardOwn{}, err
 	}
 	own := trackerdash.Own{Metrics: map[string]trackerdash.Metric{}}
 	add := func(w KeptWidget) trackerdash.Widget {
@@ -207,19 +230,23 @@ func (s *Service) ownOf(key setupKey, board tracker.BoardID, proposals bool) (tr
 		own.Metrics[w.ID] = m
 		return trackerdash.Widget{ID: w.ID, Metric: w.ID, Form: w.Form, Width: w.Width}
 	}
-	for _, d := range dashboardsOf(held.dashboards, key.site, string(board)) {
+	kept := dashboardsOf(held.kept.dashboards, key.site, string(board))
+	for _, d := range kept {
 		out := trackerdash.Dashboard{ID: d.ID, Title: d.Title}
 		for _, w := range d.Widgets {
 			out.Widgets = append(out.Widgets, add(w))
 		}
 		own.Dashboards = append(own.Dashboards, out)
 	}
+	out := boardOwn{kept: kept, tiles: cloneTiles(tilesOf(held.kept.tiles, key.site, string(board)))}
 	if proposals {
-		for _, p := range s.proposals[proposalKey{key.slug, key.site, board}] {
+		out.proposed = slices.Clone(s.proposals[proposalKey{key.slug, key.site, board}])
+		for _, p := range out.proposed {
 			own.Proposals = append(own.Proposals, trackerdash.Proposal{Widget: add(p.widget), Thread: p.thread})
 		}
 	}
-	return own, nil
+	out.Own = own
+	return out, nil
 }
 
 // KeepTarget is where Keep puts a proposed widget: at the end of the
@@ -243,6 +270,10 @@ func (s *Service) KeepProposal(subscription, proposal string, to KeepTarget) (st
 	if err != nil {
 		return "", err
 	}
+	tb, err := s.tileBoardOf(scope, key)
+	if err != nil {
+		return "", err
+	}
 	if (to.Dashboard == "") == (to.Title == "") {
 		return "", fmt.Errorf("%w: keep a widget on one dashboard, named or new", ErrInvalidRequest)
 	}
@@ -255,32 +286,49 @@ func (s *Service) KeepProposal(subscription, proposal string, to KeepTarget) (st
 	}
 	pk := proposalKey{key.slug, key.site, scope.Board}
 	s.propMu.Lock()
-	err = s.keepLocked(pk, key, string(scope.Board), proposal, to, id)
+	err = s.keepLocked(pk, key, string(scope.Board), tb, proposal, to, id)
 	s.propMu.Unlock()
 	if err != nil {
 		return "", err
 	}
-	s.dashboardsChanged()
+	s.tellDashboards(key.slug, true, boardIs(key.site, string(scope.Board)))
 	return id, nil
 }
 
 // keepLocked is KeepProposal's transition; the caller holds propMu.
-func (s *Service) keepLocked(pk proposalKey, key setupKey, board, proposal string, to KeepTarget, id string) error {
+func (s *Service) keepLocked(pk proposalKey, key setupKey, board string, tb tileBoard, proposal string, to KeepTarget, id string) error {
 	i := slices.IndexFunc(s.proposals[pk], func(p heldProposal) bool { return p.widget.ID == proposal })
 	if i < 0 {
 		return dashRefusal("dashboard_proposal_gone", "this proposed widget is no longer on the board: it was kept or dismissed in another window, or the app restarted; ask the agent to propose it again")
 	}
-	widget := s.proposals[pk][i].widget
-	_, err := s.editDashboards(key.slug, key.site, board, func(kept []KeptDashboard) ([]KeptDashboard, error) {
+	p := s.proposals[pk][i]
+	widget := p.widget
+	_, err := s.editBoard(key.slug, key.site, board, tb.kind, func(b *boardKept, _ map[string]tileWidget) error {
 		if to.Dashboard == "" {
-			return append(kept, KeptDashboard{ID: id, Title: strings.TrimSpace(to.Title), Widgets: []KeptWidget{widget}}), nil
+			b.dashboards = append(b.dashboards, KeptDashboard{ID: id, Title: strings.TrimSpace(to.Title), Widgets: []KeptWidget{widget}})
+		} else {
+			j := slices.IndexFunc(b.dashboards, func(d KeptDashboard) bool { return d.ID == to.Dashboard })
+			if j < 0 {
+				return dashRefusal("dashboard_gone", "that dashboard is gone; keep the widget on another dashboard or a new one")
+			}
+			b.dashboards[j].Widgets = append(b.dashboards[j].Widgets, widget)
 		}
-		j := slices.IndexFunc(kept, func(d KeptDashboard) bool { return d.ID == to.Dashboard })
-		if j < 0 {
-			return nil, dashRefusal("dashboard_gone", "that dashboard is gone; keep the widget on another dashboard or a new one")
+		// What the agent asked for its tile comes with it, the limit in the
+		// unit it was proposed in; a pin joins the row when it has room, as
+		// the screen said before the Keep.
+		if p.limit != nil {
+			if b.tiles.Limits == nil {
+				b.tiles.Limits = map[string]TileLimit{}
+			}
+			b.tiles.Limits[widget.ID] = *p.limit
 		}
-		kept[j].Widgets = append(kept[j].Widgets, widget)
-		return kept, nil
+		// A full row refuses the pin and the widget is kept unpinned,
+		// as the screen said before the Keep; the widget is new, so it
+		// is not pinned already.
+		if p.pin {
+			_ = admitPin(&b.tiles, widget.ID)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
@@ -310,7 +358,7 @@ func (s *Service) DismissProposal(subscription, proposal string) error {
 	}
 	s.propMu.Unlock()
 	if dropped {
-		s.dashboardsChanged()
+		s.tellDashboards(key.slug, true, boardIs(key.site, string(scope.Board)))
 	}
 	return nil
 }
@@ -323,19 +371,24 @@ func (s *Service) RemoveWidget(subscription, dashboard, widget string) error {
 	if err != nil {
 		return err
 	}
-	changed, err := s.editDashboards(key.slug, key.site, string(scope.Board), func(kept []KeptDashboard) ([]KeptDashboard, error) {
-		j := slices.IndexFunc(kept, func(d KeptDashboard) bool { return d.ID == dashboard })
-		if j < 0 || !slices.ContainsFunc(kept[j].Widgets, func(w KeptWidget) bool { return w.ID == widget }) {
-			return nil, errNoEdit
+	tb, err := s.tileBoardOf(scope, key)
+	if err != nil {
+		return err
+	}
+	changed, err := s.editBoard(key.slug, key.site, string(scope.Board), tb.kind, func(b *boardKept, _ map[string]tileWidget) error {
+		j := slices.IndexFunc(b.dashboards, func(d KeptDashboard) bool { return d.ID == dashboard })
+		if j < 0 || !slices.ContainsFunc(b.dashboards[j].Widgets, func(w KeptWidget) bool { return w.ID == widget }) {
+			return errNoEdit
 		}
-		kept[j].Widgets = slices.DeleteFunc(kept[j].Widgets, func(w KeptWidget) bool { return w.ID == widget })
-		if len(kept[j].Widgets) == 0 {
-			kept = slices.Delete(kept, j, j+1)
+		b.dashboards[j].Widgets = slices.DeleteFunc(b.dashboards[j].Widgets, func(w KeptWidget) bool { return w.ID == widget })
+		if len(b.dashboards[j].Widgets) == 0 {
+			b.dashboards = slices.Delete(b.dashboards, j, j+1)
 		}
-		return kept, nil
+		// Its tile and its limit go with it (editBoard's pruneTiles).
+		return nil
 	})
 	if changed {
-		s.dashboardsChanged()
+		s.tellDashboards(key.slug, true, boardIs(key.site, string(scope.Board)))
 	}
 	return err
 }
@@ -344,11 +397,15 @@ func (s *Service) RemoveWidget(subscription, dashboard, widget string) error {
 // it, over the board's default range in this computer's time zone, for
 // an agent of thread. With show it is then proposed on the board: it
 // shows on the board's dashboards for the person to keep or dismiss,
-// under a widget ID of its own, and the answer's view carries that ID.
+// under a widget ID of its own, and the answer's view carries that ID;
+// marks are what Keep gives its tile.
 // The project must list the board (ErrNotListed), and a show on a board
 // that holds maxProposals is refused.
-func (s *Service) TryWidget(ctx context.Context, projectID string, scope Scope, w KeptWidget, thread string, show bool) (trackerdash.Tried, error) {
+func (s *Service) TryWidget(ctx context.Context, projectID string, scope Scope, w KeptWidget, marks TileMarks, thread string, show bool) (trackerdash.Tried, error) {
 	if err := scope.boardOnly(); err != nil {
+		return trackerdash.Tried{}, err
+	}
+	if err := checkMarks(w, marks); err != nil {
 		return trackerdash.Tried{}, err
 	}
 	if err := s.enter(); err != nil {
@@ -392,10 +449,14 @@ func (s *Service) TryWidget(ctx context.Context, projectID string, scope Scope, 
 	if s.proposals == nil {
 		s.proposals = map[proposalKey][]heldProposal{}
 	}
-	s.proposals[pk] = append(s.proposals[pk], heldProposal{widget: w, thread: thread})
+	p := heldProposal{widget: w, thread: thread, pin: marks.Pin}
+	if marks.Limit != nil {
+		p.limit = &TileLimit{Value: *marks.Limit, Unit: tried.Unit}
+	}
+	s.proposals[pk] = append(s.proposals[pk], p)
 	s.propMu.Unlock()
 	tried.View.ID = w.ID
-	s.dashboardsChanged()
+	s.tellDashboards(slug, true, boardIs(key.site, string(scope.Board)))
 	return tried, nil
 }
 

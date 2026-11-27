@@ -336,3 +336,57 @@ func TestAnEstimateWidgetCountsTicketsWhereTheBoardCountsTickets(t *testing.T) {
 		}
 	}
 }
+
+// A board's summary row counts the widgets it names, the built-in's and
+// the project's own, in its order, each once, without one the board no
+// longer has and without the proposals; only the built-in names it. A
+// drill of a pinned widget answers every ticket of its rows when asked
+// for their IDs, and no page.
+func TestARowCountsTheWidgetsItNames(t *testing.T) {
+	t.Parallel()
+	e := evaluator()
+	b := keeping(teamBoard().board())
+	// A metric that counts each ticket in progress twice, once a row.
+	twice := inProgress
+	twice.Name, twice.Bucket = "w_3", ""
+	twice.SQL = "SELECT id AS ticket FROM tickets WHERE status_group = 'in_progress' UNION ALL SELECT id FROM tickets WHERE status_group = 'in_progress'"
+	b.Own.Metrics["w_3"] = twice
+	b.Own.Dashboards = append(b.Own.Dashboards, Dashboard{ID: "d_2", Title: "Twice", Widgets: []Widget{{ID: "w_3", Metric: "w_3", Form: FormNumber, Width: 3}}})
+	row := Request{Dashboard: builtinSprintsID, TimeZone: "UTC", Widgets: []string{"w_1", "stuck", "gone", "stuck"}}
+	a := mustEvaluate(t, e, b, row)
+	if len(a.Widgets) != 2 || a.Widgets[0].ID != "w_1" || a.Widgets[1].ID != "stuck" {
+		t.Fatalf("row widgets = %+v", a.Widgets)
+	}
+	whole := mustEvaluate(t, e, b, Request{Dashboard: builtinSprintsID, TimeZone: "UTC"})
+	if got, want := num(a.Widgets[1].Value), num(widgetOf(t, whole, "stuck").Value); got != want {
+		t.Fatalf("stuck on the row = %s, on the dashboard %s", got, want)
+	}
+	if _, err := e.Evaluate(context.Background(), b, Request{Dashboard: "d_1", TimeZone: "UTC", Widgets: []string{"w_1"}}); func() bool { r, ok := err.(*Refusal); return !ok || r.Code != "dashboard_request_invalid" }() {
+		t.Fatalf("a row on an own dashboard = %v; want dashboard_request_invalid", err)
+	}
+
+	for _, c := range []struct {
+		widget string
+		want   int
+	}{{"w_1", 3}, {"stuck", 2}, {"w_3", 3}} {
+		tile := row
+		tile.Widgets = []string{c.widget}
+		d, err := e.Drill(context.Background(), b, DrillRequest{Request: tile, Widget: c.widget, IDs: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := e.Drill(context.Background(), b, DrillRequest{Request: tile, Widget: c.widget})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want []string
+		for _, r := range rows.Rows {
+			if !slices.Contains(want, r.ID) {
+				want = append(want, r.ID)
+			}
+		}
+		if len(d.Rows) != 0 || !slices.Equal(d.IDs, want) || len(d.IDs) != c.want || d.Tickets != c.want {
+			t.Fatalf("%s's IDs = %v with %d rows; want %v, no rows", c.widget, d.IDs, len(d.Rows), want)
+		}
+	}
+}

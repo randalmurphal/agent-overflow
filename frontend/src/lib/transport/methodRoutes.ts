@@ -357,6 +357,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3436727647: 'selected', // PairAgentComputer
 	3277517862: 'home', // ParseCommentSuggestions
 	1748405812: 'thread', // PinThread
+	610896236: 'home', // PinTrackerWidget
 	3141095494: 'selected', // PostPRComment
 	1583250136: 'selected', // PostPRLineComment
 	4218259664: 'home', // PostTrackerTimeEntries
@@ -509,6 +510,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2967721565: 'home', // SetTrackerConnectionTokenExpiry
 	2301582015: 'home', // SetTrackerEstimate
 	2154788414: 'home', // SetTrackerSubscriptionVisible
+	3937459196: 'home', // SetTrackerWidgetLimit
 	3978807241: 'home', // SetWSLDistroPreference
 	4062584181: 'home', // SetWebviewGPUVsyncDisabled
 	3648660014: 'home', // SetWindowBackgroundColor

@@ -409,6 +409,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "PairAgentComputer", ID: 3436727647, Scope: "access:admin", Route: "selected", StepUp: true, Remote: true},                        // main.App.PairAgentComputer
 	{Name: "ParseCommentSuggestions", ID: 3277517862, Scope: "git:operate", Route: "home"},                                                   // main.App.ParseCommentSuggestions
 	{Name: "PinThread", ID: 1748405812, Scope: "threads:operate", Route: "thread"},                                                           // main.App.PinThread
+	{Name: "PinTrackerWidget", ID: 610896236, Scope: "tracker:operate", Route: "home"},                                                       // main.App.PinTrackerWidget
 	{Name: "PostPRComment", ID: 3141095494, Scope: "git:operate", Route: "selected"},                                                         // main.App.PostPRComment
 	{Name: "PostPRLineComment", ID: 1583250136, Scope: "git:operate", Route: "selected"},                                                     // main.App.PostPRLineComment
 	{Name: "PostTrackerTimeEntries", ID: 4218259664, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                       // main.App.PostTrackerTimeEntries
@@ -561,6 +562,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetTrackerConnectionTokenExpiry", ID: 2967721565, Scope: "tracker:operate", Route: "home"},                                       // main.App.SetTrackerConnectionTokenExpiry
 	{Name: "SetTrackerEstimate", ID: 2301582015, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                           // main.App.SetTrackerEstimate
 	{Name: "SetTrackerSubscriptionVisible", ID: 2154788414, Scope: "tracker:read", Route: "home"},                                            // main.App.SetTrackerSubscriptionVisible
+	{Name: "SetTrackerWidgetLimit", ID: 3937459196, Scope: "tracker:operate", Route: "home"},                                                 // main.App.SetTrackerWidgetLimit
 	{Name: "SetWSLDistroPreference", ID: 3978807241, Scope: "host", Route: "home", StepUp: true},                                             // main.App.SetWSLDistroPreference
 	{Name: "SetWebviewGPUVsyncDisabled", ID: 4062584181, Scope: "host", Route: "home", StepUp: true},                                         // main.App.SetWebviewGPUVsyncDisabled
 	{Name: "SetWindowBackgroundColor", ID: 3648660014, Scope: "host", Route: "home"},                                                         // main.App.SetWindowBackgroundColor
