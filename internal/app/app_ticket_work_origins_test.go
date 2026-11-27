@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,9 +59,14 @@ func TestTicketWorkReadsOtherProjectsOriginsOnlyForARowNoWorkProjectClones(t *te
 		{Forge: "github", Project: "team/up", Pulls: []forgefake.Pull{{Number: 2, Title: "Fix login", HeadRef: "WEB-1-login", HeadRepo: "alice/up"}}},
 		{Forge: "github", Project: "alice/up", Parent: "team/up"},
 	}})
-	others := map[string]bool{}
-	for i := range 10 {
-		p, err := f.a.store.GetProject(forgeProjectRepo(t, f.a, fmt.Sprintf("https://github.com/example/other-%d.git", i)))
+	// named renames project id so ListAllProjects, which orders by name,
+	// walks it where the test says.
+	named := func(id, name string) string {
+		t.Helper()
+		if _, _, err := f.a.store.UpdateProjectName(id, name); err != nil {
+			t.Fatal(err)
+		}
+		p, err := f.a.store.GetProject(id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -68,23 +74,30 @@ func TestTicketWorkReadsOtherProjectsOriginsOnlyForARowNoWorkProjectClones(t *te
 		if err != nil {
 			t.Fatal(err)
 		}
-		others[dir] = true
+		return dir
 	}
-	// otherReads are the git processes and origin reads run in the other
-	// projects by open, with their origins not cached, as the first open
+	// The other projects: ten before the match, whose origins clone no row.
+	others := map[string]string{}
+	for i := range 10 {
+		name := fmt.Sprintf("a-%d", i)
+		others[named(forgeProjectRepo(t, f.a, fmt.Sprintf("https://github.com/example/other-%d.git", i)), name)] = name
+	}
+	// otherReads counts the git processes and the origin reads open runs in
+	// each other project, with their origins not cached, as the first open
 	// in repoMetaTTL finds them.
-	otherReads := func(open func()) (procs, origins int) {
+	otherReads := func(open func()) (procs int, origins map[string]int) {
 		for dir := range others {
 			f.a.gitCore().InvalidateForgeCache(dir)
 		}
+		origins = map[string]int{}
 		before := len(calls())
 		open()
 		for _, c := range calls()[before:] {
 			dir, args, _ := strings.Cut(c, "\t")
-			if others[dir] {
+			if name, ok := others[dir]; ok {
 				procs++
 				if args == "remote get-url origin" {
-					origins++
+					origins[name]++
 				}
 			}
 		}
@@ -101,17 +114,19 @@ func TestTicketWorkReadsOtherProjectsOriginsOnlyForARowNoWorkProjectClones(t *te
 	}
 
 	if procs, origins := otherReads(open); procs != 0 {
-		t.Errorf("a ticket with no rows ran %d git processes (%d origin reads) in the other projects; want none", procs, origins)
+		t.Errorf("a ticket with no rows ran %d git processes (origin reads %v) in the other projects; want none", procs, origins)
 	}
 	storePRList(t, f.a, f.project, workSearchRepo, []gitops.PRListRow{
 		prListRow(workSearchRepo, 1, func(r *gitops.PRListRow) { r.Title, r.HeadRefName = "WEB-1 Fix the login", "fix-login" }),
 	}, time.Minute)
 	if procs, origins := otherReads(open); procs != 0 {
-		t.Errorf("a ticket whose row a Work project clones ran %d git processes (%d origin reads) in the other projects; want none", procs, origins)
+		t.Errorf("a ticket whose row a Work project clones ran %d git processes (origin reads %v) in the other projects; want none", procs, origins)
 	}
 
 	// The fork's branch finds team/up's 2, which no project Work covers
-	// clones: the other projects are read until one does.
+	// clones: the other projects are read in name order until one does,
+	// so c-match is read after the ten and d-after, which clones team/up
+	// too, never.
 	fork := forgeProjectRepo(t, f.a, "https://github.com/alice/up.git")
 	fp, err := f.a.store.GetProject(fork)
 	if err != nil {
@@ -120,6 +135,12 @@ func TestTicketWorkReadsOtherProjectsOriginsOnlyForARowNoWorkProjectClones(t *te
 	runGit(t, fp.Path, "branch", "WEB-1-login")
 	f.linkThread(t, "t-fork", fork, fp.Path)
 	parent := forgeProjectRepo(t, f.a, "https://github.com/team/up.git")
+	others[named(parent, "c-match")] = "c-match"
+	others[named(forgeProjectRepo(t, f.a, "https://github.com/team/up.git"), "d-after")] = "d-after"
+	want := map[string]int{"c-match": 1}
+	for i := range 10 {
+		want[fmt.Sprintf("a-%d", i)] = 1
+	}
 	var work TicketWork
 	procs, origins := otherReads(func() {
 		if work, err = f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101"); err != nil {
@@ -128,10 +149,18 @@ func TestTicketWorkReadsOtherProjectsOriginsOnlyForARowNoWorkProjectClones(t *te
 	})
 	at := slices.IndexFunc(work.PullRequests, func(pr TicketPullRequest) bool { return pr.Ref.Key() == "github:team/up:2" })
 	if at < 0 || work.PullRequests[at].ReviewProjectID != parent {
-		t.Errorf("pull requests %+v; want team/up's 2 shown by %s", work.PullRequests, parent)
+		t.Errorf("pull requests %+v; want team/up's 2 shown by c-match %s", work.PullRequests, parent)
 	}
-	if origins == 0 || origins > len(others) {
-		t.Errorf("a row no Work project clones read %d of the %d other projects' origins; want some, at most all", origins, len(others))
+	if !maps.Equal(origins, want) {
+		t.Errorf("a row no Work project clones read the other projects' origins %v; want %v", origins, want)
 	}
-	t.Logf("a row no Work project clones: %d git processes, %d origin reads in the %d other projects", procs, origins, len(others))
+	t.Logf("a row no Work project clones, Search: %d git processes in the other projects, origin reads %v", procs, origins)
+
+	// A ticket's open sends both reads, and each walks on its own: an
+	// origin the first read found is cached for the second.
+	procs, origins = otherReads(open)
+	if !maps.Equal(origins, want) {
+		t.Errorf("an open whose stored row no Work project clones read the other projects' origins %v; want %v", origins, want)
+	}
+	t.Logf("a row no Work project clones, Get then Search: %d git processes in the other projects, origin reads %v", procs, origins)
 }

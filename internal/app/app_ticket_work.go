@@ -341,24 +341,21 @@ func (a *App) reviewProjects(ctx context.Context, read *ticketWorkRead) error {
 		}
 	}
 	prs := read.work.PullRequests
-	name := func() (left int) {
-		for i, pr := range prs {
-			if pr.ReviewProjectID != "" {
-				continue
-			}
-			shows := clones[pr.Ref.Repository().Identity()]
-			switch {
-			case slices.Contains(shows, pr.ProjectID):
-				prs[i].ReviewProjectID = pr.ProjectID
-			case len(shows) > 0:
-				prs[i].ReviewProjectID = shows[0]
-			default:
-				left++
-			}
+	// The rows no project Work covers can show, by their repository.
+	waiting := map[string][]int{}
+	for i, pr := range prs {
+		repo := pr.Ref.Repository().Identity()
+		shows := clones[repo]
+		switch {
+		case slices.Contains(shows, pr.ProjectID):
+			prs[i].ReviewProjectID = pr.ProjectID
+		case len(shows) > 0:
+			prs[i].ReviewProjectID = shows[0]
+		default:
+			waiting[repo] = append(waiting[repo], i)
 		}
-		return left
 	}
-	if name() == 0 {
+	if len(waiting) == 0 {
 		return nil
 	}
 	all, err := a.store.ListAllProjects()
@@ -380,8 +377,15 @@ func (a *App) reviewProjects(ctx context.Context, read *ticketWorkRead) error {
 		if !ok || origin.Error != "" {
 			continue
 		}
-		clones[origin.Repo.Identity()] = append(clones[origin.Repo.Identity()], p.ID)
-		if name() == 0 {
+		rows, found := waiting[origin.Repo.Identity()]
+		if !found {
+			continue
+		}
+		for _, i := range rows {
+			prs[i].ReviewProjectID = p.ID
+		}
+		delete(waiting, origin.Repo.Identity())
+		if len(waiting) == 0 {
 			return nil
 		}
 	}

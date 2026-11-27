@@ -14,7 +14,8 @@
 // checkout cannot show, opens on the forge; a review whose code fails to
 // load keeps its bar, Back and Open on GitHub; the review takes the
 // keyboard when it opens, but not from where the person moved it while
-// its code loaded; on desktop the review
+// its code loaded, by a focus or by a press on something that takes none;
+// on desktop the review
 // beside the Backlog at 380 px keeps its bar and title bar inside the
 // ticket's column; and on desktop, in the ticket's own pane, the review's
 // bar is the pane's header, painted over nothing of the ticket's, and the
@@ -236,6 +237,43 @@ export function registerTicketWorkReviewFlow({ compact }: WorkSurface): void {
     await expect.poll(() => keyboardIn(page)).toBe('ticket-review-forge');
     // A key pressed now reaches the button, not the review.
     await expect(forge).toBeFocused();
+  });
+
+  test('a review whose code loads after a press on the pane\'s header, which takes no focus, leaves the keyboard alone', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    await reviewProject(harness, compact ? 'compact-work-review-press' : 'work-review-press');
+    await harness.open(page);
+    const { work } = await openWork(page, WEB1, compact);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let asked!: () => void;
+    const requested = new Promise<void>((resolve) => { asked = resolve; });
+    await page.route(/\/TicketReview-[^/]*\.js(\?|$)/, async (route) => {
+      asked();
+      await held;
+      await route.continue();
+    });
+    await openRow(work, compact);
+    const pane = page.getByTestId('issues-pane');
+    await requested;
+    await expect(pane.getByTestId('ticket-review-loading')).toBeVisible();
+    // A point of the Issues pane's header that nothing focusable covers.
+    const header = page.locator('section[data-pane-kind="issues"]').getByTestId('tool-pane-header');
+    const box = (await header.boundingBox())!;
+    const point = await page.evaluate(([left, top, width, height]) => {
+      const y = top + height / 2;
+      for (let x = left + width - 2; x > left; x -= 4) {
+        const el = document.elementFromPoint(x, y);
+        if (el && !el.closest('button, a, input, select, textarea, [tabindex], [role="tab"], [role="radio"], [contenteditable="true"]')) return { x, y };
+      }
+      return null;
+    }, [box.x, box.y, box.width, box.height]);
+    expect(point, 'a blank point of the header').not.toBeNull();
+    await page.mouse.click(point!.x, point!.y);
+    release();
+    await shownReview(pane);
+    await expect(pane.getByTestId('ticket-review-body')).toBeVisible();
+    expect(await keyboardIn(page)).not.toBe('review body');
   });
 
   if (!compact) {

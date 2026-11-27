@@ -2125,13 +2125,15 @@ delete is refused and the links the delete read are the ones it ends.
   opens on the forge. The row's own project comes first, then the
   projects Work covers, whose origins the read has; the computer's other
   projects' origins are read, in name order, only for a row those leave
-  without one, until every such row has one. An origin read is cached
-  for five minutes after it succeeds; before that it is up to two git
-  processes (`rev-parse --git-common-dir`, then `remote get-url
-  origin`), and one that failed runs again on the next read. With 10
-  other projects, a ticket with no rows and one whose rows the covered
-  projects clone read none of their origins over a ticket's open (both
-  methods), and a row none of them clones reads until a clone is found
+  without one, until every such row's repository has a clone. Each of
+  the two methods walks on its own, so a ticket's open walks them up to
+  twice. An origin read is cached for five minutes after it succeeds,
+  so the second walk reads again only the origins that failed; a read
+  is up to two git processes (`rev-parse --git-common-dir`, then
+  `remote get-url origin`). With 10 other projects, a ticket with no
+  rows and one whose rows the covered projects clone read none of their
+  origins over a ticket's open, and a row none of them clones reads
+  each project named before its clone once and none after it
   (`TestTicketWorkReadsOtherProjectsOriginsOnlyForARowNoWorkProjectClones`).
   A repository whose branches cannot be read is a problem beside the
   rest. At 2,000 stored rows over 10 repositories, a 500-branch project

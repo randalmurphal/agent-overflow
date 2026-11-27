@@ -42,7 +42,6 @@
   // compact the pane's
   // header holds the one Back, so the bar has none. Back steps out of
   // what is open in the review, then shows the ticket.
-  import { untrack } from 'svelte';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import Button from '../primitives/Button.svelte';
@@ -62,6 +61,7 @@
   import { getTransportStatusFor } from '../../stores/transportStatus.svelte';
   import { isTransportOutage } from '../../transport/wsClient';
   import { forgeLabels } from '../../utils/forgeLabels';
+  import { intendFocus, type FocusIntent } from '../../utils/focusIntent';
   import { prKey } from '../../utils/prReference';
 
   interface Props {
@@ -105,34 +105,34 @@
   let screen: TicketScreen | undefined = $state();
 
   // The review takes the keyboard once, when a person opens it from a
-  // Work row: its container at once, then the body when it has loaded,
-  // unless the person moved the focus anywhere else meanwhile (a pane, a
-  // composer, the bar's buttons). The body may load after a wait, so the
-  // decision made at the open is never acted on after the person moved.
-  let reviewFocusAsked = false;
+  // Work row: its body, once its code has loaded, as a deferred focus
+  // (`utils/focusIntent.ts`). Any later choice cancels it: a focus or a
+  // press anywhere but the review's container and body (a pane, a
+  // composer, the bar's buttons, the header), so a body that loads after
+  // the person moved never takes the keyboard back. The review closing
+  // ends it.
+  let reviewFocus: FocusIntent | null = null;
+  let reviewContainer: HTMLElement | null = null;
+  let reviewBody: HTMLElement | null = null;
+  function inReview(node: Node): boolean {
+    return node === reviewContainer || (reviewBody?.contains(node) ?? false);
+  }
   function openPullRequest(pr: TicketPullRequestOpen): void {
-    reviewFocusAsked = true;
+    reviewFocus = intendFocus({ holdsFocus: inReview, holdsPress: inReview });
     trail.openPullRequest(pr);
   }
-  function holdReviewFocus(el: HTMLElement): () => void {
-    // Untracked: what the focus's own handlers read (the pane host's
-    // focus follow) must not rerun this.
-    untrack(() => {
-      if (reviewFocusAsked && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
-    });
-    const moved = (e: FocusEvent): void => {
-      if (e.target !== el) reviewFocusAsked = false;
-    };
-    document.addEventListener('focusin', moved, true);
+  function holdReview(el: HTMLElement): () => void {
+    reviewContainer = el;
     return () => {
-      document.removeEventListener('focusin', moved, true);
-      reviewFocusAsked = false;
+      reviewFocus?.end();
+      reviewFocus = null;
+      reviewContainer = null;
+      reviewBody = null;
     };
   }
   function reviewShown(root: HTMLElement): void {
-    if (!reviewFocusAsked) return;
-    reviewFocusAsked = false;
-    root.focus({ preventScroll: true });
+    reviewBody = root;
+    reviewFocus?.land(() => root.focus({ preventScroll: true }));
   }
 
   /** One step back inside the ticket: over a pull request, what is open
@@ -231,7 +231,7 @@
     {/await}
     </div>
     {#if review}
-      <div class="absolute inset-0 flex min-h-0 flex-col bg-surface-0 focus:outline-none" tabindex="-1" data-testid="ticket-review" data-pr={prKey(review.pr)} {@attach paneFindSurface(hostPaneId, () => hasPaneFindProvider(reviewFindKey) ? reviewFindKey : null)} {@attach holdReviewFocus}>
+      <div class="absolute inset-0 flex min-h-0 flex-col bg-surface-0" data-testid="ticket-review" data-pr={prKey(review.pr)} {@attach paneFindSurface(hostPaneId, () => hasPaneFindProvider(reviewFindKey) ? reviewFindKey : null)} {@attach holdReview}>
         {@render reviewBar(review)}
         {#await loadTicketReview()}
           <p class="px-4 py-6 text-sm text-fg-muted" role="status" data-testid="ticket-review-loading">Opening the pull request…</p>
