@@ -280,6 +280,16 @@ describe('your logged time', () => {
     expect(whole.queryByTestId('dashboard-widget-unread')).toBeNull();
   });
 
+  it('says in How this is counted which days of it the page reads', async () => {
+    const w = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue);
+    await fireEvent.click(w.getByTestId('dashboard-how-toggle'));
+    expect(w.getByTestId('dashboard-how-worklogs').textContent).toBe('It counts your own logged time. While it shows, this page reads from the tracker the days of the range, and of the range before it compares with, that were not read yet. A day more than 180 days ago is not read, so a number that counts one is not known.');
+    w.unmount();
+    const tickets = draw(view({}), { id: 'pace', value: { v: 2 } } as WidgetValue);
+    await fireEvent.click(tickets.getByTestId('dashboard-how-toggle'));
+    expect(tickets.queryByTestId('dashboard-how-worklogs')).toBeNull();
+  });
+
   it('says in the drill the days it could not read', () => {
     const state = {
       target: { widget: 'logged' },

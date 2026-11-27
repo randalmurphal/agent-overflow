@@ -5,7 +5,9 @@
   // to it, the rules it reads, the tables it reads and its query. Shown in
   // the widget's place, so it reads the same under compact. A count of
   // threads reads the board's computer's (`computer`), which the Ticket
-  // screen's list, of every attached computer, can exceed: it says so.
+  // screen's list, of every attached computer, can exceed: it says so. A
+  // count of logged time says which days the page reads
+  // (trackerDashboard's reads, trackerdash worklogs.go).
   import type { How } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
 
   interface Props {
@@ -26,6 +28,9 @@
   <p>Rules it reads: {how.rules}.</p>
   {#if how.reads.length > 0}
     <p>It reads {how.reads.join(', ')}.</p>
+  {/if}
+  {#if how.reads.includes('worklogs')}
+    <p data-testid="dashboard-how-worklogs">It counts your own logged time. While it shows, this page reads from the tracker the days of the range, and of the range before it compares with, that were not read yet. A day more than 180 days ago is not read, so a number that counts one is not known.</p>
   {/if}
   {#if how.reads.includes('threads')}
     <p data-testid="dashboard-how-threads">It counts the threads on {computer} linked to these tickets; a ticket's Work lists those of every attached computer.</p>
