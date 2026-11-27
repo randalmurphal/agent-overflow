@@ -1,6 +1,7 @@
 package trackertools
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -60,12 +61,39 @@ type timeQuestion struct {
 	Offer  []string `json:"offer,omitempty"`
 }
 
+// timeDay is a day of time_read: the time logged and drafted, and what
+// this computer measured of it (readActivity): Active, the minutes with
+// the person's input in the app, and Phone, those in the compact layout;
+// the tickets the focused threads are linked to, each with its minutes,
+// or none for a ticket only a turn that day touched; and the commits.
 type timeDay struct {
-	Day       string         `json:"day"`
-	Logged    []loggedTime   `json:"logged"`
-	Drafted   []draftedTime  `json:"drafted,omitempty"`
-	Questions []timeQuestion `json:"questions,omitempty"`
+	Day         string         `json:"day"`
+	Logged      []loggedTime   `json:"logged"`
+	Drafted     []draftedTime  `json:"drafted,omitempty"`
+	Questions   []timeQuestion `json:"questions,omitempty"`
+	Active      int            `json:"active,omitempty"`
+	Phone       int            `json:"phone,omitempty"`
+	Tickets     []activeTicket `json:"tickets,omitempty"`
+	Commits     []commitLine   `json:"commits,omitempty"`
+	CommitsMore int            `json:"commits_more,omitempty"`
 }
+
+// activeTicket is a ticket a day's threads touched and the minutes of
+// input on them.
+type activeTicket struct {
+	Key     string `json:"key"`
+	Minutes int    `json:"minutes,omitempty"`
+}
+
+// commitLine is a commit of the day: its local time (15:04) and subject.
+type commitLine struct {
+	At      string `json:"at"`
+	Subject string `json:"subject"`
+}
+
+// commitsShown is the most commits a day of time_read names; commits_more
+// counts the rest.
+const commitsShown = 30
 
 // timeUnread is a connection whose time could not be read from its
 // tracker: the answer holds what this computer read before, and Days are
@@ -76,9 +104,12 @@ type timeUnread struct {
 	Days  []string `json:"days,omitempty"`
 }
 
+// timeReadAnswer is time_read's answer; ActivityGap says since when the
+// app has not recorded the person's activity, while it cannot.
 type timeReadAnswer struct {
-	Days   []timeDay    `json:"days"`
-	Unread []timeUnread `json:"unread,omitempty"`
+	Days        []timeDay    `json:"days"`
+	Unread      []timeUnread `json:"unread,omitempty"`
+	ActivityGap string       `json:"activity_gap,omitempty"`
 }
 
 // timeSources are the Jira connections among sources; none is the
@@ -202,7 +233,72 @@ func (s *Server) timeRead(ctx context.Context, _ Caller, raw json.RawMessage) (a
 		// Every connection failed: that is the answer.
 		return nil, failed
 	}
+	if err := s.readActivity(ctx, sources, from, to, &out); err != nil {
+		return nil, err
+	}
 	return fitTime(out)
+}
+
+// readActivity adds to out's days what this computer measured of them
+// (Host.Activity): the minutes with input, the phone's when there are
+// any, the minutes on each Jira ticket the focused threads are linked to
+// (a thread's link as it is now) and the tickets of the threads that
+// started a turn, and the day's commits, at most commitsShown; and the
+// recording gap while there is one. Hours are never a thread's run time.
+func (s *Server) readActivity(ctx context.Context, sources []trackerapp.TicketSource, from, to string, out *timeReadAnswer) error {
+	act, err := s.h.Activity(ctx, from, to)
+	if err != nil {
+		return fmt.Errorf("trackertools: the activity of %s to %s: %w", from, to, err)
+	}
+	if act.Gap != 0 {
+		out.ActivityGap = "since " + time.UnixMilli(act.Gap).Format("2006-01-02 15:04")
+	}
+	var threads []string
+	for _, d := range act.Days {
+		for id := range d.Threads {
+			if id != "" {
+				threads = append(threads, id)
+			}
+		}
+		threads = append(threads, d.Ran...)
+	}
+	links := map[string]trackerapp.JiraTicket{}
+	if len(threads) > 0 {
+		if links, err = s.t.ThreadJiraTickets(threads); err != nil {
+			return err
+		}
+	}
+	minutes := func(d time.Duration) int { return int((d + 30*time.Second) / time.Minute) }
+	for _, d := range act.Days {
+		i := slices.IndexFunc(out.Days, func(day timeDay) bool { return day.Day == d.Day.Day })
+		if i < 0 {
+			continue
+		}
+		day := &out.Days[i]
+		day.Active, day.Phone = minutes(d.Active), minutes(d.Phone)
+		on := map[trackerapp.JiraTicket]time.Duration{}
+		for id, spent := range d.Threads {
+			if t, ok := links[id]; ok {
+				on[t] += spent
+			}
+		}
+		for _, id := range d.Ran {
+			if t, ok := links[id]; ok {
+				on[t] += 0
+			}
+		}
+		for t, spent := range on {
+			day.Tickets = append(day.Tickets, activeTicket{Key: qualifier(sources, t.Site)(t.Key), Minutes: minutes(spent)})
+		}
+		slices.SortFunc(day.Tickets, func(a, b activeTicket) int {
+			return cmp.Or(cmp.Compare(b.Minutes, a.Minutes), strings.Compare(a.Key, b.Key))
+		})
+		for _, c := range d.Commits[:min(len(d.Commits), commitsShown)] {
+			day.Commits = append(day.Commits, commitLine{At: c.At.Local().Format("15:04"), Subject: c.Subject})
+		}
+		day.CommitsMore = len(d.Commits) - len(day.Commits)
+	}
+	return nil
 }
 
 // byName is who last wrote an entry, as answers name them: agent, or you
@@ -235,6 +331,9 @@ func fitTime(out timeReadAnswer) (timeReadAnswer, error) {
 		for _, q := range d.Questions {
 			add(q.Reason, refusalCut)
 		}
+		for _, c := range d.Commits {
+			add(c.Subject, refCut)
+		}
 	}
 	weights := make([]int, len(demands))
 	for i := range weights {
@@ -248,9 +347,10 @@ func fitTime(out timeReadAnswer) (timeReadAnswer, error) {
 			n++
 			return shown
 		}
-		cut := timeReadAnswer{Days: make([]timeDay, len(out.Days)), Unread: out.Unread}
+		cut := timeReadAnswer{Days: make([]timeDay, len(out.Days)), Unread: out.Unread, ActivityGap: out.ActivityGap}
 		for i, d := range out.Days {
-			c := timeDay{Day: d.Day, Logged: make([]loggedTime, len(d.Logged))}
+			c := timeDay{Day: d.Day, Logged: make([]loggedTime, len(d.Logged)), Active: d.Active, Phone: d.Phone, Tickets: d.Tickets,
+				CommitsMore: d.CommitsMore}
 			for j, w := range d.Logged {
 				c.Logged[j] = loggedTime{Key: w.Key, Hours: w.Hours, Title: clip(), Description: clip()}
 			}
@@ -261,6 +361,9 @@ func fitTime(out timeReadAnswer) (timeReadAnswer, error) {
 			for _, q := range d.Questions {
 				q.Reason = clip()
 				c.Questions = append(c.Questions, q)
+			}
+			for _, cm := range d.Commits {
+				c.Commits = append(c.Commits, commitLine{At: cm.At, Subject: clip()})
 			}
 			cut.Days[i] = c
 		}

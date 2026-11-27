@@ -29,6 +29,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/activity"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/mcpargs"
 	"agent-overflow/internal/trackerapp"
@@ -78,6 +79,9 @@ const (
 type Tracker interface {
 	TicketSources() ([]trackerapp.TicketSource, error)
 	LinkedTicket(threadID string) (trackerapp.LinkedTicket, bool, error)
+	// ThreadJiraTickets are the Jira tickets threads are linked to, by
+	// thread (trackerapp.Service.ThreadJiraTickets).
+	ThreadJiraTickets(threadIDs []string) (map[string]trackerapp.JiraTicket, error)
 	TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error)
 	BoardSummary(connection, board string) (trackerapp.BoardSummary, error)
 	// MirrorIssue is an issue's card and its rows as the mirror holds
@@ -159,6 +163,32 @@ type Host interface {
 	// Live reports whether session is still thread's session with the
 	// tools: false once its capability was revoked.
 	Live(threadID, session string) bool
+	// Activity is what this computer measured of the person's local days
+	// from to to (YYYY-MM-DD, included): each day's time with input, by
+	// focused thread, the threads that started a turn, and the commits
+	// the person authored in the repositories of those threads.
+	Activity(ctx context.Context, from, to string) (ActivityDays, error)
+}
+
+// ActivityDays is Host.Activity's answer: the days that hold any, and,
+// while the recorder fails to write, the earliest input it has not
+// written (Gap, Unix ms; 0 while it writes).
+type ActivityDays struct {
+	Days []ActivityDay
+	Gap  int64
+}
+
+// ActivityDay is a day the recorder measured (activity.Day) and the
+// commits authored that day, by author time, earliest first.
+type ActivityDay struct {
+	activity.Day
+	Commits []Commit
+}
+
+// Commit is a commit the person authored: when, and its subject.
+type Commit struct {
+	At      time.Time
+	Subject string
 }
 
 // ListedBoard is a board a project of this computer lists: its connection
