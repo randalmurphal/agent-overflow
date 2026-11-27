@@ -214,6 +214,12 @@ export const SETTINGS_SECTIONS = [
     description: 'What happens when you press Start work on a ticket.',
   },
   {
+    id: 'tracker-points',
+    label: 'Points and credit',
+    group: 'Issues',
+    description: 'How work is counted on this project\'s dashboards and in sprint planning.',
+  },
+  {
     id: 'tracker-time',
     label: 'Time',
     group: 'Issues',
@@ -336,5 +342,5 @@ export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'agy', 'commit-messages',
     'browser', 'thread-tools', 'assistants', 'agent-guide', 'memory', 'projects', 'git', 'editor', 'remote', 'agent-access',
     'observability', 'storage', 'voice', 'tracker-connections', 'tracker-boards', 'tracker-statuses', 'tracker-fields',
-    'tracker-start-work', 'tracker-time', 'tracker-agents'].includes(section);
+    'tracker-start-work', 'tracker-points', 'tracker-time', 'tracker-agents'].includes(section);
 }

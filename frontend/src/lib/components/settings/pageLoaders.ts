@@ -44,6 +44,7 @@ export const SETTINGS_PAGE_LOADERS: Record<SettingsSection, CachedComponentLoade
   'tracker-statuses': createCachedComponentLoader(() => import('./TrackerStatusesSettings.svelte')),
   'tracker-fields': createCachedComponentLoader(() => import('./TrackerFieldsSettings.svelte')),
   'tracker-start-work': createCachedComponentLoader(() => import('./TrackerStartWorkSettings.svelte')),
+  'tracker-points': createCachedComponentLoader(() => import('./TrackerPointsSettings.svelte')),
   'tracker-time': createCachedComponentLoader(() => import('./TrackerTimeSettings.svelte')),
   'tracker-agents': createCachedComponentLoader(() => import('./TrackerAgentsSettings.svelte')),
   remote: createCachedComponentLoader(() => import('./RemoteAccessSettings.svelte')),

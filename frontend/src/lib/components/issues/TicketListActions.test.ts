@@ -371,6 +371,33 @@ describe('Start a thread', () => {
     expect((page().getByTestId('ticket-list-thread-text') as HTMLInputElement).value).toBe('about one');
   });
 
+  it('keeps the open form and its text when a count only reorders the selected tickets', async () => {
+    const view = draw([rowOf(1), rowOf(2)]);
+    await select('WEB-1', 'WEB-2');
+    await fireEvent.click(view.getByTestId('ticket-list-thread'));
+    await fireEvent.input(page().getByTestId('ticket-list-thread-text'), { target: { value: 'compare these two' } });
+    await view.rerender({ rows: [rowOf(2), rowOf(1)] });
+    await flush();
+    expect((page().getByTestId('ticket-list-thread-text') as HTMLInputElement).value).toBe('compare these two');
+  });
+
+  it('gives a refused start its text back after a count reordered its tickets', async () => {
+    let refuse: () => void = () => {};
+    setBindingMock('StartTicketsThread', () => new Promise((_resolve, reject) => { refuse = () => reject(new Error('the tracker did not answer')); }));
+    const view = draw([rowOf(1), rowOf(2)]);
+    await select('WEB-1', 'WEB-2');
+    await fireEvent.click(view.getByTestId('ticket-list-thread'));
+    await fireEvent.input(page().getByTestId('ticket-list-thread-text'), { target: { value: 'compare these two' } });
+    await fireEvent.click(page().getByTestId('ticket-list-thread-start'));
+    await flush();
+    await view.rerender({ rows: [rowOf(2), rowOf(1)] });
+    refuse();
+    await flush();
+    expect(view.getByTestId('ticket-list-count').textContent).toBe('2 selected');
+    await fireEvent.click(view.getByTestId('ticket-list-thread'));
+    expect((page().getByTestId('ticket-list-thread-text') as HTMLInputElement).value).toBe('compare these two');
+  });
+
   it('keeps typed text with the tickets it was typed for', async () => {
     const view = draw([rowOf(1), rowOf(2)]);
     await select('WEB-1', 'WEB-2');

@@ -3,6 +3,7 @@ package trackerapp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"runtime"
@@ -479,4 +480,81 @@ func waitBlockedIn[T any](t *testing.T, fn string, ended chan T) {
 		}
 	}
 	t.Fatalf("no goroutine blocked on a mutex in %s", fn)
+}
+
+// A project that counts tickets lays its dashboards out in tickets: a
+// widget that adds up the board's points says it adds up tickets.
+func TestADashboardOfAProjectCountingTicketsIsLaidOutInTickets(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	counts := func() []string {
+		var out []string
+		for _, w := range m.list(t, sub).Dashboards[0].Widgets {
+			out = append(out, w.How.Counts)
+		}
+		return out
+	}
+	before := counts()
+	if !slices.ContainsFunc(before, func(c string) bool { return strings.Contains(c, "points") }) {
+		t.Fatalf("the built-in dashboard counts no points: %q", before)
+	}
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
+	if after := counts(); slices.ContainsFunc(after, func(c string) bool { return strings.Contains(c, "points") }) {
+		t.Fatalf("the dashboard of a project counting tickets: %q", after)
+	}
+}
+
+// A project counting tickets counts each counted row of a kept estimate
+// widget as one ticket, on every read of the copy: the agent's try, the
+// dashboard and its drill. The copy keeps each ticket's own estimate, so a
+// widget written for points, and one that finds the tickets with no
+// estimate, need no change: of tickets of 3, 5 and no points, the sum is
+// 8 points or 2 tickets, the unestimated one not counted either way, and
+// one ticket has no estimate in both.
+func TestAnEvaluationOfAProjectCountingTicketsCountsTickets(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	three, five := 3.0, 5.0
+	m.tracks([]tracker.Row{
+		{Card: card("10001", 1_799_000_000_000), Order: "a", Estimate: &three},
+		{Card: card("10002", 1_799_000_000_000), Order: "b", Estimate: &five},
+		row("10003", 1_799_000_000_000, "c"),
+	})
+	sub := m.subscribeShown(t, m.project()).ID
+	sum := openTickets()
+	sum.Metric.Title, sum.Metric.SQL = "Estimate on the board", `SELECT id AS ticket, points AS value FROM tickets`
+	sum.Metric.Reduce, sum.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
+	none := openTickets()
+	none.Metric.Title, none.Metric.SQL = "Tickets with no estimate", `SELECT id AS ticket FROM tickets WHERE points IS NULL`
+	dashboard := ""
+	for _, w := range []KeptWidget{sum, none} {
+		target := KeepTarget{Dashboard: dashboard}
+		if dashboard == "" {
+			target = KeepTarget{Title: "Estimates"}
+		}
+		var err error
+		if dashboard, err = m.svc.KeepProposal(sub, m.propose(t, w), target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reads := func() string {
+		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), sum, TileMarks{}, "thread-1", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := m.evaluate(t, sub, dashboard)
+		d, err := m.svc.DashboardDrill(t.Context(), sub, trackerdash.DrillRequest{Request: trackerdash.Request{Dashboard: dashboard, TimeZone: "UTC"}, Widget: a.Widgets[0].ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("tried %s %s; dashboard %s %s, no estimate %s; drill %s %s",
+			numText(t, tried.Value.Value), tried.Unit, numText(t, a.Widgets[0].Value), a.Estimates, numText(t, a.Widgets[1].Value), numText(t, &d.Value), d.Estimates)
+	}
+	if got, want := reads(), `tried {"v":8,"nc":1} points; dashboard {"v":8,"nc":1} points, no estimate {"v":1}; drill {"v":8,"nc":1} points`; got != want {
+		t.Fatalf("counting estimates:\n%s\nwant\n%s", got, want)
+	}
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
+	if got, want := reads(), `tried {"v":2,"nc":1} tickets; dashboard {"v":2,"nc":1} none, no estimate {"v":1}; drill {"v":2,"nc":1} none`; got != want {
+		t.Fatalf("counting tickets:\n%s\nwant\n%s", got, want)
+	}
 }

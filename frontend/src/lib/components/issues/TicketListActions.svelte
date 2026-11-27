@@ -149,13 +149,15 @@
   type Open = 'move' | 'assign' | 'thread' | null;
   let open = $state<Open>(null);
   // The tickets the open action is for, taken when it opened, and what it
-  // is for (`actingFor`): their IDs, and for Move to the statuses it
-  // planned from too; its reads stop when it ends (`reads`).
+  // is for (`actingFor`): the set of their IDs, and for Move to the status
+  // each was planned from too, in no order a count can change. The typed
+  // text and a refused start's are for the same value; its reads stop
+  // when it ends (`reads`).
   let acting = $state.raw<ListTicket[]>([]);
   let actingFor = '';
   let reads: AbortController | null = null;
   function actionFor(which: Exclude<Open, null>): string {
-    return selected.map((r) => (which === 'move' ? `${r.id}\t${statusOf(r)}` : r.id)).join('\n');
+    return selected.map((r) => (which === 'move' ? `${r.id}\t${statusOf(r)}` : r.id)).sort().join('\n');
   }
   // A count again that changed the selection, or a status Move to planned
   // from, ends the action it opened for.

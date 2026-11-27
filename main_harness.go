@@ -426,7 +426,7 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"TrackerConnections", "AddTrackerConnection", "RenameTrackerConnection", "SetTrackerConnectionEnabled",
 		"SetTrackerConnectionTokenExpiry", "RemoveTrackerConnection", "VerifyTrackerConnection",
 		"EditTrackerKeyFile", "OpenTrackerTokenPage", "TrackerProjects", "TrackerBoards",
-		"ProjectTrackerBoards", "SetProjectTrackerBoards", "TrackerBoardChoices", "ProjectTrackerSetup", "ProjectTrackerStatuses", "SetProjectTrackerSetup",
+		"ProjectTrackerBoards", "SetProjectTrackerBoards", "TrackerBoardChoices", "ProjectTrackerSetup", "ProjectTrackerStatuses", "ProjectTrackerPace", "SetProjectTrackerSetup",
 		"SubscribeTrackerBoard", "TrackerBoard", "TrackerSectionRows", "TrackerBoardPatch",
 		"SetTrackerSubscriptionVisible", "RefreshTrackerSubscription", "ReleaseTrackerSubscription",
 		"SubscribeTrackerTicket", "TrackerTicket", "TrackerComments", "TrackerAssignableUsers", "TrackerChoices",
