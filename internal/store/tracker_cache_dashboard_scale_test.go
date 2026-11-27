@@ -60,7 +60,7 @@ func dashboardAtScale(t *testing.T, n, recent int) {
 		fills = append(fills, time.Since(start))
 		return export, ok, err
 	}
-	b := trackerdash.Board{Fill: fill, Epics: true, Viewer: "acc-user1"}
+	b := trackerdash.Board{Fill: fill, Epics: true}
 	e := trackerdash.NewEvaluator(now)
 	ctx := context.Background()
 	spread := func(ds []time.Duration) string {
@@ -216,7 +216,7 @@ func dashboardMemory(t *testing.T, n int) {
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
 		return s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, 0, store.CardShapeForTest)
 	}
-	b := trackerdash.Board{Fill: fill, Epics: true, Viewer: "acc-user1"}
+	b := trackerdash.Board{Fill: fill, Epics: true}
 	e := trackerdash.NewEvaluator(time.Now)
 	ctx := context.Background()
 	evaluate := func(rng string) {

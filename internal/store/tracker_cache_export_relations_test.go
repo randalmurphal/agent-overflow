@@ -82,8 +82,8 @@ func TestTheExportHoldsTheBoardsThreadsAndYourLoggedTime(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("export: %v, %v", ok, err)
 	}
-	if export.Window != window || export.Earliest != dayMS(t, "2026-11-01") {
-		t.Fatalf("window %d, earliest %d; want %d and the sprints' start", export.Window, export.Earliest, window)
+	if export.Window != window || export.Earliest != dayMS(t, "2026-11-01") || export.Viewer != "me" {
+		t.Fatalf("window %d, earliest %d, viewer %q; want %d, the sprints' start and me", export.Window, export.Earliest, export.Viewer, window)
 	}
 	threads := exportRows(t, conn, `SELECT id || '|' || ticket || '|' || origin || '|' || linked_at || '|' || created_at || '|' || archived || '|' || coalesce(last_turn_at, '-')
 		FROM threads ORDER BY id`)
@@ -99,14 +99,15 @@ func TestTheExportHoldsTheBoardsThreadsAndYourLoggedTime(t *testing.T) {
 	}
 }
 
-// A connection with no verified account has no logged time in the export.
+// A connection with no verified account has no logged time and no viewer
+// in the export.
 func TestTheExportHoldsNoLoggedTimeWithoutAnAccount(t *testing.T) {
 	t.Parallel()
 	s, root := relationsFixture(t)
 	mustExec(t, s.db, `UPDATE tracker_connections SET verified_account_id = '' WHERE id = (SELECT connection_id FROM tracker_cache_roots WHERE id = ?)`, root)
 	conn := exportConn(t)
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"worklogs", "worklog_days"}, 0, CardShapeForTest); err != nil || !ok {
-		t.Fatalf("export: %v, %v", ok, err)
+	if export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"worklogs", "worklog_days"}, 0, CardShapeForTest); err != nil || !ok || export.Viewer != "" {
+		t.Fatalf("export: %+v, %v, %v; want no viewer", export, ok, err)
 	}
 	if got := exportRows(t, conn, `SELECT (SELECT count(*) FROM worklogs) || '|' || (SELECT count(*) FROM worklog_days)`); got[0] != "0|0" {
 		t.Fatalf("worklogs|days = %s; want none", got[0])

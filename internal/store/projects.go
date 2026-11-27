@@ -235,8 +235,7 @@ func (s *Store) ListAllProjects() ([]Project, error) {
 // (TestTimelineItemsViewJoinPushesDown) has to explain the production
 // text. A plan that materializes the view here scans `items` once per
 // sidebar thread.
-func listProjectsWithThreadCountsQuery() (string, []any) {
-	hiddenClause, hiddenArgs := catalogThreadClause("t")
+func listProjectsWithThreadCountsQuery() string {
 	return `SELECT p.id, p.path, p.name, p.slug, p.color, p.sort_position,
 		        p.created_at, p.updated_at, p.archived, p.identity_error, p.repository_id, p.identity_source,
 		        COALESCE(COUNT(t.id), 0) AS thread_count,
@@ -248,10 +247,10 @@ func listProjectsWithThreadCountsQuery() (string, []any) {
 		          0
 		        ) AS last_active
 		 FROM projects p
-		 LEFT JOIN owned_threads t ON t.project_id = p.id AND t.archived = 0 AND ` + hiddenClause + `
+		 LEFT JOIN owned_threads t ON t.project_id = p.id AND t.archived = 0 AND ` + catalogThreadClause("t") + `
 		 WHERE p.archived = 0
 		 GROUP BY p.id
-		 ORDER BY p.name ASC`, hiddenArgs
+		 ORDER BY p.name ASC`
 }
 
 // ListProjectsWithThreadCounts returns every non-archived project plus
@@ -262,8 +261,7 @@ func listProjectsWithThreadCountsQuery() (string, []any) {
 // the sidebar — only real activity (first message send and onward,
 // gated by MarkThreadActivity) counts.
 func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
-	query, args := listProjectsWithThreadCountsQuery()
-	rows, err := s.reader().Query(query, args...)
+	rows, err := s.reader().Query(listProjectsWithThreadCountsQuery())
 	if err != nil {
 		return nil, fmt.Errorf("store: list projects with counts: %w", err)
 	}

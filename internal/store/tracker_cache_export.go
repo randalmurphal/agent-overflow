@@ -168,7 +168,7 @@ CREATE TABLE main.sprint_intervals(sprint TEXT NOT NULL, ticket TEXT NOT NULL, p
 -- threads: the threads on this board's computer linked to a ticket. origin: start_work, ask, manual or agent. last_turn_at: its newest turn's start.
 CREATE TABLE main.threads(id TEXT PRIMARY KEY, ticket TEXT NOT NULL, origin TEXT NOT NULL, linked_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
   archived INTEGER NOT NULL, last_turn_at INTEGER) WITHOUT ROWID;
--- worklogs: your own logged time on this board's tickets, by day (YYYY-MM-DD). Only the days in worklog_days were read; a widget says how many of its days were not.
+-- worklogs: your own logged time on this board's tickets, by day (YYYY-MM-DD), from the day before the 180-day history window. Only the days in worklog_days were read: a widget that reads worklogs is not known until every day of the window up to now is, and says how many are not.
 CREATE TABLE main.worklogs(id TEXT PRIMARY KEY, ticket TEXT NOT NULL, day TEXT NOT NULL, seconds INTEGER NOT NULL) WITHOUT ROWID;
 CREATE TABLE main.worklog_days(day TEXT PRIMARY KEY) WITHOUT ROWID;
 `
@@ -426,6 +426,10 @@ type MirrorExport struct {
 	// earlier than Earliest: the logged time begins the day before it, at
 	// the days the Dashboards screen reads (trackerdash worklogs.go).
 	Window int64
+	// Viewer is the board's connection's verified account, whose logged
+	// time worklogs and worklog_days hold, read in the export's snapshot;
+	// "" before one is verified.
+	Viewer string
 }
 
 // ErrMirrorExportUnsupported is an export from a store with no database
@@ -507,6 +511,9 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	}
 	export.Earliest = mirrorExportEarliest(window, earliestSprint)
 	export.Window = window
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(`+mirrorExportViewerSQL+`, '')`, rootID).Scan(&export.Viewer); err != nil {
+		return MirrorExport{}, false, fmt.Errorf("store: read board %s's viewer to export it: %w", boardID, err)
+	}
 	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, export.Earliest, window, card)
 	for _, fill := range mirrorExportFills {
 		if !fill.runs(relations) {

@@ -149,7 +149,7 @@ func (s *Service) subscribedBoard(subscription string) (trackerdash.Board, error
 // export of its rows with the project's status groups, its
 // EstimateUnit the unit the project counts the board in (StatusGroups.unit)
 // while the copy holds the board's own estimates, whether its
-// tracker has epics, and the connection's verified account for Mine. The
+// tracker has epics and its tracker logs time. The
 // caller leaves the service when the evaluation returns.
 func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.Board, error) {
 	if err := scope.boardOnly(); err != nil {
@@ -169,7 +169,7 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 		export.EstimateUnit = int(groups.unit(tracker.EstimateUnit(export.EstimateUnit)))
 		return export, ok, err
 	}
-	return trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), TimeTracking: hasTimeTracking(row.Kind), Viewer: row.VerifiedAccountID}, nil
+	return trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), TimeTracking: hasTimeTracking(row.Kind)}, nil
 }
 
 // ownOf is what key's project keeps for board, and with proposals what

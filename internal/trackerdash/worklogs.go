@@ -9,18 +9,20 @@ import (
 // rules in store/tracker_cache_export_relations.go). The copy holds the
 // worklogs of the days the mirror read and says which days those are;
 // a day not read is not zero hours. What must hold:
-//   - A metric that reads worklogs counts only where its days were read:
-//     each of its periods, and its number over the range, with a day not
-//     read is not known, saying how many days were not read (Num.UR), and
-//     its widget lists the days not read of the range, and of the range
-//     before when it shows a value of it, for the page to read
-//     (WidgetValue.Unread, frontend trackerDashboard). It lists none
-//     before the copy's history window (MirrorExport.Window), where the
-//     copy's logged time begins, so the page reads at most 180 days: a
-//     period with a day before it (a sprint that began before it) stays
-//     not known, and a metric that counts now counts from it. A
-//     day is in the period that holds its dayStart, the instant day_start
-//     places a row of it at. A weekend's day counts like any other.
+//   - A metric that reads worklogs counts only once every day of the
+//     copy's history window (MirrorExport.Window) up to now is read: a
+//     row of logged time can count in a period other than its day's (a
+//     sprint's tickets, a state that holds from its day on), so no number
+//     is known while a day it could hold is not read. Each number counts
+//     the window's days not read, with those of its periods before the
+//     window, which are never read (a sprint that began before it), in
+//     Num.UR, and is not known while it counts any. The widget lists the
+//     window's days not read for the page to read (WidgetValue.Unread,
+//     frontend trackerDashboard): at most 182, read 31 a call. A widget of
+//     a metric counted by period whose range has no period counts nothing
+//     and lists none. A day is in the period that holds its placed
+//     instant, the one day_start places a row of it at. A weekend's day
+//     counts like any other.
 //   - Its rows are the viewer's: a row's person is the viewer unless the
 //     metric names one, so Mine keeps them all, and a page narrowed to
 //     another person says only the viewer's time is read rather than 0.
@@ -44,67 +46,51 @@ func (o *opened) worklogNote(p prepared) string {
 		return ""
 	case !o.timeTracking:
 		return noTimeTracking
-	case o.ev.viewer == "":
+	case o.ev.export.Viewer == "":
 		return viewerUnverified
-	case o.n.person != nil && o.n.person.ID != o.ev.viewer:
+	case o.n.person != nil && o.n.person.ID != o.ev.export.Viewer:
 		return onlyYourTime
 	}
 	return ""
 }
 
-// unread is the days whose dayStart is after from and at or before to
-// and now that the copy holds no read of, in order. A weekend's day is one
-// like any other: time can be logged on it.
+// unread is the days whose placed instant is after from and at or
+// before to and now that the copy holds no read of, in order. The days
+// are civil dates, counted apart from the instants a zone change moves.
 func (ev *evaluation) unread(from, to, now int64) []string {
 	to = min(to, now)
 	var out []string
-	t := time.UnixMilli(from).In(ev.loc)
-	for d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, ev.loc); ; d = d.AddDate(0, 0, 1) {
-		at := placed(d)
+	y, m, d := time.UnixMilli(from).In(ev.loc).Date()
+	for day := time.Date(y, m, d, 0, 0, 0, 0, time.UTC); ; day = day.AddDate(0, 0, 1) {
+		at := placed(day, ev.loc)
 		if at > to {
 			return out
 		}
-		day := d.Format(time.DateOnly)
-		if at > from && !ev.readDays[day] {
-			out = append(out, day)
+		date := day.Format(time.DateOnly)
+		if at > from && !ev.readDays[date] {
+			out = append(out, date)
 		}
 	}
 }
 
-// unreadOf is the days not read of periods ps, in order; a period still
-// to come has none (unread stops at now).
-func (ev *evaluation) unreadOf(ps []period, now int64) []string {
-	var out []string
+// windowUnread is the days of the copy's history window up to now not
+// read, read once an evaluation.
+func (ev *evaluation) windowUnread(now int64) []string {
+	if !ev.windowRead {
+		ev.windowDays, ev.windowRead = ev.unread(ev.export.Window, now, now), true
+	}
+	return ev.windowDays
+}
+
+// notRead is the days a number over periods ps needs read and are not:
+// the window's, with those of ps before it.
+func (ev *evaluation) notRead(ps []period, now int64) int {
+	days := slices.Clone(ev.windowUnread(now))
 	for _, p := range ps {
-		out = append(out, ev.unread(p.from, p.to, now)...)
+		days = append(days, ev.unread(p.from, min(p.to, ev.export.Window), now)...)
 	}
-	slices.Sort(out)
-	return slices.Compact(out)
-}
-
-// rangeUnread is the days not read that metric m's number over the range
-// counts: its periods' (g), or for a metric that counts now every day the
-// copy holds of logged time, from the history window.
-func (ev *evaluation) rangeUnread(g *ranged, now int64) []string {
-	if g.periods == nil {
-		return ev.unread(ev.export.Window, now, now)
-	}
-	return ev.unreadOf(g.periods, now)
-}
-
-// readable is days (YYYY-MM-DD, in order) without those the page does
-// not read: a day placed at or before the copy's history window.
-func (ev *evaluation) readable(days []string) []string {
-	t := time.UnixMilli(ev.export.Window).In(ev.loc)
-	first := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, ev.loc)
-	if placed(first) <= ev.export.Window {
-		first = first.AddDate(0, 0, 1)
-	}
-	i, _ := slices.BinarySearch(days, first.Format(time.DateOnly))
-	if i == len(days) {
-		return nil
-	}
-	return days[i:]
+	slices.Sort(days)
+	return len(slices.Compact(days))
 }
 
 // markUnread makes n not known where days of it were not read.
@@ -114,26 +100,31 @@ func markUnread(n *Num, days int) {
 	}
 }
 
+// counts is whether metric m's widget, its rows sorted into the range as
+// g, counts anything: a metric counted by period counts nothing over a
+// range with no period.
+func (g *ranged) counts() bool { return !g.bound || len(g.periods) > 0 }
+
 // markWidget marks widget value out of metric m, its rows sorted into
-// the range as g, where its days were not read, and lists the days not
-// read of the range and of the range before it shows that the page reads.
+// the range as g, not known while days it needs are not read, and lists
+// the window's days not read for the page to read.
 func (ev *evaluation) markWidget(out *WidgetValue, w Widget, m Metric, g *ranged, sp span) {
-	days := ev.rangeUnread(g, sp.now)
-	toRead := days
-	markUnread(out.Value, len(days))
-	if out.Previous != nil && !out.Previous.Gap {
-		before := ev.unreadOf(sp.previous, sp.now)
-		markUnread(out.Previous, len(before))
-		toRead = slices.Compact(slices.Sorted(slices.Values(slices.Concat(days, before))))
+	if !g.counts() {
+		return
 	}
-	out.Unread = ev.readable(toRead)
+	out.Unread = ev.windowUnread(sp.now)
+	whole := ev.notRead(g.periods, sp.now)
+	markUnread(out.Value, whole)
+	if out.Previous != nil && !out.Previous.Gap {
+		markUnread(out.Previous, ev.notRead(sp.previous, sp.now))
+	}
 	for i := range out.Trend {
-		markUnread(&out.Trend[i], len(ev.unreadOf(g.periods[i:i+1], sp.now)))
+		markUnread(&out.Trend[i], ev.notRead(g.periods[i:i+1], sp.now))
 	}
 	for i := range out.Buckets {
-		n := len(days)
+		n := whole
 		if !ranks(w, m) {
-			n = len(ev.unreadOf(g.periods[i:i+1], sp.now))
+			n = ev.notRead(g.periods[i:i+1], sp.now)
 		}
 		b := &out.Buckets[i]
 		markUnread(&b.Total, n)

@@ -35,6 +35,9 @@ type fixture struct {
 	// earliest is the copy's earliest instant when a kept sprint began
 	// before its window (180 days before testNow); 0 for the window.
 	earliest int64
+	// unverified is a connection with no verified account: the export
+	// names no viewer. Otherwise the viewer is u1.
+	unverified bool
 }
 
 func newFixture(plansSprints bool, estimates string) *fixture {
@@ -166,11 +169,11 @@ func (f *fixture) fill() Fill {
 		}
 		window := ms(testNow) - 180*day
 		return store.MirrorExport{Name: "WEB board", EstimateUnit: unit, PlansSprints: f.plansSprints, FirstReadDone: !f.reading,
-			Earliest: cmp.Or(f.earliest, window), Window: window}, true, nil
+			Earliest: cmp.Or(f.earliest, window), Window: window, Viewer: map[bool]string{false: "u1"}[f.unverified]}, true, nil
 	}
 }
 
-func (f *fixture) board() Board { return Board{Fill: f.fill(), Epics: true, Viewer: "u1"} }
+func (f *fixture) board() Board { return Board{Fill: f.fill(), Epics: true} }
 
 func evaluator() *Evaluator { return NewEvaluator(func() time.Time { return testNow }) }
 

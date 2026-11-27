@@ -512,16 +512,30 @@ func (a *sinkStep) Final(*sqlite.FunctionContext) {}
 // tracker profile's zone; it is placed on that date in the request's
 // zone, whatever the two zones are.
 func dayStart(d string, loc *time.Location) (int64, error) {
-	t, err := time.ParseInLocation(time.DateOnly, d, loc)
+	t, err := time.Parse(time.DateOnly, d)
 	if err != nil {
 		return 0, fmt.Errorf("day_start takes a day as YYYY-MM-DD: %w", err)
 	}
-	return placed(t), nil
+	return placed(t, loc), nil
 }
 
-// placed is the instant a day that begins at midnight is placed at: its
-// first millisecond. A period holds the instants after its start through
-// its end (period.holds), so a period that begins at midnight holds its
-// first day by this instant and not the day before. day_start places a
-// row by it and evaluation.unread finds a period's days by it.
-func placed(midnight time.Time) int64 { return midnight.UnixMilli() + 1 }
+// placed is the instant the civil date of day (its year, month and day;
+// its zone is not read) is placed at in loc: the first millisecond after
+// the date's first instant. That instant is its midnight, or where the
+// date begins when a zone change skips its midnight (America/Santiago's
+// 2026-09-06 begins at 01:00). A period holds the instants after its
+// start through its end (period.holds), so a period that begins at the
+// date's first instant holds the date by this instant and not the day
+// before. day_start places a row by it and evaluation.unread finds a
+// period's days by it.
+func placed(day time.Time, loc *time.Location) int64 {
+	y, m, d := day.Date()
+	t := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	if t.Day() != d {
+		// The midnight does not exist and Go read it in the zone before
+		// the change, which puts it on the day before: the date begins
+		// where that zone ends.
+		_, t = t.ZoneBounds()
+	}
+	return t.UnixMilli() + 1
+}

@@ -88,15 +88,15 @@ type Kind struct {
 }
 
 // Board is the board an evaluation reads: Fill exports it, Epics is as
-// Kind has it, TimeTracking is whether its tracker logs time (Jira),
-// Viewer is the connection's verified account, which Mine narrows to and
-// whose logged time the copy holds ("" before one), and Own is what its
-// project keeps and its agents proposed beside the built-in dashboard.
+// Kind has it, TimeTracking is whether its tracker logs time (Jira), and
+// Own is what its project keeps and its agents proposed beside the
+// built-in dashboard. The viewer, whom Mine narrows to and whose logged
+// time the copy holds, is the export's (store.MirrorExport.Viewer), read
+// in the snapshot its rows are.
 type Board struct {
 	Fill         Fill
 	Epics        bool
 	TimeTracking bool
-	Viewer       string
 	Own          Own
 }
 
@@ -248,9 +248,6 @@ type Answer struct {
 	Epic      *Name         `json:"epic,omitempty"`
 	At        int64         `json:"at"`
 	Widgets   []WidgetValue `json:"widgets"`
-	// Viewer is the account whose logged time the copy holds, whose days
-	// not read (WidgetValue.Unread) the page reads; "" before one.
-	Viewer string `json:"viewer,omitempty"`
 }
 
 // Listing is what a board offers as the screen lays it out: its
@@ -498,9 +495,12 @@ func how(m Metric, p prepared, plansSprints bool, estimates string) How {
 	case ReduceAverageOfPeriodSums:
 		counts = "The " + unit + " of each " + period + " added up, then averaged over the range's " + periods + "; a " + period + " with none counts as zero"
 	}
-	if p.cols.has(ColumnPerson) {
+	switch {
+	case p.cols.has(ColumnPerson):
 		counts += "; each row counts for the person the query names."
-	} else {
+	case p.readsWorklogs():
+		counts += "; each row of logged time counts for you, whose time it is."
+	default:
 		counts += "; each ticket counts for its assignee now."
 	}
 	rng := "It counts what is true now; the range does not change it, and it has no earlier value to compare with."
@@ -531,15 +531,18 @@ type evaluation struct {
 	s      *session
 	loc    *time.Location
 	export store.MirrorExport
-	// viewer is Board.Viewer, and readDays the days of the viewer's logged
-	// time the copy holds as read, filled when a metric reads worklogs.
-	viewer    string
-	readDays  map[string]bool
-	estimates string
-	sprints   []sprintRow
-	tickets   map[string]ticketRow
-	people    map[string]string
-	epics     map[string]Name
+	// readDays is the days of the viewer's (export.Viewer) logged time the
+	// copy holds as read, filled when a metric reads worklogs.
+	readDays map[string]bool
+	// windowDays is the days of the history window not read up to the
+	// evaluation's now, once windowRead (windowUnread).
+	windowDays []string
+	windowRead bool
+	estimates  string
+	sprints    []sprintRow
+	tickets    map[string]ticketRow
+	people     map[string]string
+	epics      map[string]Name
 }
 
 type ticketRow struct {
@@ -556,7 +559,7 @@ func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, relat
 		return nil, err
 	}
 	s.asked = asked
-	ev := &evaluation{s: s, loc: loc, viewer: b.Viewer}
+	ev := &evaluation{s: s, loc: loc}
 	if err := ev.fill(ctx, b, relations); err != nil {
 		if closeErr := s.close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
@@ -702,8 +705,9 @@ type narrowing struct {
 	person, epic *Name
 }
 
-func (ev *evaluation) narrowing(r Request, viewer string) (narrowing, error) {
+func (ev *evaluation) narrowing(r Request) (narrowing, error) {
 	var n narrowing
+	viewer := ev.export.Viewer
 	person := r.Person
 	if r.Mine {
 		if r.Person != "" {
@@ -740,7 +744,7 @@ func (ev *evaluation) keep(n narrowing, p prepared, rows []contribution) []contr
 		t := ev.tickets[c.ticket]
 		person, epic := t.assignee, t.epic
 		if p.readsWorklogs() {
-			person = ev.viewer
+			person = ev.export.Viewer
 		}
 		if cols.has(ColumnPerson) {
 			person = c.person
@@ -911,7 +915,7 @@ func (o *opened) resolve(b Board, r Request, loc *time.Location) error {
 		o.sp.previousGap = firstReadGap
 	}
 	o.timeTracking = b.TimeTracking
-	if o.n, err = o.ev.narrowing(r, b.Viewer); err != nil {
+	if o.n, err = o.ev.narrowing(r); err != nil {
 		return err
 	}
 	o.view, o.preps = o.ev.s.view(o.d, o.metrics, plansSprints, o.ev.estimates)
@@ -1030,7 +1034,7 @@ func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	a := Answer{Range: rangeView(o.sp), Reading: !o.ev.export.FirstReadDone, Estimates: o.ev.estimates, Person: o.n.person, Epic: o.n.epic, At: o.now.UnixMilli(), Widgets: []WidgetValue{}, Viewer: b.Viewer}
+	a := Answer{Range: rangeView(o.sp), Reading: !o.ev.export.FirstReadDone, Estimates: o.ev.estimates, Person: o.n.person, Epic: o.n.epic, At: o.now.UnixMilli(), Widgets: []WidgetValue{}}
 	// A metric runs once for all of its widgets, for what they read.
 	read := map[string]reads{}
 	for _, w := range o.d.Widgets {
@@ -1150,8 +1154,10 @@ func rangeView(sp span) RangeView {
 // value), so every widget form and drill reads a period the same way.
 type ranged struct {
 	// periods is what the metric counts by: the range's periods, or the
-	// sprint's days for a metric grouped by day.
+	// sprint's days for a metric grouped by day. bound is whether it counts
+	// by them at all; one that is not counts now.
 	periods []period
+	bound   bool
 	// rows is the rows in the periods; all of the metric's rows for one
 	// that counts now; those that hold now for a state.
 	rows []contribution
@@ -1208,7 +1214,7 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 		previous = nil
 	}
 	if c.p.cols.state() {
-		g := &ranged{periods: periods, rows: holding(c.rows, sp.now), all: c.rows, state: true, bySprint: m.Bucket == BucketSprint}
+		g := &ranged{periods: periods, bound: true, rows: holding(c.rows, sp.now), all: c.rows, state: true, bySprint: m.Bucket == BucketSprint}
 		if m.Bucket != BucketDay && len(periods) > 0 {
 			g.before, g.compared = holding(c.rows, periods[0].from), true
 		}
@@ -1219,7 +1225,7 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 		return t.created, t.updated
 	}
 	placed, unplaced := place(m, c.rows, spanOf, periods, previous)
-	g := &ranged{periods: periods, placed: placed, unplaced: unplaced[0], unplacedBefore: unplaced[1], compared: m.Bucket != BucketDay}
+	g := &ranged{periods: periods, bound: true, placed: placed, unplaced: unplaced[0], unplacedBefore: unplaced[1], compared: m.Bucket != BucketDay}
 	for _, p := range periods {
 		g.rows = append(g.rows, placed[p.id]...)
 	}
@@ -1668,12 +1674,12 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		}
 		out.Value = reduce(rows)
 	}
-	if c.p.readsWorklogs() {
-		days := ev.rangeUnread(g, sp.now)
+	if c.p.readsWorklogs() && g.counts() {
+		ps := g.periods
 		if cellPeriod != nil {
-			days = ev.unreadOf(cellPeriod, sp.now)
+			ps = cellPeriod
 		}
-		markUnread(&out.Value, len(days))
+		markUnread(&out.Value, ev.notRead(ps, sp.now))
 	}
 	rows = slices.Clone(rows)
 	sortDrill(rows, ev.keyOf)

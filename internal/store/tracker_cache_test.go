@@ -249,7 +249,7 @@ var mirrorNonWriters = []string{
 	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorBodies", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorBoardStatuses", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorParents", "ListMirrorUnnamedParents", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections", "GetMirrorBoardPace", "ListMirrorSupport",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards", "ListMirrorSprintNames", "LastMirrorPlanRow",
-	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays",
+	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays", "ReadMirrorWorklogReadDays",
 	// A board's rows copied into a dashboard's own database: a read of the
 	// file, attached read-only.
 	"ExportMirrorBoard",

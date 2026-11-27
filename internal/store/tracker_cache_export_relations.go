@@ -14,7 +14,8 @@ import "strconv"
 //     title in the export.
 //   - worklogs and worklog_days are the logged time and the read days of
 //     one person, the board's connection's verified account, the account
-//     the dashboard's Mine reads (trackerdash.Board.Viewer). worklogs holds
+//     the dashboard's Mine reads (MirrorExport.Viewer, read in the same
+//     snapshot). worklogs holds
 //     the time on the board's tickets alone; worklog_days holds every day
 //     of that person's the mirror read, whatever it logged. Both start a
 //     day before the history window (MirrorExport.Window), so they hold
@@ -40,7 +41,7 @@ func mirrorExportRelationFills() []mirrorExportFill {
 	return []mirrorExportFill{
 		{relation: "threads", name: "threads", needs: []string{"tickets"}, sql: `INSERT INTO main.threads(id, ticket, origin, linked_at, created_at, archived, last_turn_at)
 		  SELECT th.id, tt.issue_id, tt.origin, tt.linked_at, th.created_at, th.archived,
-		    (SELECT tu.started_at FROM turns tu WHERE tu.thread_id = th.id ORDER BY tu.turn_index DESC LIMIT 1)
+		    ` + newestTurnSQL("th.id", "nt.started_at") + `
 		  FROM tracker_cache_roots r
 		  CROSS JOIN tracker_connections c ON c.id = r.connection_id
 		  CROSS JOIN thread_tickets tt ON tt.kind = c.kind AND tt.site = c.site
