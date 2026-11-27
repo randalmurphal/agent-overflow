@@ -3,7 +3,6 @@ package trackerapp
 import (
 	"fmt"
 
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
