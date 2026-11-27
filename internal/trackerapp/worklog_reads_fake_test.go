@@ -148,6 +148,18 @@ func TestADashboardReadThatFailedWaitsForAPerson(t *testing.T) {
 	if read, err := s.st.ReadMirrorWorklogReadDays(s.conn.ID, "acc-user1", first, today); err != nil || len(read) != n {
 		t.Fatalf("after the person's ask the read days are %d of %d, %v", len(read), n, err)
 	}
+	// A person's ask whose first read fails ends there: the shows after
+	// it do not go on reading the days it asked for.
+	if err := s.e.AddFault(trackerfake.Fault{Origin: jira, Route: "POST rest/api/3/search/jql", Kind: trackerfake.FaultRefuse, Times: 1, Status: 400,
+		Body: json.RawMessage(`{"errorMessages":["refused"],"errors":{}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.dashRead(t, today, WorklogReadPerson); got.Failure == nil || got.More {
+		t.Fatalf("the person's failed ask answered %+v; want its failure and nothing more now", got)
+	}
+	if got := s.dashRead(t, today, WorklogReadShown); got.Read || got.More {
+		t.Fatalf("a show after the person's failed ask answered %+v; want nothing read", got)
+	}
 }
 
 // logOutside logs seconds of user 1's time on the fake Jira site today,
