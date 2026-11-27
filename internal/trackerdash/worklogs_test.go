@@ -42,7 +42,7 @@ func loggedTime(f *fixture) Board {
 	week := Metric{Name: "w_1", Title: "Your hours", Words: []string{"Your logged time by week."},
 		SQL: `SELECT ticket, seconds AS value, day_start(day) AS at FROM worklogs`, Reduce: ReduceSum, Unit: UnitTime, Bucket: BucketPeriod}
 	people := Metric{Name: "w_2", Title: "Your hours by assignee", Words: []string{"Your logged time by the ticket's assignee."},
-		SQL: `SELECT w.ticket, w.seconds AS value, day_start(w.day) AS at, t.assignee AS bucket FROM worklogs w JOIN tickets t ON t.id = w.ticket`,
+		SQL:    `SELECT w.ticket, w.seconds AS value, day_start(w.day) AS at, t.assignee AS bucket FROM worklogs w JOIN tickets t ON t.id = w.ticket`,
 		Reduce: ReduceSum, Unit: UnitTime, Bucket: BucketText}
 	b := f.board()
 	b.TimeTracking = true
