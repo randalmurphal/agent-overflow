@@ -2127,8 +2127,10 @@ delete is refused and the links the delete read are the ones it ends.
   projects' origins are read, in name order, only for a row those leave
   without one, until every such row's repository has a clone. Each of
   the two methods walks on its own, so a ticket's open walks them up to
-  twice. An origin read is cached for five minutes after it succeeds,
-  so the second walk reads again only the origins that failed; a read
+  twice. An origin read is cached for five minutes once it has
+  succeeded, so a walk that starts after another's read finished reads
+  again only the origins that failed; the two walks of one open start
+  together and may each read an origin neither has cached. A read
   is up to two git processes (`rev-parse --git-common-dir`, then
   `remote get-url origin`). With 10 other projects, a ticket with no
   rows and one whose rows the covered projects clone read none of their
