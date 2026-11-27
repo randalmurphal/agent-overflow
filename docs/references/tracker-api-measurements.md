@@ -927,7 +927,7 @@ first keeps its materialization, and copies the history. Copying the history it 
 not read would add 24,160,468 VM steps at 20,000 issues (the changes,
 the statuses and the people they name; 202, 64 and 110 ms in one run),
 and labels 1,340,026. Reading a metric's plan costs 48 to 91 µs for
-each built-in metric and 141 µs for the empty session's layout (best of
+each built-in metric and 175 µs for the empty session's layout (best of
 20, on the developer machine), once per kind for the built-ins and once
 per count for a project's own widgets.
 
