@@ -732,23 +732,31 @@ func TestEachLoggedNumberIsKnownByWhatItsReductionTook(t *testing.T) {
 // is, not by the rows it found: on a board with no logged time copied and
 // no day read, a ranked chart, a list and a number each tell the reads
 // every day of the window and list them, the number not known; once
-// every day is read, each shows its empty result and lists nothing.
+// every day is read, each shows its empty result and lists nothing. A
+// widget of a metric that does not read it asks for nothing.
 func TestAWidgetWithNoRowsAsksForTheWindow(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
 		widget string
 		form   Form
 		metric string
-	}{{"people", FormBars, "w_2"}, {"list", FormList, "w_1"}, {"n", FormNumber, "w_1"}} {
+	}{{"people", FormBars, "w_2"}, {"list", FormList, "w_1"}, {"n", FormNumber, "w_1"}, {"tickets", FormNumber, "t"}} {
 		for _, read := range [][]string{nil, window()} {
 			f := worklogBoard(read...)
 			f.exec(`DELETE FROM worklogs`)
 			b := loggedTime(f)
+			b.Own.Metrics["t"] = Metric{Name: "t", Title: "Tickets", Words: []string{"Tickets."}, SQL: `SELECT id AS ticket, 1 AS value FROM tickets`, Reduce: ReduceSum, Unit: UnitTickets}
 			b.Own.Dashboards = []Dashboard{{ID: "one", Title: "One", Widgets: []Widget{{ID: c.widget, Metric: c.metric, Form: c.form, Width: 6}}}}
 			var told []WorklogNeed
 			b.Worklogs = func(n WorklogNeed) WorklogState { told = append(told, n); return WorklogState{} }
 			a := mustEvaluate(t, evaluator(), b, Request{Dashboard: "one", Range: RangeWeeks2, TimeZone: "UTC"})
 			w := widgetOf(t, a, c.widget)
+			if c.metric == "t" {
+				if len(told) != 0 || w.Unread != nil || num(w.Value) != "2" {
+					t.Errorf("a count of tickets: told %v, lists %v, counts %s; want nothing told or listed, 2", told, w.Unread, num(w.Value))
+				}
+				continue
+			}
 			unread := len(window())
 			if read != nil {
 				unread = 0
