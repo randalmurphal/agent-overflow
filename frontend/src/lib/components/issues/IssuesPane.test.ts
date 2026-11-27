@@ -27,7 +27,7 @@ import IssuesPane from './IssuesPane.svelte';
 import { trackerBoardUpdated as applyTrackerBoardEvent, trackerIssueUpdated } from '../../stores/trackerBoardEvents';
 import { registerIssuesCommands } from '../../stores/issuesCommands';
 import { clearCommandRegistry, runCommand, type CommandContext } from '../../stores/commandRegistry.svelte';
-import { hiddenCardFields, requestTicketOpen, setTicketPlacement, takePaneOpenRequest } from '../../stores/issuesPane.svelte';
+import { hiddenCardFields, requestTicketOpen, requestTimeOpen, setTicketPlacement, takePaneOpenRequest } from '../../stores/issuesPane.svelte';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
@@ -3563,6 +3563,36 @@ describe('the Time screen in the pane', () => {
     // The person's screen stays Time; the switch was the request's.
     const again = mount();
     expect(await again.findByTestId('time-screen')).toBeInTheDocument();
+    again.unmount();
+  });
+
+  it('opens Time at a week asked for from outside the pane, over its connection\'s first board, closing the ticket open, without saving the screen', async () => {
+    const mocks = install({ choices: [choice('1', { opens_first: true }), choice('5', { connection: 'c2', project: 'p2' }), choice('6', { connection: 'c2', project: 'p3' })] });
+    installTicket();
+    const stored = setBindingMock('TrackerWorklogs', async () => ({ worklogs: [] }));
+    setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs: [] }));
+    const view = mount();
+    await view.findAllByTestId('issues-card');
+    const opened = await openCard(view, '1');
+    expect(opened).toBeInTheDocument();
+    // Of the board shown: Time at the week of the day asked for.
+    requestTimeOpen({ time: { backend: HOME_BACKEND, connection: 'c1', day: '2026-11-11' }, project: null, unplaced: vi.fn() });
+    await view.findByTestId('time-screen');
+    await waitFor(() => expect(stored).toHaveBeenLastCalledWith('c1', 'acc-user1', '2026-11-09', '2026-11-15'));
+    expect(view.queryByTestId('ticket-screen')).toBeNull();
+    // Of another connection: its first board.
+    requestTimeOpen({ time: { backend: HOME_BACKEND, connection: 'c2', day: '2026-11-25' }, project: null, unplaced: vi.fn() });
+    await waitFor(() => expect(stored).toHaveBeenLastCalledWith('c2', 'acc-user1', '2026-11-23', '2026-11-29'));
+    expect(mocks.subscribe).toHaveBeenLastCalledWith('p2', 'c2', '5', [], false);
+    // None of a connection: says so, and nothing moves.
+    const unplaced = vi.fn();
+    requestTimeOpen({ time: { backend: HOME_BACKEND, connection: 'c9', day: '2026-11-11' }, project: null, unplaced });
+    await waitFor(() => expect(unplaced).toHaveBeenCalledWith(null));
+    view.unmount();
+    // The person's screen stays the Board; the switch was the request's.
+    const again = mount();
+    expect(await again.findAllByTestId('issues-card')).not.toHaveLength(0);
+    expect(again.queryByTestId('time-screen')).toBeNull();
     again.unmount();
   });
 

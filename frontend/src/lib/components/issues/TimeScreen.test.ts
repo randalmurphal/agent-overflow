@@ -5,7 +5,7 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick, type ComponentProps } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { WorklogView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { PostTimeView, TimeEntryView, WorklogView, WriteView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import TimeScreen from './TimeScreen.svelte';
 import { methodNotFound } from '../../../test/helpers/olderComputer';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -413,5 +413,175 @@ describe('a change of the computer\'s connections', () => {
     expect(view.queryByTestId('time-reading')).toBeNull();
     expect(within(body().getByTestId('worklog-form')).getByTestId('worklog-form-description')).toHaveValue('Review, half done');
     expect(reads()).toEqual(before);
+  });
+});
+
+function drafted(id: number, day: string, minutes: number, extra: Partial<TimeEntryView> = {}): TimeEntryView {
+  return { id, revision: 2, connection: 'c1', day, issue: '10001', key: 'WEB-1', title: 'First story', minutes, reason: 'Commits on the branch', by: 'agent', thread: 't1', call: 'call-1', state: 'drafted', ...extra };
+}
+
+function asked(id: number, day: string, minutes: number, extra: Partial<TimeEntryView> = {}): TimeEntryView {
+  return drafted(id, day, minutes, { issue: undefined, key: undefined, title: undefined, reason: 'A 25 minute call at 14:05 is not on your calendar.', offers: [{ issue: '10002', key: 'WEB-2', title: 'Second story' }], ...extra });
+}
+
+function answerDraft(worklogs: WorklogView[], entries: TimeEntryView[]): void {
+  setBindingMock('TrackerWorklogs', async () => ({ worklogs, drafted: entries }));
+  setBindingMock('RefreshTrackerWorklogs', async () => ({ worklogs, drafted: entries }));
+}
+
+const POSTED = (sentence: string): PostTimeView => ({ entries: [], posted: 1, of: 1, sentence });
+
+describe('the agent\'s draft', () => {
+  const DRAFT = [
+    drafted(11, '2026-11-11', 150),
+    drafted(12, '2026-11-11', 60, { issue: '10002', key: 'WEB-2', title: 'Second story', revision: 7 }),
+    asked(13, '2026-11-12', 25),
+    drafted(14, '2026-11-12', 45),
+  ];
+
+  it('shows the week\'s draft in a banner and approves the whole week shown, questions included', async () => {
+    answerDraft(WEEK, DRAFT);
+    const post = setBindingMock('PostTrackerTimeEntries', async () => POSTED('Posted 3 of 3 entries for Wed Nov 11 and Thu Nov 12. 1 question for Thu Nov 12 is still open.'));
+    const view = render(TimeScreen, BASE);
+    const banner = await view.findByTestId('time-draft-banner');
+    expect(within(banner).getByTestId('time-draft-banner-title')).toHaveTextContent('Your agent drafted 2 days');
+    expect(within(banner).getByTestId('time-draft-banner-detail')).toHaveTextContent('3 entries · 4h 15m · 1 question · from a thread');
+    await fireEvent.click(within(banner).getByTestId('time-draft-approve-week'));
+    expect(post).toHaveBeenCalledWith('c1', { entries: [{ id: 11, revision: 2 }, { id: 12, revision: 7 }, { id: 14, revision: 2 }, { id: 13, revision: 2 }], alone: undefined });
+    expect(await view.findByTestId('time-draft-approve-week-write-outcome')).toHaveTextContent('Posted 3 of 3 entries for Wed Nov 11 and Thu Nov 12. 1 question for Thu Nov 12 is still open.');
+  });
+
+  it('asks once before Discard removes the week\'s drafted entries', async () => {
+    answerDraft(WEEK, DRAFT);
+    const remove = setBindingMock('RemoveTrackerTimeEntries', async () => DRAFT);
+    const view = render(TimeScreen, BASE);
+    await fireEvent.click(await view.findByTestId('time-draft-discard-week'));
+    expect(remove).not.toHaveBeenCalled();
+    expect(view.getByTestId('time-draft-discard-week-confirm')).toHaveTextContent('Remove the 4 entries of this draft? Nothing is logged.');
+    await fireEvent.click(view.getByTestId('time-draft-discard-week-confirm-keep'));
+    expect(remove).not.toHaveBeenCalled();
+    await fireEvent.click(view.getByTestId('time-draft-discard-week'));
+    await fireEvent.click(view.getByTestId('time-draft-discard-week-confirm-yes'));
+    expect(remove).toHaveBeenCalledWith('c1', [{ id: 11, revision: 2 }, { id: 12, revision: 7 }, { id: 14, revision: 2 }, { id: 13, revision: 2 }]);
+  });
+
+  it('shows each day\'s draft dashed under its logged time and approves one day alone', async () => {
+    answerDraft(WEEK, DRAFT);
+    const post = setBindingMock('PostTrackerTimeEntries', async () => POSTED('Posted 2 of 2 entries for Wed Nov 11.'));
+    const view = render(TimeScreen, BASE);
+    await view.findByTestId('time-draft-banner');
+    const wed = view.getAllByTestId('time-day').find((d) => d.dataset.day === '2026-11-11')!;
+    expect(within(wed).getAllByTestId('time-draft-entry').map((e) => e.dataset.entry)).toEqual(['11', '12']);
+    expect(within(wed).getByTestId('time-day-drafted')).toHaveTextContent('+3h 30m');
+    expect(within(wed).queryByTestId('time-day-empty')).toBeNull();
+    await fireEvent.click(within(wed).getByTestId('time-draft-approve-day'));
+    expect(post).toHaveBeenCalledWith('c1', { entries: [{ id: 11, revision: 2 }, { id: 12, revision: 7 }], alone: undefined });
+  });
+
+  it('changes an entry, logs it alone as changed, keeps it, and removes it from its form', async () => {
+    answerDraft([], [drafted(11, '2026-11-11', 150)]);
+    const edit = setBindingMock('EditTrackerTimeEntry', async () => drafted(11, '2026-11-11', 120, { revision: 3 }));
+    const post = setBindingMock('PostTrackerTimeEntries', async () => POSTED('Posted 1 of 1 entries for Wed Nov 11.'));
+    const remove = setBindingMock('RemoveTrackerTimeEntries', async () => [drafted(11, '2026-11-11', 150)]);
+    const view = render(TimeScreen, BASE);
+    await fireEvent.click(await view.findByTestId('time-draft-entry-hours'));
+    const form = await body().findByTestId('time-draft-form');
+    await fireEvent.input(within(form).getByTestId('time-draft-form-time'), { target: { value: '2h' } });
+    await fireEvent.click(within(form).getByTestId('time-draft-form-log'));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('c1', { entries: [{ id: 11, revision: 3 }], alone: true }));
+    expect(edit).toHaveBeenCalledWith('c1', { id: 11, revision: 2 }, { hours: 2 });
+    await waitFor(() => expect(body().queryByTestId('time-draft-form')).toBeNull());
+    // Keep as draft with nothing changed sends nothing.
+    await fireEvent.click(view.getByTestId('time-draft-entry-hours'));
+    await fireEvent.click(within(await body().findByTestId('time-draft-form')).getByTestId('time-draft-form-keep'));
+    expect(edit).toHaveBeenCalledTimes(1);
+    await fireEvent.click(view.getByTestId('time-draft-entry-hours'));
+    await fireEvent.click(within(await body().findByTestId('time-draft-form')).getByTestId('time-draft-form-remove'));
+    expect(remove).toHaveBeenCalledWith('c1', [{ id: 11, revision: 2 }]);
+  });
+
+  it('answers a question with an offered ticket or leaves it out, with one press', async () => {
+    answerDraft([], [asked(13, '2026-11-12', 25)]);
+    const edit = setBindingMock('EditTrackerTimeEntry', async () => drafted(13, '2026-11-12', 25));
+    const view = render(TimeScreen, BASE);
+    const q = await view.findByTestId('time-draft-question');
+    expect(within(q).getByTestId('time-draft-question-text')).toHaveTextContent('A 25 minute call at 14:05 is not on your calendar. Which ticket was it for?');
+    await fireEvent.click(within(q).getByTestId('time-draft-question-offer'));
+    expect(edit).toHaveBeenLastCalledWith('c1', { id: 13, revision: 2 }, { ticket: { issue: '10002', key: 'WEB-2', title: 'Second story' } });
+    await fireEvent.click(within(q).getByTestId('time-draft-question-leave-out'));
+    expect(edit).toHaveBeenLastCalledWith('c1', { id: 13, revision: 2 }, { leave_out: true });
+  });
+
+  it('shows an entry of unknown outcome with the computer\'s sentence and Remove, never a way to post it, and logs it by hand', async () => {
+    const sentence = "may already be logged, so it is not sent again; look at the day's logged time, and remove the entry if the time is there, or log the time by hand and then remove the entry";
+    const unknown = drafted(15, '2026-11-11', 90, { state: 'unknown', refusal: sentence });
+    answerDraft([], [unknown]);
+    const add = setBindingMock('AddTrackerWorklog', async () => APPLIED);
+    const remove = setBindingMock('RemoveTrackerTimeEntries', async () => [unknown]);
+    const view = render(TimeScreen, BASE);
+    const row = await view.findByTestId('time-draft-entry');
+    expect(within(row).getByTestId('time-draft-entry-unknown')).toHaveTextContent(`This entry ${sentence}.`);
+    expect(within(row).getByTestId('time-draft-entry-hours').tagName).toBe('SPAN');
+    expect(view.queryByTestId('time-draft-approve-day')).toBeNull();
+    expect(view.queryByTestId('time-draft-banner')).toBeNull();
+    await fireEvent.click(within(row).getByTestId('time-draft-entry-log-by-hand'));
+    const form = await body().findByTestId('worklog-form');
+    expect(within(form).getByTestId('worklog-form-time')).toHaveValue('1h 30m');
+    expect(within(form).getByTestId('worklog-form-description')).toHaveValue('Commits on the branch');
+    expect(within(form).getByTestId('worklog-form-day')).toHaveValue('2026-11-11');
+    expect(remove).not.toHaveBeenCalled();
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('c1', [{ id: 15, revision: 2 }]));
+    expect(add).toHaveBeenCalledWith('c1', { issue: '10001', day: '2026-11-11', spent_seconds: 5400, description: 'Commits on the branch' });
+  });
+
+  it('keeps an entry of unknown outcome when its time could not be logged by hand', async () => {
+    const unknown = drafted(15, '2026-11-11', 90, { state: 'unknown', refusal: 'may already be logged' });
+    answerDraft([], [unknown]);
+    setBindingMock('AddTrackerWorklog', async () => ({ parts: [{ step: 'worklog', state: 'refused', refusal: { reason: 'refused', message: 'Worklog is closed.' } }] }) as WriteView);
+    const remove = setBindingMock('RemoveTrackerTimeEntries', async () => [unknown]);
+    const view = render(TimeScreen, BASE);
+    await fireEvent.click(within(await view.findByTestId('time-draft-entry')).getByTestId('time-draft-entry-log-by-hand'));
+    await fireEvent.click(within(await body().findByTestId('worklog-form')).getByTestId('worklog-form-save'));
+    await body().findByTestId('worklog-form-write-outcome');
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('shows the draft dashed in its tickets\' cells and the questions in a last Not placed row', async () => {
+    answerDraft(WEEK, DRAFT);
+    const view = render(TimeScreen, BASE);
+    await view.findByTestId('time-draft-banner');
+    await fireEvent.click(view.getByRole('radio', { name: 'By ticket' }));
+    const web1 = view.getAllByTestId('time-ticket-row').find((r) => r.dataset.issue === '10001')!;
+    const wed = within(web1).getAllByTestId('time-cell').find((c) => c.dataset.day === '2026-11-11')!;
+    expect(within(wed).getByTestId('time-cell-drafted')).toHaveTextContent('2h 30m');
+    const notPlaced = view.getByTestId('time-not-placed-row');
+    expect(within(notPlaced).getAllByTestId('time-not-placed-cell').map((c) => c.dataset.day)).toEqual(['2026-11-12']);
+    await fireEvent.click(within(notPlaced).getByTestId('time-not-placed-cell'));
+    expect(within(await body().findByTestId('time-draft-questions')).getAllByTestId('time-draft-question').map((q) => q.dataset.entry)).toEqual(['13']);
+    await fireEvent.click(wed);
+    expect(await body().findByTestId('time-draft-form')).toBeInTheDocument();
+    expect(view.getByTestId('time-draft-note')).toHaveTextContent("Dashed cells are your agent's draft. Nothing is posted until you approve.");
+  });
+
+  it('marks each day of the compact strip with what it holds', async () => {
+    answerDraft(WEEK, DRAFT);
+    const view = render(TimeScreen, { ...BASE, compact: true });
+    await view.findByTestId('time-draft-banner');
+    expect(view.getAllByTestId('time-day-tab').map((t) => [t.dataset.day, t.dataset.mark, t.title])).toEqual([
+      ['2026-11-09', 'logged', 'Logged'],
+      ['2026-11-10', 'logged', 'Logged'],
+      ['2026-11-11', 'drafted', 'Drafted, not logged'],
+      ['2026-11-12', 'question', 'A question is waiting'],
+      ['2026-11-13', 'none', 'Nothing yet'],
+    ]);
+  });
+
+  it('moves to a week another surface asks for', async () => {
+    answerDraft([], []);
+    const view = render(TimeScreen, BASE);
+    await view.findByTestId('time-week');
+    await view.rerender({ ...BASE, askedWeek: { monday: '2026-11-02' } });
+    await waitFor(() => expect(getBindingMock('TrackerWorklogs')!.mock.calls.at(-1)).toEqual(['c1', 'acct-1', '2026-11-02', '2026-11-08']));
   });
 });
