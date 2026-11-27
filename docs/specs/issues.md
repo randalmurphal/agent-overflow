@@ -843,10 +843,11 @@ with credit.
   Credit counts only on a Jira site.
 - A ticket whose credit is not read yet is listed and not counted. A
   finished ticket names who had it when it finished only once its
-  history is read for its latest change; until then its points count for
-  no one and its reviews are not counted. While the last read of who
-  worked on the tickets failed, every dashboard that counts credit says
-  so with the reason.
+  history is read for its latest change and reaches back to the finish;
+  until then its points count for no one and its reviews are not
+  counted. While the last read of who worked on the tickets failed, every
+  widget that counts credit says so with the reason, on a dashboard and
+  in an agent's tried widget.
 
 ### Time
 

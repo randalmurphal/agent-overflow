@@ -984,8 +984,12 @@ but answered after the settle margin still decides, since the history
 leaves the issue due nothing more. The service serializes a connection's
 history reads (its history lock); ticket reads run beside them, so the
 order is kept in the record, not by the caller. A history read is told as
-a change only when its changes or the shown status time or its finality
-changed. A card
+a change only when its changes, the shown status time or its finality,
+or what credit reads of it (whether it is final for the card's version,
+and from when it is complete) changed (`writeMirrorHistoryTimesTx`;
+`TestEveryWriteThatChangesATicketsCreditReportsIt` finds each column
+credit reads from its SQL and checks each write of it reports the
+ticket). A card
 read that finds the same status at a newer update keeps the time it
 showed, no longer final, so an issue that left its status and came back
 between two card reads shows the earlier stay's time until a read of the
@@ -2760,16 +2764,20 @@ ticket whose evidence is not read for its card has one row not counted,
 with no person, so a person's page lists it too (`evaluation.keep`). The
 built-in dashboard's pace and its finished bars then count three
 series: finished tickets, review credit and support credit. Who had a
-finished ticket is read from a history that covers its card: until the
-history unit reads it again after an edit (at once, and once more a
-settle margin later, one minute on Jira), the ticket names no person
-and its reviews are one row not counted. Support time counts in closed
+finished ticket is read from a history that covers its card and is
+complete from before the finish: until the history unit reads it again
+after an edit (at once, and once more a settle margin later, one minute
+on Jira), the ticket names no person and its reviews are one row not
+counted, and one whose history starts after its finish (a ticket the
+tracker no longer answers for) names no one, its points still counted.
+When it finished is read from that history too, else from its
+resolution. Support time counts in closed
 and active sprints only: work after the last completion while no sprint
 is active counts once the next one starts. While the evidence unit's
-last whole read failed, an answer with a widget that reads `credit`
-says why, whatever its rows hold (`Answer.Evidence`,
-`EvidenceSentence`), on the dashboard, its proposals and a tried
-widget; a change of that outcome has the open boards count again
+last whole read failed, each value of a widget that reads `credit`
+says why, whatever its rows hold (`WidgetValue.Evidence`,
+`EvidenceSentence`), on the dashboard, its proposals, a tried widget
+and the agent's `dashboard_widget`; a change of that outcome has the open boards count again
 (`BoardEvent.Recount`). A project that
 counts no credit binds no rules, its `credit` relation is empty, and
 its pace runs the statement it ran before credit
@@ -2950,11 +2958,14 @@ statement.
   inside a wrapper that produces the whole result in SQLite's first
   step, under a 1 s deadline counted from before its prepare, at most
   20,000 rows and 4 MiB of encoded rows. A row counts toward them only
-  if a widget or drill of the evaluation takes it (`reads`): a state's
-  if it holds at an instant they read (now, where the range begins, or
-  the end of a period they show), an event's placed in periods if it
-  falls in a period they show, or in the previous range for a number
-  that compares with it, so rows no widget reduces do not fill the
+  if a widget or drill of the evaluation takes it (`reads`), by the
+  rules the reduction places it by (`heldAt`, `period.holdsState`,
+  `period.places`, `period.meets`): a state's if it holds now or where
+  the range begins, or at the end of a period they show, in that
+  period's sprint for a metric by sprint; an event's placed in periods
+  if it falls in a period they show, or in the previous range for a
+  number that compares with it, one with no instant if its ticket's
+  life meets such a period; so rows no widget reduces do not fill the
   limit; past it, a state widget's sentence says which of those
   instants the rows held at. An evaluation has 4 s. A
   count of a dashboard is two, one after the other: its own widgets, on
