@@ -6,7 +6,8 @@
 // Covered on both: Ask your agent opens a new thread in the board's
 // project with an unsent draft naming the board; the agent reads the
 // rules, a query on a column the board's copy lacks is refused with a
-// sentence naming it, and two widgets it shows appear above the grid with
+// sentence naming it, a widget it tries counts the tickets by the type
+// the board's read gave them, and two widgets it shows appear above the grid with
 // their numbers and How this is counted, their query among it; Dismiss
 // drops one and Keep puts the other on a new dashboard, which the picker
 // lists after Overview and another browser shows; edit mode removes the
@@ -50,7 +51,9 @@ const BY_GROUP = {
   title: 'By status group', words: ['Tickets by their status group.'], sql: 'SELECT id AS ticket, status_group AS bucket FROM tickets',
   reduce: 'count', unit: 'tickets', bucket: 'text', form: 'bars',
 };
-const PRIORITY = { ...OPEN, title: 'Urgent', sql: "SELECT id AS ticket FROM tickets WHERE priority = 'High'" };
+const SEVERITY = { ...OPEN, title: 'Critical', sql: "SELECT id AS ticket FROM tickets WHERE severity = 'Critical'" };
+/** WEB-1 is a Story, WEB-2 and WEB-3 are Tasks. */
+const BY_TYPE = { ...BY_GROUP, title: 'By type', words: ['Tickets by their issue type.'], sql: 'SELECT id AS ticket, type AS bucket FROM tickets' };
 
 /** The seed's board estimated in story points. */
 const POINTS_BOARD: ExtraJira = {
@@ -104,7 +107,8 @@ async function pickDashboard(page: Page, screen: Locator, title: string, compact
   await expect(screen.getByTestId('dashboard-title')).toHaveText(title);
 }
 
-/** The thread's turn: the rules, a refused query, and two widgets shown. */
+/** The thread's turn: the rules, a refused query, two widgets shown and
+ * one tried. */
 function widgetScenario(name: string, provider: ProviderName): Record<string, unknown> {
   return threadToolsScenario({
     name,
@@ -113,19 +117,20 @@ function widgetScenario(name: string, provider: ProviderName): Record<string, un
     turns: [{
       steps: [
         { call: { server: SERVER, tool: 'dashboard_widget', args: {} } },
-        { call: { server: SERVER, tool: 'dashboard_widget', args: { widget: PRIORITY, show: true } } },
+        { call: { server: SERVER, tool: 'dashboard_widget', args: { widget: SEVERITY, show: true } } },
         { call: { server: SERVER, tool: 'dashboard_widget', args: { widget: OPEN, show: true } } },
         { call: { server: SERVER, tool: 'dashboard_widget', args: { widget: BY_GROUP, show: true } } },
+        { call: { server: SERVER, tool: 'dashboard_widget', args: { widget: BY_TYPE } } },
       ],
       text: 'Two widgets are on the dashboard for you to keep.',
     }],
   });
 }
 
-/** The four answers of widgetScenario's turn, as the model received them. */
+/** The five answers of widgetScenario's turn, as the model received them. */
 async function widgetAnswers(harness: HarnessApp, cwd: string): Promise<Array<{ isError: boolean; text: string }>> {
   const out = [];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 5; i++) {
     const event = await harness.awaitMcpResult({ server: SERVER, tool: 'dashboard_widget', cwd, timeoutMs: 60_000 });
     out.push({ isError: Boolean(event.report.isError), text: event.report.result ?? '' });
   }
@@ -133,17 +138,20 @@ async function widgetAnswers(harness: HarnessApp, cwd: string): Promise<Array<{ 
 }
 
 function expectWidgetAnswers(answers: Array<{ isError: boolean; text: string }>): void {
-  const [rules, refused, open, byGroup] = answers;
+  const [rules, refused, open, byGroup, byType] = answers;
   expect(rules.isError, rules.text).toBe(false);
   expect(JSON.parse(rules.text)).toContain('CREATE TABLE main.tickets(');
   expect(refused.isError).toBe(true);
-  expect(refused.text).toMatch(/^\[dashboard_widget_refused\] This widget's query failed: no such column: priority\. Change its query\.$/);
+  expect(refused.text).toMatch(/^\[dashboard_widget_refused\] This widget's query failed: no such column: severity\. Change its query\.$/);
   expect(open.isError, open.text).toBe(false);
   expect(JSON.parse(open.text)).toMatchObject({
     board: 'WEB board', value: 3, rows: 3, shown: "It is on the board's dashboards for the user to keep or dismiss.",
   });
   expect(byGroup.isError, byGroup.text).toBe(false);
   expect(JSON.parse(byGroup.text)).toMatchObject({ buckets: [{ label: 'todo', total: 2 }, { label: 'in_progress', total: 1 }] });
+  expect(byType.isError, byType.text).toBe(false);
+  expect(JSON.parse(byType.text)).toMatchObject({ buckets: [{ label: 'Task', total: 2 }, { label: 'Story', total: 1 }] });
+  expect(JSON.parse(byType.text)).not.toHaveProperty('shown');
 }
 
 /** A project listing the seed's board, with its path for the scenario. */

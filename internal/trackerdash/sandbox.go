@@ -6,7 +6,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -102,17 +101,24 @@ type session struct {
 	// key names the sink in the sessions registry (sessionSinks).
 	key string
 	// denied is what the authorizer refused last, for the sentence of the
-	// error SQLite reports as "not authorized"; reads is what it allowed
-	// the statement to read. The authorizer runs while the statement
-	// prepares, on the goroutine that prepares it; mu is for the race
-	// detector's sake and for a reprepare SQLite may run on a step.
+	// error SQLite reports as "not authorized". The authorizer runs while
+	// the statement prepares, on the goroutine that prepares it; mu is for
+	// the race detector's sake and for a reprepare SQLite may run on a
+	// step.
 	mu     sync.Mutex
 	denied string
-	reads  []string
 	// wrapping is whether the wrapper prepares, the one statement that may
 	// call bounded_rows. A metric's own text is prepared first without it,
 	// so a metric that calls bounded_rows never runs.
 	wrapping bool
+	// layout is how an empty session stores the export, from which its
+	// prepares read what each statement reads (plan.go); nil on a session
+	// filled with a copy, whose prepares read asked instead.
+	layout *layout
+	// asked is what the copy was filled with for each metric, by name,
+	// from its plan on an empty session: what a filled session's prepare
+	// says it reads.
+	asked map[string]asks
 }
 
 // connector opens the snapshot on its zone's driver (driverFor).
@@ -235,9 +241,6 @@ func (s *session) authorize(action sqlite.AuthorizerActionCode, arg1, arg2, data
 	// column and no database. The gate leaves main the only database that
 	// can hold an export table's name.
 	if action == sqlite.AuthRead && exportTables[arg1] && (database == "main" || (database == "" && arg2 == "")) {
-		if !slices.Contains(s.reads, arg1) {
-			s.reads = append(s.reads, arg1)
-		}
 		return sqlite.AuthorizerOK
 	}
 	if action == sqlite.AuthFunction {
@@ -280,13 +283,13 @@ func (s *session) setWrapping(on bool) {
 	s.mu.Unlock()
 }
 
-// take clears and returns what the authorizer recorded.
-func (s *session) take() (denied string, reads []string) {
+// take clears and returns what the authorizer denied last.
+func (s *session) take() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	denied, reads = s.denied, s.reads
-	s.denied, s.reads = "", nil
-	return denied, reads
+	denied := s.denied
+	s.denied = ""
+	return denied
 }
 
 // prepared is a metric's statement checked against the contract.
@@ -294,7 +297,8 @@ type prepared struct {
 	sql   string
 	names []string
 	cols  columns
-	reads []string
+	// asks is what it reads of the copy, from its plan (plan.go).
+	asks asks
 	// series is the metric's declared series (Metric.Series).
 	series []string
 	// took is how long the prepare took, which the metric's deadline
@@ -325,8 +329,7 @@ func (s *session) prepare(m Metric) (prepared, error) {
 		info, err = ci.ColumnInfo(text)
 		return err
 	})
-	denied, reads := s.take()
-	if err != nil {
+	if denied := s.take(); err != nil {
 		return prepared{}, sqlError(err, denied)
 	}
 	if len(info) == 0 {
@@ -340,8 +343,50 @@ func (s *session) prepare(m Metric) (prepared, error) {
 	if err != nil {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + strings.TrimPrefix(err.Error(), "the query ") + "; change its query."}
 	}
-	slices.Sort(reads)
-	return prepared{sql: text, names: names, cols: cols, reads: reads, series: m.Series, took: time.Since(start)}, nil
+	p := prepared{sql: text, names: names, cols: cols, series: m.Series}
+	if p.asks, err = s.asksOf(m, p); err != nil {
+		return prepared{}, err
+	}
+	p.took = time.Since(start)
+	return p, nil
+}
+
+// asksOf is what metric m, prepared as p, reads of the copy: on an empty
+// session what the plan of the statement a count runs reads, on a filled
+// session what the copy was filled with for it, or why its plan could not
+// be read there.
+func (s *session) asksOf(m Metric, p prepared) (asks, error) {
+	if s.layout != nil {
+		return s.planAsks(s.wrapped(p))
+	}
+	a, ok := s.asked[m.Name]
+	if !ok {
+		return asks{}, fmt.Errorf("metric %s was not planned before its count", m.Name)
+	}
+	return a, a.failed
+}
+
+// hostParams is what the host binds to the wrapped statement: :now, the
+// evaluation's instant, and :since, where the range's periods begin.
+func hostParams(now, since int64) []any {
+	return []any{sql.Named("now", now), sql.Named("since", since)}
+}
+
+// wrapped is the statement a count of p runs: p's own between
+// parentheses, its rows capped, each one with whether its ticket is on
+// the board, into the session's sink through bounded_rows.
+func (s *session) wrapped(p prepared) string {
+	var b strings.Builder
+	b.WriteString("WITH q AS (\n")
+	b.WriteString(p.sql)
+	b.WriteString("\n), r AS (SELECT * FROM q LIMIT ")
+	fmt.Fprint(&b, maxRows+1)
+	b.WriteString(") SELECT bounded_rows('" + s.key + "', EXISTS (SELECT 1 FROM main.tickets WHERE id = r.\"ticket\")")
+	for _, name := range p.names {
+		b.WriteString(`, r."` + name + `"`)
+	}
+	b.WriteString(") FROM r")
+	return b.String()
 }
 
 // run runs a prepared metric under its deadline, which began when its
@@ -356,22 +401,12 @@ func (s *session) run(ctx context.Context, p prepared, now, since int64) ([]cont
 	defer cancel()
 	s.sink.reset(p.cols, p.series)
 	defer s.sink.reset(columns{}, nil)
-	var b strings.Builder
-	b.WriteString("WITH q AS (\n")
-	b.WriteString(p.sql)
-	b.WriteString("\n), r AS (SELECT * FROM q LIMIT ")
-	fmt.Fprint(&b, maxRows+1)
-	b.WriteString(") SELECT bounded_rows('" + s.key + "', EXISTS (SELECT 1 FROM main.tickets WHERE id = r.\"ticket\")")
-	for _, name := range p.names {
-		b.WriteString(`, r."` + name + `"`)
-	}
-	b.WriteString(") FROM r")
 	s.take()
 	s.setWrapping(true)
 	var n int64
-	err := s.conn.QueryRowContext(ctx, b.String(), sql.Named("now", now), sql.Named("since", since)).Scan(&n)
+	err := s.conn.QueryRowContext(ctx, s.wrapped(p), hostParams(now, since)...).Scan(&n)
 	s.setWrapping(false)
-	denied, _ := s.take()
+	denied := s.take()
 	switch {
 	case s.sink.err != nil:
 		return nil, s.sink.err
