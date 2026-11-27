@@ -1151,26 +1151,26 @@ The export's `credit` fill:
 
 | Board | Rows | Bytes | VM steps | Best time |
 |---|---|---|---|---|
-| 2,000, estimated | 520 finished, 1,560 review | 167,936 | 631,846 | 11.4 ms |
-| 2,000, none estimated | 1,040 support | 73,728 | 390,023 | 8.6 ms |
-| 20,000, estimated | 5,200 finished, 1,560 review | 364,544 | 2,940,166 | 82.3 ms |
-| 20,000, none estimated | 1,040 support | 73,728 | 1,645,343 | 59.1 ms |
-| 20,000, a board without sprints, every done ticket | 8,000 finished, 660 review | 385,024 | 4,313,700 | 138.0 ms |
+| 2,000, estimated | 520 finished, 1,560 review | 167,936 | 643,286 | 11.9 ms |
+| 2,000, none estimated | 1,040 support | 73,728 | 390,543 | 9.5 ms |
+| 20,000, estimated | 5,200 finished, 1,560 review | 364,544 | 3,054,566 | 93.4 ms |
+| 20,000, none estimated | 1,040 support | 73,728 | 1,650,543 | 73.8 ms |
+| 20,000, a board without sprints, every done ticket | 8,000 finished, 660 review | 385,024 | 4,489,700 | 111.3 ms |
 
-The tickets fill of the same copy takes 654,994 steps (11.4 ms) at 2,000
-and 6,544,594 (125 ms) at 20,000.
+The tickets fill of the same copy takes 658,634 steps (12.2 ms) at 2,000
+and 6,580,994 (117 ms) at 20,000.
 
 The Backlog's totals (`CountMirrorSections`, the pace's 5 closed sprints
 included), credit off and on:
 
 | Board | Off | On |
 |---|---|---|
-| 2,000, estimated | 207,027 steps, 4.1 ms | 324,127 steps, 6.1 ms |
-| 2,000, none estimated | 192,827 steps, 4.0 ms | 326,503 steps, 7.9 ms |
-| 20,000, estimated | 2,018,727 steps, 59.1 ms | 2,475,127 steps, 76.2 ms |
-| 20,000, none estimated | 1,876,727 steps, 61.2 ms | 2,840,203 steps, 102.5 ms |
-| 5 boards of 4,000, estimated | 408,332 steps, 11.4 ms | 563,133 steps, 15.7 ms |
-| 5 boards of 4,000, none estimated | 379,932 steps, 9.6 ms | 605,809 steps, 16.6 ms |
+| 2,000, estimated | 207,027 steps, 4.4 ms | 326,327 steps, 6.9 ms |
+| 2,000, none estimated | 192,827 steps, 4.5 ms | 326,603 steps, 7.6 ms |
+| 20,000, estimated | 2,018,727 steps, 66.3 ms | 2,497,127 steps, 74.4 ms |
+| 20,000, none estimated | 1,876,727 steps, 57.0 ms | 2,841,203 steps, 91.6 ms |
+| 5 boards of 4,000, estimated | 408,332 steps, 12.5 ms | 567,533 steps, 13.0 ms |
+| 5 boards of 4,000, none estimated | 379,932 steps, 8.5 ms | 606,009 steps, 16.3 ms |
 
 With none estimated, most of the difference is the support rule telling
 each row of the sections, which a project counting no credit does not
@@ -1180,16 +1180,17 @@ The pace alone, credit off and on:
 
 | Board | Off | On |
 |---|---|---|
-| 2,000, estimated | 14,090 steps | 131,190 steps, 2.4 ms |
-| 2,000, none estimated | 13,890 steps | 65,552 steps, 1.4 ms |
-| 20,000, estimated | 129,290 steps, 5.6 ms | 585,690 steps, 16.4 ms |
-| 20,000, none estimated | 127,290 steps, 5.7 ms | 270,752 steps, 17.0 ms |
-| 5 boards of 4,000, estimated | 26,891 steps | 181,692 steps, 6.3 ms |
-| 5 boards of 4,000, none estimated | 26,491 steps | 88,354 steps, 3.0 ms |
+| 2,000, estimated | 14,090 steps | 133,390 steps, 2.3 ms |
+| 2,000, none estimated | 13,890 steps | 65,652 steps, 1.5 ms |
+| 20,000, estimated | 129,290 steps, 9.0 ms | 607,690 steps, 20.2 ms |
+| 20,000, none estimated | 127,290 steps, 4.8 ms | 271,752 steps, 11.7 ms |
+| 5 boards of 4,000, estimated | 26,891 steps | 186,092 steps, 4.3 ms |
+| 5 boards of 4,000, none estimated | 26,491 steps | 88,554 steps, 3.0 ms |
 
-Reading whether each member's history covers its card, which decides
-whether its person is known, adds 1.5% to 5% to the pace: 25,694 steps at
-20,000, estimated.
+Reading whether each member's history covers its card and reaches back
+to its finish, which decides whether its finish and its person are
+known, adds 47,694 steps (8.5%) to the pace at 20,000, estimated; the
+reach back to the finish is 22,000 of them.
 
 Of the pace with credit at 20,000, estimated (1,000 finished members in
 its 5 sprints), measured part by part: reading the members takes about
@@ -1199,8 +1200,8 @@ whether its evidence is read 119,000, its review and support rows
 
 The evidence listing's arm for a board without sprints walks the root's
 issues updated in the window. With every issue of the root changed in
-it, the upper bound, a listing with every source read takes 1,070,560
-steps (33.7 ms) at 20,000 and 705,762 (22.2 ms) for one board of five
+it, the upper bound, a listing with every source read takes 1,118,560
+steps (37.5 ms) at 20,000 and 715,362 (24.9 ms) for one board of five
 of 4,000; with none read it stops at its first page, 27,800 steps.
 
 A board read that writes every card of a board again at a later update
@@ -1210,12 +1211,12 @@ is a member of a closed sprint (`trg_tracker_cache_credit_card_moved`):
 
 | Board | Passed | Without the trigger | With it |
 |---|---|---|---|
-| 20,000 | every card's receipts | 139,653,797 steps, 3.25 s | 141,513,796 steps, 4.04 s |
-| 20,000 | every card's history (19,800 in a closed sprint) | 99,614,197 steps, 3.43 s | 102,121,396 steps, 3.21 s |
-| 20,000 | neither | 99,554,197 steps, 2.96 s | 99,934,197 steps, 2.94 s |
-| 2,000 | every card's receipts | 3,165,377 steps, 143 ms | 3,351,376 steps, 153 ms |
-| 2,000 | every card's history (1,980 in a closed sprint) | 2,761,417 steps, 135 ms | 3,012,136 steps, 148 ms |
-| 2,000 | neither | 2,755,417 steps, 161 ms | 2,793,417 steps, 140 ms |
+| 20,000 | every card's receipts | 139,673,797 steps, 3.66 s | 141,533,796 steps, 3.89 s |
+| 20,000 | every card's history (19,800 in a closed sprint) | 99,634,197 steps, 3.39 s | 102,141,396 steps, 3.19 s |
+| 20,000 | neither | 99,574,197 steps, 3.51 s | 99,954,197 steps, 2.92 s |
+| 2,000 | every card's receipts | 3,167,377 steps, 163 ms | 3,353,376 steps, 168 ms |
+| 2,000 | every card's history (1,980 in a closed sprint) | 2,763,417 steps, 153 ms | 3,014,136 steps, 177 ms |
+| 2,000 | neither | 2,757,417 steps, 157 ms | 2,795,417 steps, 172 ms |
 
 The trigger costs 93 steps a card whose receipt it passes, 127 a closed
 sprint's member whose history it passes, and 19 a card that passes
