@@ -45,9 +45,20 @@ func (m *mirrorFixture) propose(t *testing.T, w KeptWidget) string {
 func (m *mirrorFixture) evaluate(t *testing.T, sub, dashboard string) trackerdash.Answer {
 	t.Helper()
 	if dashboard == "" {
-		dashboard = must[[]trackerdash.DashboardView](t)(m.svc.Dashboards(t.Context(), sub))[0].ID
+		dashboard = m.list(t, sub).Dashboards[0].ID
 	}
 	return must[trackerdash.Answer](t)(m.svc.EvaluateDashboard(t.Context(), sub, trackerdash.Request{Dashboard: dashboard, TimeZone: "UTC"}))
+}
+
+// list is the dashboards and proposals subscription sub shows.
+func (m *mirrorFixture) list(t *testing.T, sub string) trackerdash.Listing {
+	t.Helper()
+	return must[trackerdash.Listing](t)(m.svc.Dashboards(t.Context(), sub))
+}
+
+// proposed is whether listing l holds proposal id.
+func proposed(l trackerdash.Listing, id string) bool {
+	return slices.ContainsFunc(l.Proposals, func(v trackerdash.ProposalView) bool { return v.View.ID == id })
 }
 
 func refusalCode(err error) string {
@@ -71,19 +82,18 @@ func TestATriedWidgetIsCountedAndShownOnlyWhenAsked(t *testing.T) {
 	if tried.Count != 3 || tried.Value.Value == nil || *tried.Value.Value.V != 3 || len(tried.Rows) != 3 || tried.Rows[0].Key == "" {
 		t.Fatalf("tried = %+v", tried)
 	}
-	builtin := m.evaluate(t, sub, "")
-	if len(builtin.Proposals) != 0 || m.events.dashboards.Load() != 0 {
-		t.Fatalf("a try without show proposed: %+v, told %d", builtin.Proposals, m.events.dashboards.Load())
+	if l := m.list(t, sub); len(l.Proposals) != 0 || m.events.dashboards.Load() != 0 {
+		t.Fatalf("a try without show proposed: %+v, told %d", l.Proposals, m.events.dashboards.Load())
 	}
 
 	id := m.propose(t, openTickets())
 	if !isOwnID(id, widgetPrefix) || m.events.dashboards.Load() != 1 {
 		t.Fatalf("proposal %q, told %d", id, m.events.dashboards.Load())
 	}
-	builtin = m.evaluate(t, sub, builtin.Dashboard.ID)
-	if len(builtin.Proposals) != 1 || builtin.Proposals[0].View.ID != id || builtin.Proposals[0].Thread != "thread-1" || builtin.Proposals[0].View.How.SQL == "" {
-		t.Fatalf("proposals = %+v", builtin.Proposals)
+	if ps := m.list(t, sub).Proposals; len(ps) != 1 || ps[0].View.ID != id || ps[0].Thread != "thread-1" || ps[0].View.How.SQL == "" {
+		t.Fatalf("proposals = %+v", ps)
 	}
+	builtin := m.evaluate(t, sub, "")
 	i := slices.IndexFunc(builtin.Widgets, func(v trackerdash.WidgetValue) bool { return v.ID == id })
 	if i < 0 || *builtin.Widgets[i].Value.V != 3 {
 		t.Fatalf("the proposal's value among %+v", builtin.Widgets)
@@ -106,8 +116,8 @@ func TestATriedWidgetIsRefusedWithItsReason(t *testing.T) {
 	if r, ok := errors.AsType[*trackerdash.Refusal](err); !ok || r.Code != "dashboard_widget_refused" || !strings.Contains(r.Sentence, "labels") {
 		t.Fatalf("a query on a column the copy lacks: %v", err)
 	}
-	if a := m.evaluate(t, sub, ""); len(a.Proposals) != 0 {
-		t.Fatalf("a refused widget was proposed: %+v", a.Proposals)
+	if l := m.list(t, sub); len(l.Proposals) != 0 {
+		t.Fatalf("a refused widget was proposed: %+v", l.Proposals)
 	}
 	if _, err := m.svc.TryWidget(t.Context(), m.project(), Scope{Connection: m.conn.ID, Board: "5"}, openTickets(), "thread-1", true); !errors.Is(err, ErrNotListed) {
 		t.Fatalf("a board the project does not list: %v", err)
@@ -145,12 +155,12 @@ func TestKeepMovesAProposalOntoAKeptDashboard(t *testing.T) {
 	if n := m.events.dashboards.Load() - told; n != 1 {
 		t.Fatalf("a Keep was told %d times; want 1", n)
 	}
-	list := must[[]trackerdash.DashboardView](t)(m.svc.Dashboards(t.Context(), sub))
-	if len(list) != 2 || list[1].ID != id || list[1].Title != "Bugs" || len(list[1].Widgets) != 1 || list[1].Widgets[0].ID != first {
+	list := m.list(t, sub)
+	if ds := list.Dashboards; len(ds) != 2 || ds[1].ID != id || ds[1].Title != "Bugs" || len(ds[1].Widgets) != 1 || ds[1].Widgets[0].ID != first || len(list.Proposals) != 0 {
 		t.Fatalf("dashboards = %+v", list)
 	}
 	kept := m.evaluate(t, sub, id)
-	if len(kept.Proposals) != 0 || len(kept.Widgets) != 1 || *kept.Widgets[0].Value.V != 3 {
+	if len(kept.Widgets) != 1 || *kept.Widgets[0].Value.V != 3 {
 		t.Fatalf("the kept dashboard = %+v", kept)
 	}
 	if _, err := m.svc.KeepProposal(sub, first, KeepTarget{Dashboard: id}); refusalCode(err) != "dashboard_proposal_gone" {
@@ -175,8 +185,8 @@ func TestKeepMovesAProposalOntoAKeptDashboard(t *testing.T) {
 	if n := m.events.dashboards.Load() - told; n != 1 {
 		t.Fatalf("two Dismisses were told %d times, want once", n)
 	}
-	if a := m.evaluate(t, sub, id); len(a.Proposals) != 0 || len(a.Dashboard.Widgets) != 2 {
-		t.Fatalf("after the second Keep and the Dismiss: %+v", a)
+	if l := m.list(t, sub); len(l.Proposals) != 0 || len(l.Dashboards[1].Widgets) != 2 {
+		t.Fatalf("after the second Keep and the Dismiss: %+v", l)
 	}
 }
 
@@ -197,9 +207,8 @@ func TestKeptDashboardsLiveInTheSetupFile(t *testing.T) {
 
 	m.restart(t)
 	sub = m.subscribeShown(t, m.project()).ID
-	a := m.evaluate(t, sub, id)
-	if len(a.Proposals) != 0 || len(a.Dashboard.Widgets) != 1 || a.Dashboard.Widgets[0].ID != w {
-		t.Fatalf("after a restart: %+v", a)
+	if l := m.list(t, sub); len(l.Proposals) != 0 || len(l.Dashboards) != 2 || len(l.Dashboards[1].Widgets) != 1 || l.Dashboards[1].Widgets[0].ID != w {
+		t.Fatalf("after a restart: %+v", l)
 	}
 
 	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
@@ -208,7 +217,7 @@ func TestKeptDashboardsLiveInTheSetupFile(t *testing.T) {
 	if _, err := m.svc.SetProjectSetup(m.project(), saved.Revision, Setup{}); err != nil {
 		t.Fatal(err)
 	}
-	if list := must[[]trackerdash.DashboardView](t)(m.svc.Dashboards(t.Context(), sub)); len(list) != 2 || list[1].ID != id {
+	if list := m.list(t, sub).Dashboards; len(list) != 2 || list[1].ID != id {
 		t.Fatalf("after setup saves over %s: %+v", stored.Revision, list)
 	}
 
@@ -222,7 +231,7 @@ func TestKeptDashboardsLiveInTheSetupFile(t *testing.T) {
 	if n := m.events.dashboards.Load() - told; n != 1 {
 		t.Fatalf("a Remove, twice, was told %d times; want 1", n)
 	}
-	if list := must[[]trackerdash.DashboardView](t)(m.svc.Dashboards(t.Context(), sub)); len(list) != 1 {
+	if list := m.list(t, sub).Dashboards; len(list) != 1 {
 		t.Fatalf("the dashboard outlived its last widget: %+v", list)
 	}
 	if _, err := os.Stat(m.setupPathOf(t, m.project())); !errors.Is(err, os.ErrNotExist) {
@@ -263,8 +272,8 @@ func TestKeepRefusesANewerSectionAndAFullFile(t *testing.T) {
 			if refusalCode(err) != "dashboard_full" {
 				t.Fatalf("a Keep past the bound: %v", err)
 			}
-			if a := m.evaluate(t, sub, ""); !slices.ContainsFunc(a.Proposals, func(v trackerdash.ProposalView) bool { return v.View.ID == p }) {
-				t.Fatalf("a refused Keep dropped its proposal: %+v", a.Proposals)
+			if l := m.list(t, sub); !proposed(l, p) {
+				t.Fatalf("a refused Keep dropped its proposal: %+v", l.Proposals)
 			}
 			break
 		}
@@ -285,10 +294,9 @@ func TestAKeepIsToldOnceAndReadsSettled(t *testing.T) {
 	type seen struct{ proposed, kept bool }
 	var reads []seen
 	hook := func() {
-		a := m.evaluate(t, sub, "")
-		list := must[[]trackerdash.DashboardView](t)(m.svc.Dashboards(t.Context(), sub))
-		kept := len(list) == 2 && slices.ContainsFunc(list[1].Widgets, func(w trackerdash.WidgetView) bool { return w.ID == p })
-		reads = append(reads, seen{slices.ContainsFunc(a.Proposals, func(v trackerdash.ProposalView) bool { return v.View.ID == p }), kept})
+		l := m.list(t, sub)
+		kept := len(l.Dashboards) == 2 && slices.ContainsFunc(l.Dashboards[1].Widgets, func(w trackerdash.WidgetView) bool { return w.ID == p })
+		reads = append(reads, seen{proposed(l, p), kept})
 	}
 	m.events.onDashboards.Store(&hook)
 	if _, err := m.svc.KeepProposal(sub, p, KeepTarget{Title: "Bugs"}); err != nil {
@@ -300,9 +308,9 @@ func TestAKeepIsToldOnceAndReadsSettled(t *testing.T) {
 	}
 }
 
-// A count that overlaps a Keep finds the widget proposed or kept, never
-// in neither place: it reads the kept dashboards and the proposals under
-// the proposals' lock, the order a Keep holds them in. The test holds
+// A count that overlaps a Keep counts the widget once, proposed or kept,
+// never in neither place nor both: it reads the kept dashboards and the
+// proposals under the proposals' lock, the order a Keep holds them in. The test holds
 // that lock, waits for the count to block on it, and does a Keep's
 // transition by hand.
 func TestACountOverlappingAKeepFindsTheWidgetOnce(t *testing.T) {
@@ -324,10 +332,14 @@ func TestACountOverlappingAKeepFindsTheWidgetOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := <-done
-	proposed := slices.ContainsFunc(a.Proposals, func(v trackerdash.ProposalView) bool { return v.View.ID == q })
-	kept := slices.ContainsFunc(a.Dashboard.Widgets, func(w trackerdash.WidgetView) bool { return w.ID == q })
-	if proposed == kept {
-		t.Fatalf("the count found the widget proposed %v and kept %v; want exactly one", proposed, kept)
+	var counted int
+	for _, w := range a.Widgets {
+		if w.ID == q {
+			counted++
+		}
+	}
+	if counted != 1 {
+		t.Fatalf("the count counted the widget %d times; want once", counted)
 	}
 }
 

@@ -15,7 +15,7 @@
 
 import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
 import { formatDurationMs, formatTimeOfDay, formatCalendarDate } from '../../utils/format';
-import { formatAmount, unitWord, type DashboardUnit } from '../../stores/trackerDashboardModel';
+import { formatAmount, unitWord, type DashboardUnit } from '../../utils/dashboardAmount';
 import {
   FACT_MAX,
   INSTRUCTIONS_FACT_MAX,

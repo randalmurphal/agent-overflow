@@ -5,7 +5,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
-import type { Answer, DashboardView, DrillAnswer } from '../../../bindings/agent-overflow/internal/trackerdash/models';
+import type { TrackerDashboardsView } from '../../../bindings/agent-overflow/internal/app/models';
+import type { Answer, DashboardView, DrillAnswer, ProposalView } from '../../../bindings/agent-overflow/internal/trackerdash/models';
 import {
   createTrackerDashboard,
   DASHBOARD_CHANGE_INTERVAL_MS,
@@ -17,6 +18,7 @@ import { getPinnedBackend } from '../transport/backends';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { readFrontendValue } from './frontendStorage';
 import { trackerDashboardsUpdated } from './trackerBoardEvents';
+import { applySettingsSnapshot } from './settings.svelte';
 
 const VIEW = {
   id: 'overview_sprints',
@@ -29,8 +31,13 @@ const VIEW = {
   widgets: [],
 } as unknown as DashboardView;
 
+/** The list read's answer: the dashboards, the proposals and Ask's sentence. */
+function listed(dashboards: DashboardView[], proposals: ProposalView[] = [], ask = ''): TrackerDashboardsView {
+  return { dashboards, proposals, ask } as TrackerDashboardsView;
+}
+
 function answerFor(range: string, at = 1): Answer {
-  return { dashboard: VIEW, range: { id: range, label: range, periods: [], previous: '' }, estimates: 'points', at, widgets: [] } as unknown as Answer;
+  return { range: { id: range, label: range, periods: [], previous: '' }, estimates: 'points', at, widgets: [] } as unknown as Answer;
 }
 
 /** A binding mock whose answers the test releases one at a time. */
@@ -82,10 +89,10 @@ afterEach(() => {
 
 /** Opens the store and lands its dashboards and its first answer. */
 async function opened(): Promise<{ s: TrackerDashboard; evaluate: ReturnType<typeof held<Answer>> }> {
-  const list = held<DashboardView[] | null>('TrackerDashboards');
+  const list = held<TrackerDashboardsView | null>('TrackerDashboards');
   const evaluate = held<Answer>('EvaluateTrackerDashboard');
   const s = open();
-  list.answer([VIEW]);
+  list.answer(listed([VIEW]));
   await flush();
   evaluate.answer(answerFor('sprints_5'));
   await flush();
@@ -109,12 +116,12 @@ describe('a count that fails', () => {
 
 describe('when the screen opens', () => {
   it('lists the board\'s dashboards and counts the first at once, on the board\'s computer', async () => {
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     const evaluate = held<Answer>('EvaluateTrackerDashboard');
     const s = open();
     expect(list.calls).toEqual([['sub-1']]);
     expect(list.pins).toEqual(['peer-1']);
-    list.answer([VIEW]);
+    list.answer(listed([VIEW]));
     await flush();
     expect(s.dashboard?.id).toBe('overview_sprints');
     expect(s.range).toBe('sprints_5');
@@ -130,7 +137,7 @@ describe('when the screen opens', () => {
   });
 
   it('says a computer whose version has no dashboards has none', async () => {
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     const evaluate = held<Answer>('EvaluateTrackerDashboard');
     const s = open();
     list.answer(null);
@@ -141,13 +148,13 @@ describe('when the screen opens', () => {
 
   it('counts nothing while hidden, and at once when it shows', async () => {
     shown = false;
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     const evaluate = held<Answer>('EvaluateTrackerDashboard');
     open();
     expect(list.calls).toHaveLength(0);
     shown = true;
     flushSync();
-    list.answer([VIEW]);
+    list.answer(listed([VIEW]));
     await flush();
     expect(evaluate.calls).toHaveLength(1);
   });
@@ -193,7 +200,7 @@ describe('when what is counted changes', () => {
 
   it('counts a subscription made again after a reconnect at once', async () => {
     const { evaluate } = await opened();
-    held<DashboardView[] | null>('TrackerDashboards');
+    held<TrackerDashboardsView | null>('TrackerDashboards');
     source = { backend: 'peer-1', board: testBoard, subscription: 'sub-2', changes: 0 };
     flushSync();
     expect(evaluate.calls.at(-1)![0]).toBe('sub-2');
@@ -330,11 +337,62 @@ const MINE_VIEW = { ...VIEW, id: 'd_1', title: 'Bugs' } as unknown as DashboardV
 const NEW_VIEW = { ...VIEW, id: 'd_2', title: 'New' } as unknown as DashboardView;
 
 describe('the board\'s own dashboards', () => {
-  it('shows the one picked last for the board, and another board starts on the built-in', async () => {
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+  it('lays out the proposals and says why Ask cannot start a thread from the list, before any count answers', async () => {
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     held<Answer>('EvaluateTrackerDashboard');
     const s = open();
-    list.answer([VIEW, MINE_VIEW]);
+    const proposal = { view: { ...VIEW.widgets[0], id: 'w_9', title: 'Proposed' }, thread: 't-1' } as unknown as ProposalView;
+    list.answer(listed([VIEW], [proposal], 'Ask needs a provider.'));
+    await flush();
+    expect(s.answer).toBeNull();
+    expect(s.proposals).toEqual([proposal]);
+    expect(s.ask).toBe('Ask needs a provider.');
+  });
+
+  it('lists again when the board computer\'s settings change, so Ask\'s sentence follows its providers', async () => {
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
+    held<Answer>('EvaluateTrackerDashboard');
+    const s = open();
+    list.answer(listed([VIEW], [], 'Ask needs a provider.'));
+    await flush();
+    expect(list.calls).toHaveLength(1);
+    applySettingsSnapshot({ claudeEnabled: true }, 'peer-1');
+    await flush();
+    expect(list.calls).toHaveLength(2);
+    list.answer(listed([VIEW]));
+    await flush();
+    expect(s.ask).toBe('');
+  });
+
+  it('shows no answer of another dashboard: one picked shows none until its own count answers or fails', async () => {
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
+    const evaluate = held<Answer>('EvaluateTrackerDashboard');
+    const s = open();
+    list.answer(listed([VIEW, MINE_VIEW]));
+    await flush();
+    evaluate.answer(answerFor('sprints_5'));
+    await flush();
+    expect(s.answer).not.toBeNull();
+    s.pick('d_1');
+    await flush();
+    expect(s.answer).toBeNull();
+    expect(s.stale).toBe(false);
+    evaluate.fail(new Error('dashboard_too_slow'));
+    await flush();
+    expect(s.answer).toBeNull();
+    expect(s.error).toBeInstanceOf(Error);
+    s.openDrill({ widget: 'w_1' });
+    expect(s.drill).toBeNull();
+    s.pick('overview_sprints');
+    await flush();
+    expect(s.answer?.range.id).toBe('sprints_5');
+  });
+
+  it('shows the one picked last for the board, and another board starts on the built-in', async () => {
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
+    held<Answer>('EvaluateTrackerDashboard');
+    const s = open();
+    list.answer(listed([VIEW, MINE_VIEW]));
     await flush();
     expect(s.dashboard?.id).toBe('overview_sprints');
     expect(s.ownShown).toBe(false);
@@ -345,23 +403,23 @@ describe('the board\'s own dashboards', () => {
     s.destroy();
 
     const again = open();
-    list.answer([VIEW, MINE_VIEW]);
+    list.answer(listed([VIEW, MINE_VIEW]));
     await flush();
     expect(again.dashboard?.id).toBe('d_1');
     again.destroy();
 
     source = { backend: 'peer-1', board: { ...testBoard, board: '2' }, subscription: 'sub-2', changes: 0 };
     const other = open();
-    list.answer([VIEW, MINE_VIEW]);
+    list.answer(listed([VIEW, MINE_VIEW]));
     await flush();
     expect(other.dashboard?.id).toBe('overview_sprints');
   });
 
   it('lists and counts again on a change from the board\'s computer only', async () => {
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     const evaluate = held<Answer>('EvaluateTrackerDashboard');
     open();
-    list.answer([VIEW]);
+    list.answer(listed([VIEW]));
     await flush();
     evaluate.answer(answerFor('sprints_5'));
     await flush();
@@ -376,11 +434,11 @@ describe('the board\'s own dashboards', () => {
   });
 
   it('shows a new dashboard a Keep made once it is listed, and reads busy meanwhile', async () => {
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     held<Answer>('EvaluateTrackerDashboard');
     const keep = held<string>('KeepTrackerWidget');
     const s = open();
-    list.answer([VIEW]);
+    list.answer(listed([VIEW]));
     await flush();
     const kept = s.keep('w_1', { title: 'New' });
     expect(s.busy.has('w_1')).toBe(true);
@@ -390,19 +448,19 @@ describe('the board\'s own dashboards', () => {
     await flush();
     expect(s.busy.has('w_1')).toBe(false);
     expect(list.calls).toHaveLength(2);
-    list.answer([VIEW, NEW_VIEW]);
+    list.answer(listed([VIEW, NEW_VIEW]));
     await kept;
     flushSync();
     expect(s.dashboard?.id).toBe('d_2');
   });
 
   it('removes a widget only from a dashboard the project keeps', async () => {
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     held<Answer>('EvaluateTrackerDashboard');
     const remove = held<void>('RemoveTrackerWidget');
     const dismiss = held<void>('DismissTrackerWidget');
     const s = open();
-    list.answer([VIEW, MINE_VIEW]);
+    list.answer(listed([VIEW, MINE_VIEW]));
     await flush();
     void s.removeWidget('w_1');
     expect(remove.calls).toEqual([]);
@@ -418,26 +476,26 @@ describe('the board\'s own dashboards', () => {
   });
 
   it('shows the built-in once the dashboard shown is gone', async () => {
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     held<Answer>('EvaluateTrackerDashboard');
     const s = open();
-    list.answer([VIEW, MINE_VIEW]);
+    list.answer(listed([VIEW, MINE_VIEW]));
     await flush();
     s.pick('d_1');
     flushSync();
     trackerDashboardsUpdated('peer-1');
     await flush();
-    list.answer([VIEW]);
+    list.answer(listed([VIEW]));
     await flush();
     expect(s.dashboard?.id).toBe('overview_sprints');
     expect(s.ownShown).toBe(false);
   });
 
   it('shows the built-in on its own range once the dashboard shown is gone', async () => {
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     const evaluate = held<Answer>('EvaluateTrackerDashboard');
     const s = open();
-    list.answer([VIEW, MINE_VIEW]);
+    list.answer(listed([VIEW, MINE_VIEW]));
     await flush();
     s.setRange('this_sprint');
     s.pick('d_1');
@@ -445,7 +503,7 @@ describe('the board\'s own dashboards', () => {
     flushSync();
     trackerDashboardsUpdated('peer-1');
     await flush();
-    list.answer([VIEW]);
+    list.answer(listed([VIEW]));
     await flush();
     expect(s.dashboard?.id).toBe('overview_sprints');
     expect(s.range).toBe('this_sprint');
@@ -454,10 +512,10 @@ describe('the board\'s own dashboards', () => {
   });
 
   it('starts each dashboard picked on its own range, not the one picked on the last', async () => {
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     held<Answer>('EvaluateTrackerDashboard');
     const s = open();
-    list.answer([VIEW, MINE_VIEW]);
+    list.answer(listed([VIEW, MINE_VIEW]));
     await flush();
     s.setRange('this_sprint');
     flushSync();
@@ -470,10 +528,10 @@ describe('the board\'s own dashboards', () => {
   });
 
   it('counts nothing for a change of the dashboards while hidden, and lists them again when it shows', async () => {
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     const evaluate = held<Answer>('EvaluateTrackerDashboard');
     open();
-    list.answer([VIEW]);
+    list.answer(listed([VIEW]));
     await flush();
     evaluate.answer(answerFor('sprints_5'));
     await flush();
@@ -491,10 +549,10 @@ describe('the board\'s own dashboards', () => {
   });
 
   it('keeps the list beside a failed read of it, and Refresh reads it again', async () => {
-    const list = held<DashboardView[] | null>('TrackerDashboards');
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     held<Answer>('EvaluateTrackerDashboard');
     const s = open();
-    list.answer([VIEW, MINE_VIEW]);
+    list.answer(listed([VIEW, MINE_VIEW]));
     await flush();
     trackerDashboardsUpdated('peer-1');
     await flush();
@@ -506,7 +564,7 @@ describe('the board\'s own dashboards', () => {
     s.refresh();
     flushSync();
     expect(list.calls).toHaveLength(3);
-    list.answer([VIEW]);
+    list.answer(listed([VIEW]));
     await flush();
     expect(s.dashboardsError).toBeNull();
   });

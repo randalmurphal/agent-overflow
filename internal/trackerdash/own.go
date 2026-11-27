@@ -67,7 +67,7 @@ type Tried struct {
 func (e *Evaluator) Try(ctx context.Context, b Board, w Widget, m Metric, timeZone string) (_ Tried, err error) {
 	w.ID, w.Metric = tryID, m.Name
 	b.Own = Own{Dashboards: []Dashboard{{ID: tryID, Title: m.Title, Widgets: []Widget{w}}}, Metrics: map[string]Metric{m.Name: m}}
-	o, err := e.begin(ctx, b, Request{Dashboard: tryID, TimeZone: timeZone}, func(Widget) bool { return true })
+	o, err := e.begin(ctx, b, Request{Dashboard: tryID, TimeZone: timeZone}, func(Widget, bool) bool { return true })
 	if err != nil {
 		return Tried{}, err
 	}

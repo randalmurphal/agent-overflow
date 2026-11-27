@@ -3,10 +3,14 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/trackerdash"
+	"agent-overflow/internal/transport"
 )
 
 // A subscribed board's dashboards: the built-in, the ones its project
@@ -16,20 +20,109 @@ import (
 // tracker:dashboards_updated tells every client of this computer that a
 // board's dashboards changed.
 
-// TrackerDashboards lists the dashboards a subscribed board offers, the
-// built-in first, each with its ranges and its widgets' layout and How
-// this is counted.
+// TrackerDashboardsView is what a subscribed board's Dashboards screen
+// lays out: the dashboards it offers, the built-in first, each with its
+// ranges and its widgets' layout and How this is counted, and the widgets
+// agents proposed on the board with their threads (trackerdash.Listing).
+// Ask is why Ask your agent cannot start a thread on this computer, ""
+// when it can (trackerToolsProvider).
+type TrackerDashboardsView struct {
+	Dashboards []trackerdash.DashboardView `json:"dashboards"`
+	Proposals  []trackerdash.ProposalView  `json:"proposals"`
+	Ask        string                      `json:"ask"`
+}
+
+// TrackerDashboards lists what a subscribed board's Dashboards screen lays
+// out. It counts nothing, so it answers while every count is out.
 //
 //ao:scope tracker:read
 //ao:route home
 //ao:callerbound
-func (a *App) TrackerDashboards(ctx context.Context, subscriptionID string) ([]trackerdash.DashboardView, error) {
+func (a *App) TrackerDashboards(ctx context.Context, subscriptionID string) (TrackerDashboardsView, error) {
 	svc, err := a.trackerService()
 	if err != nil {
-		return nil, err
+		return TrackerDashboardsView{}, err
 	}
-	out, err := svc.Dashboards(ctx, subscriptionID)
-	return out, dashboardError(err)
+	list, err := svc.Dashboards(ctx, subscriptionID)
+	if err != nil {
+		return TrackerDashboardsView{}, dashboardError(err)
+	}
+	out := TrackerDashboardsView{Dashboards: list.Dashboards, Proposals: list.Proposals}
+	if a.trackerToolsProvider(ctx) == "" {
+		out.Ask = noTrackerToolsProvider
+	}
+	return out, nil
+}
+
+// noTrackerToolsProvider is why a thread that needs the tracker tools
+// cannot start here.
+const noTrackerToolsProvider = "Ask your agent needs a provider whose agents get the tracker tools, turned on in Settings and installed on this computer."
+
+// trackerToolsProvider is the provider a thread that needs the tracker
+// tools (ao-tracker-tools) starts on: the one a new thread starts on
+// when its agents get them and this computer offers it (providerOffered),
+// else the first in provider order that does; "" when none does.
+func (a *App) trackerToolsProvider(ctx context.Context) string {
+	has := func(name string) bool {
+		return provider.CapabilitiesForProvider(name).SupportsTrackerMCP && a.providerOffered(name)
+	}
+	if last := a.seedChatModelProfile(ctx, "", "").Provider; has(last) {
+		return last
+	}
+	for _, kind := range provider.AllProviders() {
+		if has(string(kind)) {
+			return string(kind)
+		}
+	}
+	return ""
+}
+
+// StartTrackerDashboardThread makes the thread of a board's Ask your agent
+// and answers its row: in the project the board subscription was made
+// for, in its checkout, on the provider trackerToolsProvider picks, its
+// draft, unsent, naming the board by its name and site/ID, which the
+// tracker tools' dashboard_widget takes. A failure to seed the draft
+// deletes the thread. Nothing else is written.
+//
+//ao:scope threads:operate
+//ao:route home
+func (a *App) StartTrackerDashboardThread(ctx context.Context, subscriptionID string) (store.Thread, error) {
+	if a.shuttingDown.Load() {
+		return store.Thread{}, ErrShuttingDown
+	}
+	if err := a.requireScope(ctx, transport.ScopeTrackerRead, "StartTrackerDashboardThread reads the board it names"); err != nil {
+		return store.Thread{}, err
+	}
+	svc, err := a.trackerService()
+	if err != nil {
+		return store.Thread{}, err
+	}
+	board, err := svc.DashboardAsk(subscriptionID)
+	if err != nil {
+		return store.Thread{}, dashboardError(err)
+	}
+	providerName := a.trackerToolsProvider(ctx)
+	if providerName == "" {
+		return store.Thread{}, errorsx.Public("tracker_tools_no_provider", noTrackerToolsProvider, nil)
+	}
+	project, err := a.store.GetProject(board.Project)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("start dashboard thread: %w", err)
+	}
+	thread, cut, err := a.createThreadWithWorktree(ctx, CreateThreadOptions{ProjectID: project.ID, Provider: providerName}, false)
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("start dashboard thread: %w", err)
+	}
+	if err := a.SaveDraft(ctx, thread.ID, dashboardAskSeed(board), nil, nil, nil); err != nil {
+		return store.Thread{}, errors.Join(fmt.Errorf("start dashboard thread: seed the draft: %w", err), a.rollBackCreatedThread("start dashboard thread", project, thread, cut))
+	}
+	return a.store.GetThread(thread.ID)
+}
+
+// dashboardAskSeed is the draft Ask your agent leaves for the person to
+// finish and send.
+func dashboardAskSeed(b trackerapp.DashboardAskBoard) string {
+	return fmt.Sprintf("About the dashboards of the board %s (%s): ", b.Name, b.Handle)
 }
 
 // EvaluateTrackerDashboard counts one dashboard of a subscribed board over

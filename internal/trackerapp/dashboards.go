@@ -37,31 +37,63 @@ type heldProposal struct {
 	thread string
 }
 
-// Dashboards is the dashboards the board subscription shows: the
-// built-in its kind (whether it plans sprints, whether its tracker has
-// epics) picks, then the project's own.
-func (s *Service) Dashboards(ctx context.Context, subscription string) ([]trackerdash.DashboardView, error) {
+// Dashboards is what the board subscription shows: the built-in
+// dashboard its kind (whether it plans sprints, whether its tracker has
+// epics) picks, the project's own, and the widgets agents proposed on the
+// board, laid out with the board's estimates. It counts nothing.
+func (s *Service) Dashboards(ctx context.Context, subscription string) (trackerdash.Listing, error) {
 	scope, key, err := s.boardHandle(subscription)
 	if err != nil {
-		return nil, err
+		return trackerdash.Listing{}, err
 	}
-	own, err := s.ownOf(key, scope.Board, false)
+	own, err := s.ownOf(key, scope.Board, true)
 	if err != nil {
-		return nil, err
+		return trackerdash.Listing{}, err
 	}
 	root, err := s.readRoot(scope.Connection)
 	if err != nil {
-		return nil, err
+		return trackerdash.Listing{}, err
 	}
 	defer s.leave()
 	st, ok, err := s.store.GetMirrorBoard(root, string(scope.Board))
 	switch {
 	case err != nil:
-		return nil, fmt.Errorf("trackerapp: read board %s from the mirror: %w", scope.Board, err)
+		return trackerdash.Listing{}, fmt.Errorf("trackerapp: read board %s from the mirror: %w", scope.Board, err)
 	case !ok:
-		return nil, fmt.Errorf("%w: board %s", ErrNotMirrored, scope.Board)
+		return trackerdash.Listing{}, fmt.Errorf("%w: board %s", ErrNotMirrored, scope.Board)
 	}
-	return s.dash.Dashboards(ctx, trackerdash.Kind{PlansSprints: st.Board.PlansSprints, Epics: hasEpics(key.site.tracker)}, own)
+	return s.dash.Dashboards(ctx, trackerdash.Kind{PlansSprints: st.Board.PlansSprints, Epics: hasEpics(key.site.tracker)}, st.Board.EstimateUnit, own)
+}
+
+// DashboardAskBoard is a board as Ask your agent names it: the project
+// whose thread asks, and the board by its name and its site/ID, as the
+// tracker tools' dashboard_widget takes it.
+type DashboardAskBoard struct {
+	Project string
+	Name    string
+	Handle  string
+}
+
+// DashboardAsk is the board subscription as Ask your agent names it, in
+// the project the subscription was made for.
+func (s *Service) DashboardAsk(subscription string) (DashboardAskBoard, error) {
+	scope, key, project, err := s.boardHandleProject(subscription)
+	if err != nil {
+		return DashboardAskBoard{}, err
+	}
+	root, err := s.readRoot(scope.Connection)
+	if err != nil {
+		return DashboardAskBoard{}, err
+	}
+	defer s.leave()
+	st, ok, err := s.store.GetMirrorBoard(root, string(scope.Board))
+	switch {
+	case err != nil:
+		return DashboardAskBoard{}, fmt.Errorf("trackerapp: read board %s from the mirror: %w", scope.Board, err)
+	case !ok:
+		return DashboardAskBoard{}, fmt.Errorf("%w: board %s", ErrNotMirrored, scope.Board)
+	}
+	return DashboardAskBoard{Project: project, Name: st.Board.Name, Handle: siteName(key.site.site) + "/" + string(scope.Board)}, nil
 }
 
 // EvaluateDashboard counts a dashboard of the board subscription and the

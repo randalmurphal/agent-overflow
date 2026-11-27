@@ -5,7 +5,8 @@
   // point's value shows on hover and focus, and a press or Enter opens its
   // rows.
   import type { BucketValue } from '../../../../../bindings/agent-overflow/internal/trackerdash/models';
-  import { formatNum, numValue, type DashboardUnit, type Num } from '../../../stores/trackerDashboardModel';
+  import { formatNum, numValue, type Num } from '../../../stores/trackerDashboardModel';
+  import type { DashboardUnit } from '../../../utils/dashboardAmount';
   import { isLocalEnter } from '../../../utils/localEnter';
   import { labelEvery, SERIES_COLORS, valueScale } from './chartScale';
 

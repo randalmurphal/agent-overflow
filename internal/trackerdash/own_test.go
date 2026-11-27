@@ -2,11 +2,14 @@ package trackerdash
 
 import (
 	"context"
+	"database/sql"
 	"maps"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/store"
 )
 
 // inProgress is a metric a project keeps: the tickets in progress now, by
@@ -29,32 +32,34 @@ func keeping(b Board) Board {
 }
 
 // A kept dashboard is listed after the built-in and counted as it is; the
-// proposals count beside whichever dashboard is shown and drill as its
-// widgets do. The built-in of the other kind of board is refused.
+// proposals are listed with their threads, count beside whichever
+// dashboard is shown and drill as its widgets do. The built-in of the
+// other kind of board is refused.
 func TestAKeptDashboardAndItsProposalsAreCounted(t *testing.T) {
 	t.Parallel()
 	e := evaluator()
 	b := keeping(teamBoard().board())
-	list, err := e.Dashboards(context.Background(), Kind{PlansSprints: true, Epics: true}, b.Own)
+	list, err := e.Dashboards(context.Background(), Kind{PlansSprints: true, Epics: true}, store.MirrorEstimatePoints, b.Own)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 2 || list[0].ID != builtinSprintsID || list[1].ID != "d_1" || list[1].Widgets[0].How.SQL != inProgress.SQL {
-		t.Fatalf("dashboards = %+v", list)
+	ds := list.Dashboards
+	if len(ds) != 2 || ds[0].ID != builtinSprintsID || ds[1].ID != "d_1" || ds[1].Widgets[0].How.SQL != inProgress.SQL {
+		t.Fatalf("dashboards = %+v", ds)
+	}
+	if ps := list.Proposals; len(ps) != 1 || ps[0].Thread != "thread-1" || ps[0].View.Title != "Proposed" || ps[0].View.How.SQL != inProgress.SQL {
+		t.Fatalf("proposals = %+v", ps)
 	}
 	a := mustEvaluate(t, e, b, Request{Dashboard: "d_1", TimeZone: "UTC"})
 	if len(a.Widgets) != 2 || a.Widgets[0].ID != "w_1" || a.Widgets[1].ID != "w_2" || *a.Widgets[1].Value.V != 3 {
 		t.Fatalf("widgets = %+v", a.Widgets)
 	}
-	if len(a.Proposals) != 1 || a.Proposals[0].Thread != "thread-1" || a.Proposals[0].View.Title != "Proposed" {
-		t.Fatalf("proposals = %+v", a.Proposals)
-	}
 	if bars := a.Widgets[0].Buckets; len(bars) != 2 {
 		t.Fatalf("in progress by person = %+v", bars)
 	}
 	builtin := mustEvaluate(t, e, b, Request{Dashboard: builtinSprintsID, Range: RangeSprints3, TimeZone: "UTC"})
-	if len(builtin.Proposals) != 1 || builtin.Widgets[len(builtin.Widgets)-1].ID != "w_2" {
-		t.Fatalf("the built-in with the proposal: %+v", builtin.Proposals)
+	if last := builtin.Widgets[len(builtin.Widgets)-1]; last.ID != "w_2" || last.Value == nil {
+		t.Fatalf("the built-in with the proposal: %+v", last)
 	}
 	drill, err := e.Drill(context.Background(), b, DrillRequest{Request: Request{Dashboard: builtinSprintsID, TimeZone: "UTC"}, Widget: "w_2"})
 	if err != nil || drill.Count != 3 {
@@ -117,6 +122,62 @@ func TestProposalsPastTheDeadlineFailInTheirOwnPlace(t *testing.T) {
 		if !strings.Contains(w.Error, "ran out before this widget was counted") {
 			t.Errorf("proposal %s: %+v", w.ID, w)
 		}
+	}
+}
+
+// The proposals count on a copy of the board of their own, after the
+// dashboard's is closed: a proposal whose copy reads what the dashboard
+// does not, and reaches the deadline copying it, says so in its own
+// place, and the dashboard's widgets keep their numbers.
+func TestAProposalsCopyPastTheDeadlineLeavesTheDashboardWhole(t *testing.T) {
+	t.Parallel()
+	e := evaluator()
+	e.deadline = 300 * time.Millisecond
+	b := keeping(teamBoard().board())
+	history := b.Own.Metrics["w_2"]
+	history.SQL, history.Bucket = "SELECT ticket AS ticket FROM changes", ""
+	b.Own.Metrics = maps.Clone(b.Own.Metrics)
+	b.Own.Metrics["w_2"] = history
+	fill := b.Fill
+	held := -1
+	b.Fill = func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+		if slices.Contains(relations, "changes") {
+			held = len(e.slots)
+			<-ctx.Done()
+			return store.MirrorExport{}, false, ctx.Err()
+		}
+		return fill(ctx, conn, relations)
+	}
+	a := mustEvaluate(t, e, b, Request{Dashboard: "d_1", TimeZone: "UTC"})
+	if len(a.Widgets) != 2 || a.Widgets[0].Error != "" || len(a.Widgets[0].Buckets) != 2 {
+		t.Fatalf("the dashboard's widget = %+v", a.Widgets)
+	}
+	if !strings.Contains(a.Widgets[1].Error, "ran out before this widget was counted") {
+		t.Errorf("the proposal: %+v", a.Widgets[1])
+	}
+	if held != 1 {
+		t.Errorf("the proposals' copy was made holding %d counting slots, not its own one", held)
+	}
+}
+
+// The list of dashboards and proposals counts nothing, so it answers
+// while every count this computer allows is out; How this is counted
+// names the board's estimates as a count does.
+func TestTheListAnswersWhileEveryCountIsOut(t *testing.T) {
+	t.Parallel()
+	e := evaluator()
+	for range maxEvaluations {
+		e.slots <- struct{}{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), busyWait/4)
+	defer cancel()
+	b := keeping(teamBoard().board())
+	list, err := e.Dashboards(ctx, Kind{PlansSprints: true, Epics: true}, store.MirrorEstimateTime, b.Own)
+	if err != nil || len(list.Dashboards) != 2 || len(list.Proposals) != 1 {
+		t.Fatalf("the list with every count out: %+v, %v", list, err)
+	}
+	if !slices.ContainsFunc(list.Dashboards[0].Widgets, func(w WidgetView) bool { return strings.Contains(w.How.Counts, "estimated hours") }) {
+		t.Errorf("a time board's built-in does not count estimated hours: %+v", list.Dashboards[0].Widgets)
 	}
 }
 

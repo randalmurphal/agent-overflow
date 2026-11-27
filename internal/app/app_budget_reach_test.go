@@ -87,6 +87,9 @@ var budgetReachMethodBoundaries = map[string]map[string]string{
 	"StartNextAssistantThread": {
 		"(agent-overflow/internal/threadapp.Workspace).CreateWorktree": "an assistant's next thread is made in its home with no worktree cut (createThreadRow)",
 	},
+	"StartTrackerDashboardThread": {
+		"(agent-overflow/internal/threadapp.Workspace).CreateWorktree": "a dashboard Ask's thread runs in the project's checkout; its options name no worktree",
+	},
 }
 
 // TestEveryMethodReachingALongStepDeclaresItsBudget walks driveGraph from

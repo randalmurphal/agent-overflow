@@ -9,9 +9,12 @@
   // and its thread; nothing joins a dashboard without Keep. Under the
   // widgets sit on a 12-column grid by the screen's width: their own
   // widths when wide, doubled when medium, and when narrow or under
-  // compact the numbers two to a row and the rest full width. Every
-  // widget's numbers are from one answer (stores/trackerDashboard.svelte.ts);
-  // while a new one is counted the last stays, dimmed, and says so.
+  // compact the numbers two to a row and the rest full width. The widgets,
+  // the proposals and their controls are the list's, there whatever a
+  // count does; every widget's numbers are from one answer of the
+  // dashboard shown (stores/trackerDashboard.svelte.ts). While a new one
+  // is counted the last stays, its numbers dimmed and taking no click, and
+  // says so.
   import { onDestroy } from 'svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import X from '@lucide/svelte/icons/x';
@@ -26,8 +29,6 @@
   import ErrorNotice from '../shared/ErrorNotice.svelte';
   import { captureError, type CapturedError } from '../../stores/errorReports.svelte';
   import { mountThreadForToolPane } from '../../stores/panes.svelte';
-  import { getSettings } from '../../stores/settings.svelte';
-  import { trackerToolsBlocked } from '../../providers/trackerTools';
   import { getThreadById } from '../../stores/threads.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { askAgentAboutDashboards, createTrackerDashboard, type DashboardSource } from '../../stores/trackerDashboard.svelte';
@@ -42,7 +43,7 @@
 
   interface Props {
     source: DashboardSource | null;
-    /** The board's name, which Ask your agent's draft names. */
+    /** The board's name, which a failed Ask names. */
     boardName: string;
     shown: boolean;
     compact: boolean;
@@ -73,10 +74,8 @@
     return w.width;
   }
 
-  // The widgets as the answer laid them out, so a widget and its numbers
-  // are from one evaluation; the dashboard's own before the first answer.
   const answer = $derived(store.answer);
-  const dashboard = $derived(answer?.dashboard ?? store.dashboard);
+  const dashboard = $derived(store.dashboard);
   const values = $derived(new Map((answer?.widgets ?? []).map((w) => [w.id, w])));
   const stale = $derived(store.stale);
   const rangeLabel = $derived(store.dashboard?.ranges.find((r) => r.id === store.range)?.label ?? '');
@@ -119,13 +118,13 @@
 
   const listed = $derived(Array.isArray(store.dashboards) ? store.dashboards : []);
   const own = $derived(listed.slice(1));
-  const proposals = $derived(answer?.proposals ?? []);
+  const proposals = $derived(store.proposals);
   // Why a Keep, a Dismiss or an edit takes no press: undefined when it does.
   // The toolbar shows once the board is listed, so a source is there.
   const operate = $derived(source ? scopeGrant('tracker:operate', source.backend) : 'pending');
   const editBlocked = $derived(grantBlockedTitle(operate));
   const askBlocked = $derived(source
-    ? workGate(source.backend, source.board.projectId).ask || trackerToolsBlocked(getSettings(source.backend), computerName) || undefined
+    ? workGate(source.backend, source.board.projectId).ask || store.ask || undefined
     : undefined);
 
   let pickerOpen = $state(false);
@@ -149,7 +148,7 @@
     if (!source || asking) return;
     asking = true;
     try {
-      await askAgentAboutDashboards(source.backend, source.board.projectId, boardName);
+      await askAgentAboutDashboards(source.backend, source.subscription);
     } catch (err) {
       addErrorToast(`Could not start a thread about ${boardName}: ${userFacingError(err)}`, err);
     } finally {
@@ -202,6 +201,7 @@
       value={values.get(w.id)}
       range={answer?.range}
       estimates={answer?.estimates ?? ''}
+      {stale}
       onDrill={(t) => store.openDrill(t)}
       onPerson={(p) => store.narrowPerson(p)}
       onEpic={(e) => store.narrowEpic(e)}
@@ -311,9 +311,8 @@
     {/if}
     <div class="min-h-0 flex-1 overflow-y-auto" bind:clientWidth={width}>
       <div
-        class="grid grid-cols-12 gap-2 p-3 transition-opacity {stale ? 'opacity-60' : ''}"
+        class="grid grid-cols-12 gap-2 p-3"
         aria-busy={store.counting}
-        inert={stale}
         data-testid="dashboard-grid"
         data-stale={stale}
       >

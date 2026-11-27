@@ -2206,9 +2206,15 @@ to remove a widget.
 
 A proposal is a widget an agent showed on a board (`dashboard_widget`
 with `show`, [Agent tools](#dashboards-by-agents)). It is held in memory
-by project and board, at most 5, and is gone when the app stops. Every
-evaluation of any of the board's dashboards counts the proposals beside
-it, and the screen shows them above the grid with Keep and Dismiss.
+by project and board, at most 5, and is gone when the app stops. The
+list of a board (`TrackerDashboards`) answers its dashboards, its
+proposals with their threads, and why Ask your agent cannot start a
+thread there, counting nothing and taking no counting slot, so the
+screen lays out every widget and control (Keep, Dismiss, Edit, Remove)
+from it whatever a count does; values come from an answer of the
+dashboard shown, by widget ID. Every evaluation of any of the board's
+dashboards counts the proposals after it, and the screen shows them
+above the grid with Keep and Dismiss.
 Keep moves a proposal onto a kept dashboard or a new one, Dismiss drops
 it; nothing joins a dashboard without Keep, and the built-in dashboard
 never takes a widget. Edit mode on a kept dashboard removes widgets, and
@@ -2216,8 +2222,10 @@ the dashboard goes with its last one. Keep, Dismiss and Remove
 (`KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`)
 need `tracker:operate`, run on the board's computer and are not
 caller-bound. A Keep finds the proposal, writes the setup file and drops
-the proposal under the proposals' lock, so a reader sees the widget
-proposed or kept and never both, and a failed write leaves it proposed.
+the proposal under the proposals' lock, and every reader of both (the
+list, a count, a drill) reads them under that lock too, so it sees the
+widget proposed or kept and never both or neither, and a failed write
+leaves it proposed.
 Each change, from any client, emits the payload-less
 `tracker:dashboards_updated` once, on which an open screen of that
 computer lists the board's dashboards and counts again; a hidden screen
@@ -2307,11 +2315,18 @@ statement.
   parameters, with LIKE and GLOB patterns of at most 256 bytes. It runs
   inside a wrapper that produces the whole result in SQLite's first
   step, under a 1 s deadline counted from before its prepare, at most
-  20,000 rows and 4 MiB of encoded rows. An evaluation has 4 s: the
-  dashboard's own widgets count first, then the board's proposals in the
-  time they leave, and a proposal the deadline stops, or leaves no time
-  for, fails in its own place, saying so. Two run at once on a
-  computer; a third waits up to 2 s and is refused as busy.
+  20,000 rows and 4 MiB of encoded rows. An evaluation has 4 s. A
+  count of a dashboard is two, one after the other: its own widgets, on
+  a copy of what they read, with their titles, then the board's
+  proposals, on a copy of their own made after the first is closed, so
+  what the proposals read or take never reaches the dashboard's numbers.
+  A failure of the proposals' evaluation (its copy, its deadline, a busy
+  computer) is each proposal's sentence, and a proposal its deadline
+  stops, or leaves no time for, fails in its own place, saying so; a
+  proposal's rows are let go once its value is drawn. Two evaluations
+  run at once on a computer; a third waits up to 2 s and is refused as
+  busy. A count with proposals takes at most 12 s (two waits and two
+  evaluations) against its method's 45 s.
 - The app's functions (`days`, `working_days`, `day` and the wrapper's
   `bounded_rows`) are registered once per time zone a count names, on a
   driver of that zone the process keeps (`trackerdash/funcs.go`): one
@@ -2519,14 +2534,20 @@ column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a
 refusal is `dashboard_widget_refused` with the sentence the widget would
 show. Proposing changes nothing until the person keeps it, so it needs no
-approval and a read-only thread may propose. Ask your agent on the
-Dashboards screen opens a new thread in the board's project itself (a
-checkout remembered for new threads does not redirect it) with an
-unsent draft naming the board, on a provider whose agents get the
-tracker tools: the default when it has them, else Claude, else Codex
-(`frontend/src/lib/providers/trackerTools.ts`, which
-`internal/provider` pins to `SupportsTrackerMCP`). With neither turned
-on, Ask is disabled and says which to turn on.
+approval and a read-only thread may propose. A board listed through two
+connections of its site is two accounts' copies of it, and is refused
+naming the connections by the labels the person gave them. Ask your agent
+on the Dashboards screen (`StartTrackerDashboardThread`, which needs
+`threads:operate` and `tracker:read`) makes a new thread on the board's
+computer, in the checkout of the project the board's subscription was
+made for, with an unsent draft naming the board by its name and
+site/ID, on a provider whose agents get the tracker tools
+(`SupportsTrackerMCP`) and that the computer offers: the one a new thread
+starts on when it has them, else Claude, else Codex
+(`app.trackerToolsProvider`). A draft that cannot be saved takes the
+thread back. With neither offered, the list says why, and Ask is
+disabled with that sentence; the screen lists again when the computer's
+settings change.
 
 The tool is listed in every session that has the tracker tools. Listing
 it only in a thread Ask your agent started would need a mark on the
@@ -2997,8 +3018,8 @@ and statuses in a window), and a board's dashboards on the Dashboards
 screen ([Dashboards](#dashboards)): the built-in, the ones its project
 keeps and the widgets agents propose, with the wrappers of
 `TrackerDashboards`, `EvaluateTrackerDashboard`, `TrackerDashboardDrill`,
-`KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`
-and `tracker:dashboards_updated`
+`KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`,
+`StartTrackerDashboardThread` and `tracker:dashboards_updated`
 (`stores/trackerDashboard.svelte.ts`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures

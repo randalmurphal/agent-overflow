@@ -103,7 +103,6 @@ async function loadAndStartDraftPlaceholder(
   pane: ThreadPane,
   project: Project,
   groupId?: string,
-  provider?: (defaultProvider: string) => string,
 ): Promise<boolean> {
   pane.startDraftPlaceholder(
     project,
@@ -114,12 +113,8 @@ async function loadAndStartDraftPlaceholder(
   const request = beginDraftDefaultsRequest(pane);
   let defaults: DraftPlaceholderDefaults | undefined;
   try {
-    const backend = requireEntityBackend(projectBackend(project.id));
-    const seeded = await withBackendTarget(backend, () => GetThreadDefaults({ projectId: project.id, mode: 'chat' }));
-    const picked = provider?.(seeded.provider);
-    defaults = picked && picked !== seeded.provider
-      ? await withBackendTarget(backend, () => GetThreadDefaults({ projectId: project.id, mode: 'chat', provider: picked }))
-      : seeded;
+    defaults = await withBackendTarget(requireEntityBackend(projectBackend(project.id)),
+      () => GetThreadDefaults({ projectId: project.id, mode: 'chat' }));
   } catch (err) {
     reportFrontendDiagnostic('thread defaults fetch failed', errString(err));
   }
@@ -190,12 +185,6 @@ export interface OpenDraftThreadOptions {
   groupId?: string;
   targetPane?: ThreadPane | null;
   openInNewPane?: boolean;
-  /** The project as given: a checkout of its repository remembered for
-   * new threads does not redirect it. */
-  exact?: boolean;
-  /** The provider the draft starts on, from the one its defaults name;
-   * another one's defaults are read for it. */
-  provider?: (defaultProvider: string) => string;
 }
 
 /**
@@ -218,7 +207,7 @@ export interface OpenDraftThreadOptions {
 export async function openDraftThreadForProject(
   options: OpenDraftThreadOptions,
 ): Promise<ThreadPane | null> {
-  const { projectId, groupId, targetPane, openInNewPane = false, exact = false, provider } = options;
+  const { projectId, groupId, targetPane, openInNewPane = false } = options;
   revealProject(projectId);
   const source = getProject(projectId)?.project;
   if (!source) {
@@ -227,9 +216,8 @@ export async function openDraftThreadForProject(
   if (groupId && getThreadGroupById(groupId)?.projectId !== projectId) {
     throw new Error('That group no longer exists in this project');
   }
-  // A group fixes the computer and project, as exact does; repository
-  // preferences cannot redirect it.
-  const project = groupId || exact ? source : preferredProjectTarget(source);
+  // A group fixes the computer and project; repository preferences cannot redirect it.
+  const project = groupId ? source : preferredProjectTarget(source);
   const pane: ThreadPane = openInNewPane
     ? openEmptyPane()
     : threadHostPane(targetPane ?? focusedOpenTargetPane());
@@ -240,7 +228,7 @@ export async function openDraftThreadForProject(
   // Opens the placeholder, then applies the same seed values CreateThread
   // would have used (last-used model profile + current git branch) so its
   // toolbar and workspace strip converge on the real model and branch.
-  const opened = await loadAndStartDraftPlaceholder(pane, project, groupId, provider);
+  const opened = await loadAndStartDraftPlaceholder(pane, project, groupId);
   return opened ? pane : null;
 }
 

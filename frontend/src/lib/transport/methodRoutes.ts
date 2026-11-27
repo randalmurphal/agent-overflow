@@ -517,6 +517,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2623175319: 'home', // StartSSHConnection
 	3009548683: 'selected', // StartTerminal
 	2291054583: 'project', // StartTicketThread
+	3031630647: 'home', // StartTrackerDashboardThread
 	1961738625: 'home', // StartTrackerSprint
 	2580445357: 'thread', // StopBackgroundTasks
 	536320598: 'thread', // StopClaudeTask

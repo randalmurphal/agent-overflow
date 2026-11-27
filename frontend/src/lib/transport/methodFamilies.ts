@@ -89,6 +89,7 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   2206254666: 'subscription', // EvaluateTrackerDashboard
   124644262: 'subscription', // TrackerDashboardDrill
   2951524960: 'subscription', // KeepTrackerWidget
+  3031630647: 'subscription', // StartTrackerDashboardThread
   350315805: 'subscription', // DismissTrackerWidget
   446977083: 'subscription', // RemoveTrackerWidget
 

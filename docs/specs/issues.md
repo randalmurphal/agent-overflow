@@ -631,9 +631,15 @@ counted, selecting rows in a ticket list, or a number tile's limit.
 - Until the board's first read has finished, the dashboard and each
   drill say "This board's first read has not finished: these numbers
   count the tickets read so far.", and nothing is compared.
-- While a new range or narrowing is counted, the last answer stays
-  dimmed and takes no click. A count that fails says "Not counted again"
-  and why beside the last answer.
+- While a new range or narrowing is counted, the last answer's numbers
+  stay dimmed and take no click. A count that fails says "Not counted
+  again" and why beside the last answer. Another dashboard picked shows
+  none of the last one's numbers. The widgets, the proposals and Keep,
+  Dismiss, Edit and Remove are there whatever a count does.
+- Ask your agent opens a new thread in the board's project, its draft
+  unsent and naming the board by name and site/ID, on a provider whose
+  agents get the tracker tools. With none turned on and installed on the
+  board's computer, Ask is disabled and says why.
 - Clicking a person or an epic narrows every widget on the page to it. A
   chip in the toolbar clears it.
 - Rows in a ticket-list widget can be selected, then moved, assigned or

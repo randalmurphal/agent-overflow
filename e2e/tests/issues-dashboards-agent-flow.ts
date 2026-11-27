@@ -13,8 +13,9 @@
 // widget, and with it the dashboard, which takes both browsers back to
 // Overview. Number proposals two to a row keep their buttons inside their
 // cards, and Keep's new-dashboard name takes every key typed beside the
-// dashboards it lists. With neither Claude nor Codex turned on, Ask your
-// agent is disabled and says why. A board on a paired computer takes a
+// dashboards it lists. A count whose unit is estimate draws, and drills,
+// as tickets on a board estimated in points. With neither Claude nor Codex
+// turned on, Ask your agent is disabled and says why. A board on a paired computer takes a
 // widget its agent proposed from this computer's screen, the kept
 // dashboard is still there after that computer restarts, and Ask your
 // agent from this computer's screen opens its thread on that computer.
@@ -30,14 +31,14 @@ import { expect, test, type SeedResult } from './fixtures.js';
 import { pairOwnDevice } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { setScenario, threadRows, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
-import { connectFakeJira, openIssuesPane, press, seedFakeJira } from './tracker-helpers.js';
+import { connectFakeJira, JIRA_SITE, openIssuesPane, press, seedFakeJira, type ExtraJira } from './tracker-helpers.js';
 
 export interface DashboardAgentSurface {
   compact: boolean;
 }
 
 const SERVER = 'ao-tracker-tools';
-const SEED = 'About the dashboards of the board WEB board: ';
+const SEED = `About the dashboards of the board WEB board (${JIRA_SITE}/1): `;
 
 /** WEB-1 (in progress), WEB-2 and WEB-3 (to do): every ticket of the
  * seed's board is open. */
@@ -50,6 +51,12 @@ const BY_GROUP = {
   reduce: 'count', unit: 'tickets', bucket: 'text', form: 'bars',
 };
 const PRIORITY = { ...OPEN, title: 'Urgent', sql: "SELECT id AS ticket FROM tickets WHERE priority = 'High'" };
+
+/** The seed's board estimated in story points. */
+const POINTS_BOARD: ExtraJira = {
+  estimation: 'customfield_10016',
+  fields: [{ id: 'customfield_10016', name: 'Story Points', schema: { type: 'number', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:float', customId: 10016 } }],
+};
 
 function proposal(screen: Locator, title: string): Locator {
   return screen.locator('[data-testid="dashboard-widget"]').filter({ has: screen.page().getByTestId('dashboard-proposal') }).filter({ hasText: title });
@@ -138,8 +145,8 @@ function expectWidgetAnswers(answers: Array<{ isError: boolean; text: string }>)
 }
 
 /** A project listing the seed's board, with its path for the scenario. */
-async function boardProject(harness: HarnessApp, name: string, threads: ReadonlyArray<Record<string, unknown>> = []): Promise<{ projectId: string; path: string; threadIds: string[] }> {
-  await seedFakeJira(harness);
+async function boardProject(harness: HarnessApp, name: string, threads: ReadonlyArray<Record<string, unknown>> = [], extra?: ExtraJira): Promise<{ projectId: string; path: string; threadIds: string[] }> {
+  await seedFakeJira(harness, extra);
   const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name, repo: {}, threads }] });
   const project = seed.projects[0];
   await connectFakeJira(harness, project.projectId);
@@ -219,11 +226,13 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     }
   });
 
-  test('number proposals side by side keep their buttons in their cards, a new dashboard\'s name takes every key, and Ask needs a provider with the tracker tools', async ({ harness, page }) => {
+  test('number proposals side by side keep their buttons in their cards, a count in estimates draws tickets on a points board, a new dashboard\'s name takes every key, and Ask needs a provider with the tracker tools', async ({ harness, page }) => {
     test.setTimeout(180_000);
     const provider: ProviderName = 'claude';
-    const project = await boardProject(harness, name('numbers'), [{ title: 'Board questions', provider }]);
-    const numbers = [OPEN, { ...OPEN, title: 'Closed tickets', sql: 'SELECT id AS ticket FROM tickets WHERE open = 0' }, { ...OPEN, title: 'All tickets', sql: 'SELECT id AS ticket FROM tickets' }];
+    const project = await boardProject(harness, name('numbers'), [{ title: 'Board questions', provider }], POINTS_BOARD);
+    // All tickets counts with the unit estimate: a count is of tickets
+    // whatever its unit says.
+    const numbers = [OPEN, { ...OPEN, title: 'Closed tickets', sql: 'SELECT id AS ticket FROM tickets WHERE open = 0' }, { ...OPEN, title: 'All tickets', sql: 'SELECT id AS ticket FROM tickets', unit: 'estimate' }];
     await setScenario(harness, project.path, threadToolsScenario({
       name: name('numbers'),
       provider,
@@ -236,7 +245,13 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
       const event = await harness.awaitMcpResult({ server: SERVER, tool: 'dashboard_widget', cwd: project.path, timeoutMs: 60_000 });
       expect(event.report.isError, event.report.result).toBeFalsy();
     }
-    await expect(proposal(screen, 'All tickets').getByTestId('dashboard-number-value')).toHaveText('3', { timeout: 30_000 });
+    const all = proposal(screen, 'All tickets');
+    await expect(all.getByTestId('dashboard-number-value')).toHaveText('3', { timeout: 30_000 });
+    await expect(all.getByTestId('dashboard-number')).toHaveAttribute('aria-label', 'All tickets: 3 tickets. Show its tickets');
+    await press(all.getByTestId('dashboard-number'), compact);
+    await expect(page.getByTestId('dashboard-drill-value')).toHaveText('3 tickets');
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('dashboard-drill')).toHaveCount(0);
 
     // Each proposal's buttons sit inside its own card, two to a row on
     // compact.
@@ -275,7 +290,7 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     await expect(screen.getByTestId('dashboard-ask')).toBeEnabled();
     await harness.rpc('UpdateSettings', { claudeEnabled: false, codexEnabled: false });
     await expect(screen.getByTestId('dashboard-ask')).toBeDisabled();
-    await expect(screen.getByTestId('dashboard-ask')).toHaveAttribute('title', /^Ask needs Claude or Codex, whose agents get the tracker tools; turn one on in Settings on .+\.$/);
+    await expect(screen.getByTestId('dashboard-ask')).toHaveAttribute('title', 'Ask your agent needs a provider whose agents get the tracker tools, turned on in Settings and installed on this computer.');
   });
 
   test('a paired computer\'s board takes the widget its agent proposed, and keeps it through that computer\'s restart', async ({ page }) => {

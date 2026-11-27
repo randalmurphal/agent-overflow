@@ -10,6 +10,12 @@
 // widgets from the dashboard's, a drill's number from the drill's own
 // evaluation, which also lists its rows.
 //
+// What the screen lays out is the list (TrackerDashboards): the dashboards,
+// the proposals and why Ask cannot start a thread, read without counting,
+// so the controls on them (Keep, Dismiss, Edit, Remove) are there whatever
+// becomes of a count. The values are the answer's, by widget ID, shown
+// only on the dashboard it counted.
+//
 // Freshness. The board's subscription keeps syncing while the screen
 // shows (issuesPane.svelte.ts votes it shown), and the board's changes
 // count (TrackerBoardState.changes) moves with each event that names rows
@@ -32,13 +38,14 @@
 // (frontendStorage).
 //
 // A board's own dashboards and the widgets agents proposed on it are the
-// board's computer's too (trackerapp/dashboards.go): Keep, Dismiss, Remove
-// and Delete are its methods, and every change there, from any client, is
-// a `tracker:dashboards_updated` from that computer, on which the screen
-// lists the dashboards and counts again. A Keep onto a new dashboard shows
-// it once the list read after the Keep holds it.
+// board's computer's too (trackerapp/dashboards.go): Keep, Dismiss and
+// Remove are its methods, and every change there, from any client, is a
+// `tracker:dashboards_updated` from that computer, on which the screen
+// lists the dashboards and counts again. A change of that computer's
+// settings lists them again too, for Ask's sentence. A Keep onto a new
+// dashboard shows it once the list read after the Keep holds it.
 
-import { tick, untrack } from 'svelte';
+import { untrack } from 'svelte';
 import { SvelteSet } from 'svelte/reactivity';
 import type { KeepTarget } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import type {
@@ -46,6 +53,7 @@ import type {
   DashboardView,
   DrillAnswer,
   Name,
+  ProposalView,
   Request,
 } from '../../../bindings/agent-overflow/internal/trackerdash/models';
 import type { BackendKey } from '../transport/backendKey';
@@ -56,17 +64,17 @@ import {
   EvaluateTrackerDashboard,
   KeepTrackerWidget,
   RemoveTrackerWidget,
+  StartTrackerDashboardThread,
   TrackerDashboardDrill,
   TrackerDashboards,
 } from './bindings';
 import { readFrontendValue, writeFrontendValue } from './frontendStorage';
+import { getSettings } from './settings.svelte';
+import { openTicketThread } from './ticketWork.svelte';
+import { prependThreadReply } from './threads.svelte';
+import { threadRowFrameMark } from './threadRowFrames';
 import type { TrackerBoardRef } from './trackerBoard.svelte';
 import { onTrackerDashboardsUpdated } from './trackerBoardEvents';
-import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
-import { revealPane } from './panes.svelte';
-import { openDraftThreadForProject } from './threadCreation.svelte';
-import { getSettings } from './settings.svelte';
-import { trackerToolsProvider } from '../providers/trackerTools';
 
 const RANGE_KEY = 'issues-dashboard-range';
 const MINE_KEY = 'issues-dashboard-mine';
@@ -112,6 +120,12 @@ export interface TrackerDashboard {
    * computer whose release has none. Reactive. */
   readonly dashboards: readonly DashboardView[] | 'older' | null;
   readonly dashboardsError: unknown;
+  /** The widgets agents proposed on the board, as the list has them.
+   * Reactive. */
+  readonly proposals: readonly ProposalView[];
+  /** Why Ask your agent cannot start a thread on the board's computer;
+   * '' when it can, or before the list is read. */
+  readonly ask: string;
   /** The dashboard shown: the one picked last for the board, else the
    * built-in, which is first. Reactive. */
   readonly dashboard: DashboardView | null;
@@ -125,7 +139,8 @@ export interface TrackerDashboard {
   readonly mine: boolean;
   readonly person: Name | null;
   readonly epic: Name | null;
-  /** The answer the screen draws; null until the first lands. */
+  /** The answer the screen draws: the last of the dashboard shown; null
+   * until one lands. */
   readonly answer: Answer | null;
   /** What is asked now has not been answered or refused yet: an
    * evaluation of it is out or about to start. */
@@ -175,6 +190,8 @@ function timeZone(): string {
 
 export function createTrackerDashboard(opts: { source: () => DashboardSource | null; shown: () => boolean }): TrackerDashboard {
   let dashboards = $state.raw<readonly DashboardView[] | 'older' | null>(null);
+  let proposals = $state.raw<readonly ProposalView[]>([]);
+  let ask = $state('');
   let dashboardsError = $state.raw<unknown>(null);
   let listedFor = '';
   // Moves with each change of the dashboards on the board's computer, so
@@ -190,6 +207,8 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   let epic = $state.raw<Name | null>(null);
   let answer = $state.raw<Answer | null>(null);
   let answerKey = $state('');
+  // The dashboard the answer counted.
+  let answerOf = $state('');
   // The source and request the answer shown answered, which a drill from
   // it counts.
   let answered: { source: DashboardSource; request: Request } | null = null;
@@ -206,6 +225,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     const pick = dashboardPick || (s ? savedPicks()[boardKey(s.board)] : '');
     return dashboards.find((d) => d.id === pick) ?? dashboards[0] ?? null;
   });
+  const shownAnswer = $derived(answer !== null && answerOf === dashboard?.id ? answer : null);
   const ownShown = $derived(dashboards !== null && dashboards !== 'older' && dashboard !== null && dashboards.indexOf(dashboard) > 0);
   const range = $derived.by(() => {
     const d = dashboard;
@@ -241,6 +261,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
         if (!token.isCurrent()) return;
         answer = a;
         answerKey = key;
+        answerOf = r.dashboard;
         answered = { source: s, request: r };
         settledKey = key;
         error = null;
@@ -264,6 +285,17 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       const key = `${s.backend}\n${s.subscription}\n${gen}`;
       if (key === untrack(() => listedFor)) return;
       untrack(() => void list(s, key));
+    });
+
+    // Whether Ask can start a thread is the board's computer's settings'
+    // (which providers are turned on), so a change of them lists again.
+    let settingsSeen: object | null = null;
+    $effect(() => {
+      const s = opts.source();
+      if (!s) return;
+      const current = getSettings(s.backend);
+      if (settingsSeen !== null && current !== settingsSeen) untrack(() => { listGen += 1; });
+      settingsSeen = current;
     });
 
     $effect(() => onTrackerDashboardsUpdated((backend) => {
@@ -306,7 +338,9 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       try {
         const answer = await withBackendTarget(s.backend, () => TrackerDashboards(s.subscription));
         if (listedFor !== key) return;
-        dashboards = answer ?? 'older';
+        dashboards = answer?.dashboards ?? 'older';
+        proposals = answer?.proposals ?? [];
+        ask = answer?.ask ?? '';
         dashboardsError = null;
       } catch (err) {
         if (listedFor !== key) return;
@@ -366,6 +400,8 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   return {
     get dashboards() { return dashboards; },
     get dashboardsError() { return dashboardsError; },
+    get proposals() { return proposals; },
+    get ask() { return ask; },
     get dashboard() { return dashboard; },
     get ownShown() { return ownShown; },
     get busy() { return busy; },
@@ -392,9 +428,9 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     get mine() { return mine; },
     get person() { return person; },
     get epic() { return epic; },
-    get answer() { return answer; },
+    get answer() { return shownAnswer; },
     get counting() { return inFlightKey !== '' || (requestKey !== '' && settledKey !== requestKey); },
-    get stale() { return answer !== null && answerKey !== requestKey; },
+    get stale() { return shownAnswer !== null && answerKey !== requestKey; },
     get error() { return error; },
     get drill() { return drill; },
     setRange(next) {
@@ -425,7 +461,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       scheduler.request({ immediate: true });
     },
     openDrill(target) {
-      if (!answered) return;
+      if (!answered || !shownAnswer) return;
       drillOf = answered;
       void readDrill(target, 0, 0);
     },
@@ -443,31 +479,14 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   };
 }
 
-/** The draft Ask your agent leaves in its new thread: the board it is
- * about, for the person to finish and send. */
-export function dashboardAskSeed(boardName: string): string {
-  return `About the dashboards of the board ${boardName}: `;
-}
-
-/** Ask your agent: a new thread in the board's project itself, on its
- * computer `backend`, opened in a pane of its own, on a provider whose
- * agents get the tracker tools (trackerToolsProvider), whose unsent draft
- * names the board and is saved as typed text is. The agent answers with
- * the tracker tools' dashboard_widget, whose proposals show on the
- * board's dashboards. */
-export async function askAgentAboutDashboards(backend: BackendKey, projectId: string, boardName: string): Promise<void> {
-  const settings = getSettings(backend);
-  const pane = await openDraftThreadForProject({
-    projectId, openInNewPane: true, exact: true,
-    provider: (p) => trackerToolsProvider(p, settings) ?? p,
-  });
-  if (!pane) return;
-  revealPane(pane.paneId);
-  await tick();
-  const draft = getComposerDraftForPane(pane.paneId);
-  if (!draft) throw new Error('The new thread opened without its composer.');
-  if (draft.content.trim()) return;
-  // As typed text does: the draft makes the thread real, and is saved.
-  draft.setContent(dashboardAskSeed(boardName));
-  await pane.ensureMaterializedThread();
+/** Ask your agent: a new thread on the board's computer `backend`, made
+ * there (StartTrackerDashboardThread) in the project of the board's
+ * subscription on a provider whose agents get the tracker tools, its draft
+ * naming the board for the person to finish and send, opened as a ticket's
+ * Ask opens its thread. The agent answers with the tracker tools'
+ * dashboard_widget, whose proposals show on the board's dashboards. */
+export async function askAgentAboutDashboards(backend: BackendKey, subscription: string): Promise<void> {
+  const mark = threadRowFrameMark();
+  const made = await withBackendTarget(backend, () => StartTrackerDashboardThread(subscription));
+  await openTicketThread(prependThreadReply(made, mark));
 }
