@@ -131,6 +131,7 @@ var isolationConsumers = map[string]func(a *App) time.Duration{
 	"AgentSettledWindow":      (*App).agentSettledWindowSpan,
 	"TrackerPollInterval":     func(a *App) time.Duration { return a.trackerCadence.Delta },
 	"TrackerTicketPoll":       func(a *App) time.Duration { return a.trackerCadence.Ticket },
+	"TrackerApprovalWait":     func(a *App) time.Duration { return a.trackerMCP.approvals.waitFor() },
 }
 
 // isolationDerived names the consumers that follow another interval by

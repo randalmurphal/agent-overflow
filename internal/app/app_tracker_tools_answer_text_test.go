@@ -75,7 +75,7 @@ func TestTrackerAgentAnswersNameNoRequest(t *testing.T) {
 			done := trackerWriteCall(t, f.a, endpoint, "ticket_update", c.args)
 			open, _ := trackerWritePrompt(t, f.a, thread.ID)
 			c.fail(t, f)
-			if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+			if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 				t.Fatal(err)
 			}
 			result := <-done

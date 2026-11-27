@@ -19,7 +19,9 @@ defaults in Settings > Issues > Starting work or from the Start work form,
 and what its threads may do to tickets in Settings > Issues > Agents.
 Agents can find, read, create and change tickets, a change of several
 tickets waiting for the person's approval unless the project turned that
-off; their worklog tools are not built ([Agent tools](../architecture/tracker-backend.md#agent-tools)).
+off. They read and draft the person's time, and ask to log the draft of
+named days, which is logged only once the person approves what the
+prompt shows ([Agent tools](../architecture/tracker-backend.md#agent-tools)).
 
 ## Goal
 
@@ -778,8 +780,9 @@ counted, selecting rows in a ticket list, or a number tile's limit.
   saved.
 - Agents has three rows: Read tickets, always on; Change tickets, on
   unless turned off; and Ask before changing several at once, on unless
-  turned off. With Change tickets off, a thread of the project that
-  creates or changes a ticket is refused at the call with a sentence that
+  turned off. Change tickets covers logging time, which always waits for
+  the person's approval. With Change tickets off, a thread of the project that
+  creates or changes a ticket, or drafts or logs time, is refused at the call with a sentence that
   tells the agent to ask the person to turn it on here. With Ask before
   changing several at once off, a change to several tickets is sent
   without waiting for approval, an exception to the approval ruling that

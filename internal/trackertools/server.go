@@ -1,6 +1,6 @@
 // Package trackertools is the ao-tracker-tools contract: the tools an agent
 // in a thread uses to find, read, create and change tickets in the user's
-// issue tracker and to read and draft the user's time (time.go), their
+// issue tracker and to read, draft and post the user's time (time.go), their
 // schemas, argument validation, how a ticket key
 // names an issue on this computer's connections, what a write checks
 // before it sends anything, the shape of each answer, and the guide the
@@ -107,6 +107,14 @@ type Tracker interface {
 	// DraftTime stores an agent call's draft of that account's time
 	// (trackerapp.Service.DraftTime); it sends nothing.
 	DraftTime(connection string, in trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error)
+	// OpenTimeEntries are that account's entries not yet logged on days,
+	// with no tracker call (trackerapp.Service.OpenTimeEntries).
+	OpenTimeEntries(connection string, days []string) ([]trackerapp.TimeEntryView, error)
+	// PostTime posts the entries in names, as the person's approval of
+	// their day does (trackerapp.Service.PostTimeEntries), and answers each
+	// one's outcome, with an error too when the post failed after it sent.
+	// Only a post the person approved calls it.
+	PostTime(ctx context.Context, connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error)
 	IssueTypes(ctx context.Context, connection, project string) ([]trackerapp.IssueTypeView, error)
 	CreateFields(ctx context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error)
 
@@ -142,9 +150,10 @@ type Host interface {
 	// decide whether the change waits for the person (Approve) and to
 	// bound what that approval carries; and just before the first write,
 	// to send nothing the policy no longer allows, including a change
-	// that went unasked while the policy now asks. time_draft, which sends
-	// nothing to a tracker, reads it at admission and just before its
-	// store write.
+	// that went unasked while the policy now asks. time_draft's draft,
+	// which sends nothing to a tracker, reads it at admission and just
+	// before its store write; its post, which always waits for the person,
+	// at admission and once they approved, before it sends.
 	WritePolicy(threadID string) (WritePolicy, error)
 	// Approve asks the person to approve a change and returns when they
 	// answer: nil when they approve, a public error when they deny or do
@@ -156,6 +165,9 @@ type Host interface {
 	// Drafted puts the row of a time_draft call that changed the draft in
 	// the thread's timeline.
 	Drafted(threadID string, row TimeRow)
+	// Posted puts the row of a time_draft post that ran in the thread's
+	// timeline, once.
+	Posted(threadID string, row TimePostRow)
 	// Boards are the boards the projects of this computer list, on every
 	// connection, each marked when the thread's project lists it, in the
 	// order the listings are, and the thread's project ("" for none).
@@ -203,21 +215,29 @@ type ListedBoard struct {
 }
 
 // Approval is a change the person approves before it is sent: the call's
-// ID, each ticket with the changes it gets, the comment each gets, and
-// each value of the call's set whole, which a change line shows in part.
-// Everything is carried whole: a call whose set and comment pass
-// maxApprovalBytes is refused before it asks.
+// ID, the action as the person reads it (Title) and the tool that asks
+// (Tool), each ticket with the changes it gets, the comment each gets,
+// each value of the call's set whole, which a change line shows in part,
+// and Notes, lines of the call that name no ticket. Everything is carried
+// whole: a call whose approval would pass maxApprovalBytes is refused
+// before it asks.
 type Approval struct {
 	ID      string           `json:"id"`
+	Title   string           `json:"-"`
+	Tool    string           `json:"-"`
 	Tickets []ApprovalTicket `json:"tickets"`
 	Comment string           `json:"comment,omitempty"`
 	Values  []ApprovalValue  `json:"values,omitempty"`
+	Notes   []string         `json:"notes,omitempty"`
 }
 
 // ApprovalTicket is one ticket of an Approval: its key as answers write
-// it, its title, and each change as a person reads it.
+// it, the connection it is changed through when another of its site's
+// connections is in the approval too (the post's postAccount), its
+// title, and each change as a person reads it.
 type ApprovalTicket struct {
 	Key     string           `json:"key"`
+	Account string           `json:"account,omitempty"`
 	Title   string           `json:"title,omitempty"`
 	Changes []ApprovalChange `json:"changes,omitempty"`
 }

@@ -117,7 +117,7 @@ func TestTrackerWriteOfSeveralTicketsWaitsForThePerson(t *testing.T) {
 	if got := fakeComments(t, f, "10101"); len(got) != 0 {
 		t.Fatalf("a comment was sent before the approval: %q", got)
 	}
-	answer := provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}
+	answer := provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}
 	if err := f.a.RespondToApproval(t.Context(), thread.ID, answer); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestTrackerWriteUnansweredEndsTheWait(t *testing.T) {
 		t.Fatalf("ticket_update = %v", result)
 	}
 	noTrackerWritePrompt(t, f.a, thread.ID)
-	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); !errors.Is(err, transport.ErrAlreadyHandled) {
+	if err := f.a.RespondToApproval(t.Context(), thread.ID, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); !errors.Is(err, transport.ErrAlreadyHandled) {
 		t.Fatalf("an answer after the wait = %v, want already handled", err)
 	}
 	if got := fakeComments(t, f, "10101"); len(got) != 0 {
@@ -239,7 +239,7 @@ func TestTrackerWriteOfOneTicketAndFromAReadOnlyThread(t *testing.T) {
 		since = log[len(log)-1].Seq
 	}
 	text, isError = trackerMCPStreamedCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-2"}, "comment": "Looked."})
-	if !isError || text != "[tracker_read_only] This thread is read-only, so it cannot change tickets; ask the user to change its access." {
+	if !isError || text != "[tracker_read_only] This thread is read-only, so it cannot change tickets or log time; ask the user to change its access." {
 		t.Fatalf("a read-only update = %s (error %v)", text, isError)
 	}
 	text, isError = trackerMCPStreamedCall(t, f.a, endpoint, "ticket_create", map[string]any{"project": "WEB", "title": "New"})
