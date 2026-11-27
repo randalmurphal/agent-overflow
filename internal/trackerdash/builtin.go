@@ -8,10 +8,40 @@ const (
 	builtinWeeksID   = "overview_weeks"
 )
 
-// weight is a ticket t's estimate on a board with one, a ticket on a
-// board without, so a metric of the estimate counts tickets there, as the
-// Backlog's pace does.
-const weight = `iif((SELECT estimates FROM board) = 'none', 1, coalesce(t.points, 0))`
+// weightOf is an estimate points (an SQL expression) on a board with
+// one, a ticket on a board without, so a metric of the estimate counts
+// tickets there, as the Backlog's pace does. weight is a ticket t's.
+func weightOf(points string) string {
+	return `iif((SELECT estimates FROM board) = 'none', 1, coalesce(` + points + `, 0))`
+}
+
+var weight = weightOf("t.points")
+
+// openStatus holds for a status row g (statuses) the board counts not
+// done, as tickets.open does for a ticket's status now: not done,
+// canceled or left out of counts, an unclassified status included.
+func openStatus(g string) string {
+	return `coalesce(` + g + `.status_group, '') NOT IN ('done', 'canceled', 'left_out')`
+}
+
+// never stands for an open end where a query compares ends.
+const never = `9223372036854775807`
+
+// statusUnknown is the CTE unknown(ticket, from_at, to_at) of the
+// stretches no status interval covers, when a ticket's status is not
+// known (status_intervals): from its creation (NULL: not known) to its
+// first interval, between two intervals, after the last closed one, and
+// a ticket with none from its creation on.
+const statusUnknown = `unknown(ticket, from_at, to_at) AS (
+  SELECT ticket, prev, from_at FROM (
+    SELECT si.ticket, si.from_at, iif(row_number() OVER w = 1, t.created_at, lag(si.to_at) OVER w) AS prev
+    FROM status_intervals si JOIN tickets t ON t.id = si.ticket WINDOW w AS (PARTITION BY si.ticket ORDER BY si.from_at))
+  WHERE prev IS NULL OR prev < from_at
+  UNION ALL
+  SELECT si.ticket, si.to_at, NULL FROM status_intervals si
+  WHERE si.to_at IS NOT NULL AND si.from_at = (SELECT max(x.from_at) FROM status_intervals x WHERE x.ticket = si.ticket)
+  UNION ALL
+  SELECT t.id, t.created_at, NULL FROM tickets t WHERE NOT EXISTS (SELECT 1 FROM status_intervals x WHERE x.ticket = t.id))`
 
 // activeMembers is the tickets of the board's active sprints.
 const activeMembers = `(SELECT m.ticket FROM sprint_tickets m JOIN sprints s ON s.id = m.sprint WHERE s.state = 'active')`
@@ -50,20 +80,32 @@ FROM tickets t WHERE ` + finishedInRange,
 	Reduce: ReduceMedian, Unit: UnitDays, Good: GoodDown, Bucket: BucketPeriod,
 }
 
+// stuckAfter is how long a ticket stays in an in-progress status before
+// it is stuck: more than 3 days, in milliseconds.
+const stuckAfter = `259200000`
+
 var stuckMetric = Metric{
 	Name:  "stuck",
 	Title: "Stuck right now",
 	Words: []string{
-		"The tickets in an in-progress status that have been in that status for more than 3 days.",
-		"A ticket whose time in its status is not known is listed and not counted.",
+		"The tickets in an in-progress status that have been in that status for more than 3 days, now and where the range begins.",
+		"A ticket whose time in its status is not known, or whose status then is not known, is listed and not counted.",
 	},
-	SQL: `SELECT t.id AS ticket,
-  iif(coalesce(t.status_since, 0) > 0, days(t.status_since, :now), NULL) AS value,
-  iif(coalesce(t.status_since, 0) > 0,
-      'in ' || coalesce(s.name, t.status) || ' for ' || CAST(days(t.status_since, :now) AS INTEGER) || ' days',
-      'how long it has been in ' || coalesce(s.name, t.status) || ' is not known') AS note
-FROM tickets t LEFT JOIN statuses s ON s.id = t.status
-WHERE t.status_group = 'in_progress' AND (coalesce(t.status_since, 0) = 0 OR days(t.status_since, :now) > 3)`,
+	// Each stay in an in-progress status is stuck from 3 days in until it
+	// ends; a stretch whose status is not known is not counted while it
+	// lasts, and one that lasts until now only for a ticket in progress
+	// now (its status now is known otherwise).
+	SQL: `WITH ` + statusUnknown + `
+SELECT si.ticket AS ticket, days(si.from_at, coalesce(si.to_at, :now)) AS value, si.from_at + ` + stuckAfter + ` + 1 AS at, si.to_at AS until,
+  'in ' || coalesce(s.name, si.status) || ' for ' || CAST(days(si.from_at, coalesce(si.to_at, :now)) AS INTEGER) || ' days' AS note
+FROM status_intervals si JOIN statuses s ON s.id = si.status
+WHERE s.status_group = 'in_progress' AND coalesce(si.to_at, ` + never + `) > max(si.from_at + ` + stuckAfter + ` + 1, :since)
+UNION ALL
+SELECT u.ticket, NULL, u.from_at, iif(u.to_at IS NULL AND t.status_group IS NOT 'in_progress', :now, u.to_at),
+  iif(u.to_at IS NULL AND t.status_group = 'in_progress', 'how long it has been in ' || coalesce(s.name, t.status) || ' is not known',
+      'its status then is not known')
+FROM unknown u JOIN tickets t ON t.id = u.ticket LEFT JOIN statuses s ON s.id = t.status
+WHERE coalesce(u.to_at, ` + never + `) > :since`,
 	Reduce: ReduceCount, Unit: UnitTickets, Good: GoodDown,
 }
 

@@ -249,7 +249,11 @@ type contribution struct {
 	epic    string
 	at      int64
 	hasAt   bool
-	note    string
+	// until is when a state row stops holding (ColumnUntil); hasUntil is
+	// false for one that still holds.
+	until    int64
+	hasUntil bool
+	note     string
 	// period is the label of the period place put the row in.
 	period string
 }
@@ -350,6 +354,18 @@ func (s *rowSink) read(args []driver.Value) (contribution, error) {
 			err = fmt.Errorf("ticket %q's at is %g, not an instant in milliseconds from 1970 to 2286", truncate(c.ticket, 64), v)
 		}
 		c.at = int64(v)
+	}
+	if err == nil && s.cols.has(ColumnUntil) {
+		var v float64
+		v, c.hasUntil, err = number(ColumnUntil, at(ColumnUntil))
+		switch {
+		case err != nil || !c.hasUntil:
+		case !(v >= 0 && v <= maxInstant):
+			err = fmt.Errorf("ticket %q's until is %g, not an instant in milliseconds from 1970 to 2286", truncate(c.ticket, 64), v)
+		case c.hasAt && int64(v) < c.at:
+			err = fmt.Errorf("ticket %q's until is before its at; a state holds from at until until", truncate(c.ticket, 64))
+		}
+		c.until = int64(v)
 	}
 	return c, err
 }

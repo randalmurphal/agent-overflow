@@ -153,7 +153,8 @@ func TestAFirstReadNotFinishedIsSaid(t *testing.T) {
 
 // A widget whose metric counts now has no previous value and no trend,
 // so the screen can draw no change mark for it; its view says it counts
-// now. A metric of the range has both.
+// now. A metric of the range has both, and a state's (Stuck) compares
+// what holds now with what held where the range begins.
 func TestNowMetricHasNoChangeMark(t *testing.T) {
 	t.Parallel()
 	e := evaluator()
@@ -166,15 +167,15 @@ func TestNowMetricHasNoChangeMark(t *testing.T) {
 	for _, v := range list.Dashboards[0].Widgets {
 		views[v.ID] = v
 	}
-	stuck := widgetOf(t, a, "stuck")
-	if !views["stuck"].Now || stuck.Previous != nil || stuck.Trend != nil {
-		t.Fatalf("stuck: now %v, previous %s, trend %v; want a now widget with neither", views["stuck"].Now, num(stuck.Previous), stuck.Trend)
+	if !views["carrying"].Now || views["carrying"].State || !strings.Contains(views["carrying"].How.Range, "true now") {
+		t.Fatalf("carrying: now %v, state %v, How %q; want a now widget", views["carrying"].Now, views["carrying"].State, views["carrying"].How.Range)
 	}
-	if !strings.Contains(views["stuck"].How.Range, "true now") {
-		t.Fatalf("stuck's How says %q of the range", views["stuck"].How.Range)
+	stuck := widgetOf(t, a, "stuck")
+	if views["stuck"].Now || !views["stuck"].State || stuck.Previous == nil || len(stuck.Trend) != 3 || !strings.Contains(views["stuck"].How.Range, "where the range begins") {
+		t.Fatalf("stuck: now %v, state %v, previous %s, trend %v, How %q; want a state with both", views["stuck"].Now, views["stuck"].State, num(stuck.Previous), stuck.Trend, views["stuck"].How.Range)
 	}
 	pace := widgetOf(t, a, "pace")
-	if views["pace"].Now || pace.Previous == nil || len(pace.Trend) != 3 {
+	if views["pace"].Now || views["pace"].State || pace.Previous == nil || len(pace.Trend) != 3 {
 		t.Fatalf("pace: now %v, previous %s, trend %v; want both", views["pace"].Now, num(pace.Previous), pace.Trend)
 	}
 }

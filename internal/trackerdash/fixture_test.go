@@ -70,6 +70,10 @@ func (f *fixture) ticket(t ticket) *fixture {
 	if t.points == "" {
 		t.points = "NULL"
 	}
+	// The store's status interval now: the status from status_since.
+	if t.since > 0 && t.status != "" {
+		f.exec(`INSERT INTO status_intervals VALUES ('%s', '%s', %d, NULL)`, t.id, t.status, t.since)
+	}
 	return f.exec(`INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, parent, epic, created_at, updated_at,
 		resolved_at, status_since, points, history_from, started_known, started_at, done_at, open, counts)
 		VALUES ('%s', '%s', 'Title of %s', 0, '%s', '%s', %s, NULL, %s, %s, %d, %s, %d, %s, %s, %d, %s, %s, %d, %d)`,

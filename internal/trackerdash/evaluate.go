@@ -122,14 +122,17 @@ type How struct {
 
 // WidgetView is a widget as the screen lays it out.
 type WidgetView struct {
-	ID     string   `json:"id"`
-	Title  string   `json:"title"`
-	Form   Form     `json:"form"`
-	Width  int      `json:"width"`
-	Bucket Bucket   `json:"bucket,omitempty"`
-	Unit   Unit     `json:"unit"`
-	Good   Good     `json:"good,omitempty"`
-	Now    bool     `json:"now,omitempty"`
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Form   Form   `json:"form"`
+	Width  int    `json:"width"`
+	Bucket Bucket `json:"bucket,omitempty"`
+	Unit   Unit   `json:"unit"`
+	Good   Good   `json:"good,omitempty"`
+	Now    bool   `json:"now,omitempty"`
+	// State is a number of a state (Metric's until): its value is what
+	// holds now and its previous value what held where the range begins.
+	State  bool     `json:"state,omitempty"`
 	Series []string `json:"series,omitempty"`
 	How    How      `json:"how"`
 }
@@ -171,8 +174,11 @@ type BucketValue struct {
 	Key     string `json:"key"`
 	Label   string `json:"label"`
 	Partial bool   `json:"partial,omitempty"`
-	Cells   []Num  `json:"cells"`
-	Total   Num    `json:"total"`
+	// Last is the sprint's last working day of a day chart, where its even
+	// pace reaches zero.
+	Last  bool  `json:"last,omitempty"`
+	Cells []Num `json:"cells"`
+	Total Num   `json:"total"`
 }
 
 // TicketRow is one row of a metric in a ticket list or a drill: a ticket
@@ -197,14 +203,21 @@ type TicketRow struct {
 
 // WidgetValue is a widget's numbers, or the sentence of its failure.
 type WidgetValue struct {
-	ID       string        `json:"id"`
-	Error    string        `json:"error,omitempty"`
-	Value    *Num          `json:"value,omitempty"`
-	Previous *Num          `json:"previous,omitempty"`
-	Trend    []Num         `json:"trend,omitempty"`
-	Series   []string      `json:"series,omitempty"`
-	Buckets  []BucketValue `json:"buckets,omitempty"`
-	Tickets  []TicketRow   `json:"tickets,omitempty"`
+	ID    string `json:"id"`
+	Error string `json:"error,omitempty"`
+	// Note says why a widget of the sprint's days has nothing to draw: no
+	// sprint is active, or its dates are not known.
+	Note string `json:"note,omitempty"`
+	// RangeWords is How this is counted's range sentence as this answer
+	// counted it, when it names what the listing could not: the active
+	// sprints a widget of the sprint's days counts.
+	RangeWords string        `json:"range_words,omitempty"`
+	Value      *Num          `json:"value,omitempty"`
+	Previous   *Num          `json:"previous,omitempty"`
+	Trend      []Num         `json:"trend,omitempty"`
+	Series     []string      `json:"series,omitempty"`
+	Buckets    []BucketValue `json:"buckets,omitempty"`
+	Tickets    []TicketRow   `json:"tickets,omitempty"`
 	// More is a list's rows past those it shows, or the buckets a widget
 	// that ranks its buckets left out (DrillRequest.Rest opens them).
 	More int `json:"more,omitempty"`
@@ -422,7 +435,7 @@ func (s *session) view(d Dashboard, metrics map[string]Metric, plansSprints bool
 			}
 		}
 		v.Widgets = append(v.Widgets, WidgetView{ID: w.ID, Title: cmpOr(w.Title, m.Title), Form: w.Form, Width: w.Width, Bucket: m.Bucket, Unit: m.numbersUnit(), Good: m.Good,
-			Now: pr.err == nil && !pr.p.cols.periodBound(m), Series: m.Series, How: how(m, pr.p, plansSprints, estimates)})
+			Now: pr.err == nil && !pr.p.cols.periodBound(m), State: pr.err == nil && pr.p.cols.state(), Series: m.Series, How: how(m, pr.p, plansSprints, estimates)})
 	}
 	return v, preps
 }
@@ -476,10 +489,22 @@ func how(m Metric, p prepared, plansSprints bool, estimates string) How {
 		counts += "; each ticket counts for its assignee now."
 	}
 	rng := "It counts what is true now; the range does not change it, and it has no earlier value to compare with."
-	if p.cols.periodBound(m) {
+	switch {
+	case m.Bucket == BucketDay:
+		rng = dayRangeWords("the active sprint")
+	case p.cols.state():
+		rng = "It counts what holds now, compared with what held where the range begins, and what held at the end of each of the range's " + periods + "."
+	case p.cols.periodBound(m):
 		rng = "It counts the range's " + periods + " and compares them with the " + periods + " before."
 	}
 	return How{Words: m.Words, Counts: counts, Range: rng, Rules: "none", SQL: strings.TrimSpace(m.SQL), Reads: p.asks.tables}
+}
+
+// dayRangeWords is How this is counted's range sentence of a metric
+// grouped by day, which counts sprint: the listing names no sprint, and a
+// count's answer names the active ones (WidgetValue.RangeWords).
+func dayRangeWords(sprint string) string {
+	return "It counts " + sprint + " at its start and at the end of each working day; the range does not change it."
 }
 
 // evaluation is one opened, filled and sealed session with the board's
@@ -553,9 +578,9 @@ func tooSlow(ctx context.Context, err error) error {
 // which the ranges, the narrowing and the labels need.
 func (ev *evaluation) readBoard(ctx context.Context) error {
 	ev.tickets, ev.people, ev.epics = map[string]ticketRow{}, map[string]string{}, map[string]Name{}
-	err := ev.query(ctx, `SELECT id, name, state, coalesce(start_at, 0), coalesce(completed_at, 0), position FROM sprints`, func(r *sql.Rows) error {
+	err := ev.query(ctx, `SELECT id, name, state, coalesce(start_at, 0), coalesce(end_at, 0), coalesce(completed_at, 0), position FROM sprints`, func(r *sql.Rows) error {
 		var s sprintRow
-		err := r.Scan(&s.id, &s.name, &s.state, &s.startAt, &s.completedAt, &s.position)
+		err := r.Scan(&s.id, &s.name, &s.state, &s.startAt, &s.endAt, &s.completedAt, &s.position)
 		ev.sprints = append(ev.sprints, s)
 		return err
 	})
@@ -1057,29 +1082,51 @@ func rangeView(sp span) RangeView {
 // ranged is a metric's rows sorted into a range and the one before it
 // (inRange).
 type ranged struct {
-	// rows is the rows in the range's periods; all of the metric's rows
-	// for one that counts now.
+	// periods is what the metric counts by: the range's periods, or the
+	// sprint's days for a metric grouped by day.
+	periods []period
+	// rows is the rows in the periods; all of the metric's rows for one
+	// that counts now; those that hold now for a state.
 	rows []contribution
-	// placed is the rows of both ranges' periods by period ID; nil for a
-	// metric that counts now.
+	// placed is the rows of the periods and the previous range's by period
+	// ID; nil for a metric that counts now.
 	placed map[string][]contribution
 	// unplaced and unplacedBefore are the rows with no instant of the
 	// range and of the one before it: not counted, in no period (place).
 	unplaced, unplacedBefore []contribution
+	// state is a state metric's: before is the rows that held where the
+	// range begins, which its number compares with; compared is false when
+	// there is nothing to compare (the sprint's days).
+	state    bool
+	before   []contribution
+	compared bool
 }
 
-// inRange is c's rows sorted into the range sp and the one before it.
+// inRange is c's rows sorted into the range sp and the one before it, or
+// into the sprint's days for a metric grouped by day; a state's rows are
+// read where they hold.
 func (ev *evaluation) inRange(m Metric, c counted, sp span) ranged {
 	if !c.p.cols.periodBound(m) {
 		return ranged{rows: c.rows}
+	}
+	periods, previous := sp.periods, sp.previous
+	if m.Bucket == BucketDay {
+		periods, previous = sp.days, nil
+	}
+	if c.p.cols.state() {
+		g := ranged{periods: periods, rows: holding(c.rows, sp.now), placed: placeStates(m, c.rows, periods), state: true}
+		if m.Bucket != BucketDay && len(periods) > 0 {
+			g.before, g.compared = holding(c.rows, periods[0].from), true
+		}
+		return g
 	}
 	spanOf := func(ticket string) (int64, int64) {
 		t := ev.tickets[ticket]
 		return t.created, t.updated
 	}
-	placed, unplaced := place(m, c.rows, spanOf, sp.periods, sp.previous)
-	g := ranged{placed: placed, unplaced: unplaced[0], unplacedBefore: unplaced[1]}
-	for _, p := range sp.periods {
+	placed, unplaced := place(m, c.rows, spanOf, periods, previous)
+	g := ranged{periods: periods, placed: placed, unplaced: unplaced[0], unplacedBefore: unplaced[1], compared: m.Bucket != BucketDay}
+	for _, p := range periods {
 		g.rows = append(g.rows, placed[p.id]...)
 	}
 	return g
@@ -1089,7 +1136,7 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) ranged {
 // them: a bars or table widget whose buckets are not periods. Its drill
 // can name the rest (DrillRequest.Rest).
 func ranks(w Widget, m Metric) bool {
-	return (w.Form == FormBars || w.Form == FormTable) && m.Bucket != BucketPeriod && m.Bucket != BucketSprint
+	return (w.Form == FormBars || w.Form == FormTable) && m.Bucket != BucketPeriod && m.Bucket != BucketSprint && m.Bucket != BucketDay
 }
 
 // ranked is a bucket of a widget that ranks its buckets, with its total.
@@ -1140,6 +1187,13 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 		out.Error = c.err.Sentence
 		return out
 	}
+	if m.Bucket == BucketDay && sp.daysNote != "" {
+		out.Note = sp.daysNote
+		return out
+	}
+	if m.Bucket == BucketDay {
+		out.RangeWords = dayRangeWords(sp.daysLabel)
+	}
 	g := ev.inRange(m, c, sp)
 	rows, placed := g.rows, g.placed
 	switch w.Form {
@@ -1149,13 +1203,28 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 			out.Value = &v
 			return out
 		}
-		v := reduceRange(m.Reduce, sp.periods, placed, g.unplaced)
-		prev := gapNum
-		if sp.previousGap == "" {
-			prev = reduceRange(m.Reduce, sp.previous, placed, g.unplacedBefore)
+		var v, prev Num
+		switch {
+		case g.state:
+			v = reduceRows(m.Reduce, rows)
+			// What held where the range begins needs no earlier sprints: only
+			// a copy still in its first read has nothing to compare with.
+			prev = reduceRows(m.Reduce, g.before)
+			if sp.previousGap == firstReadGap {
+				prev = gapNum
+			}
+		default:
+			v = reduceRange(m.Reduce, g.periods, placed, g.unplaced)
+			prev = gapNum
+			if sp.previousGap == "" {
+				prev = reduceRange(m.Reduce, sp.previous, placed, g.unplacedBefore)
+			}
 		}
-		out.Value, out.Previous = &v, &prev
-		for _, p := range sp.periods {
+		out.Value = &v
+		if g.compared {
+			out.Previous = &prev
+		}
+		for _, p := range g.periods {
 			out.Trend = append(out.Trend, reduceRows(m.Reduce, placed[p.id]))
 		}
 	case FormList:
@@ -1187,8 +1256,14 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 		// counted" lists them and opens the whole widget.
 		out.NotCounted = notCounted(g.unplaced)
 		if !ranks(w, m) {
-			for _, p := range sp.periods {
-				out.Buckets = append(out.Buckets, cell(p.id, p.label, p.partial, reduceRows(m.Reduce, placed[p.id]), placed[p.id]))
+			for _, p := range g.periods {
+				b := cell(p.id, p.label, p.partial, reduceRows(m.Reduce, placed[p.id]), placed[p.id])
+				if p.future {
+					// A day still to come has no value, not a zero.
+					b.Total, b.Cells = Num{}, make([]Num, len(b.Cells))
+				}
+				b.Last = p.last
+				out.Buckets = append(out.Buckets, b)
 			}
 			return out
 		}
@@ -1329,6 +1404,9 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	}
 	ev, sp := o.ev, o.sp
 	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Reading: !ev.export.FirstReadDone, Unit: m.numbersUnit(), Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
+	if m.Bucket == BucketDay && sp.daysNote != "" {
+		return DrillAnswer{}, refuse("dashboard_request_invalid", sp.daysNote, nil)
+	}
 	g := ev.inRange(m, c, sp)
 	rows, placed := g.rows, g.placed
 	switch {
@@ -1346,18 +1424,22 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		}
 		out.Title += fmt.Sprintf(", %d more%s", len(rest), map[Bucket]string{BucketPerson: " people", BucketEpic: " epics"}[m.Bucket])
 		out.Value = reduceRows(m.Reduce, rows)
-	case r.Cell == nil && placed == nil:
+	case r.Cell == nil && (placed == nil || g.state):
 		out.Value = reduceRows(m.Reduce, rows)
 	case r.Cell == nil:
-		out.Value = reduceRange(m.Reduce, sp.periods, placed, g.unplaced)
-		out.Title += ", " + strings.ToLower(sp.label[:1]) + sp.label[1:]
+		out.Value = reduceRange(m.Reduce, g.periods, placed, g.unplaced)
+		if m.Bucket == BucketDay {
+			out.Title += ", " + sp.daysLabel
+		} else {
+			out.Title += ", " + strings.ToLower(sp.label[:1]) + sp.label[1:]
+		}
 		rows = append(rows, g.unplaced...)
 	case !ranks(w, m):
-		j := slices.IndexFunc(sp.periods, func(p period) bool { return p.id == r.Cell.Bucket })
+		j := slices.IndexFunc(g.periods, func(p period) bool { return p.id == r.Cell.Bucket })
 		if j < 0 {
 			return DrillAnswer{}, refuse("dashboard_request_invalid", "that bar is not in the range any more; read the dashboard again", nil)
 		}
-		p := sp.periods[j]
+		p := g.periods[j]
 		out.Title += ", " + p.label
 		rows = placed[p.id]
 	default:
