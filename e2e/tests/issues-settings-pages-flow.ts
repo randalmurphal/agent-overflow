@@ -515,7 +515,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
 
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
-    await expect(numbers).toHaveText('1 ticket', { timeout: 15_000 });
+    await expect(numbers).toHaveText('1 ticket · 0 points', { timeout: 15_000 });
 
     const off = await pointsPage(page, compact);
     await press(rule(off, 'Count credit'), compact);
