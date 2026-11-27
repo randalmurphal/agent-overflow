@@ -264,7 +264,9 @@ type contribution struct {
 // rowSink gathers the rows of the metric that runs, charged against the
 // row limit and the byte budget. One metric runs at a time on a session.
 // A state metric's row is kept only when it holds at one of the instants
-// its widgets read (at); the limit and the budget count the rows kept.
+// its widgets read (at), and a metric by sprint's only when its sprint is
+// one they read (at.sprints); the limit and the budget count the rows
+// kept, and no other row is held.
 type rowSink struct {
 	cols columns
 	// series is the metric's declared series, which a row's series is one of.
@@ -280,10 +282,14 @@ func (s *rowSink) reset(cols columns, series []string, at heldAt) {
 }
 
 // heldAt is the instants a state metric's widgets read, sorted, with
-// where they are in words for the row limit's sentence (reads.instants).
+// where they are in words for the row limit's sentence (reads.instants),
+// and for a metric by sprint the sprints they read (span.sprintIDs; nil
+// for any other metric): place puts a row of no other sprint in no
+// period.
 type heldAt struct {
-	at    []int64
-	where string
+	at      []int64
+	where   string
+	sprints map[string]bool
 }
 
 // holdAny is whether state row c holds at one of the instants (holdsAt).
@@ -347,6 +353,9 @@ func (s *rowSink) add(onBoard driver.Value, args []driver.Value) error {
 		if !s.at.holdAny(c) {
 			return nil
 		}
+	}
+	if s.at.sprints != nil && !s.at.sprints[c.bucket] {
+		return nil
 	}
 	if len(s.rows) == maxRows {
 		s.err = s.at.errRows(s.cols.state())

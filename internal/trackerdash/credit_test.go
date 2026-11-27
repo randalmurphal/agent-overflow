@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // creditBoard is the sprint board of a project that counts credit, with
@@ -178,5 +179,28 @@ func TestTheWeeksPaceCountsCreditByWeek(t *testing.T) {
 	}
 	if words := strings.Join(list.Dashboards[0].Widgets[0].How.Words, " "); !strings.Contains(words, "A review counts in the week its ticket finished, whenever it was left") {
 		t.Fatalf("How this is counted: %s", words)
+	}
+}
+
+// A metric by sprint is charged its rows of the sprints its widgets read
+// alone, the range's and the one before it: 20,800 review rows of an
+// earlier sprint, over the row limit, leave This sprint counted, and its
+// rows are the only ones held.
+func TestASprintMetricIsChargedOnlyTheSprintsItsWidgetsRead(t *testing.T) {
+	t.Parallel()
+	f := creditBoard("points")
+	f.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20800)
+		INSERT INTO credit(sprint, at, ticket, kind, person, value, share, points, review_share, review_need, did, qualified, hours, hours_per_point, note)
+		SELECT 's1', %d, 't1', 'review', 'u2', 0.5, 0.1, 5, 10, 2, 'commented, logged time', 1, NULL, 4, NULL FROM n`, ago(40))
+	start := time.Now()
+	a := mustEvaluate(t, evaluator(), creditOn(f), Request{Dashboard: builtinSprintsID, Range: RangeThisSprint, TimeZone: "UTC"})
+	t.Logf("evaluated This sprint over 20,800 rows of another sprint in %v", time.Since(start))
+	for _, w := range a.Widgets {
+		if w.Error != "" {
+			t.Fatalf("widget %s failed: %s", w.ID, w.Error)
+		}
+	}
+	if pace := widgetOf(t, a, "pace"); num(pace.Previous) != "9, 1 not counted" {
+		t.Fatalf("the pace before This sprint (sprint 6) is %s; want sprint 6's credit alone", num(pace.Previous))
 	}
 }

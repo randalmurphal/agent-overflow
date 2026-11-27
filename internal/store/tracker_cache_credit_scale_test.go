@@ -24,7 +24,8 @@ import (
 // while every row is estimated, so no ticket is support, then with none
 // estimated, so every one is. It measures the export's credit fills (VM
 // steps, rows, bytes), the pace and the section totals with credit on and
-// off (VM steps and time), and, as a board that plans no sprints, the
+// off (VM steps and time; it fails when the totals with credit on take more
+// than twice the steps, or the pace more than creditPaceSteps), and, as a board that plans no sprints, the
 // evidence listing's weeks arm and the weeks credit fill. It restores the
 // board's sprints, plan, estimates and update times.
 func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *mirrorWriteRecorder) {
@@ -35,14 +36,17 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 	members, evidence := creditScaleSetup(t, s, root, size)
 	t.Logf("credit: %d members in the window's 26 sprints, %d with evidence", len(members), len(evidence))
 	rules := []MirrorCreditRule{{ReviewShare: 10, ReviewNeed: 2, Commented: true, LoggedTime: true, HoursPerPoint: 4}}
+	// off is a project that counts no credit, which names no support
+	// tickets (trackerapp applies a site's support entry only while the
+	// project counts credit); on is the same project counting credit.
 	off, err := NewMirrorRegroup(map[string]int{"5": MirrorGroupDone})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if off, err = off.WithSupport(MirrorSupportRule{Boards: []string{board}}); err != nil {
-		t.Fatal(err)
+	on, err := off.WithSupport(MirrorSupportRule{Boards: []string{board}})
+	if err == nil {
+		on, err = on.WithCredit(rules)
 	}
-	on, err := off.WithCredit(rules)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,10 +87,14 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 		for _, name := range slices.Sorted(maps.Keys(out)) {
 			t.Logf("credit, %s: %-28s %9d VM steps %s", rows, name, steps[name], out[name])
 		}
-		for _, what := range []string{"pace", "section totals"} {
-			if on, off := out[what+", credit on"].median(), out[what+", credit off"].median(); on > 2*off {
-				t.Logf("credit, %s: %s with credit on takes %s, more than twice the %s with it off", rows, what, on, off)
-			}
+		// The totals a project counting credit reads cost at most twice a
+		// project's that counts none, in VM steps (times are reported,
+		// not held: they move with the machine's load).
+		if on, off := steps["section totals, credit on"], steps["section totals, credit off"]; on > 2*off {
+			t.Errorf("credit, %s: the section totals with credit on take %d VM steps, more than twice the %d with it off", rows, on, off)
+		}
+		if most, ok := creditPaceSteps[size.String()+", "+rows]; ok && steps["pace, credit on"] > most {
+			t.Errorf("credit, %s: the pace with credit on takes %d VM steps, more than the %d it took", rows, steps["pace, credit on"], most)
 		}
 	}
 	mustExec(t, s.db, `UPDATE tracker_cache_boards SET estimate_reset_at = ? WHERE root_id = ? AND board_id = ?`, reset, root, board)
@@ -101,7 +109,7 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 	}
 	read(0)
 	creditExportAtScale(t, s, root, board, on, reset, 0, 0, "weeks, every done ticket in the window")
-	boards := []MirrorActsBoard{{BoardID: board, Regroup: off}}
+	boards := []MirrorActsBoard{{BoardID: board, Regroup: on}}
 	listed := 0
 	listDue := func(int) error {
 		due, _, err := s.ListMirrorActsDue(root, boards, 0, testNow)
@@ -130,6 +138,19 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 		t.Fatal(err)
 	}
 	mustExec(t, s.db, `UPDATE tracker_cache_issues SET updated_at = 1000 WHERE root_id = ? AND issue_id IN (SELECT value FROM json_each(?))`, root, list)
+}
+
+// creditPaceSteps is the most VM steps the pace with credit on takes, by
+// size and rows, as measured when it was last made cheaper: a guard against
+// a change that makes it dearer unnoticed. A change that makes it cheaper
+// lowers the number.
+var creditPaceSteps = map[string]int{
+	"1x2000, every row estimated":  123_992,
+	"1x2000, no row estimated":     64_354,
+	"1x20000, every row estimated": 554_192,
+	"1x20000, no row estimated":    257_854,
+	"5x4000, every row estimated":  171_794,
+	"5x4000, no row estimated":     85_856,
 }
 
 // creditExportAtScale fills a copy of board's credit by regroup, its

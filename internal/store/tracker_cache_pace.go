@@ -90,10 +90,17 @@ var mirrorPaceLastSQL = `last AS MATERIALIZED (
 // by the pace's rule, cr_m) but for its support tickets, which count by
 // their time, and its credit rows' sums (cr_rows), ?5 the support rule
 // and ?6 the credit rules. It reads closed sprints alone, whose acts end
-// at their completion, so it needs no clock.
-var mirrorPaceCreditSQL = func() string {
-	p := mirrorCreditParams{groups: "?4", reset: "?3", support: "?5", rules: "?6", from: "0", until: mirrorExportNever}
-	with, rows := mirrorCreditSQL(p, mirrorPaceLastSQL, "l.sprint_id IN (SELECT sprint_id FROM last)", false)
+// at their completion, so it needs no clock. mirrorPaceCreditPlainSQL is
+// it for a project that names no support tickets, with no support term.
+var mirrorPaceCreditSQL, mirrorPaceCreditPlainSQL = mirrorPaceCredit(true), mirrorPaceCredit(false)
+
+func mirrorPaceCredit(support bool) string {
+	p := mirrorCreditParams{groups: "?4", reset: "?3", rules: "?6", from: "0", until: mirrorExportNever}
+	if support {
+		p.support = "?5"
+	}
+	chosen := func(alias string) string { return alias + `.sprint_id IN (SELECT sprint_id FROM last)` }
+	with, rows := mirrorCreditSQL(p, mirrorPaceLastSQL, chosen, false)
 	return with + `,
 	  cr_rows(` + mirrorCreditColumns + `) AS (` + rows + `)
 	SELECT l.sprint_id, coalesce(f.members, 0), coalesce(f.done, 0), coalesce(f.estimate, 0), coalesce(c.review, 0), coalesce(c.review_shares, 0),
@@ -106,7 +113,7 @@ var mirrorPaceCreditSQL = func() string {
 	    total(iif(kind = 'support', value, 0)) AS support, total(iif(kind = 'support', share, 0)) AS support_shares,
 	    count(DISTINCT iif(value IS NULL AND kind <> 'finished', ticket, NULL)) AS unread
 	  FROM cr_rows GROUP BY sprint) c ON c.sprint = l.sprint_id`
-}()
+}
 
 // mirrorStatusAtCompletionSQL is the status issue i had when sprint l
 // (its sprint_id and completed_at) of board ?2 was completed, by the
@@ -180,7 +187,10 @@ func readMirrorPaceTx(tx sqlQueryer, rootID int64, boardID string, board mirrorS
 	}
 	estimated := board.unit != MirrorEstimateNone
 	query, args := mirrorPaceSQL, []any{rootID, boardID, board.estimateResetAt, groups}
-	if regroup.credit != "" {
+	switch {
+	case regroup.credit != "" && regroup.support == "":
+		query, args = mirrorPaceCreditPlainSQL, append(args, nil, regroup.credit)
+	case regroup.credit != "":
 		query, args = mirrorPaceCreditSQL, append(args, regroup.supportArg(), regroup.credit)
 	}
 	var out []MirrorSprintFinished

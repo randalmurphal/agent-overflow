@@ -116,9 +116,10 @@ func (r MirrorRegroup) creditArg() any {
 
 // mirrorCreditParams are the parameters a credit fragment reads, beside
 // ?1 root and ?2 board: the regrouping (a JSON object), the board's
-// estimate reset, the support rule, the credit rules, the earliest update
-// a board without sprints reads its tickets from (its weeks), and until,
-// the instant after which no act counts: the evaluation's clock, or
+// estimate reset, the support rule ("" for a statement that reads none:
+// no ticket is support), the credit rules, the earliest update a board
+// without sprints reads its tickets from (its weeks), and until, the
+// instant after which no act counts: the evaluation's clock, or
 // mirrorExportNever for a read of closed sprints alone (an SQL expression
 // each).
 type mirrorCreditParams struct {
@@ -132,45 +133,50 @@ func mirrorCreditRuleSQL(rules, at string) string {
 	     WHERE cr.value ->> 'from' <= ` + at + `) || ']')`
 }
 
-// mirrorCreditSprintsSQL is the CTE cr_sp of the board's sprints credit
-// places by, closed (completed), active and future with a start: each
-// one's end hi (its completion; until for an open one), the rule it counts
-// by, the board's estimate unit, lo, where its support work can begin:
-// the latest completion at or before its start, else the beginning, and
-// alone, whether no other sprint's dates meet [start, hi), which holds
-// [lo, hi) but for its start before lo (every other sprint that ends
-// after lo ends after start): then every instant of [lo, hi) counts in
-// the sprint (mirrorCreditCountsInSQL). A future sprint finishes nothing
+// mirrorCreditSprintsSQL is the CTEs cr_sp0 and cr_sp of the board's
+// sprints credit places by, closed (completed), active and future with a
+// start. cr_sp0 is every one of them with its end hi (its completion;
+// until for an open one), which support placement weighs one against
+// another (mirrorCreditCountsInSQL). cr_sp is those chosen holds for (a
+// condition on the alias it is given), the ones a reader counts, each
+// with the rule it counts by, the board's estimate unit, lo, where its
+// support work can begin: the latest completion at or before its start,
+// else its start (work before the board's first sprint the mirror holds
+// is an earlier sprint's, which it does not), and alone, whether no other sprint's dates meet
+// [start, hi), which holds [lo, hi) but for its start before lo (every
+// other sprint that ends after lo ends after start): then every instant
+// of [lo, hi) counts in the sprint. A future sprint finishes nothing
 // (cr_m) and is where the support work after the last completion goes
-// while none is active, the next to start. It holds no row without rules.
-func mirrorCreditSprintsSQL(p mirrorCreditParams) string {
+// while none is active, the next to start. Neither holds a row without
+// rules, nor of a board that plans no sprints, which counts by the week.
+func mirrorCreditSprintsSQL(p mirrorCreditParams, chosen func(alias string) string) string {
 	closed := strconv.Itoa(MirrorSprintClosed)
 	hi := `iif(sp.state = ` + closed + `, sp.completed_at, ` + p.until + `)`
-	lo := `coalesce((SELECT max(o.completed_at) FROM cr_sp0 o WHERE o.state = ` + closed + ` AND o.completed_at <= sp.start_at), 0)`
+	lo := `coalesce((SELECT max(o.completed_at) FROM cr_sp0 o WHERE o.state = ` + closed + ` AND o.completed_at <= sp.start_at), sp.start_at)`
 	return `cr_sp0 AS MATERIALIZED (
-	  SELECT sp.sprint_id, sp.state, sp.start_at, sp.completed_at, ` + hi + ` AS hi, ` + mirrorCreditRuleSQL(p.rules, hi) + ` AS rule,
-	    (SELECT bd.estimate_unit FROM tracker_cache_boards bd WHERE bd.root_id = sp.root_id AND bd.board_id = sp.board_id) AS unit
+	  SELECT sp.sprint_id, sp.state, sp.start_at, sp.completed_at, ` + hi + ` AS hi
 	  FROM tracker_cache_sprints sp
-	  WHERE sp.root_id = CAST(?1 AS INTEGER) AND sp.board_id = ?2 AND ` + p.rules + ` IS NOT NULL
+	  WHERE sp.root_id = CAST(?1 AS INTEGER) AND sp.board_id = ?2 AND ` + p.rules + ` IS NOT NULL AND NOT ` + mirrorCreditWeeksSQL + `
 	    AND (sp.state = ` + closed + ` AND sp.completed_at > 0 OR sp.state = ` + strconv.Itoa(MirrorSprintActive) + `
 	      OR sp.state = ` + strconv.Itoa(MirrorSprintFuture) + ` AND sp.start_at > 0)),
 	  cr_sp AS MATERIALIZED (
-	  SELECT sp.sprint_id, sp.state, sp.start_at, sp.completed_at, sp.hi, sp.rule, sp.unit, ` + lo + ` AS lo,
+	  SELECT sp.sprint_id, sp.state, sp.start_at, sp.completed_at, sp.hi, ` + mirrorCreditRuleSQL(p.rules, "sp.hi") + ` AS rule,
+	    (SELECT bd.estimate_unit FROM tracker_cache_boards bd WHERE bd.root_id = CAST(?1 AS INTEGER) AND bd.board_id = ?2) AS unit, ` + lo + ` AS lo,
 	    NOT EXISTS (SELECT 1 FROM cr_sp0 h WHERE h.sprint_id <> sp.sprint_id AND h.start_at < sp.hi AND h.hi > sp.start_at) AS alone
-	  FROM cr_sp0 sp)`
+	  FROM cr_sp0 sp WHERE ` + chosen("sp") + `)`
 }
 
 // mirrorCreditCountsInSQL holds for a support worklog starting at at, in
-// sprint l's [lo, hi), that counts in l: of the sprints of cr_sp, l's
+// sprint l's [lo, hi), that counts in l: of the sprints of cr_sp0, l's
 // dates hold it and no other's that ends first does, or none holds it and
 // l is the next to start. Both hold for every instant of a sprint no other
-// sprint's dates meet (l.alone), so only the others read cr_sp, a board's
-// sprints, with no sort.
+// sprint's dates meet (l.alone), so only the others read cr_sp0, a
+// board's sprints, with no sort.
 func mirrorCreditCountsInSQL(at string) string {
 	holds := `h.start_at <= ` + at + ` AND ` + at + ` < h.hi`
-	return `(l.alone OR l.start_at <= ` + at + ` AND NOT EXISTS (SELECT 1 FROM cr_sp h WHERE ` + holds + `
+	return `(l.alone OR l.start_at <= ` + at + ` AND NOT EXISTS (SELECT 1 FROM cr_sp0 h WHERE ` + holds + `
 	      AND (h.hi < l.hi OR h.hi = l.hi AND h.sprint_id < l.sprint_id))
-	    OR l.start_at > ` + at + ` AND NOT EXISTS (SELECT 1 FROM cr_sp h WHERE ` + holds + ` OR h.start_at > ` + at + `
+	    OR l.start_at > ` + at + ` AND NOT EXISTS (SELECT 1 FROM cr_sp0 h WHERE ` + holds + ` OR h.start_at > ` + at + `
 	      AND (h.start_at < l.start_at OR h.start_at = l.start_at AND h.sprint_id < l.sprint_id)))`
 }
 
@@ -188,15 +194,24 @@ const mirrorCreditMemberColumns = `sprint_id, closed, hi, rule, unit, root_id, i
 // mirrorCreditReceiptsSQL are an issue i's receipts as cr_m holds them.
 const mirrorCreditReceiptsSQL = `r1.read_at, r1.read_for, r1.tried_reason, r2.read_at, r2.read_for, r2.read_from, r2.tried_reason`
 
+// mirrorCreditSupportSQL is whether issue i (its row b) of the board is a
+// support ticket, by p's support rule: never without one.
+func mirrorCreditSupportSQL(p mirrorCreditParams) string {
+	if p.support == "" {
+		return `0`
+	}
+	return mirrorSupportSQL(p.support, "?2", mirrorRowEstimate(p.reset))
+}
+
 // mirrorCreditMembersSQL is the CTE cr_m of the tickets whose finish
-// credit counts: the members of the closed and active sprints of cr_sp
-// chosen holds for (a condition on its row l), and with weeks the done
-// tickets of a board that plans no sprints updated since from.
-func mirrorCreditMembersSQL(p mirrorCreditParams, chosen string, weeks bool) string {
+// credit counts: the members of the closed and active sprints of cr_sp,
+// and with weeks the done tickets of a board that plans no sprints
+// updated since from.
+func mirrorCreditMembersSQL(p mirrorCreditParams, weeks bool) string {
 	done := mirrorDoneStatusesSQL(p.groups)
 	estimate := mirrorRowEstimate(p.reset)
 	points := `iif(l.unit <> ` + strconv.Itoa(MirrorEstimateNone) + `, ` + estimate + `, NULL)`
-	support := mirrorSupportSQL(p.support, "?2", estimate)
+	support := mirrorCreditSupportSQL(p)
 	sprints := `SELECT l.sprint_id, l.state = ` + strconv.Itoa(MirrorSprintClosed) + `, l.hi, l.rule, l.unit, i.root_id, i.issue_id, i.history_gen, i.updated_at,
 	    i.resolved_at, i.assignee_id, ` + points + `, iif(l.state = ` + strconv.Itoa(MirrorSprintClosed) + `, ` + mirrorStatusAtCompletionSQL + ` IN (` + done + `),
 	    i.status_id IN (` + done + `)), ` + support + `, ` + mirrorCreditReceiptsSQL + `
@@ -204,7 +219,7 @@ func mirrorCreditMembersSQL(p mirrorCreditParams, chosen string, weeks bool) str
 	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = CAST(?1 AS INTEGER) AND m.sprint_id = l.sprint_id
 	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = m.root_id AND b.board_id = ?2 AND b.issue_id = m.issue_id
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = m.root_id AND i.issue_id = m.issue_id` + mirrorActsReceiptsSQL + `
-	  WHERE l.state <> ` + strconv.Itoa(MirrorSprintFuture) + ` AND ` + chosen
+	  WHERE l.state <> ` + strconv.Itoa(MirrorSprintFuture)
 	if weeks {
 		unit := `(SELECT bd.estimate_unit FROM tracker_cache_boards bd WHERE bd.root_id = i.root_id AND bd.board_id = ?2)`
 		sprints += `
@@ -250,16 +265,17 @@ func mirrorCreditWhySQL(issue, readAt, reason string) string {
 	    ELSE 'it changed since who worked on it was read' END`
 }
 
-// mirrorCreditFinishedSQL is the CTEs cr_d and cr_f of cr_m's tickets
-// that counted done, or whose status then is not known, and are not
-// support tickets: cr_d gives each the moment it moved to done (its last
-// move into done by its sprint's end or until, else its resolution by
-// then; NULL: not known) and the rule it counts by (its sprint's, else
-// the one in force when it finished), once each, since cr_f reads them
-// in several columns; cr_f the person it was assigned to at that moment
-// (NULL, unowned, when the moment is not known and its history holds an
-// assignee change), and why its evidence is not read for its card (NULL
-// when it is): the first source the rule counts that is not current.
+// mirrorCreditFinishedSQL is the CTEs cr_d0, cr_d1 and cr_f of cr_m's
+// tickets that counted done, or whose status then is not known, and are
+// not support tickets: cr_d0 gives each the moment it moved to done (its
+// last move into done by its sprint's end or until, else its resolution
+// by then; NULL: not known), cr_d1 the rule it counts by (its sprint's,
+// else the one in force when it finished) and whether who had it then is
+// not known (unowned: the moment is not known and its history holds an
+// assignee change); cr_f the rule's terms, the person it was assigned to
+// at that moment (NULL when unowned), and why its evidence is not read
+// for its card (NULL when it is): the first source the rule counts that
+// is not current.
 func mirrorCreditFinishedSQL(p mirrorCreditParams) string {
 	assignee := func(cmp, value, order string) string {
 		return `(SELECT c.` + value + ` FROM tracker_cache_changes c WHERE c.root_id = cm.root_id AND c.issue_id = cm.issue_id AND c.gen = cm.history_gen
@@ -267,29 +283,31 @@ func mirrorCreditFinishedSQL(p mirrorCreditParams) string {
 	}
 	reassigned := `EXISTS (SELECT 1 FROM tracker_cache_changes c WHERE c.root_id = cm.root_id AND c.issue_id = cm.issue_id AND c.gen = cm.history_gen
 	      AND c.kind = 4)`
-	comments := `(cm.rule ->> 'commented' = 1 AND NOT ` + mirrorCreditCurrentSQL("cm.c_at", "cm.c_for", "", "coalesce(cm.c_why, '')", "cm.updated_at") + `)`
-	worklogs := `(cm.rule ->> 'logged_time' = 1 AND NOT ` + mirrorCreditCurrentSQL("cm.w_at", "cm.w_for", "cm.w_from", "coalesce(cm.w_why, '')", "cm.updated_at") + `)`
-	return `cr_d AS MATERIALIZED (
-	  SELECT cm.sprint_id, cm.closed, cm.hi, cm.root_id, cm.issue_id, cm.history_gen, cm.updated_at, cm.assignee_id, cm.points, cm.done, cm.moment,
-	    coalesce(cm.rule, ` + mirrorCreditRuleSQL(p.rules, `coalesce(cm.moment, `+mirrorExportNever+`)`) + `) AS rule,
-	    cm.c_at, cm.c_for, cm.c_why, cm.w_at, cm.w_for, cm.w_from, cm.w_why
-	  FROM (SELECT cm.*, coalesce(` + mirrorExportStatusChangeSQL("cm", "max", mirrorDoneStatusesSQL(p.groups), "cm.hi") + `,
+	comments := `(cm.rule_now ->> 'commented' = 1 AND NOT ` + mirrorCreditCurrentSQL("cm.c_at", "cm.c_for", "", "coalesce(cm.c_why, '')", "cm.updated_at") + `)`
+	worklogs := `(cm.rule_now ->> 'logged_time' = 1 AND NOT ` + mirrorCreditCurrentSQL("cm.w_at", "cm.w_for", "cm.w_from", "coalesce(cm.w_why, '')", "cm.updated_at") + `)`
+	return `cr_d0 AS MATERIALIZED (
+	  SELECT cm.*, coalesce(` + mirrorExportStatusChangeSQL("cm", "max", mirrorDoneStatusesSQL(p.groups), "cm.hi") + `,
 	      iif(cm.resolved_at > 0 AND cm.resolved_at <= cm.hi, cm.resolved_at, NULL)) AS moment
-	    FROM cr_m cm WHERE cm.done IS NOT 0 AND NOT cm.support) cm),
+	  FROM cr_m cm WHERE cm.done IS NOT 0 AND NOT cm.support),
+	  cr_d1 AS MATERIALIZED (
+	  SELECT cm.*, coalesce(cm.rule, ` + mirrorCreditRuleSQL(p.rules, `coalesce(cm.moment, `+mirrorExportNever+`)`) + `) AS rule_now,
+	    cm.moment IS NULL AND ` + reassigned + ` AS unowned
+	  FROM cr_d0 cm),
 	  cr_f AS MATERIALIZED (
-	  SELECT cm.sprint_id, cm.closed, cm.hi, cm.rule, cm.root_id, cm.issue_id, cm.history_gen, cm.assignee_id, cm.points, cm.done, cm.moment,
-	    cm.moment IS NULL AND ` + reassigned + ` AS unowned,
+	  SELECT cm.sprint_id, cm.closed, cm.hi, cm.rule_now ->> 'share' AS rule_share, cm.rule_now ->> 'need' AS rule_need,
+	    cm.rule_now ->> 'commented' AS rule_commented, cm.rule_now ->> 'approved' AS rule_approved, cm.rule_now ->> 'logged_time' AS rule_logged,
+	    cm.root_id, cm.issue_id, cm.history_gen, cm.assignee_id, cm.points, cm.done, cm.moment, cm.unowned,
 	    nullif(coalesce(` + assignee("<=", "to_value", " DESC") + `, ` + assignee(">", "from_value", "") + `,
-	      iif(cm.moment IS NULL AND ` + reassigned + `, '', cm.assignee_id)), '') AS person,
+	      iif(cm.unowned, '', cm.assignee_id)), '') AS person,
 	    CASE WHEN ` + comments + ` THEN ` + mirrorCreditWhySQL("cm.issue_id", "cm.c_at", "cm.c_why") + `
 	         WHEN ` + worklogs + ` THEN ` + mirrorCreditWhySQL("cm.issue_id", "cm.w_at", "cm.w_why") + ` END AS unread
-	  FROM cr_d cm)`
+	  FROM cr_d1 cm)`
 }
 
 // mirrorCreditApprovalsSQL is a review row's note while approvals are not
-// read, for a review row of rule g.rule that counts them: the one place
-// that says so.
-const mirrorCreditApprovalsSQL = `iif(g.rule ->> 'approved' = 1, 'approvals are not read yet', NULL)`
+// read, for a review row whose rule counts them: the one place that says
+// so.
+const mirrorCreditApprovalsSQL = `iif(g.rule_approved = 1, 'approvals are not read yet', NULL)`
 
 // MirrorCreditColumns are the columns of a credit row, as
 // mirrorCreditRowsSQL selects them and the export's credit relation
@@ -297,15 +315,16 @@ const mirrorCreditApprovalsSQL = `iif(g.rule ->> 'approved' = 1, 'approvals are 
 const mirrorCreditColumns = `sprint, at, ticket, kind, person, value, share, points, review_share, review_need, did, qualified, hours, hours_per_point, note`
 
 // mirrorCreditRowsSQL is the credit rows of cr_f and of the support
-// tickets (mirrorCreditColumns): of the sprints of cr_sp chosen holds
-// for, and with weeks of a board that plans no sprints.
-func mirrorCreditRowsSQL(p mirrorCreditParams, chosen string, weeks bool) string {
-	support := mirrorSupportSQL(p.support, "?2", mirrorRowEstimate(p.reset))
+// tickets (mirrorCreditColumns): of the sprints of cr_sp, and with weeks
+// of a board that plans no sprints; with no support rule, none of
+// support.
+func mirrorCreditRowsSQL(p mirrorCreditParams, weeks bool) string {
+	support := mirrorCreditSupportSQL(p)
 	worklogs := strconv.Itoa(MirrorActWorklog)
 	current := mirrorCreditCurrentSQL("r2.read_at", "r2.read_for", "", "r2.tried_reason", "i.updated_at")
-	// The support value of seconds of rule r on a board of unit u.
-	supportValue := func(seconds, r, u string) string {
-		return `iif(` + u + ` = ` + strconv.Itoa(MirrorEstimateTime) + `, ` + seconds + `, ` + seconds + ` / 3600.0 / (` + r + ` ->> 'hpp'))`
+	// The support value of seconds of hpp hours a point on a board of unit u.
+	supportValue := func(seconds, hpp, u string) string {
+		return `iif(` + u + ` = ` + strconv.Itoa(MirrorEstimateTime) + `, ` + seconds + `, ` + seconds + ` / 3600.0 / ` + hpp + `)`
 	}
 	// A ticket whose owner at its finish is not known (cr_f.unowned) has
 	// as reviewers only the people who never had it.
@@ -318,33 +337,35 @@ func mirrorCreditRowsSQL(p mirrorCreditParams, chosen string, weeks bool) string
 	         WHEN f.unowned THEN 'who had it when it finished is not known' END
 	  FROM cr_f f
 	  UNION ALL
-	  SELECT f.sprint_id, f.moment, f.issue_id, 'review', NULL, NULL, NULL, f.points, f.rule ->> 'share', f.rule ->> 'need', NULL, NULL, NULL, NULL, f.unread
+	  SELECT f.sprint_id, f.moment, f.issue_id, 'review', NULL, NULL, NULL, f.points, f.rule_share, f.rule_need, NULL, NULL, NULL, NULL, f.unread
 	  FROM cr_f f WHERE f.done = 1 AND f.unread IS NOT NULL
 	  UNION ALL
-	  SELECT g.sprint_id, g.moment, g.issue_id, 'review', g.person, iif(g.qualified, coalesce(g.points, 0) * (g.rule ->> 'share') / 100.0, 0),
-	    iif(g.qualified, (g.rule ->> 'share') / 100.0, 0), g.points, g.rule ->> 'share', g.rule ->> 'need',
+	  SELECT g.sprint_id, g.moment, g.issue_id, 'review', g.person, iif(g.qualified, coalesce(g.points, 0) * g.rule_share / 100.0, 0),
+	    iif(g.qualified, g.rule_share / 100.0, 0), g.points, g.rule_share, g.rule_need,
 	    nullif(rtrim(iif(g.commented, 'commented, ', '') || iif(g.approved, 'approved, ', '') || iif(g.logged, 'logged time, ', ''), ', '), ''),
 	    g.qualified, NULL, NULL, ` + mirrorCreditApprovalsSQL + `
-	  FROM (SELECT d.sprint_id, d.moment, d.issue_id, d.points, d.rule, d.person, d.commented, d.approved, d.logged,
-	      (d.rule ->> 'commented') * d.commented + (d.rule ->> 'approved') * d.approved + (d.rule ->> 'logged_time') * d.logged
-	      >= (d.rule ->> 'need') AS qualified FROM (
-	    SELECT f.sprint_id, f.moment, f.issue_id, f.points, f.rule, a.person, max(a.source = ` + strconv.Itoa(MirrorActComment) + `) AS commented,
-	      max(a.source = 3) AS approved, max(a.source = ` + worklogs + `) AS logged
+	  FROM (SELECT d.*, d.rule_commented * d.commented + d.rule_approved * d.approved + d.rule_logged * d.logged >= d.rule_need AS qualified FROM (
+	    SELECT f.sprint_id, f.moment, f.issue_id, f.points, f.rule_share, f.rule_need, f.rule_commented, f.rule_approved, f.rule_logged, a.person,
+	      max(a.source = ` + strconv.Itoa(MirrorActComment) + `) AS commented, max(a.source = 3) AS approved, max(a.source = ` + worklogs + `) AS logged
 	    FROM cr_f f
 	    CROSS JOIN tracker_cache_issue_acts a ON a.root_id = CAST(?1 AS INTEGER) AND a.issue_id = f.issue_id
 	    WHERE f.done = 1 AND f.unread IS NULL AND a.person <> '' AND a.person IS NOT f.person AND a.at <= f.hi AND ` + owner + `
-	    GROUP BY f.sprint_id, f.issue_id, a.person) d) g
+	    GROUP BY f.sprint_id, f.issue_id, a.person) d) g`
+	if p.support == "" {
+		return rows
+	}
+	rows += `
 	  UNION ALL
-	  SELECT s.sprint_id, NULL, s.issue_id, 'support', s.person, ` + supportValue("s.seconds", "s.rule", "s.unit") + `, s.seconds / 3600.0 / (s.rule ->> 'hpp'),
-	    NULL, NULL, NULL, NULL, NULL, s.seconds / 3600.0, s.rule ->> 'hpp',
+	  SELECT s.sprint_id, NULL, s.issue_id, 'support', s.person, ` + supportValue("s.seconds", "s.hpp", "s.unit") + `, s.seconds / 3600.0 / s.hpp,
+	    NULL, NULL, NULL, NULL, NULL, s.seconds / 3600.0, s.hpp,
 	    iif(s.read_from > s.lo, 'time logged before ' || strftime('%Y-%m-%d', s.read_from / 1000, 'unixepoch') || ' is not read', NULL)
-	  FROM (SELECT l.sprint_id, l.rule, l.unit, l.lo, a.issue_id, a.person, total(a.seconds) AS seconds, max(r2.read_from) AS read_from
+	  FROM (SELECT l.sprint_id, l.rule ->> 'hpp' AS hpp, l.unit, l.lo, a.issue_id, a.person, total(a.seconds) AS seconds, max(r2.read_from) AS read_from
 	    FROM cr_sp l
 	    CROSS JOIN tracker_cache_issue_acts a ON a.root_id = CAST(?1 AS INTEGER) AND a.source = ` + worklogs + ` AND a.at >= l.lo AND a.at < l.hi
 	    CROSS JOIN tracker_cache_board_issues b ON b.root_id = a.root_id AND b.board_id = ?2 AND b.issue_id = a.issue_id
 	    CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
 	    CROSS JOIN tracker_cache_issue_act_reads r2 ON r2.root_id = i.root_id AND r2.issue_id = i.issue_id AND r2.source = ` + worklogs + `
-	    WHERE ` + chosen + ` AND ` + current + ` AND ` + support + ` AND ` + mirrorCreditCountsInSQL("a.at") + `
+	    WHERE ` + current + ` AND ` + support + ` AND ` + mirrorCreditCountsInSQL("a.at") + `
 	    GROUP BY l.sprint_id, a.issue_id, a.person) s
 	  UNION ALL
 	  SELECT l.sprint_id, i.updated_at, i.issue_id, 'support', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
@@ -353,21 +374,22 @@ func mirrorCreditRowsSQL(p mirrorCreditParams, chosen string, weeks bool) string
 	  CROSS JOIN tracker_cache_issues i ON ` + mirrorUpdatedSinceSQL("i", ">=", "l.lo") + ` AND i.updated_at < l.hi
 	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = i.root_id AND b.board_id = ?2 AND b.issue_id = i.issue_id
 	  LEFT JOIN tracker_cache_issue_act_reads r2 ON r2.root_id = i.root_id AND r2.issue_id = i.issue_id AND r2.source = ` + worklogs + `
-	  WHERE ` + chosen + ` AND ` + support + ` AND NOT ` + mirrorCreditCurrentSQL("r2.read_at", "r2.read_for", "", "coalesce(r2.tried_reason, '')", "i.updated_at") + `
+	  WHERE ` + support + ` AND NOT ` + mirrorCreditCurrentSQL("r2.read_at", "r2.read_for", "", "coalesce(r2.tried_reason, '')", "i.updated_at") + `
 	    AND ` + mirrorCreditCountsInSQL("i.updated_at")
 	if weeks {
 		unit := `(SELECT bd.estimate_unit FROM tracker_cache_boards bd WHERE bd.root_id = CAST(?1 AS INTEGER) AND bd.board_id = ?2)`
-		rule := mirrorCreditRuleSQL(p.rules, "a.at")
+		hpp := `(` + mirrorCreditRuleSQL(p.rules, "a.at") + ` ->> 'hpp')`
 		rows += `
 	  UNION ALL
-	  SELECT NULL, a.at, a.issue_id, 'support', a.person, ` + supportValue("a.seconds", rule, unit) + `, a.seconds / 3600.0 / (` + rule + ` ->> 'hpp'),
-	    NULL, NULL, NULL, NULL, NULL, a.seconds / 3600.0, ` + rule + ` ->> 'hpp', NULL
-	  FROM tracker_cache_issue_acts a
-	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = a.root_id AND b.board_id = ?2 AND b.issue_id = a.issue_id
-	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
-	  CROSS JOIN tracker_cache_issue_act_reads r2 ON r2.root_id = i.root_id AND r2.issue_id = i.issue_id AND r2.source = ` + worklogs + `
-	  WHERE a.root_id = CAST(?1 AS INTEGER) AND a.source = ` + worklogs + ` AND a.at >= ` + p.from + ` AND a.at < ` + p.until + ` AND ` + p.rules + ` IS NOT NULL
-	    AND ` + mirrorCreditWeeksSQL + ` AND ` + current + ` AND ` + support + `
+	  SELECT NULL, w.at, w.issue_id, 'support', w.person, ` + supportValue("w.seconds", "w.hpp", unit) + `, w.seconds / 3600.0 / w.hpp,
+	    NULL, NULL, NULL, NULL, NULL, w.seconds / 3600.0, w.hpp, NULL
+	  FROM (SELECT a.at, a.issue_id, a.person, a.seconds, ` + hpp + ` AS hpp
+	    FROM tracker_cache_issue_acts a
+	    CROSS JOIN tracker_cache_board_issues b ON b.root_id = a.root_id AND b.board_id = ?2 AND b.issue_id = a.issue_id
+	    CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
+	    CROSS JOIN tracker_cache_issue_act_reads r2 ON r2.root_id = i.root_id AND r2.issue_id = i.issue_id AND r2.source = ` + worklogs + `
+	    WHERE a.root_id = CAST(?1 AS INTEGER) AND a.source = ` + worklogs + ` AND a.at >= ` + p.from + ` AND a.at < ` + p.until + ` AND ` + p.rules + ` IS NOT NULL
+	      AND ` + mirrorCreditWeeksSQL + ` AND ` + current + ` AND ` + support + `) w
 	  UNION ALL
 	  SELECT NULL, i.updated_at, i.issue_id, 'support', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 	    ` + mirrorCreditWhySQL("i.issue_id", "r2.read_at", "r2.tried_reason") + `
@@ -380,18 +402,19 @@ func mirrorCreditRowsSQL(p mirrorCreditParams, chosen string, weeks bool) string
 	return rows
 }
 
-// mirrorCreditSQL is the WITH list of the credit fragment (cr_sp0,
-// cr_sp, cr_m, cr_d, cr_f) of the sprints of cr_sp chosen holds for, and with weeks of a
-// board that plans no sprints, after the caller's own CTEs (before, ""
-// for none), and its rows (mirrorCreditRowsSQL).
-func mirrorCreditSQL(p mirrorCreditParams, before, chosen string, weeks bool) (with, rows string) {
+// mirrorCreditSQL is the WITH list of the credit fragment (cr_sp0, cr_sp,
+// cr_m, cr_d0, cr_d1, cr_f) of the sprints chosen holds for (a
+// condition on the alias it is given), and with weeks of a board that
+// plans no sprints, after the caller's own CTEs (before, "" for none),
+// and its rows (mirrorCreditRowsSQL).
+func mirrorCreditSQL(p mirrorCreditParams, before string, chosen func(alias string) string, weeks bool) (with, rows string) {
 	with = `WITH `
 	if before != "" {
 		with += before + `,
 	  `
 	}
-	with += mirrorCreditSprintsSQL(p) + `,
-	  ` + mirrorCreditMembersSQL(p, chosen, weeks) + `,
+	with += mirrorCreditSprintsSQL(p, chosen) + `,
+	  ` + mirrorCreditMembersSQL(p, weeks) + `,
 	  ` + mirrorCreditFinishedSQL(p)
-	return with, mirrorCreditRowsSQL(p, chosen, weeks)
+	return with, mirrorCreditRowsSQL(p, weeks)
 }

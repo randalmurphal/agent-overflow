@@ -380,7 +380,7 @@ var mirrorExportFills = append([]mirrorExportFill{
 	    UNION SELECT to_value FROM main.changes WHERE kind = 'assignee' AND to_value IS NOT NULL) x
 	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
 	{relation: "credit", name: "credit", sql: func() string {
-		with, rows := mirrorCreditSQL(mirrorExportCreditParams, "", "1", true)
+		with, rows := mirrorCreditSQL(mirrorExportCreditParams, "", func(string) string { return "1" }, true)
 		return with + `
 	  INSERT INTO main.credit(` + mirrorCreditColumns + `)
 	  ` + rows

@@ -1014,7 +1014,11 @@ func (o *opened) count(m Metric, r reads) (counted, error) {
 		return counted{err: pr.err}, nil
 	}
 	now := o.now.UnixMilli()
-	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now), r.instants(now))
+	at := r.instants(now)
+	if m.Bucket == BucketSprint {
+		at.sprints = o.sp.sprintIDs()
+	}
+	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now), at)
 }
 
 // Evaluate counts dashboard r.Dashboard of board b and then the board's

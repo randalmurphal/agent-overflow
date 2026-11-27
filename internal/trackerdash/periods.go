@@ -76,6 +76,18 @@ func (sp span) since(now int64) int64 {
 	return from
 }
 
+// sprintIDs is the sprints of the span's periods, the previous range's
+// included: the only ones a metric by sprint places a row in (place).
+func (sp span) sprintIDs() map[string]bool {
+	out := map[string]bool{}
+	for _, p := range slices.Concat(sp.periods, sp.previous) {
+		for _, s := range p.sprints {
+			out[s] = true
+		}
+	}
+	return out
+}
+
 // span is a range resolved against a board: its periods oldest first and
 // the previous range's of equal length. The previous range is a gap when
 // the mirror holds fewer sprints before the range than the range has; a
