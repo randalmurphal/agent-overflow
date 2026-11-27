@@ -48,10 +48,12 @@ type widgetSpec struct {
 
 // widgetAnswer is a counted widget as the agent reads it: what it counts
 // as How this is counted says it, the numbers it draws over the range,
-// in their unit (seconds for a time board's estimates, which the screen
-// shows as hours), the tickets each number could not count, how many rows
-// its query returned, the first of them, and, when shown, where the
-// person finds it.
+// in their unit (seconds for logged time or a time board's estimates,
+// which the screen shows as hours), the tickets each number could not
+// count, the days of the person's logged time each could not read (not
+// known until the person's Dashboards screen reads them), why it counts
+// nothing when it does not (Note), how many rows its query returned, the
+// first of them, and, when shown, where the person finds it.
 type widgetAnswer struct {
 	Board    string   `json:"board"`
 	Range    string   `json:"range"`
@@ -60,16 +62,20 @@ type widgetAnswer struct {
 	Value    *float64 `json:"value,omitempty"`
 	Previous *float64 `json:"previous,omitempty"`
 	// PreviousNotCounted is the range before's tickets not counted.
-	PreviousNotCounted int             `json:"previous_not_counted,omitempty"`
-	Series             []string        `json:"series,omitempty"`
-	Buckets            []widgetBucket  `json:"buckets,omitempty"`
-	More               int             `json:"more,omitempty"`
-	NotCounted         int             `json:"not_counted,omitempty"`
-	Rows               int             `json:"rows"`
-	First              []widgetRow     `json:"first_rows"`
-	Partial            string          `json:"partial,omitempty"`
-	Shown              string          `json:"shown,omitempty"`
-	List               []widgetListRow `json:"list,omitempty"`
+	PreviousNotCounted int `json:"previous_not_counted,omitempty"`
+	// NotRead and PreviousNotRead are the days of logged time not read.
+	NotRead         int             `json:"not_read,omitempty"`
+	PreviousNotRead int             `json:"previous_not_read,omitempty"`
+	Note            string          `json:"note,omitempty"`
+	Series          []string        `json:"series,omitempty"`
+	Buckets         []widgetBucket  `json:"buckets,omitempty"`
+	More            int             `json:"more,omitempty"`
+	NotCounted      int             `json:"not_counted,omitempty"`
+	Rows            int             `json:"rows"`
+	First           []widgetRow     `json:"first_rows"`
+	Partial         string          `json:"partial,omitempty"`
+	Shown           string          `json:"shown,omitempty"`
+	List            []widgetListRow `json:"list,omitempty"`
 }
 
 type widgetBucket struct {
@@ -79,6 +85,7 @@ type widgetBucket struct {
 	CellsNotCounted []int    `json:"cells_not_counted,omitempty"`
 	Total           *float64 `json:"total"`
 	NotCounted      int      `json:"not_counted,omitempty"`
+	NotRead         int      `json:"not_read,omitempty"`
 }
 
 type widgetRow struct {
@@ -130,17 +137,20 @@ func (s *Server) dashboardWidget(ctx context.Context, caller Caller, raw json.Ra
 	}
 	out := widgetAnswer{Board: board.Name, Range: tried.Range.Label, Counts: tried.View.How.Counts, Unit: tried.Unit, Rows: tried.Count,
 		Value: numOf(tried.Value.Value), Previous: numOf(tried.Value.Previous), Series: tried.Value.Series, More: tried.Value.More,
-		NotCounted: tried.Value.NotCounted, First: []widgetRow{}}
+		NotCounted: tried.Value.NotCounted, Note: tried.Value.Note, First: []widgetRow{}}
 	// A number's tickets not counted are its value's; a list's or a
 	// chart's are the widget's.
-	if v := tried.Value.Value; v != nil && v.NC > 0 {
-		out.NotCounted = v.NC
+	if v := tried.Value.Value; v != nil {
+		if v.NC > 0 {
+			out.NotCounted = v.NC
+		}
+		out.NotRead = v.UR
 	}
 	if p := tried.Value.Previous; p != nil {
-		out.PreviousNotCounted = p.NC
+		out.PreviousNotCounted, out.PreviousNotRead = p.NC, p.UR
 	}
 	for _, b := range tried.Value.Buckets {
-		wb := widgetBucket{Label: b.Label, Total: numOf(&b.Total), NotCounted: b.Total.NC}
+		wb := widgetBucket{Label: b.Label, Total: numOf(&b.Total), NotCounted: b.Total.NC, NotRead: b.Total.UR}
 		if len(b.Cells) > 1 {
 			nc := make([]int, len(b.Cells))
 			for i := range b.Cells {

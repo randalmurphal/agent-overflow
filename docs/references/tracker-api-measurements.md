@@ -1074,6 +1074,27 @@ runs' spread. On the release upgrade corpus (a v0.0.16 database at scale
 empties it: migrating from schema 139 and booting took 1,325 ms through
 v175 and 1,158 ms through v174, one run each.
 
+### Thread links and logged time
+
+The fills of `threads`, `worklogs` and `worklog_days`
+(`TestMirrorExportFillsAtScale`, the sprint history's dated fixture with
+2,000 threads linked to its tickets, two turns each, 1,000 worklogs of
+the viewer's and 1,000 of another person's, and 180 read days of each:
+`seedRelationsAtScale`). VM steps are the same in all 12 exports of a
+size (all changed and 10% changed, each with no column, one and every
+column, with and without `changes`); a time is the range of those
+exports' best of 5:
+
+| Fill | Rows | 2,000 tickets | 20,000 tickets |
+|---|---|---|---|
+| threads | 2,000 | 158,303 steps, 4.4 to 6.4 ms | 158,303 steps, 4.0 to 7.6 ms |
+| worklogs | 1,000 | 27,047 steps, 0.96 to 1.5 ms | 27,047 steps, 0.90 to 1.7 ms |
+| worklog_days | 180 | 2,745 steps, 37 to 67 µs | 2,745 steps, 36 to 82 µs |
+
+The steps follow the links and the viewer's worklogs, not the board's
+tickets: about 79 a link (each with its newest turn) and 27 a worklog of
+the viewer's; the other person's are not read.
+
 ## Planning poker add-on
 
 Applies only to a site with Easy Agile TeamRhythm installed
