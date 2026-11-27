@@ -12,11 +12,17 @@ package store
 //     has the name the development data gives, by that name alone
 //     (unmatched, person empty); no writer stores one yet. Each source's
 //     shape is checked on its own.
-//   - tracker_cache_issue_act_reads: one receipt per issue and source, the
-//     issue's update time the read returned (read_for) and the read's
-//     order time (read_at). An issue's acts of a source are what its read
-//     found exactly when a receipt exists; one with none was never read
-//     whole, and one whose receipt is older than its card is due.
+//   - tracker_cache_issue_act_reads: one row per issue and source, the
+//     receipt of the last read that stored its acts and the last failed
+//     attempt since. The receipt: the issue's update time the read
+//     returned (read_for, 0 once a changed worklog made it due again),
+//     the read's order time (read_at) and wall time (read_wall), and the
+//     start of the worklogs it read (read_from, 0 for every one; a
+//     comment's is 0). An issue's acts of a source are what the read
+//     found from read_from exactly when a receipt exists (read_at > 0).
+//     The attempt: when it failed on the wall clock (tried_at) and why
+//     (tried_reason), both cleared by a read that stores. A row holds a
+//     receipt, an attempt or both.
 //
 // Both belong to their issue (ON DELETE CASCADE), so the cleanup sweep and
 // a root's drain take them with it. The three Tempo triggers of v168 are
@@ -47,8 +53,16 @@ CREATE TABLE tracker_cache_issue_act_reads (
  root_id INTEGER NOT NULL,
  issue_id TEXT NOT NULL,
  source INTEGER NOT NULL CHECK(source IN (1, 2, 3)),
- read_for INTEGER NOT NULL CHECK(read_for > 0),
- read_at INTEGER NOT NULL CHECK(read_at > 0),
+ read_for INTEGER NOT NULL DEFAULT 0 CHECK(read_for >= 0),
+ read_at INTEGER NOT NULL DEFAULT 0 CHECK(read_at >= 0),
+ read_wall INTEGER NOT NULL DEFAULT 0,
+ read_from INTEGER NOT NULL DEFAULT 0 CHECK(read_from >= 0 AND (source = 2 OR read_from = 0)),
+ tried_at INTEGER NOT NULL DEFAULT 0 CHECK(tried_at >= 0),
+ tried_reason TEXT NOT NULL DEFAULT '',
+ CHECK((read_at > 0) = (read_wall > 0)),
+ CHECK(read_at > 0 OR read_for = 0 AND read_from = 0),
+ CHECK((tried_at > 0) = (tried_reason <> '')),
+ CHECK(read_at > 0 OR tried_at > 0),
  PRIMARY KEY (root_id, issue_id, source),
  FOREIGN KEY (root_id, issue_id) REFERENCES tracker_cache_issues(root_id, issue_id) ON DELETE CASCADE
 ) WITHOUT ROWID;

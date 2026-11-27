@@ -27,8 +27,8 @@ func TestTheActsMigrationFollowsTheTimeSource(t *testing.T) {
 		mustExec(t, db, `INSERT OR REPLACE INTO tracker_cache_issue_acts(root_id, issue_id, source, act_id, person, at, seconds) VALUES
 			(7, '10001', 1, 'c1', 'acc-user1', 2, 0), (7, '10001', 2, 'w1', 'acc-user1', 2, 60),
 			(8, '10001', 1, 'c1', 'acc-user2', 2, 0), (8, '10001', 2, 'w1', 'acc-user2', 2, 60)`)
-		mustExec(t, db, `INSERT OR REPLACE INTO tracker_cache_issue_act_reads(root_id, issue_id, source, read_for, read_at) VALUES
-			(7, '10001', 1, 5, 1), (7, '10001', 2, 5, 1), (8, '10001', 1, 5, 1), (8, '10001', 2, 5, 1)`)
+		mustExec(t, db, `INSERT OR REPLACE INTO tracker_cache_issue_act_reads(root_id, issue_id, source, read_for, read_at, read_wall) VALUES
+			(7, '10001', 1, 5, 1, 1), (7, '10001', 2, 5, 1, 1), (8, '10001', 1, 5, 1, 1), (8, '10001', 2, 5, 1, 1)`)
 	}
 	rows := `SELECT (SELECT group_concat(root_id || ':' || source) FROM (SELECT root_id, source FROM tracker_cache_issue_acts ORDER BY root_id, source))
 		|| '/' || (SELECT group_concat(root_id || ':' || source) FROM (SELECT root_id, source FROM tracker_cache_issue_act_reads ORDER BY root_id, source))`
@@ -102,11 +102,33 @@ func commentsOf(issue string, readFor, at int64, ids ...string) MirrorIssueActs 
 	return in
 }
 
+// worklogsOf is issue's worklogs from from as one read found them: one
+// act per ID, by User 1, at at, a minute each.
+func worklogsOf(issue string, readFor, from, at int64, ids ...string) MirrorIssueActs {
+	in := MirrorIssueActs{IssueID: issue, Source: MirrorActWorklog, ReadFor: readFor, From: from}
+	for _, id := range ids {
+		in.Acts = append(in.Acts, MirrorAct{ID: id, Person: "acc-user1", At: at, Seconds: 60})
+	}
+	return in
+}
+
 const storedActsSQL = `SELECT issue_id || ':' || source || ':' || act_id || ':' || person || ':' || at || ':' || seconds
 	FROM tracker_cache_issue_acts ORDER BY issue_id, source, act_id`
 
+// storedActReadsSQL is each row of the reads: issue, source, read_for,
+// read_at, and the coverage, wall and attempt when set.
 const storedActReadsSQL = `SELECT issue_id || ':' || source || ':' || read_for || ':' || read_at
+	    || iif(read_from > 0, ' from ' || read_from, '') || iif(read_wall <> read_at, ' wall ' || read_wall, '')
+	    || iif(tried_at > 0, ' tried ' || tried_at || ' ' || tried_reason, '')
 	FROM tracker_cache_issue_act_reads ORDER BY issue_id, source`
+
+// replaceActs replaces in, and tried, as a read of root begun at at.
+func replaceActs(t *testing.T, s *Store, root, at int64, tried []MirrorActsAttempt, in ...MirrorIssueActs) {
+	t.Helper()
+	if _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, at), in, tried, MirrorCatalog{}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // A replace makes an issue's acts of a source what the read found, with
 // its receipt: an act gone is removed, one changed is rewritten, the
@@ -118,23 +140,12 @@ func TestMirrorActsReplaceAnIssuesSource(t *testing.T) {
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21")), []byte("c1"))
-	replace := func(at int64, in ...MirrorIssueActs) []MirrorActsResult {
-		t.Helper()
-		results, _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, at), in, MirrorCatalog{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return results
-	}
 	worklogs := MirrorIssueActs{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 5, Acts: []MirrorAct{{ID: "w1", Person: "acc-user2", At: 3, Seconds: 600}}}
 	catalog := MirrorCatalog{Users: []MirrorUser{{ID: "acc-user2", Name: "User 2"}}}
-	results, catalogWrite, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), []MirrorIssueActs{commentsOf("10001", 5, 2, "c1", "c2"), worklogs,
-		commentsOf("99999", 5, 2, "c9")}, catalog)
+	catalogWrite, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), []MirrorIssueActs{commentsOf("10001", 5, 2, "c1", "c2"), worklogs,
+		commentsOf("99999", 5, 2, "c9")}, nil, catalog)
 	if err != nil || !catalogWrite.Changed {
 		t.Fatalf("first replace: %v, catalog %+v", err, catalogWrite)
-	}
-	if want := []MirrorActsResult{{"10001", 1, true, false}, {"10001", 2, true, false}, {"99999", 1, false, false}}; fmt.Sprint(results) != fmt.Sprint(want) {
-		t.Fatalf("results = %+v; want %+v", results, want)
 	}
 	assertRows(t, s.db, storedActsSQL, "10001:1:c1:acc-user1:2:0,10001:1:c2:acc-user1:2:0,10001:2:w1:acc-user2:3:600")
 	assertRows(t, s.db, storedActReadsSQL, "10001:1:5:10,10001:2:5:10")
@@ -142,22 +153,37 @@ func TestMirrorActsReplaceAnIssuesSource(t *testing.T) {
 
 	changed := commentsOf("10001", 6, 2, "c2", "c3")
 	changed.Acts[0].At = 4
-	if got := replace(11, changed); !got[0].Stored {
-		t.Fatalf("second replace = %+v", got)
-	}
+	replaceActs(t, s, root, 11, nil, changed)
 	assertRows(t, s.db, storedActsSQL, "10001:1:c2:acc-user1:4:0,10001:1:c3:acc-user1:2:0,10001:2:w1:acc-user2:3:600")
 	assertRows(t, s.db, storedActReadsSQL, "10001:1:6:11,10001:2:5:10")
 
 	for _, at := range []int64{11, 9} {
-		if got := replace(at, commentsOf("10001", 7, 2)); got[0].Stored || !got[0].Superseded {
-			t.Fatalf("a read begun at %d = %+v; want it superseded", at, got)
-		}
+		replaceActs(t, s, root, at, nil, commentsOf("10001", 7, 2))
 	}
 	assertRows(t, s.db, storedActReadsSQL, "10001:1:6:11,10001:2:5:10")
-	if got := replace(12, commentsOf("10001", 7, 2)); !got[0].Stored {
-		t.Fatalf("a read that found no comment = %+v", got)
-	}
-	assertRows(t, s.db, storedActsSQL, "10001:2:w1:acc-user2:3:600")
+	replaceActs(t, s, root, 12, nil, commentsOf("10001", 7, 2), worklogsOf("10001", 7, 400, 500, "w2"))
+	assertRows(t, s.db, storedActsSQL, "10001:2:w2:acc-user1:500:60")
+	assertRows(t, s.db, storedActReadsSQL, "10001:1:7:12,10001:2:7:12 from 400")
+}
+
+// A failed attempt is recorded beside the receipt the row holds, at the
+// read's wall time and with its reason, superseded as a read is, and a
+// read that stores clears it; an issue the mirror does not keep records
+// none.
+func TestMirrorActsRecordAFailedAttempt(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21"), webRow("10002", 5, "b", "21")), []byte("c1"))
+	replaceActs(t, s, root, 10, nil, commentsOf("10001", 5, 2, "c1"))
+	replaceActs(t, s, root, 11, []MirrorActsAttempt{{IssueID: "10001", Source: MirrorActComment, Reason: "Jira is busy"},
+		{IssueID: "10002", Source: MirrorActWorklog, Reason: "too large"}, {IssueID: "99999", Source: MirrorActComment, Reason: "gone"}})
+	assertRows(t, s.db, storedActReadsSQL, "10001:1:5:10 tried 11 Jira is busy,10002:2:0:0 tried 11 too large")
+	assertRows(t, s.db, storedActsSQL, "10001:1:c1:acc-user1:2:0")
+	replaceActs(t, s, root, 9, []MirrorActsAttempt{{IssueID: "10001", Source: MirrorActComment, Reason: "older"}})
+	assertRows(t, s.db, storedActReadsSQL, "10001:1:5:10 tried 11 Jira is busy,10002:2:0:0 tried 11 too large")
+	replaceActs(t, s, root, 12, nil, commentsOf("10001", 6, 2), worklogsOf("10002", 5, 0, 3, "w1"))
+	assertRows(t, s.db, storedActReadsSQL, "10001:1:6:12,10002:2:5:12")
 }
 
 // A replace refuses what it cannot store as given, before writing
@@ -168,79 +194,136 @@ func TestMirrorActsRefuseAnInvalidReplace(t *testing.T) {
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21")), []byte("c1"))
 	comment := commentsOf("10001", 5, 2, "c1")
-	for name, in := range map[string][]MirrorIssueActs{
-		"no issue":            {commentsOf("", 5, 2)},
-		"no source":           {{IssueID: "10001", ReadFor: 5}},
-		"no update time":      {commentsOf("10001", 0, 2)},
-		"an issue twice":      {comment, comment},
-		"an act twice":        {commentsOf("10001", 5, 2, "c1", "c1")},
-		"an act with no time": {commentsOf("10001", 5, 0, "c1")},
-		"a comment's seconds": {{IssueID: "10001", Source: MirrorActComment, ReadFor: 5, Acts: []MirrorAct{{ID: "c1", Person: "acc-user1", At: 2, Seconds: 1}}}},
-		"no author":           {{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 5, Acts: []MirrorAct{{ID: "w1", At: 2, Seconds: 1}}}},
+	from := commentsOf("10001", 5, 2)
+	from.From = 1
+	attempt := MirrorActsAttempt{IssueID: "10001", Source: MirrorActComment, Reason: "busy"}
+	for name, c := range map[string]struct {
+		in    []MirrorIssueActs
+		tried []MirrorActsAttempt
+	}{
+		"no issue":                  {in: []MirrorIssueActs{commentsOf("", 5, 2)}},
+		"no source":                 {in: []MirrorIssueActs{{IssueID: "10001", ReadFor: 5}}},
+		"no update time":            {in: []MirrorIssueActs{commentsOf("10001", 0, 2)}},
+		"an issue twice":            {in: []MirrorIssueActs{comment, comment}},
+		"read and attempted":        {in: []MirrorIssueActs{comment}, tried: []MirrorActsAttempt{attempt}},
+		"an attempt with no reason": {tried: []MirrorActsAttempt{{IssueID: "10001", Source: MirrorActComment}}},
+		"comments from a start":     {in: []MirrorIssueActs{from}},
+		"an act twice":              {in: []MirrorIssueActs{commentsOf("10001", 5, 2, "c1", "c1")}},
+		"an act with no time":       {in: []MirrorIssueActs{commentsOf("10001", 5, 0, "c1")}},
+		"a comment's seconds":       {in: []MirrorIssueActs{{IssueID: "10001", Source: MirrorActComment, ReadFor: 5, Acts: []MirrorAct{{ID: "c1", Person: "acc-user1", At: 2, Seconds: 1}}}}},
+		"no author":                 {in: []MirrorIssueActs{{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 5, Acts: []MirrorAct{{ID: "w1", At: 2, Seconds: 1}}}}},
 	} {
-		if _, _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), in, MirrorCatalog{}); !errors.Is(err, ErrInvalidTrackerCache) {
+		if _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), c.in, c.tried, MirrorCatalog{}); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v; want it refused", name, err)
 		}
 	}
-	if _, _, err := s.ReplaceMirrorActs(root, 0, MirrorRead{}, []MirrorIssueActs{comment}, MirrorCatalog{}); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, err := s.ReplaceMirrorActs(root, 0, MirrorRead{}, []MirrorIssueActs{comment}, nil, MirrorCatalog{}); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Errorf("no read: %v; want it refused", err)
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_acts`, "0")
 }
 
-// A worklog read under an earlier time source generation is refused in
-// the write's transaction, comments of the same call included; a call of
-// comments alone names no generation.
+// A call under an earlier time source generation stores its comments and
+// none of its worklogs or worklog attempts, in every transaction, and
+// returns ErrTrackerCacheSourceChanged; a call of comments alone names no
+// generation.
 func TestMirrorActsFollowTheirTimeSource(t *testing.T) {
 	t.Parallel()
 	s, c, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
-	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21")), []byte("c1"))
+	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21"), webRow("10002", 5, "b", "21")), []byte("c1"))
 	mustCreateTrackerConnection(t, s, NewTrackerConnection{Kind: TrackerKindTempo, Site: "https://api.tempo.io", ParentID: c.ID, Label: "Tempo", CreatedAt: 11})
-	worklogs := MirrorIssueActs{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 5, Acts: []MirrorAct{{ID: "w1", Person: "acc-user1", At: 3, Seconds: 60}}}
-	if _, _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), []MirrorIssueActs{commentsOf("10001", 5, 2, "c1"), worklogs}, MirrorCatalog{}); !errors.Is(err, ErrTrackerCacheSourceChanged) {
+	many := commentsOf("10002", 5, 2)
+	for i := range mirrorMaxBatchChanges {
+		many.Acts = append(many.Acts, MirrorAct{ID: strconv.Itoa(i), Person: "acc-user1", At: 2})
+	}
+	_, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), []MirrorIssueActs{commentsOf("10001", 5, 2, "c1"), worklogsOf("10001", 5, 0, 3, "w1"), many},
+		[]MirrorActsAttempt{{IssueID: "10002", Source: MirrorActWorklog, Reason: "x"}}, MirrorCatalog{})
+	if !errors.Is(err, ErrTrackerCacheSourceChanged) {
 		t.Fatalf("a worklog read under generation 0: %v", err)
 	}
-	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_act_reads`, "0")
-	if _, _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), []MirrorIssueActs{commentsOf("10001", 5, 2, "c1")}, MirrorCatalog{}); err != nil {
+	assertRows(t, s.db, `SELECT DISTINCT issue_id || ':' || source FROM tracker_cache_issue_acts ORDER BY 1`, "10001:1,10002:1")
+	assertRows(t, s.db, storedActReadsSQL, "10001:1:5:10,10002:1:5:10")
+	if _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 11), []MirrorIssueActs{commentsOf("10001", 6, 2, "c1")}, nil, MirrorCatalog{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.ReplaceMirrorActs(root, 1, mirrorReadOf(root, 11), []MirrorIssueActs{worklogs}, MirrorCatalog{}); err != nil {
+	if _, err := s.ReplaceMirrorActs(root, 1, mirrorReadOf(root, 12), []MirrorIssueActs{worklogsOf("10001", 5, 0, 3, "w1")}, nil, MirrorCatalog{}); err != nil {
 		t.Fatal(err)
 	}
-	assertRows(t, s.db, storedActReadsSQL, "10001:1:5:10,10001:2:5:11")
+	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_act_reads WHERE source = 2`, "1")
 }
 
 // A call of more acts than one transaction writes is written in several,
-// an issue's acts of a source never split, and returns every outcome.
+// an issue's acts of a source never split, counting the acts it may
+// remove as well as those it writes.
 func TestMirrorActsSplitAcrossTransactions(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21"), webRow("10002", 5, "b", "21")), []byte("c1"))
-	many := func(issue string) MirrorIssueActs {
+	many := func(issue string, n int) MirrorIssueActs {
 		in := MirrorIssueActs{IssueID: issue, Source: MirrorActComment, ReadFor: 5}
-		for i := range 1500 {
+		for i := range n {
 			in.Acts = append(in.Acts, MirrorAct{ID: strconv.Itoa(i), Person: "acc-user1", At: 2})
 		}
 		return in
 	}
 	before := s.CommitCount()
-	results, _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), []MirrorIssueActs{many("10001"), many("10002")}, MirrorCatalog{})
-	if err != nil || !results[0].Stored || !results[1].Stored {
-		t.Fatalf("results %+v, %v", results, err)
-	}
+	replaceActs(t, s, root, 10, nil, many("10001", 1500), many("10002", 1500))
 	if n := s.CommitCount() - before; n != 2 {
 		t.Fatalf("%d transactions; want 2", n)
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_acts`, "3000")
+	// Emptying 10001 removes 1,500 acts: with 10002's 600 it is over one
+	// transaction's bound.
+	before = s.CommitCount()
+	replaceActs(t, s, root, 11, nil, many("10001", 0), many("10002", 600))
+	if n := s.CommitCount() - before; n != 2 {
+		t.Fatalf("%d transactions for 1,500 removed and 600 written; want 2", n)
+	}
+	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_acts`, "600")
 }
 
-// actsDue lists root's acts due on board 10 by its plain groups, from
-// window start from, and returns the issues with support marked.
-func actsDue(t *testing.T, s *Store, root int64, from int64) (string, bool) {
+// The remove of the acts a read did not find costs steps in proportion
+// to the acts: each stored act is one probe of the read's.
+func TestMirrorActsReplaceGrowsLinearly(t *testing.T) {
+	steps := map[int]int{}
+	for _, n := range []int{1000, 2000, 4000} {
+		s, _, root := newMirror(t)
+		mustReplaceStructure(t, s, root, webStructure(), true)
+		mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21")), []byte("c1"))
+		acts := func(from, count int) MirrorIssueActs {
+			in := MirrorIssueActs{IssueID: "10001", Source: MirrorActComment, ReadFor: 5}
+			for i := range count {
+				in.Acts = append(in.Acts, MirrorAct{ID: strconv.Itoa(from + i), Person: "acc-user1", At: 2})
+			}
+			return in
+		}
+		replaceActs(t, s, root, 10, nil, acts(0, n))
+		var err error
+		_, steps[n] = countStatementRuns(t, mirrorActsRemoveSQL, func() {
+			_, err = s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 11), []MirrorIssueActs{acts(n/2, n)}, nil, MirrorCatalog{})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRows(t, s.db, fmt.Sprintf(`SELECT count(*) FROM tracker_cache_issue_acts WHERE root_id = %d AND issue_id = '10001' AND source = 1`, root), strconv.Itoa(n))
+	}
+	t.Logf("remove steps by stored acts: %v", steps)
+	if steps[4000] > 5*steps[1000] {
+		t.Fatalf("the remove's steps grow faster than its acts: %v", steps)
+	}
+}
+
+// actsDue lists root's acts due on boards 10 (twice) and 11 by their
+// plain groups, from window start from at wall time now, and returns each
+// issue with its sources due (c, w) and the start of its worklogs.
+func actsDue(t *testing.T, s *Store, root, from, now int64, boards ...MirrorActsBoard) (string, bool) {
 	t.Helper()
-	due, more, err := s.ListMirrorActsDue(root, []MirrorActsBoard{{BoardID: "10"}, {BoardID: "10"}, {BoardID: "11"}}, from)
+	if len(boards) == 0 {
+		boards = []MirrorActsBoard{{BoardID: "10"}, {BoardID: "10"}, {BoardID: "11"}}
+	}
+	due, more, err := s.ListMirrorActsDue(root, boards, from, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,9 +332,15 @@ func actsDue(t *testing.T, s *Store, root int64, from int64) (string, bool) {
 		if i > 0 {
 			out += ","
 		}
-		out += d.IssueID
-		if d.Support {
-			out += "*"
+		out += d.IssueID + ":"
+		if d.Comments {
+			out += "c"
+		}
+		if d.Worklogs {
+			out += "w"
+			if d.WorklogsFrom > 0 {
+				out += "@" + strconv.FormatInt(d.WorklogsFrom, 10)
+			}
 		}
 	}
 	return out, more
@@ -259,10 +348,10 @@ func actsDue(t *testing.T, s *Store, root int64, from int64) (string, bool) {
 
 // The acts due on a board: its active sprints' members done now, first,
 // then its closed sprints' members done at the completion, newest
-// completion first, whose sprint completed in the window, each once, until a read for their update
-// stored a receipt of its comments and of its worklogs. A member carried on from a closed
-// sprint whose history is unread is not done there yet, and a board the
-// mirror does not show (11) lists nothing.
+// completion first, whose sprint completed in the window, each once, each
+// source until a read for its update stored its receipt. A member carried
+// on from a closed sprint whose history is unread is not done there yet,
+// and a board the mirror does not show (11) lists nothing.
 func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -284,28 +373,117 @@ func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
 		MirrorWrite{Changed: true})
 	check := func(from int64, want string) {
 		t.Helper()
-		if got, more := actsDue(t, s, root, from); got != want || more {
+		if got, more := actsDue(t, s, root, from, 20); got != want || more {
 			t.Fatalf("due (from %d) = %q, more %v; want %q", from, got, more, want)
 		}
 	}
-	check(0, "10001,10003,10006")
-	check(501, "10001,10003")
-	check(951, "10001")
-	replace := func(at int64, in ...MirrorIssueActs) {
-		t.Helper()
-		if _, _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, at), in, MirrorCatalog{}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	replace(9, commentsOf("10006", 5, 2), MirrorIssueActs{IssueID: "10006", Source: MirrorActWorklog, ReadFor: 5})
-	replace(10, commentsOf("10001", 5, 2), commentsOf("10003", 4, 2))
-	check(0, "10001,10003")
-	replace(11, commentsOf("10003", 5, 2), MirrorIssueActs{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 6})
-	check(0, "10003")
-	replace(12, MirrorIssueActs{IssueID: "10003", Source: MirrorActWorklog, ReadFor: 5})
+	check(0, "10001:cw,10003:cw,10006:cw")
+	check(501, "10001:cw,10003:cw")
+	check(951, "10001:cw")
+	replaceActs(t, s, root, 9, nil, commentsOf("10006", 5, 2), worklogsOf("10006", 5, 0, 2))
+	replaceActs(t, s, root, 10, nil, commentsOf("10001", 5, 2), commentsOf("10003", 4, 2))
+	check(0, "10001:w,10003:cw")
+	replaceActs(t, s, root, 11, nil, commentsOf("10003", 5, 2), worklogsOf("10001", 6, 0, 2))
+	check(0, "10003:w")
+	replaceActs(t, s, root, 12, nil, worklogsOf("10003", 5, 0, 2))
 	check(0, "")
 	mustWriteRowPage(t, s, root, webPage("10", done(webRow("10001", 7, "a", "21"))), []byte("c2"))
-	check(0, "10001")
+	check(0, "10001:cw")
+}
+
+// A worklog receipt of a ticket the active-sprint arm lists is due again
+// a day after its read, its comments not; a closed sprint's member is not
+// read again until its card moves.
+func TestMirrorActsDueRevalidatesLiveWorklogs(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	done := func(r MirrorRow) MirrorRow { r.Card.StatusID = "10001"; return r }
+	mustWriteRowPage(t, s, root, webPage("10", done(webRow("10001", 5, "a", "21")), done(webRow("10003", 5, "c", "20"))), []byte("c1"))
+	mustReplaceHistory(t, s, root, MirrorHistory{IssueID: "10003", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 900, From: "1", To: "10001"}}},
+		MirrorWrite{Changed: true})
+	const read = 1_000
+	replaceActs(t, s, root, read, nil, commentsOf("10001", 5, 2), worklogsOf("10001", 5, 0, 2), commentsOf("10003", 5, 2), worklogsOf("10003", 5, 0, 2))
+	day := mirrorActsRevalidate.Milliseconds()
+	for _, c := range []struct {
+		now  int64
+		want string
+	}{{read + day, ""}, {read + day + 1, "10001:w"}} {
+		if got, _ := actsDue(t, s, root, 0, c.now); got != c.want {
+			t.Fatalf("due at %d = %q; want %q", c.now, got, c.want)
+		}
+	}
+}
+
+// A source whose read failed for its issue alone is not due for a day,
+// whatever its card does, and is due again after; the other source keeps
+// its own rule.
+func TestMirrorActsDueRetryAFailedSourceAfterADay(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	done := func(r MirrorRow) MirrorRow { r.Card.StatusID = "10001"; return r }
+	mustWriteRowPage(t, s, root, webPage("10", done(webRow("10001", 5, "a", "21"))), []byte("c1"))
+	const tried = 1_000
+	replaceActs(t, s, root, tried, []MirrorActsAttempt{{IssueID: "10001", Source: MirrorActComment, Reason: "Jira is busy"}}, worklogsOf("10001", 5, 0, 2))
+	day := mirrorActsRetry.Milliseconds()
+	if got, _ := actsDue(t, s, root, 0, tried+day); got != "" {
+		t.Fatalf("due within a day of the failure = %q", got)
+	}
+	mustWriteRowPage(t, s, root, webPage("10", done(webRow("10001", 7, "a", "21"))), []byte("c2"))
+	if got, _ := actsDue(t, s, root, 0, tried+day); got != "10001:w" {
+		t.Fatalf("due after the card moved, within a day = %q; want the worklogs", got)
+	}
+	if got, _ := actsDue(t, s, root, 0, tried+day+1); got != "10001:cw" {
+		t.Fatalf("due a day after the failure = %q", got)
+	}
+}
+
+// supportBoard is board 10 with every row with no estimate a support
+// ticket.
+func supportBoard(t *testing.T) MirrorActsBoard {
+	t.Helper()
+	regroup, err := MirrorRegroup{}.WithSupport(MirrorSupportRule{Boards: []string{"10"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return MirrorActsBoard{BoardID: "10", Regroup: regroup}
+}
+
+// A support ticket is a row the rule names whose card moved since the
+// window's start: its worklogs from that start are due, never its
+// comments, a row whose card did not move is not listed, and a worklog
+// receipt is revalidated a day after its read. A receipt that holds
+// worklogs from earlier serves a later start, and a re-read keeps that
+// earlier start; a support ticket a closed sprint in the window also
+// lists is read whole with its comments.
+func TestMirrorActsDueOfSupportTickets(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	done := func(r MirrorRow) MirrorRow { r.Card.StatusID = "10001"; return r }
+	points := 3.0
+	estimated := webRow("10004", 1200, "d")
+	estimated.Estimate = &points
+	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 1200, "a"), webRow("10002", 300, "b"), done(webRow("10003", 1200, "c", "20")), estimated), []byte("c1"))
+	mustReplaceHistory(t, s, root, MirrorHistory{IssueID: "10003", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 900, From: "1", To: "10001"}}},
+		MirrorWrite{Changed: true})
+	board := supportBoard(t)
+	check := func(from, now int64, want string) {
+		t.Helper()
+		if got, _ := actsDue(t, s, root, from, now, board); got != want {
+			t.Fatalf("due (from %d at %d) = %q; want %q", from, now, got, want)
+		}
+	}
+	// Sprint 20 completed at 950: a window from 960 leaves it out.
+	check(960, 20, "10001:w@960,10003:w@960")
+	replaceActs(t, s, root, 30, nil, worklogsOf("10001", 1200, 960, 1000, "w1"), worklogsOf("10003", 1200, 960, 1000))
+	check(960, 30, "")
+	check(1000, 30, "")
+	day := mirrorActsRevalidate.Milliseconds()
+	check(1000, 30+day+1, "10001:w@960,10003:w@960")
+	check(900, 30, "10003:cw,10001:w@900")
+	check(0, 30, "10003:cw,10002:w,10001:w")
 }
 
 // A listing holds at most a page, and says when more are due.
@@ -320,10 +498,48 @@ func TestMirrorActsDueArePaged(t *testing.T) {
 		rows = append(rows, r)
 	}
 	mustWriteRowPage(t, s, root, webPage("10", rows...), []byte("c1"))
-	due, more, err := s.ListMirrorActsDue(root, []MirrorActsBoard{{BoardID: "10"}}, 0)
+	due, more, err := s.ListMirrorActsDue(root, []MirrorActsBoard{{BoardID: "10"}}, 0, testNow)
 	if err != nil || len(due) != mirrorActsDuePage || !more {
 		t.Fatalf("%d due, more %v, %v; want a page and more", len(due), more, err)
 	}
+}
+
+// A worklog write makes the worklog evidence of each issue whose worklog
+// it adds, changes, moves or removes due again, superseding an evidence
+// read that began before it; an unchanged worklog, and a receipt from a
+// later read, are left as they were.
+func TestAWorklogWriteMakesItsIssuesEvidenceDue(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	var rows []MirrorRow
+	for i := range 6 {
+		rows = append(rows, webRow(strconv.Itoa(10001+i), 5, string(rune('a'+i)), "21"))
+	}
+	mustWriteRowPage(t, s, root, webPage("10", rows...), []byte("c1"))
+	logs := func(at int64, ws ...MirrorWorklog) {
+		t.Helper()
+		if _, err := s.ReplaceMirrorWorklogs(root, 0, "acc-user1", "2026-01-05", "2026-01-06", mirrorReadOf(root, at), ws); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := func(id, issue string, spent int64) MirrorWorklog {
+		return MirrorWorklog{ID: id, IssueID: issue, AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: spent}
+	}
+	logs(10, w("w1", "10001", 60), w("w2", "10002", 60), w("w3", "10003", 60), w("w4", "10004", 60))
+	var reads []MirrorIssueActs
+	for i := range 6 {
+		reads = append(reads, worklogsOf(strconv.Itoa(10001+i), 5, 0, 2))
+	}
+	replaceActs(t, s, root, 20, nil, reads...)
+	replaceActs(t, s, root, 40, nil, worklogsOf("10006", 5, 0, 2, "x"))
+	// w1 unchanged, w2 changed, w3 moved to 10005, w4 removed, w5 added
+	// on 10006, whose receipt is from a later read.
+	logs(30, w("w1", "10001", 60), w("w2", "10002", 120), w("w3", "10005", 60), w("w5", "10006", 60))
+	assertRows(t, s.db, `SELECT issue_id || ':' || read_for || ':' || read_at FROM tracker_cache_issue_act_reads ORDER BY issue_id`,
+		"10001:5:20,10002:0:30,10003:0:30,10004:0:30,10005:0:30,10006:5:40")
+	replaceActs(t, s, root, 25, nil, worklogsOf("10002", 5, 0, 2))
+	assertRows(t, s.db, `SELECT read_for || ':' || read_at FROM tracker_cache_issue_act_reads WHERE issue_id = '10002'`, "0:30")
 }
 
 // The sweep removes an unkept issue's act receipts before its acts, in
@@ -338,7 +554,7 @@ func TestTheSweepRemovesActReceiptsBeforeActs(t *testing.T) {
 	for i := range 1200 {
 		in.Acts = append(in.Acts, MirrorAct{ID: strconv.Itoa(i), Person: "acc-user1", At: 2})
 	}
-	if _, _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), []MirrorIssueActs{in, {IssueID: "10001", Source: MirrorActWorklog, ReadFor: 5}}, MirrorCatalog{}); err != nil {
+	if _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), []MirrorIssueActs{in, {IssueID: "10001", Source: MirrorActWorklog, ReadFor: 5}}, nil, MirrorCatalog{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ClearThreadTicket("acts"); err != nil {

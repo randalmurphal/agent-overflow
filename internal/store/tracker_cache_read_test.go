@@ -311,6 +311,9 @@ var mirrorNotReadTimes = map[string]string{
 	"tracker_cache_issue_acts.seconds":             "a duration",
 	"tracker_cache_issue_act_reads.source":         "an enum",
 	"tracker_cache_issue_act_reads.read_for":       "the tracker's clock",
+	"tracker_cache_issue_act_reads.read_from":      "the tracker's clock",
+	"tracker_cache_issue_act_reads.read_wall":      "a wall time (MirrorRead.Wall)",
+	"tracker_cache_issue_act_reads.tried_at":       "a wall time (MirrorRead.Wall)",
 }
 
 // Every INTEGER column of every mirror table is a read time the clock's

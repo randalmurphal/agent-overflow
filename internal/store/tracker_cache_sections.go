@@ -151,17 +151,23 @@ func mirrorRegroupedGroupNameSQL(expr string) string {
 	return mirrorGroupCaseSQL(expr, ` WHEN `+strconv.Itoa(MirrorGroupLeftOut)+` THEN 'left_out'`, "NULL")
 }
 
-// MirrorRegroup is a project's regrouping of one tracker site's statuses,
-// which a board read applies: by status ID, the group the status counts
-// in (MirrorGroupBacklog to MirrorGroupCanceled, or MirrorGroupLeftOut).
-// A status it does not name keeps the group tracker_cache_statuses holds.
+// MirrorRegroup is how a project counts the rows of one tracker site's
+// boards, which a board read applies. Its regrouping of the site's
+// statuses: by status ID, the group the status counts in
+// (MirrorGroupBacklog to MirrorGroupCanceled, or MirrorGroupLeftOut). A
+// status it does not name keeps the group tracker_cache_statuses holds.
 // The zero value regroups nothing, and a read with it runs the plain
 // statements, which read a row's status by its key; a regrouping that
-// regroups something runs the regrouped ones, which bind it.
+// regroups something runs the regrouped ones, which bind it. Its support
+// rule (WithSupport): which rows are support tickets, which a total does
+// not count as without an estimate (mirrorSupportSQL). The zero value
+// names no row support.
 type MirrorRegroup struct {
 	// statuses is the JSON object the regrouped statements read with
 	// json_each, empty for the zero value.
 	statuses string
+	// support is the JSON object mirrorSupportSQL reads, empty for none.
+	support string
 }
 
 // NewMirrorRegroup is the regrouping groups gives, by status ID. A

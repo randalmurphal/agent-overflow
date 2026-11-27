@@ -519,7 +519,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		}
 		listed := 0
 		list := func(int) error {
-			due, _, err := s.ListMirrorActsDue(root, boards, 0)
+			due, _, err := s.ListMirrorActsDue(root, boards, 0, testNow)
 			listed = len(due)
 			return err
 		}
@@ -528,8 +528,8 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		}, list)
 		t.Logf("acts due, none read%s: %d listed", credit.name, listed)
 		out["acts due, every one read"+credit.name] = measureScale(t, rec, func(int) {
-			mustExec(t, s.db, `INSERT OR REPLACE INTO tracker_cache_issue_act_reads(root_id, issue_id, source, read_for, read_at)
-				SELECT root_id, issue_id, src.value, updated_at, 1 FROM tracker_cache_issues, json_each('[1,2]') src WHERE root_id = ?`, root)
+			mustExec(t, s.db, `INSERT OR REPLACE INTO tracker_cache_issue_act_reads(root_id, issue_id, source, read_for, read_at, read_wall)
+				SELECT root_id, issue_id, src.value, updated_at, 1, ? FROM tracker_cache_issues, json_each('[1,2]') src WHERE root_id = ?`, testNow, root)
 		}, list)
 		t.Logf("acts due, every one read%s: %d listed", credit.name, listed)
 	}
