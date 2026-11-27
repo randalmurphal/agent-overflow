@@ -577,9 +577,9 @@ func TestAnEvaluationOfAProjectCountingTicketsCountsTickets(t *testing.T) {
 // A project that turns credit on, with no status groups or support named
 // for the site, has its boards' dashboards listed again with the pace
 // read from credit. While the evidence read fails, a finished ticket's
-// review is not counted and the answer of a range that holds it says why,
-// and one of a range that does not says nothing; once a read stores the
-// evidence, its reviews count and the sentence is gone.
+// review is not counted and every answer of the credit dashboard says
+// why, whatever its range holds; once a read stores the evidence, its
+// reviews count and the sentence is gone.
 func TestAProjectCountingCreditCountsItsPaceFromCredit(t *testing.T) {
 	m, _, _ := evidenceFixture(t, 1)
 	sub := m.subscribeShown(t, m.project()).ID
@@ -623,15 +623,15 @@ func TestAProjectCountingCreditCountsItsPaceFromCredit(t *testing.T) {
 		t.Fatal("the failing evidence read did not fail its tick")
 	}
 	got, evidence := pace()
-	if got != `{"nc":1}` || !strings.HasPrefix(evidence, "Some tickets' credit is not counted: the last read of who worked on them failed. ") ||
+	if got != `{"nc":1}` || !strings.HasPrefix(evidence, "Credit may not count everything: the last read of who worked on the tickets failed. ") ||
 		!strings.Contains(evidence, out.Failure.Message) {
 		t.Fatalf("while the read fails: credit %s, evidence %q; want the ticket's review not counted and the failure %q", got, evidence, out.Failure.Message)
 	}
-	// The ticket is the active sprint's: the last five finished sprints,
-	// the range a dashboard opens on, count no credit not read, so their
-	// answer says nothing of it.
-	if a := m.evaluate(t, sub, ""); a.Evidence != "" {
-		t.Fatalf("the last five sprints say %q; want nothing: no credit they count is unread", a.Evidence)
+	// The ticket is the active sprint's; the last five finished sprints,
+	// the range a dashboard opens on, count credit too, which the failed
+	// read may have left out.
+	if a := m.evaluate(t, sub, ""); a.Evidence != evidence {
+		t.Fatalf("the last five sprints say %q; want %q", a.Evidence, evidence)
 	}
 	m.p.set(func(p *scripted) { p.evidence = read })
 	m.evidenceTick(t)

@@ -39,7 +39,8 @@ const evidenceBatch = 50
 // The unit owns its last outcome (store RecordMirrorEvidenceOutcome),
 // which the credit sentence says: a unit that reads to its end clears
 // it, and one that fails as a whole records why, unless the run stopped
-// or the mirror ended.
+// or the mirror ended. An outcome that changed has the connection's
+// boards count again (tellRecount).
 func (r *run) evidence() (UnitResult, error) {
 	if !r.p.Capabilities().Evidence {
 		return UnitResult{}, nil
@@ -60,8 +61,12 @@ func (r *run) evidence() (UnitResult, error) {
 			failure = ClassifyFailure(r.row.Kind, c.err).Message
 		}
 	}
-	if _, recErr := r.s.store.RecordMirrorEvidenceOutcome(r.root, failure, millis(r.s.now())); recErr != nil {
+	changed, recErr := r.s.store.RecordMirrorEvidenceOutcome(r.root, failure)
+	if recErr != nil {
 		err = errors.Join(err, fmt.Errorf("trackerapp: record the evidence read's outcome of %s: %w", r.row.ID, recErr))
+	}
+	if changed {
+		r.s.tellRecount(r.row.ID)
 	}
 	return res, err
 }

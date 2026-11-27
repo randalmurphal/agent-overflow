@@ -2759,11 +2759,18 @@ its time alone. Acts after the evaluation's clock count nowhere. A
 ticket whose evidence is not read for its card has one row not counted,
 with no person, so a person's page lists it too (`evaluation.keep`). The
 built-in dashboard's pace and its finished bars then count three
-series: finished tickets, review credit and support credit. While such
-a row is in a widget's range and the evidence unit's last whole read
-failed, the answer says why (`Answer.Evidence`, `EvidenceSentence`). A
-metric by sprint holds only the rows of the sprints its widgets read,
-so other sprints' rows do not count against the row limit. A project that
+series: finished tickets, review credit and support credit. Who had a
+finished ticket is read from a history that covers its card: until the
+history unit reads it again after an edit (at once, and once more a
+settle margin later, one minute on Jira), the ticket names no person
+and its reviews are one row not counted. Support time counts in closed
+and active sprints only: work after the last completion while no sprint
+is active counts once the next one starts. While the evidence unit's
+last whole read failed, an answer with a widget that reads `credit`
+says why, whatever its rows hold (`Answer.Evidence`,
+`EvidenceSentence`), on the dashboard, its proposals and a tried
+widget; a change of that outcome has the open boards count again
+(`BoardEvent.Recount`). A project that
 counts no credit binds no rules, its `credit` relation is empty, and
 its pace runs the statement it ran before credit
 (`TestAPaceWithoutCreditRunsTodaysStatement`). Its costs at 2,000 and
@@ -2846,7 +2853,7 @@ The rules are the comments at the top of
   31 days a read, back to back. It hands a span out and checks the run's
   own account and time source on the connection's row before it reads,
   and stops when either moved. It tells the connection's boards when it
-  ends (`BoardEvent.Logged`), on which the page counts again. Every span
+  ends (`BoardEvent.Recount`), on which the page counts again. Every span
   handed out ends stored, recorded as failed, or forgotten with the
   state: a screen that closes does not stop a run; turning the connection
   off, `Stop`, and a change of account or source do, and clear what was
@@ -2942,11 +2949,14 @@ statement.
   parameters, with LIKE and GLOB patterns of at most 256 bytes. It runs
   inside a wrapper that produces the whole result in SQLite's first
   step, under a 1 s deadline counted from before its prepare, at most
-  20,000 rows and 4 MiB of encoded rows. A state's row counts toward the
-  rows only if it holds at an instant its widgets read (now, where the
-  range begins, or the end of a period they show), so a state's past
-  stays do not fill the limit; past it, the widget's sentence says which
-  of those instants the rows held at. An evaluation has 4 s. A
+  20,000 rows and 4 MiB of encoded rows. A row counts toward them only
+  if a widget or drill of the evaluation takes it (`reads`): a state's
+  if it holds at an instant they read (now, where the range begins, or
+  the end of a period they show), an event's placed in periods if it
+  falls in a period they show, or in the previous range for a number
+  that compares with it, so rows no widget reduces do not fill the
+  limit; past it, a state widget's sentence says which of those
+  instants the rows held at. An evaluation has 4 s. A
   count of a dashboard is two, one after the other: its own widgets, on
   a copy of what they read, with their titles, then the board's
   proposals, on a copy of their own made after the first is closed, so
