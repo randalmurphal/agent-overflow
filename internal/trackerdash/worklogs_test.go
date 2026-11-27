@@ -559,8 +559,8 @@ func TestAnEvaluationTellsTheReadsWhatItNeeds(t *testing.T) {
 // coverageBoard is a sprints board of the viewer's logged time, today
 // (25 November) not read, with six closed sprints: p1, p2 and p3 from 200
 // days ago to 160 days ago, around the copy's first day (28 May, 181 days
-// ago; p2 ends, and p3's period begins, at its midnight), and r1, r2 and
-// r3 from 60 days ago to 18 days ago; and active,
+// ago; p2 holds the day before it alone, from that day's midnight to
+// its own), and r1, r2 and r3 from 60 days ago to 18 days ago; and active,
 // from 5 days ago to 9 days on. Its metrics count the logged time now
 // (now), by the period of each row's day (event), and as a state that
 // holds from its day on (state), and by the active sprint's days (days).
@@ -571,7 +571,7 @@ func coverageBoard() Board {
 	for i, s := range []struct {
 		id         string
 		start, end float64
-	}{{"p1", 200, 190}, {"p2", 190, 181.5}, {"p3", 181.5, 160}, {"r1", 60, 46}, {"r2", 46, 32}, {"r3", 32, 18}} {
+	}{{"p1", 200, 182.5}, {"p2", 182.5, 181.5}, {"p3", 181.5, 160}, {"r1", 60, 46}, {"r2", 46, 32}, {"r3", 32, 18}} {
 		f.sprint(s.id, s.id, "closed", ago(s.start), ago(s.end), i+1)
 	}
 	f.dated("active", "active", "active", ago(5), ago(-9), 0, 7)
@@ -665,7 +665,8 @@ func TestEachLoggedNumberIsKnownByWhatItsReductionTook(t *testing.T) {
 	}
 
 	// The last 10 sprints, p1 to r3: p1 and p2 begin before the copy's
-	// first day; p1 ends before it, p2 after.
+	// first day, p2 at the midnight of the day before it, and end at
+	// midnights, p2 at the first day's.
 	r.Range = RangeSprints10
 	a = mustEvaluate(t, evaluator(), b, r)
 	event = widgetOf(t, a, "event")
