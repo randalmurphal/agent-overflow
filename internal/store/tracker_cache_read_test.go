@@ -266,6 +266,7 @@ var mirrorNotReadTimes = map[string]string{
 	"tracker_cache_boards.retired":                 "a flag",
 	"tracker_cache_boards.structure_wall":          "a wall time (MirrorRead.Wall)",
 	"tracker_cache_sync.read_wall":                 "a wall time (MirrorRead.Wall)",
+	"tracker_cache_roots.evidence_failed_wall":     "a wall time (when the evidence read failed)",
 	"tracker_cache_sync.failed_wall":               "a wall time (MirrorRead.Wall)",
 	"tracker_cache_sync.reconcile_failed_wall":     "a wall time (when the failing call returned)",
 	"tracker_cache_sync.reconcile_refused":         "a flag",

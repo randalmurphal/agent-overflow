@@ -577,7 +577,8 @@ func TestAnEvaluationOfAProjectCountingTicketsCountsTickets(t *testing.T) {
 // A project that turns credit on, with no status groups or support named
 // for the site, has its boards' dashboards listed again with the pace
 // read from credit. While the evidence read fails, a finished ticket's
-// review is not counted and the answer says why; once a read stores the
+// review is not counted and the answer of a range that holds it says why,
+// and one of a range that does not says nothing; once a read stores the
 // evidence, its reviews count and the sentence is gone.
 func TestAProjectCountingCreditCountsItsPaceFromCredit(t *testing.T) {
 	m, _, _ := evidenceFixture(t, 1)
@@ -607,7 +608,9 @@ func TestAProjectCountingCreditCountsItsPaceFromCredit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		a := m.evaluate(t, sub, "")
+		dashboard := m.list(t, sub).Dashboards[0].ID
+		a := must[trackerdash.Answer](t)(m.svc.EvaluateDashboard(t.Context(), sub, trackerdash.Request{Dashboard: dashboard, Range: trackerdash.RangeThisSprint,
+			TimeZone: "UTC"}))
 		for _, w := range a.Widgets {
 			if w.Error != "" {
 				t.Fatalf("widget %s failed: %s", w.ID, w.Error)
@@ -623,6 +626,12 @@ func TestAProjectCountingCreditCountsItsPaceFromCredit(t *testing.T) {
 	if got != `{"nc":1}` || !strings.HasPrefix(evidence, "Some tickets' credit is not counted: the last read of who worked on them failed. ") ||
 		!strings.Contains(evidence, out.Failure.Message) {
 		t.Fatalf("while the read fails: credit %s, evidence %q; want the ticket's review not counted and the failure %q", got, evidence, out.Failure.Message)
+	}
+	// The ticket is the active sprint's: the last five finished sprints,
+	// the range a dashboard opens on, count no credit not read, so their
+	// answer says nothing of it.
+	if a := m.evaluate(t, sub, ""); a.Evidence != "" {
+		t.Fatalf("the last five sprints say %q; want nothing: no credit they count is unread", a.Evidence)
 	}
 	m.p.set(func(p *scripted) { p.evidence = read })
 	m.evidenceTick(t)

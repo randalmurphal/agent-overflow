@@ -94,16 +94,16 @@ const mirrorExportCardArg = 11
 
 // mirrorExportWindowArg is the parameter of the earliest instant a count
 // can ask of the intervals (mirrorExportEarliest), after the card blob's
-// shape; the three after it are credit's (mirrorExportCreditParams).
+// shape; the four after it are credit's (mirrorExportCreditParams).
 var mirrorExportWindowArg = mirrorExportCardArg + len(mirrorExportCardColumns)
 
 // mirrorExportCreditParams are the credit fill's parameters
-// (mirrorCreditSQL): the history window's start, from which the evidence
-// unit reads support tickets' worklogs (ListMirrorActsDue), then the
-// support rule and the credit rules.
+// (mirrorCreditSQL): the history window's start, from which a board
+// without sprints reads its weeks, the support rule, the credit rules,
+// and the export's clock, after which no act counts.
 var mirrorExportCreditParams = mirrorCreditParams{groups: "?3", reset: "CAST(?4 AS INTEGER)",
 	from: intParam("?" + strconv.Itoa(mirrorExportWindowArg+1)), support: "?" + strconv.Itoa(mirrorExportWindowArg+2),
-	rules: "?" + strconv.Itoa(mirrorExportWindowArg+3)}
+	rules: "?" + strconv.Itoa(mirrorExportWindowArg+3), until: intParam("?" + strconv.Itoa(mirrorExportWindowArg+4))}
 
 // args is the shape as the fills bind it, ?6 to ?10 and then a member
 // path for each column of mirrorExportCardColumns (mirrorExportFills).
@@ -450,12 +450,13 @@ var ErrMirrorExportUnsupported = errors.New("store: this store has no database f
 // every export fills (mirrorExportRelations), the others left empty, and
 // the columns of MirrorExportColumns relations names, decoded from card
 // blobs of shape card, and the intervals from window, the start of the
-// mirror's history window in milliseconds (mirrorExportIntervalsFrom). It reads with regroup in one read transaction of this
+// mirror's history window in milliseconds (mirrorExportIntervalsFrom);
+// now is the evaluation's clock, after which no act counts as credit. It reads with regroup in one read transaction of this
 // store's file, attached to conn read-only for the fill and detached
 // before it returns. ok is false, with nothing filled, for a board the
 // mirror does not show. It takes a history read slot, as every read that
 // walks a board does; ctx bounds the wait for it and every statement.
-func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations []string, window int64, card MirrorCardShape) (export MirrorExport, ok bool, err error) {
+func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations []string, window, now int64, card MirrorCardShape) (export MirrorExport, ok bool, err error) {
 	if s.path == "" || s.path == ":memory:" || strings.Contains(s.path, "mode=memory") {
 		return MirrorExport{}, false, ErrMirrorExportUnsupported
 	}
@@ -487,13 +488,13 @@ func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID in
 			ok = false
 		}
 	}()
-	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup, set, window, card)
+	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup, set, window, now, card)
 	return export, ok, err
 }
 
 // exportMirrorBoardTx runs the fill in one transaction on conn, the file
 // attached.
-func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations map[string]bool, window int64, card MirrorCardShape) (MirrorExport, bool, error) {
+func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations map[string]bool, window, now int64, card MirrorCardShape) (MirrorExport, bool, error) {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: begin the export of board %s: %w", boardID, err)
@@ -518,7 +519,7 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 		return MirrorExport{}, false, fmt.Errorf("store: read board %s's earliest sprint to export it: %w", boardID, err)
 	}
 	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone,
-		mirrorExportEarliest(window, earliestSprint), window, card)
+		mirrorExportEarliest(window, earliestSprint), window, now, card)
 	for _, fill := range mirrorExportFills {
 		if !fill.runs(relations) {
 			continue
@@ -536,8 +537,9 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 
 // mirrorExportArgs is what the fills bind (mirrorExportFills).
 // from is the earliest instant a count can ask of the intervals
-// (mirrorExportEarliest), window the history window's start.
-func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, from, window int64, card MirrorCardShape) []any {
+// (mirrorExportEarliest), window the history window's start and now the
+// export's clock.
+func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, from, window, now int64, card MirrorCardShape) []any {
 	groups := regroup.statuses
 	if groups == "" {
 		groups = "{}"
@@ -546,7 +548,7 @@ func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, reset
 	if estimated {
 		hasEstimate = 1
 	}
-	return append(append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...), from, window, regroup.supportArg(), regroup.creditArg())
+	return append(append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...), from, window, regroup.supportArg(), regroup.creditArg(), now)
 }
 
 // mirrorExportURI is the read-only URI of the database file at path.

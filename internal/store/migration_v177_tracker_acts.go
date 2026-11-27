@@ -30,9 +30,22 @@ package store
 // a root's drain take them with it. The three Tempo triggers of v168 are
 // made again to delete the root's worklog acts and receipts too when the
 // time source changes, so no worklog of the earlier source is counted and
-// every issue's logged time reads as not read until the next read. A
-// replace read under an earlier generation is refused by
+// every issue's logged time reads as not read until the next read, and to
+// advance the totals revision of each of the root's boards, whose credit
+// that changes. A replace read under an earlier generation is refused by
 // ReplaceMirrorActs, as ReplaceMirrorWorklogs refuses one.
+//
+// trg_tracker_cache_credit_card_moved advances the totals revision of the
+// boards holding an issue whose update time moves past a receipt that was
+// for it: its credit is not read from then until a read for the new
+// update (mirrorCreditCurrentSQL). A card write that moves no receipt out
+// of date, the steady state of a board read, runs one probe of the
+// issue's receipts by key.
+//
+// tracker_cache_roots.evidence_failure is why the evidence unit's last
+// read of the root's connection failed as a whole, at evidence_failed_wall
+// on the wall clock; empty and 0 while its last read did not
+// (RecordMirrorEvidenceOutcome).
 const trackerActsV177SQL = `
 CREATE TABLE tracker_cache_issue_acts (
  root_id INTEGER NOT NULL,
@@ -69,6 +82,15 @@ CREATE TABLE tracker_cache_issue_act_reads (
  PRIMARY KEY (root_id, issue_id, source),
  FOREIGN KEY (root_id, issue_id) REFERENCES tracker_cache_issues(root_id, issue_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
+ALTER TABLE tracker_cache_roots ADD COLUMN evidence_failed_wall INTEGER NOT NULL DEFAULT 0 CHECK(evidence_failed_wall >= 0);
+ALTER TABLE tracker_cache_roots ADD COLUMN evidence_failure TEXT NOT NULL DEFAULT '';
+CREATE TRIGGER trg_tracker_cache_credit_card_moved AFTER UPDATE OF updated_at ON tracker_cache_issues
+WHEN EXISTS (SELECT 1 FROM tracker_cache_issue_act_reads r WHERE r.root_id = NEW.root_id AND r.issue_id = NEW.issue_id
+  AND r.read_at > 0 AND r.read_for >= OLD.updated_at AND r.read_for < NEW.updated_at)
+BEGIN
+ UPDATE tracker_cache_boards SET totals_revision = totals_revision + 1 WHERE root_id = NEW.root_id
+  AND board_id IN (SELECT board_id FROM tracker_cache_board_issues WHERE root_id = NEW.root_id AND issue_id = NEW.issue_id);
+END;
 DROP TRIGGER tracker_tempo_added_drops_worklogs;
 DROP TRIGGER tracker_tempo_enabled_drops_worklogs;
 DROP TRIGGER tracker_tempo_deleted_drops_worklogs;
@@ -80,6 +102,7 @@ BEGIN
  DELETE FROM tracker_cache_worklog_days WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = NEW.parent_id);
  DELETE FROM tracker_cache_issue_act_reads WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = NEW.parent_id) AND source = 2;
  DELETE FROM tracker_cache_issue_acts WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = NEW.parent_id) AND source = 2;
+ UPDATE tracker_cache_boards SET totals_revision = totals_revision + 1 WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = NEW.parent_id);
 END;
 CREATE TRIGGER tracker_tempo_enabled_drops_worklogs AFTER UPDATE OF enabled ON tracker_connections
 WHEN NEW.kind = 'tempo' AND NEW.enabled IS NOT OLD.enabled
@@ -89,6 +112,7 @@ BEGIN
  DELETE FROM tracker_cache_worklog_days WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = NEW.parent_id);
  DELETE FROM tracker_cache_issue_act_reads WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = NEW.parent_id) AND source = 2;
  DELETE FROM tracker_cache_issue_acts WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = NEW.parent_id) AND source = 2;
+ UPDATE tracker_cache_boards SET totals_revision = totals_revision + 1 WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = NEW.parent_id);
 END;
 CREATE TRIGGER tracker_tempo_deleted_drops_worklogs AFTER DELETE ON tracker_connections
 WHEN OLD.kind = 'tempo' AND OLD.enabled = 1
@@ -98,6 +122,7 @@ BEGIN
  DELETE FROM tracker_cache_worklog_days WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = OLD.parent_id);
  DELETE FROM tracker_cache_issue_act_reads WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = OLD.parent_id) AND source = 2;
  DELETE FROM tracker_cache_issue_acts WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = OLD.parent_id) AND source = 2;
+ UPDATE tracker_cache_boards SET totals_revision = totals_revision + 1 WHERE root_id = (SELECT id FROM tracker_cache_roots WHERE connection_id = OLD.parent_id);
 END;
 `
 

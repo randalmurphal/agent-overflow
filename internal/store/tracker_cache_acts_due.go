@@ -13,12 +13,14 @@ import (
 const mirrorActsDuePage = 4 * mirrorHistoryBatch
 
 // mirrorActsRevalidate is how long a worklog receipt of a ticket the
-// active-sprint arm or the support arm lists stays current: a worklog
+// active-sprint, weeks or support arm lists stays current: a worklog
 // deleted, summarized by the time source once a day, or processed late
 // moves no card, so a live ticket's worklogs are read again this long
-// after their read. A closed sprint's are not: a later add or edit moves
-// the card. mirrorActsRetry is how long a source whose read failed for its
-// issue alone (MirrorActsAttempt) is not due.
+// after their read (a week's reviews count up to now, as an active
+// sprint's do). A closed sprint's are not: its reviews count up to its
+// completion, and a later add or edit moves the card. mirrorActsRetry is
+// how long a source whose read failed for its issue alone
+// (MirrorActsAttempt) is not due.
 const (
 	mirrorActsRevalidate = 24 * time.Hour
 	mirrorActsRetry      = 24 * time.Hour
@@ -92,7 +94,7 @@ func mirrorWorklogsFromSQL(need string) string {
 //   - weeks: of a board that plans no sprints, its rows done now whose
 //     card moved at or after ?6 (a ticket's finish is one of its
 //     updates), walked by the update index, their comments and every
-//     worklog;
+//     worklog, revalidated: a week's reviews count up to now;
 //   - support: the board's rows the support rule names whose card moved
 //     at or after ?6, walked by the update index (a worklog written moves
 //     its card), their worklogs from ?6, revalidated.
@@ -115,10 +117,10 @@ var mirrorActsDueSQL = func() (out struct{ active, sprints, closed, weeks, suppo
 		   AND ` + due + ` AND i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `)` + limit
 	out.sprints = `SELECT sprint_id, completed_at FROM tracker_cache_sprints
 		 WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND state = ` + strconv.Itoa(MirrorSprintClosed) + ` AND completed_at >= ` + window
-	columns, due = member(false)
-	out.closed = columns + ` FROM tracker_cache_sprints l` + members("l") + `
+	closedColumns, closedDue := member(false)
+	out.closed = closedColumns + ` FROM tracker_cache_sprints l` + members("l") + `
 		 WHERE l.root_id = CAST(?1 AS INTEGER) AND l.board_id = ?2 AND l.sprint_id = ?9
-		   AND ` + due + ` AND coalesce(` + mirrorStatusAtCompletionSQL + ` IN (` + mirrorDoneStatusesSQL("?3") + `), 0)` + limit
+		   AND ` + closedDue + ` AND coalesce(` + mirrorStatusAtCompletionSQL + ` IN (` + mirrorDoneStatusesSQL("?3") + `), 0)` + limit
 	out.weeks = columns + ` FROM tracker_cache_issues i
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = i.root_id AND b.board_id = ?2 AND b.issue_id = i.issue_id` + mirrorActsReceiptsSQL + `
 		 WHERE ` + mirrorUpdatedSinceSQL("i", ">=", window) + `

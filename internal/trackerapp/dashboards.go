@@ -164,9 +164,9 @@ func (s *Service) subscribedBoard(subscription string, r trackerdash.Request) (t
 // EstimateUnit the unit the project counts the board in (StatusGroups.unit)
 // while the copy holds the board's own estimates, whether its
 // tracker has epics, the connection's verified account for Mine, and
-// while the project counts credit, the failure of the connection's last
-// linked tick, which reads who worked on the tickets (SyncLinked). The
-// caller leaves the service when the evaluation returns.
+// while the project counts credit, why the evidence unit's last read of
+// who worked on the tickets failed as a whole (UnitEvidence). The caller
+// leaves the service when the evaluation returns.
 func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.Board, error) {
 	if err := scope.boardOnly(); err != nil {
 		return trackerdash.Board{}, err
@@ -181,19 +181,15 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 		return trackerdash.Board{}, fmt.Errorf("trackerapp: read connection %s: %w", scope.Connection, err)
 	}
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-		export, ok, err := s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, relations, s.window().UnixMilli(), cardShape)
+		export, ok, err := s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, relations, s.window().UnixMilli(), millis(s.now()), cardShape)
 		export.EstimateUnit = int(groups.unit(tracker.EstimateUnit(export.EstimateUnit)))
 		return export, ok, err
 	}
 	b := trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), Credit: groups.credit, Viewer: row.VerifiedAccountID}
 	if groups.credit {
-		linked, ok, err := s.store.GetMirrorSync(root, "", millis(s.now()))
-		if err != nil {
+		if b.EvidenceFailure, err = s.store.GetMirrorEvidenceFailure(root); err != nil {
 			s.leave()
-			return trackerdash.Board{}, fmt.Errorf("trackerapp: read the linked issues' sync state of %s: %w", scope.Connection, err)
-		}
-		if ok && linked.Failure.Kind != "" {
-			b.EvidenceFailure = linked.Failure.Message
+			return trackerdash.Board{}, fmt.Errorf("trackerapp: read the evidence read's outcome of %s: %w", scope.Connection, err)
 		}
 	}
 	return b, nil

@@ -149,7 +149,7 @@ func TestMirrorActsReplaceAnIssuesSource(t *testing.T) {
 	catalog := MirrorCatalog{Users: []MirrorUser{{ID: "acc-user2", Name: "User 2"}}}
 	catalogWrite, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), []MirrorIssueActs{commentsOf("10001", 5, 2, "c1", "c2"), worklogs,
 		commentsOf("99999", 5, 2, "c9")}, nil, catalog)
-	if err != nil || !catalogWrite.Changed {
+	if err != nil || !catalogWrite.Catalog.Changed {
 		t.Fatalf("first replace: %v, catalog %+v", err, catalogWrite)
 	}
 	assertRows(t, s.db, storedActsSQL, "10001:1:c1:acc-user1:2:0,10001:1:c2:acc-user1:2:0,10001:2:w1:acc-user2:3:600")
@@ -400,7 +400,7 @@ func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
 // whose card moved in the window, their comments and every worklog, each
 // source until a read for its update stored its receipt; a row not done,
 // one that did not move in the window, and a sprint board's done row in no
-// sprint are not.
+// sprint are not. Its worklogs are revalidated as a live sprint's are.
 func TestMirrorActsDueOnABoardWithoutSprints(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -426,6 +426,11 @@ func TestMirrorActsDueOnABoardWithoutSprints(t *testing.T) {
 	check("10001:w")
 	replaceActs(t, s, root, 11, nil, worklogsOf("10001", 500, 0, 2))
 	check("")
+	// A week's reviews count through today, so its worklogs are read again
+	// a day after their read, as a live sprint's are.
+	if got, _ := actsDue(t, s, root, 100, 11+mirrorActsRevalidate.Milliseconds()+1); got != "10001:w" {
+		t.Fatalf("due a day after the read = %q; want the worklogs again", got)
+	}
 }
 
 // A worklog receipt of a ticket the active-sprint arm lists is due again

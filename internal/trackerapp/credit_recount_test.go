@@ -1,0 +1,120 @@
+package trackerapp
+
+import (
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
+)
+
+// rowsToldSince is the rows the fixture board's events after the first n
+// named as changed.
+func (m *mirrorFixture) rowsToldSince(n int) []tracker.IssueID {
+	boards, _, _ := m.events.snapshot()
+	var out []tracker.IssueID
+	for _, e := range boards[n:] {
+		if e.Scope == m.scope() {
+			out = append(out, e.Changed...)
+		}
+	}
+	return out
+}
+
+// An evidence read that changes what credit counts of a ticket tells
+// each open board holding it, which counts its credit again: the first
+// read of a finished ticket's evidence names its row; the same read again
+// names nothing.
+func TestAnEvidenceReadTellsTheBoardsHoldingItsTickets(t *testing.T) {
+	m, _, _ := evidenceFixture(t, 1)
+	m.countCredit(t, m.conn.ID, true)
+	m.subscribeShown(t, m.project())
+	n := m.boardEventCount()
+	m.evidenceTick(t)
+	if got := m.rowsToldSince(n); !slices.Contains(got, "20001") {
+		t.Fatalf("after the evidence read the board was told %v; want ticket 20001's row", got)
+	}
+	n = m.boardEventCount()
+	m.evidenceTick(t)
+	if got := m.rowsToldSince(n); len(got) != 0 {
+		t.Fatalf("a tick with nothing due told %v", got)
+	}
+}
+
+// evidenceFailureOf is why the evidence read failed as the fixture
+// board's dashboard reads it while its project counts credit.
+func (m *mirrorFixture) evidenceFailureOf(t *testing.T) string {
+	t.Helper()
+	p := must[store.Project](t)(m.st.GetProject(m.project()))
+	groups := must[StatusGroups](t)(m.svc.boardStatusGroups(setupKey{slug: p.Slug, site: siteKey{m.conn.Kind, m.conn.Site}}))
+	b, err := m.svc.dashboardBoard(m.scope(), groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.svc.leave()
+	return b.EvidenceFailure
+}
+
+// The credit sentence says the evidence read's own failure: a linked tick
+// that fails before the evidence read (an off-board linked card Jira
+// refuses) says none; an evidence read that fails as a whole says why,
+// and the next that reads to its end clears it.
+func TestTheCreditSentenceSaysTheEvidenceReadsOwnFailure(t *testing.T) {
+	m, _, _ := evidenceFixture(t, 1)
+	m.countCredit(t, m.conn.ID, true)
+	m.linkThread("thread-1", "50005")
+	var read func(tracker.EvidenceQuery) (tracker.Evidence, error)
+	m.p.set(func(p *scripted) {
+		read = p.evidence
+		p.cards = func([]tracker.IssueID) (tracker.Cards, error) {
+			return tracker.Cards{}, &trackerapi.StatusError{Status: 403}
+		}
+	})
+	out := must[Outcome](t)(m.svc.SyncLinked(t.Context(), m.conn.ID, LinkedDue{Cards: true, Evidence: true}, Background))
+	if out.Failure == nil || slices.ContainsFunc(out.Ran, func(u UnitResult) bool { return u.Unit == UnitEvidence }) {
+		t.Fatalf("the linked tick %+v; want it failed at its cards, before the evidence read", out)
+	}
+	if got := m.evidenceFailureOf(t); got != "" {
+		t.Fatalf("after a failure before the evidence read, the sentence's failure is %q; want none", got)
+	}
+	m.p.set(func(p *scripted) {
+		p.cards = nil
+		p.evidence = func(tracker.EvidenceQuery) (tracker.Evidence, error) {
+			return tracker.Evidence{}, &trackerapi.TransientError{Err: errors.New("reset")}
+		}
+	})
+	out = must[Outcome](t)(m.svc.SyncLinked(t.Context(), m.conn.ID, LinkedDue{Evidence: true}, Background))
+	if out.Failure == nil {
+		t.Fatal("the failing evidence read did not fail its tick")
+	}
+	if got := m.evidenceFailureOf(t); got == "" || !strings.Contains(got, out.Failure.Message) {
+		t.Fatalf("after the evidence read failed, the sentence's failure is %q; want %q", got, out.Failure.Message)
+	}
+	m.p.set(func(p *scripted) { p.evidence = read })
+	m.evidenceTick(t)
+	if got := m.evidenceFailureOf(t); got != "" {
+		t.Fatalf("after an evidence read that stored, the sentence's failure is %q; want none", got)
+	}
+}
+
+// Turning the connection's Tempo connection on or off, which drops its
+// worklogs (credit's evidence), reads its boards again.
+func TestATimeSourceChangeReadsTheBoardsAgain(t *testing.T) {
+	m, _, _ := evidenceFixture(t, 1)
+	m.subscribeShown(t, m.project())
+	n := m.boardEventCount()
+	tempo := m.addTempo(m.conn.ID)
+	if !m.readAgainSince(n) {
+		t.Fatal("adding Tempo did not read the board again")
+	}
+	n = m.boardEventCount()
+	if _, err := m.svc.SetEnabled(tempo.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if !m.readAgainSince(n) {
+		t.Fatal("turning Tempo off did not read the board again")
+	}
+}

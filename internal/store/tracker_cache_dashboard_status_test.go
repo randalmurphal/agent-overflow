@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"testing"
@@ -26,7 +27,7 @@ func TestDashboardCountsStatusesAsTheSectionsDo(t *testing.T) {
 	evaluate := func(board, dashboard, rng string) trackerdash.Answer {
 		t.Helper()
 		fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-			return s.ExportMirrorBoard(ctx, conn, root, board, regroup, relations, 0, store.CardShapeForTest)
+			return s.ExportMirrorBoard(ctx, conn, root, board, regroup, relations, 0, math.MaxInt64, store.CardShapeForTest)
 		}
 		a, err := e.Evaluate(context.Background(), trackerdash.Board{Fill: fill, Epics: true},
 			trackerdash.Request{Dashboard: dashboard, Range: rng, TimeZone: "UTC"})
@@ -95,7 +96,7 @@ func TestStartToDoneCountsWhatTheHistoryShows(t *testing.T) {
 	// WEB-23 Tuesday to Wednesday.
 	s, root := store.DashboardHistoryFixtureForTest(t, time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC).UnixMilli(), day)
 	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-		return s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{}, relations, 0, store.CardShapeForTest)
+		return s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{}, relations, 0, math.MaxInt64, store.CardShapeForTest)
 	}}
 	r := trackerdash.Request{Dashboard: "overview_weeks", Range: trackerdash.RangeWeeks2, TimeZone: "UTC"}
 	d, err := trackerdash.NewEvaluator(func() time.Time { return now }).Drill(context.Background(), b, trackerdash.DrillRequest{Request: r, Widget: "start_to_done"})
@@ -128,7 +129,7 @@ func TestACountCopiesWhatItsMetricsRead(t *testing.T) {
 	var asked [][]string
 	var changes []int
 	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-		export, ok, err := s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{}, relations, 0, store.CardShapeForTest)
+		export, ok, err := s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{}, relations, 0, math.MaxInt64, store.CardShapeForTest)
 		var n int
 		if err == nil {
 			err = conn.QueryRowContext(ctx, `SELECT count(*) FROM changes`).Scan(&n)

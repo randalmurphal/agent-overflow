@@ -253,9 +253,9 @@ type WidgetValue struct {
 type Answer struct {
 	Range   RangeView `json:"range"`
 	Reading bool      `json:"reading,omitempty"`
-	// Evidence says, while credit the dashboard counts is not read for
-	// some ticket, that the read of who worked on the tickets is failing
-	// and why (Board.EvidenceFailure); "" otherwise.
+	// Evidence says, while credit a widget counts in its range is not read
+	// for some ticket, that the last read of who worked on the tickets
+	// failed and why (EvidenceSentence); "" otherwise.
 	Evidence  string        `json:"evidence,omitempty"`
 	Estimates string        `json:"estimates"`
 	Person    *Name         `json:"person,omitempty"`
@@ -1057,6 +1057,7 @@ func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer
 		read[m.Name] = read[m.Name].and(widgetReads(w, m, o.sp))
 	}
 	runs := map[string]counted{}
+	unread := false
 	for _, w := range o.d.Widgets {
 		m := o.metrics[w.Metric]
 		c, ok := runs[m.Name]
@@ -1067,35 +1068,39 @@ func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer
 			runs[m.Name] = c
 		}
 		a.Widgets = append(a.Widgets, o.ev.widget(w, m, c, o.sp))
+		unread = unread || b.EvidenceFailure != "" && o.unreadCredit(m, c)
 	}
 	if err := o.ev.titles(o.ctx, listed(a.Widgets)); err != nil {
 		return Answer{}, err
 	}
-	if a.Evidence, err = o.ev.evidence(o.ctx, b.EvidenceFailure); err != nil {
-		return Answer{}, err
+	if unread {
+		a.Evidence = EvidenceSentence(b.EvidenceFailure)
 	}
 	return a, nil
 }
 
-// evidence is the sentence an answer gives while the read of who worked
-// on the tickets fails (failure, "" for none) and credit in the copy is
-// not read for some ticket: a review or support row not counted. A copy
-// with no credit says none.
-func (ev *evaluation) evidence(ctx context.Context, failure string) (string, error) {
-	if failure == "" || !ev.filled["credit"] {
-		return "", nil
+// unreadCredit reports that metric m, which read the credit relation,
+// counted c with a row of the range it does not count for want of credit
+// read: a review or support row not counted (one whose status or finish
+// is not known is a finished one).
+func (o *opened) unreadCredit(m Metric, c counted) bool {
+	if c.err != nil || !slices.Contains(o.preps[m.Name].p.asks.tables, "credit") {
+		return false
 	}
-	unread := false
-	err := ev.query(ctx, `SELECT EXISTS (SELECT 1 FROM credit WHERE value IS NULL AND kind <> 'finished')`, func(r *sql.Rows) error {
-		return r.Scan(&unread)
-	})
-	if err != nil {
-		return "", tooSlow(ctx, fmt.Errorf("read whether the copy's credit is read: %w", err))
+	g := o.ev.inRange(m, c, o.sp)
+	unread := func(r contribution) bool { return !r.counted && r.series != seriesFinished }
+	return slices.ContainsFunc(g.rows, unread) || slices.ContainsFunc(g.unplaced, unread)
+}
+
+// EvidenceSentence is what a screen says where credit it counts is not
+// read for some ticket in view while the evidence unit's last read of who
+// worked on the tickets failed with failure: "" for none
+// (Board.EvidenceFailure, Answer.Evidence).
+func EvidenceSentence(failure string) string {
+	if failure == "" {
+		return ""
 	}
-	if !unread {
-		return "", nil
-	}
-	return "Some tickets' credit is not counted: the last read of who worked on them failed. " + failure, nil
+	return "Some tickets' credit is not counted: the last read of who worked on them failed. " + failure
 }
 
 // proposals is the values of b's proposals over r's range and narrowing,

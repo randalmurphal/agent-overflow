@@ -87,17 +87,20 @@ var mirrorPaceLastSQL = `last AS MATERIALIZED (
 
 // mirrorPaceCreditSQL is mirrorPaceSQL with credit: each of the sprints
 // of last, what it finished as mirrorPaceSQL counts it (its members' done
-// by the pace's rule, cr_m), and its credit rows' sums (cr_rows), ?5 the
-// support rule and ?6 the credit rules.
+// by the pace's rule, cr_m) but for its support tickets, which count by
+// their time, and its credit rows' sums (cr_rows), ?5 the support rule
+// and ?6 the credit rules. It reads closed sprints alone, whose acts end
+// at their completion, so it needs no clock.
 var mirrorPaceCreditSQL = func() string {
-	p := mirrorCreditParams{groups: "?4", reset: "?3", support: "?5", rules: "?6", from: "0"}
+	p := mirrorCreditParams{groups: "?4", reset: "?3", support: "?5", rules: "?6", from: "0", until: mirrorExportNever}
 	with, rows := mirrorCreditSQL(p, mirrorPaceLastSQL, "l.sprint_id IN (SELECT sprint_id FROM last)", false)
 	return with + `,
 	  cr_rows(` + mirrorCreditColumns + `) AS (` + rows + `)
 	SELECT l.sprint_id, coalesce(f.members, 0), coalesce(f.done, 0), coalesce(f.estimate, 0), coalesce(c.review, 0), coalesce(c.review_shares, 0),
 	  coalesce(c.support, 0), coalesce(c.support_shares, 0), coalesce(c.unread, 0)
 	FROM last l
-	LEFT JOIN (SELECT sprint_id, count(*) AS members, total(done = 1) AS done, total(iif(done = 1, points, 0)) AS estimate FROM cr_m GROUP BY sprint_id) f
+	LEFT JOIN (SELECT sprint_id, count(*) AS members, total(done = 1 AND NOT support) AS done, total(iif(done = 1 AND NOT support, points, 0)) AS estimate
+	    FROM cr_m GROUP BY sprint_id) f
 	  ON f.sprint_id = l.sprint_id
 	LEFT JOIN (SELECT sprint, total(iif(kind = 'review', value, 0)) AS review, total(iif(kind = 'review', share, 0)) AS review_shares,
 	    total(iif(kind = 'support', value, 0)) AS support, total(iif(kind = 'support', share, 0)) AS support_shares,

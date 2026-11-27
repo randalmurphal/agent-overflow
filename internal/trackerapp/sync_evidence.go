@@ -35,6 +35,11 @@ const evidenceBatch = 50
 // worklog (store ReplaceMirrorActs), its failure included when the change
 // closed the client it read through, and reports More: the next tick
 // reads under the new source with a provider built for it.
+//
+// The unit owns its last outcome (store RecordMirrorEvidenceOutcome),
+// which the credit sentence says: a unit that reads to its end clears
+// it, and one that fails as a whole records why, unless the run stopped
+// or the mirror ended.
 func (r *run) evidence() (UnitResult, error) {
 	if !r.p.Capabilities().Evidence {
 		return UnitResult{}, nil
@@ -43,6 +48,27 @@ func (r *run) evidence() (UnitResult, error) {
 	if err != nil || len(boards) == 0 {
 		return UnitResult{}, err
 	}
+	res, err := r.evidenceOfBoards(boards)
+	failure := ""
+	switch {
+	case err == nil:
+	case r.ctx.Err() != nil || endsMirror(err):
+		return res, err
+	default:
+		failure = err.Error()
+		if c, ok := errors.AsType[*callError](err); ok {
+			failure = ClassifyFailure(r.row.Kind, c.err).Message
+		}
+	}
+	if _, recErr := r.s.store.RecordMirrorEvidenceOutcome(r.root, failure, millis(r.s.now())); recErr != nil {
+		err = errors.Join(err, fmt.Errorf("trackerapp: record the evidence read's outcome of %s: %w", r.row.ID, recErr))
+	}
+	return res, err
+}
+
+// evidenceOfBoards is the unit's read of the tickets credit counts on
+// boards (evidence).
+func (r *run) evidenceOfBoards(boards []store.MirrorActsBoard) (UnitResult, error) {
 	due, more, err := r.s.store.ListMirrorActsDue(r.root, boards, millis(r.window()), millis(r.s.now()))
 	if err != nil {
 		return UnitResult{}, fmt.Errorf("trackerapp: list the tickets whose evidence is due: %w", err)
@@ -57,7 +83,7 @@ func (r *run) evidence() (UnitResult, error) {
 	}()
 	for batch := range slices.Chunk(due, evidenceBatch) {
 		changed, tried, err := r.evidenceOf(batch)
-		log.add(Changes{Catalog: changed})
+		log.add(changed)
 		failed = append(failed, tried...)
 		switch {
 		case errors.Is(err, store.ErrTrackerCacheSourceChanged):
@@ -85,16 +111,19 @@ func (r *run) timeSourceMoved() (bool, error) {
 
 // evidenceOf reads the due sources of the tickets of due and stores what
 // it read and the sources that failed for their ticket alone, which it
-// returns, and reports whether the catalog changed. A failure of the
-// whole read is returned after what came before it is stored.
-func (r *run) evidenceOf(due []store.MirrorActsDue) (changed bool, failed []tracker.SourceFailure, _ error) {
+// returns, and what the store committed: whether the catalog changed and
+// the tickets whose credit evidence changed, whose boards count their
+// credit again (Changes.Evidence). A failure of the whole read is
+// returned after what came before it is stored, and records no ticket's
+// source as failed.
+func (r *run) evidenceOf(due []store.MirrorActsDue) (changed Changes, failed []tracker.SourceFailure, _ error) {
 	q := tracker.EvidenceQuery{Issues: make([]tracker.EvidenceIssue, len(due))}
 	for i, d := range due {
 		q.Issues[i] = tracker.EvidenceIssue{Issue: tracker.IssueID(d.IssueID), Comments: d.Comments, Worklogs: d.Worklogs, WorklogsFrom: timeOf(d.WorklogsFrom)}
 	}
 	read, err := r.beginRead()
 	if err != nil {
-		return false, nil, err
+		return Changes{}, nil, err
 	}
 	r.calls++
 	ev, readErr := r.p.Evidence(r.ctx, q)
@@ -103,7 +132,7 @@ func (r *run) evidenceOf(due []store.MirrorActsDue) (changed bool, failed []trac
 	}
 	catalog, err := mirrorCatalog(ev.Catalog)
 	if err != nil {
-		return false, nil, errors.Join(readErr, err)
+		return Changes{}, nil, errors.Join(readErr, err)
 	}
 	from := make(map[string]int64, len(due))
 	for _, d := range due {
@@ -122,17 +151,18 @@ func (r *run) evidenceOf(due []store.MirrorActsDue) (changed bool, failed []trac
 		tried[i] = store.MirrorActsAttempt{IssueID: string(f.Issue), Source: mirrorActSource(f.Source), Reason: f.Err.Error()}
 	}
 	if len(acts)+len(tried) == 0 {
-		return false, nil, readErr
+		return Changes{}, nil, readErr
 	}
-	catalogWrite, err := r.s.store.ReplaceMirrorActs(r.root, r.row.TimeSourceGen, read, acts, tried, catalog)
-	r.told("", written{Changes: Changes{Catalog: catalogWrite.Changed}, links: catalogWrite.Threads})
+	stored, err := r.s.store.ReplaceMirrorActs(r.root, r.row.TimeSourceGen, read, acts, tried, catalog)
+	changed = Changes{Catalog: stored.Catalog.Changed, Evidence: issueIDs(stored.Credited)}
+	r.told("", written{Changes: changed, links: stored.Catalog.Threads})
 	if err != nil {
 		err = fmt.Errorf("trackerapp: store who worked on %d tickets: %w", len(due), err)
 	}
 	if err == nil || errors.Is(err, store.ErrTrackerCacheSourceChanged) {
 		failed = ev.Failed
 	}
-	return catalogWrite.Changed, failed, errors.Join(err, readErr)
+	return changed, failed, errors.Join(err, readErr)
 }
 
 // mirrorActSource is source as the mirror stores it.

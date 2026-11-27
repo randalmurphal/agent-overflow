@@ -85,12 +85,14 @@ type MirrorStore interface {
 	ReadMirrorRefreshTargets(rootID int64, cardIDs, detailIDs, boardIDs []string) (store.MirrorRefreshTargets, error)
 
 	ListMirrorActsDue(rootID int64, boards []store.MirrorActsBoard, from, now int64) ([]store.MirrorActsDue, bool, error)
-	ReplaceMirrorActs(rootID, sourceGen int64, read store.MirrorRead, issues []store.MirrorIssueActs, tried []store.MirrorActsAttempt, catalog store.MirrorCatalog) (store.MirrorCatalogWrite, error)
+	RecordMirrorEvidenceOutcome(rootID int64, failure string, wall int64) (bool, error)
+	GetMirrorEvidenceFailure(rootID int64) (string, error)
+	ReplaceMirrorActs(rootID, sourceGen int64, read store.MirrorRead, issues []store.MirrorIssueActs, tried []store.MirrorActsAttempt, catalog store.MirrorCatalog) (store.MirrorActsWrite, error)
 
 	ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
 	ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay string) (store.MirrorWorklogDays, error)
 
-	ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup store.MirrorRegroup, relations []string, window int64, card store.MirrorCardShape) (store.MirrorExport, bool, error)
+	ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup store.MirrorRegroup, relations []string, window, now int64, card store.MirrorCardShape) (store.MirrorExport, bool, error)
 }
 
 var (
@@ -257,6 +259,10 @@ type Changes struct {
 	// cleanup removed it kept it again (store KeepMirrorTicket). A view
 	// that shows one as another's link shows it without or with its card.
 	Visibility []tracker.IssueID `json:"visibility,omitempty"`
+	// Evidence are the issues whose evidence credit counts changed (store
+	// MirrorActsWrite.Credited): every board holding them counts their
+	// credit again, as a history moves a row's totals.
+	Evidence []tracker.IssueID `json:"evidence,omitempty"`
 }
 
 // written is what one store write committed, as run.told takes it: the
@@ -272,7 +278,7 @@ type written struct {
 
 // Empty reports changes that name nothing a view of the mirror shows.
 func (c Changes) Empty() bool {
-	return len(c.Cards)+len(c.Rows)+len(c.Removed)+len(c.Parents)+len(c.History)+len(c.Details)+len(c.Dropped)+len(c.Visibility) == 0 &&
+	return len(c.Cards)+len(c.Rows)+len(c.Removed)+len(c.Parents)+len(c.History)+len(c.Details)+len(c.Dropped)+len(c.Visibility)+len(c.Evidence) == 0 &&
 		!c.Catalog && !c.Structure
 }
 
@@ -287,6 +293,7 @@ func (c *Changes) add(o Changes) {
 	c.Details = unite(c.Details, o.Details)
 	c.Dropped = unite(c.Dropped, o.Dropped)
 	c.Visibility = unite(c.Visibility, o.Visibility)
+	c.Evidence = unite(c.Evidence, o.Evidence)
 	c.Catalog = c.Catalog || o.Catalog
 	c.Structure = c.Structure || o.Structure
 }
@@ -307,6 +314,7 @@ func (l *changeLog) add(o Changes) {
 	l.c.Details = append(l.c.Details, o.Details...)
 	l.c.Dropped = append(l.c.Dropped, o.Dropped...)
 	l.c.Visibility = append(l.c.Visibility, o.Visibility...)
+	l.c.Evidence = append(l.c.Evidence, o.Evidence...)
 	l.c.Catalog = l.c.Catalog || o.Catalog
 	l.c.Structure = l.c.Structure || o.Structure
 }
@@ -316,6 +324,7 @@ func (l *changeLog) changes() Changes {
 	c := &l.c
 	c.Cards, c.Rows, c.Removed, c.Parents = ordered(c.Cards), ordered(c.Rows), ordered(c.Removed), ordered(c.Parents)
 	c.History, c.Details, c.Dropped, c.Visibility = ordered(c.History), ordered(c.Details), ordered(c.Dropped), ordered(c.Visibility)
+	c.Evidence = ordered(c.Evidence)
 	return *c
 }
 

@@ -3,10 +3,12 @@ package store
 import (
 	"context"
 	"database/sql/driver"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // creditRules is one snapshot from the start: 10% of a finished ticket's
@@ -86,8 +88,15 @@ func creditFixture(t *testing.T) (*Store, int64) {
 // names.
 func creditOf(t *testing.T, s *Store, root int64, regroup MirrorRegroup) (rows, people []string) {
 	t.Helper()
+	return creditAt(t, s, root, regroup, 0)
+}
+
+// creditAt is creditOf with the history window from window, at the
+// wall clock now.
+func creditAt(t *testing.T, s *Store, root int64, regroup MirrorRegroup, window int64) (rows, people []string) {
+	t.Helper()
 	conn := exportConn(t)
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", regroup, []string{"credit"}, 0, CardShapeForTest); err != nil || !ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", regroup, []string{"credit"}, window, time.Now().UnixMilli(), CardShapeForTest); err != nil || !ok {
 		t.Fatalf("export: %v, %v", ok, err)
 	}
 	rows = exportRows(t, conn, `SELECT concat_ws(' ', coalesce(sprint, '-'), coalesce(at, '-'), ticket, kind, coalesce(person, '-'),
@@ -132,7 +141,8 @@ func TestMirrorCreditCountsFinishedReviewAndSupport(t *testing.T) {
 // With credit, the Backlog's pace adds each sprint's credit to what it
 // finished: the review and support credit in the board's estimate and in
 // tickets, and the tickets whose credit is not read; what it finished is
-// what the pace without credit counts.
+// what the pace without credit counts but for its support tickets, which
+// count by their time (TestASupportTicketIsCreditedOnlyByItsTime).
 func TestMirrorPaceCountsCredit(t *testing.T) {
 	t.Parallel()
 	s, root := creditFixture(t)
@@ -142,9 +152,13 @@ func TestMirrorPaceCountsCredit(t *testing.T) {
 		t.Fatalf("pace = %+v\nwant %+v", got, want)
 	}
 	ps, proot := paceFixture(t)
+	noSupport, err := MirrorRegroup{}.WithCredit(creditRules(false))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, board := range []string{"10", "11"} {
 		plain := paceOf(t, ps, proot, board, MirrorRegroup{})
-		credited := paceOf(t, ps, proot, board, creditRegroup(t, creditRules(false)))
+		credited := paceOf(t, ps, proot, board, noSupport)
 		for i := range credited {
 			credited[i].Unread = 0
 		}
@@ -193,7 +207,8 @@ func TestAPaceWithoutCreditRunsTodaysStatement(t *testing.T) {
 // its issue, once a write, when it changes: a closed sprint's ticket
 // whose evidence was never read is read and found to hold no act (it goes
 // from not read to read), then the same read again changes nothing, then
-// a comment found moves it, and a failed attempt does not.
+// a comment found moves it; a failed attempt after it leaves the source
+// not counted until a read stores it again.
 func TestMirrorEvidenceMovesTheTotalsWhenItChanges(t *testing.T) {
 	t.Parallel()
 	s, root := creditFixture(t)
@@ -219,7 +234,13 @@ func TestMirrorEvidenceMovesTheTotalsWhenItChanges(t *testing.T) {
 		}, true, 0, 0.5},
 		{"a failed attempt", func() {
 			replaceActs(t, s, root, 60, []MirrorActsAttempt{{IssueID: "10002", Source: MirrorActWorklog, Reason: "issue 10002: refused"}})
-		}, false, 0, 0.5},
+		}, true, 1, 0.5},
+		{"the same failure again", func() {
+			replaceActs(t, s, root, 70, []MirrorActsAttempt{{IssueID: "10002", Source: MirrorActWorklog, Reason: "issue 10002: refused"}})
+		}, false, 1, 0.5},
+		{"a read that stores", func() {
+			replaceActs(t, s, root, 80, nil, MirrorIssueActs{IssueID: "10002", Source: MirrorActWorklog, ReadFor: 900})
+		}, true, 0, 0.5},
 	} {
 		before, err := s.CountMirrorSections(root, "10", regroup)
 		if err != nil {
@@ -342,7 +363,7 @@ func TestMirrorCreditOnABoardWithoutSprints(t *testing.T) {
 			act("w3", "acc-user2", 960, 7200), act("w4", "acc-user2", 50, 3600)}})
 	rules := []MirrorCreditRule{creditRules(false)[0], {From: 750, ReviewShare: 20, ReviewNeed: 2, Commented: true, LoggedTime: true, HoursPerPoint: 2}}
 	conn := exportConn(t)
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", creditRegroup(t, rules), []string{"credit"}, 100, CardShapeForTest); err != nil || !ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", creditRegroup(t, rules), []string{"credit"}, 100, math.MaxInt64, CardShapeForTest); err != nil || !ok {
 		t.Fatalf("export: %v, %v", ok, err)
 	}
 	rows := exportRows(t, conn, `SELECT concat_ws(' ', coalesce(sprint, '-'), coalesce(at, '-'), ticket, kind, coalesce(person, '-'),
