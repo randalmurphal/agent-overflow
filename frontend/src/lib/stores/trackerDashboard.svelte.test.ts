@@ -702,7 +702,7 @@ describe('your logged time', () => {
   });
 
   it('shows a failed Read again only on the computer it asked, and not once a newer ask was taken', async () => {
-    const { s, evaluate, reads } = await openedLogged(loggedAnswer(['2026-11-25']));
+    const { s, reads } = await openedLogged(loggedAnswer(['2026-11-25']));
     // Peer 1's ask is out when the board of another computer shows.
     s.logged.retry();
     await flush();

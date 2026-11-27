@@ -16,15 +16,16 @@
 // subscription it reads nothing. Until the first read lands there is no
 // set and the board shows every card; a read that fails keeps the last set
 // and says why. A set the drill does not know whole (its number not known
-// for days of your logged time not read, or older than kept) is no set:
-// the board shows every card and says why (incomplete).
+// for days of your logged time not read) is no set: the board shows every
+// card and says why (incomplete). A tile's set is what holds now, which
+// never counts days older than those kept.
 
 import { untrack } from 'svelte';
 import type { Request } from '../../../bindings/agent-overflow/internal/trackerdash/models';
 import { withBackendTarget } from '../transport/backends';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
 import { TrackerDashboardDrill } from './bindings';
-import { LOGGED_OLD_TEXT, notReadWords, type Num } from './trackerDashboardModel';
+import { notReadWords, type Num } from './trackerDashboardModel';
 import type { TrackerBoardRef } from './trackerBoard.svelte';
 import { DASHBOARD_CHANGE_INTERVAL_MS, recountOnChanges, type DashboardSource } from './trackerDashboard.svelte';
 
@@ -82,7 +83,7 @@ export function createBoardTicketSet(opts: {
         );
         if (!token.isCurrent()) return;
         const n = a.value as Num | undefined;
-        incomplete = n?.old ? `it counts days ${LOGGED_OLD_TEXT}` : n?.ur ? `${notReadWords(n.ur)} of your logged time` : '';
+        incomplete = n?.ur ? `${notReadWords(n.ur)} of your logged time` : '';
         ids = incomplete ? null : new Set(a.ids ?? []);
         error = null;
       } catch (err) {
