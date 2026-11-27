@@ -168,13 +168,19 @@ func TestEvidenceReadsTempoWorklogsWhileTempoIsTheTime(t *testing.T) {
 }
 
 // A batch whose answer is over the transport's bound is read again in
-// halves, so every issue of it is read; an issue whose one comment is
-// over the bound alone fails its comments, its worklogs and the other
-// issues read.
+// halves, so every issue of it is read in bulk; an issue whose one
+// comment is over the bound alone fails its comments, its worklogs and
+// the other issues read.
 func TestEvidenceReadsAnAnswerOverTheBoundInParts(t *testing.T) {
 	var ids []tracker.EvidenceIssue
 	var start time.Time
-	s := newEditedScenario(t, nil, func(site *trackerfake.JiraSite) {
+	var mu sync.Mutex
+	routes := map[string]int{}
+	s := newEditedScenario(t, func(r trackerfake.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		routes[r.Route]++
+	}, func(site *trackerfake.JiraSite) {
 		site.Tempo = nil
 		base := site.Issues[0]
 		start = base.Created
@@ -206,6 +212,13 @@ func TestEvidenceReadsAnAnswerOverTheBoundInParts(t *testing.T) {
 	if fmt.Sprint(read) != "map[1:490 2:50]" || len(ev.Failed) != 1 || ev.Failed[0].Issue != "30002" || ev.Failed[0].Source != tracker.EvidenceComments ||
 		!strings.Contains(ev.Failed[0].Err.Error(), "over its") {
 		t.Fatalf("acts read by source %v, failed %+v", read, ev.Failed)
+	}
+	// Halving reads the batch in 11 bulk fetches; the issue over the bound
+	// alone is the only one whose lists are read by page.
+	mu.Lock()
+	defer mu.Unlock()
+	if routes["POST rest/api/3/issue/bulkfetch"] != 11 || routes["GET rest/api/3/issue/{issue}/worklog"] != 1 {
+		t.Fatalf("requests %v", routes)
 	}
 }
 
