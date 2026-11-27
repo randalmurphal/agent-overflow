@@ -124,12 +124,7 @@ func (a *App) GetTicketWork(ctx context.Context, connectionID, issueID string) (
 	if err != nil {
 		return TicketWork{}, err
 	}
-	if len(read.work.PullRequests) > 0 {
-		if err := a.readComputerOrigins(ctx, &read); err != nil {
-			return TicketWork{}, err
-		}
-	}
-	return read.answer(), nil
+	return a.answerTicketWork(ctx, &read)
 }
 
 // SearchTicketWork is GetTicketWork's answer with the forge searched by
@@ -156,34 +151,30 @@ func (a *App) SearchTicketWork(ctx context.Context, connectionID, issueID string
 	if err != nil {
 		return TicketWork{}, budgetError(ctx, err)
 	}
-	if err := a.readComputerOrigins(ctx, &read); err != nil {
-		return TicketWork{}, budgetError(ctx, err)
-	}
 	a.searchTicketForge(ctx, &read)
-	return read.answer(), nil
+	return a.answerTicketWork(ctx, &read)
 }
 
 // ticketWorkRead is a ticket's Work as its reads gather it: the pull
 // requests listed so far, the projects Work covers, the forge repository
-// each one's origin names and every branch of theirs that names the key.
-// answer folds a branch a listed pull request names into it.
+// each one's origin names (Repo zero, and Error set, when git could not
+// read it) and every branch of theirs that names the key.
+// answerTicketWork folds a branch into the pull request whose head it is.
 type ticketWorkRead struct {
 	work     TicketWork
 	projects []string
-	origins  []ticketProjectOrigin
+	origins  []ForgeProject
 	branches []TicketBranch
-	// shows are the computer's projects by the forge repository their
-	// origin names (readComputerOrigins), nil until read.
-	shows map[string][]string
+	// heads are the pull requests each forge lookup by a branch's name
+	// found, by the project whose checkout it ran in and the branch
+	// (searchTicketForge): the proof that a fork's branch is the head of
+	// a pull request of its parent.
+	heads map[ticketHead][]string
 }
 
-// ticketProjectOrigin is a project of Work's whose origin names a forge
-// repository, as forgeProject reads it: Repo is zero, and Error set, when
-// git could not read the origin.
-type ticketProjectOrigin struct {
-	project store.Project
-	ForgeProject
-}
+// ticketHead is a branch of a project's checkout that a head lookup ran
+// for.
+type ticketHead struct{ project, branch string }
 
 // readTicketWork is the read from what this computer stores and git's
 // refs that both Work methods start from (GetTicketWork's sources).
@@ -285,7 +276,7 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 			return ticketWorkRead{}, err
 		}
 		if ok {
-			read.origins = append(read.origins, ticketProjectOrigin{project: project, ForgeProject: origin})
+			read.origins = append(read.origins, origin)
 		}
 		branches, err := a.ticketBranches(project, key)
 		if err != nil {
@@ -297,74 +288,104 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 	return read, nil
 }
 
-// readComputerOrigins reads which projects of the computer can show a
-// pull request of each repository (ticketWorkRead.shows): those whose
-// origin it is. GetTicketWork reads them only for an answer that lists a
-// pull request; SearchTicketWork before its search, which may find one,
-// so no local read starts after the forge's requests spent the budget.
-func (a *App) readComputerOrigins(ctx context.Context, read *ticketWorkRead) error {
-	computer, err := a.forgeProjects(ctx)
-	if err != nil {
-		return err
+// answerTicketWork is the Work answer: the pull requests listed, each
+// with the project that can show it (reviewProjects), and the branches
+// that are no listed pull request's head. A branch of project P is a pull
+// request's head when their names match and the pull request is of P's
+// origin's repository, or a lookup by the branch's name in P's checkout
+// found it, as it finds a fork's in the parent. The project a row was
+// listed under takes no part: it is where the list was read, not where
+// the head is. So before the search answers, a fork's branch stands
+// beside the parent's pull request it heads.
+func (a *App) answerTicketWork(ctx context.Context, read *ticketWorkRead) (TicketWork, error) {
+	if err := a.reviewProjects(ctx, read); err != nil {
+		return TicketWork{}, err
 	}
-	read.shows = map[string][]string{}
-	for _, p := range computer {
-		if p.Error == "" {
-			read.shows[p.Repo.Identity()] = append(read.shows[p.Repo.Identity()], p.ProjectID)
-		}
-	}
-	return nil
-}
-
-// answer is the Work answer: the pull requests listed, each with the
-// project that can show it, and the branches no listed pull request has
-// as its head (branchNamedByPullRequest).
-func (r ticketWorkRead) answer() TicketWork {
-	work := r.work
-	work.PullRequests = slices.Clone(r.work.PullRequests)
-	for i, pr := range work.PullRequests {
-		work.PullRequests[i].ReviewProjectID = reviewProject(pr, r.shows[pr.Ref.Repository().Identity()])
-	}
-	origins := make(map[string]string, len(r.origins))
-	for _, o := range r.origins {
+	origins := make(map[string]string, len(read.origins))
+	for _, o := range read.origins {
 		if o.Error == "" {
 			origins[o.ProjectID] = o.Repo.Identity()
 		}
 	}
+	work := read.work
 	work.Branches = []TicketBranch{}
-	for _, b := range r.branches {
-		if !branchNamedByPullRequest(b, origins[b.ProjectID], work.PullRequests) {
+	for _, b := range read.branches {
+		found := read.heads[ticketHead{b.ProjectID, b.Name}]
+		heads := slices.ContainsFunc(work.PullRequests, func(pr TicketPullRequest) bool {
+			return pr.Branch == b.Name && (origins[b.ProjectID] != "" && pr.Ref.Repository().Identity() == origins[b.ProjectID] ||
+				slices.Contains(found, pr.Ref.Identity()))
+		})
+		if !heads {
 			work.Branches = append(work.Branches, b)
 		}
 	}
-	return work
+	return work, nil
 }
 
-// reviewProject is the project of the computer's whose checkout can show
-// pr in the app, of shows, those whose origin is pr's repository, pr's
-// own project first: a review fetches the pull request's refs from
-// origin (gitops.Core.EnsurePRObjects), so a fork's checkout cannot show
-// its parent's pull request. Empty when no project can.
-func reviewProject(pr TicketPullRequest, shows []string) string {
-	switch {
-	case slices.Contains(shows, pr.ProjectID):
-		return pr.ProjectID
-	case len(shows) > 0:
-		return shows[0]
+// reviewProjects names, for each listed pull request, the project of the
+// computer whose checkout can show it in the app (ReviewProjectID): one
+// whose origin is the pull request's repository, since a review fetches
+// its refs from origin (gitops.Core.EnsurePRObjects), so a fork's
+// checkout cannot show its parent's. An archived project counts: archiving
+// keeps the checkout, and a review opens a project by its ID. The row's
+// own project comes first, then the projects Work covers, whose origins
+// the read has; the computer's other projects are read, in name order,
+// only for a row those leave without one, and only until every such row
+// has one or ctx ends, so a search that spent its budget keeps its answer
+// and those rows open on the forge. None when no project can.
+func (a *App) reviewProjects(ctx context.Context, read *ticketWorkRead) error {
+	clones := map[string][]string{}
+	for _, o := range read.origins {
+		if o.Error == "" {
+			clones[o.Repo.Identity()] = append(clones[o.Repo.Identity()], o.ProjectID)
+		}
 	}
-	return ""
-}
-
-// branchNamedByPullRequest reports whether one of prs has b, a branch of
-// a project whose origin is the repository origin (empty when unread), as
-// its head: a pull request listed under b's project, or one listed under
-// no project in that repository. A ticket's branches can share a name
-// across repositories, so a row never takes another repository's branch.
-func branchNamedByPullRequest(b TicketBranch, origin string, prs []TicketPullRequest) bool {
-	return slices.ContainsFunc(prs, func(pr TicketPullRequest) bool {
-		return pr.Branch == b.Name &&
-			(pr.ProjectID == b.ProjectID || pr.ProjectID == "" && origin != "" && pr.Ref.Repository().Identity() == origin)
-	})
+	prs := read.work.PullRequests
+	name := func() (left int) {
+		for i, pr := range prs {
+			if pr.ReviewProjectID != "" {
+				continue
+			}
+			shows := clones[pr.Ref.Repository().Identity()]
+			switch {
+			case slices.Contains(shows, pr.ProjectID):
+				prs[i].ReviewProjectID = pr.ProjectID
+			case len(shows) > 0:
+				prs[i].ReviewProjectID = shows[0]
+			default:
+				left++
+			}
+		}
+		return left
+	}
+	if name() == 0 {
+		return nil
+	}
+	all, err := a.store.ListAllProjects()
+	if err != nil {
+		return fmt.Errorf("read the projects that may show the ticket's pull requests: %w", err)
+	}
+	for _, p := range all {
+		if slices.Contains(read.projects, p.ID) {
+			continue
+		}
+		// No read starts once ctx ended, and forgeProject fails only then.
+		if ctx.Err() != nil {
+			return nil
+		}
+		origin, ok, err := a.forgeProject(ctx, p)
+		if err != nil {
+			return nil
+		}
+		if !ok || origin.Error != "" {
+			continue
+		}
+		clones[origin.Repo.Identity()] = append(clones[origin.Repo.Identity()], p.ID)
+		if name() == 0 {
+			return nil
+		}
+	}
+	return nil
 }
 
 // mirroredTicketKey is the key of issueID in connectionID's mirror.

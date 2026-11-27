@@ -36,6 +36,9 @@ func TestTicketWorkListsThePullRequestsAndBranchesThatNameItsKey(t *testing.T) {
 	writeFile(t, dir, ".gitkeep", "")
 	runGit(t, dir, "add", ".")
 	runGit(t, dir, "commit", "-m", "initial")
+	// The repository the project's stored list was read from, as the Pull
+	// requests page reads it.
+	runGit(t, dir, "remote", "add", "origin", "https://github.com/acme/widgets.git")
 	for _, branch := range []string{"web-1-retry", "WEB-12-other", "feature/WEB-1-ui"} {
 		runGit(t, dir, "branch", branch)
 	}
@@ -76,8 +79,8 @@ func TestTicketWorkListsThePullRequestsAndBranchesThatNameItsKey(t *testing.T) {
 	}
 	wantPRs := []TicketPullRequest{
 		{Ref: prListRow(prListRepoA, 5, nil).Ref, Title: "Retry cursor", Author: "User 1", State: TicketPROpen, CI: "success",
-			Branch: "feature/WEB-1-ui", ProjectID: f.project},
-		{Ref: merged, URL: "https://github.com/acme/widgets/pull/9", State: TicketPRMerged, Branch: "web-1-first", ProjectID: f.project},
+			Branch: "feature/WEB-1-ui", ProjectID: f.project, ReviewProjectID: f.project},
+		{Ref: merged, URL: "https://github.com/acme/widgets/pull/9", State: TicketPRMerged, Branch: "web-1-first", ProjectID: f.project, ReviewProjectID: f.project},
 	}
 	if !slices.Equal(work.PullRequests, wantPRs) {
 		t.Errorf("pull requests = %+v\nwant %+v", work.PullRequests, wantPRs)

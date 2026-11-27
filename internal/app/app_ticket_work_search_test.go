@@ -732,3 +732,76 @@ func TestSearchTicketWorkRequestsPerTicketBranchOnGitHub(t *testing.T) {
 		}
 	}
 }
+
+// An archived project that is the only clone of a pull request's
+// repository shows it in the app: archiving keeps the checkout and its
+// threads, and a review opens a project by its ID, archived or not.
+func TestTicketWorkNamesAnArchivedCloneToShowAPullRequest(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}, {Forge: "github", Project: "example/api"}}})
+	api := forgeProjectRepo(t, f.a, "https://github.com/example/api.git")
+	ap, err := f.a.store.GetProject(api)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.linkThread(t, "t-api", api, ap.Path)
+	if _, err := f.a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{ThreadID: "t-api", Forge: "github", Host: "github.com",
+		Project: "example/api", Number: 5, URL: "https://github.com/example/api/pull/5", Branch: "WEB-1-api", WorktreePath: ap.Path, SeenOpenAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.a.store.ArchiveProject(api); err != nil {
+		t.Fatal(err)
+	}
+	for name, read := range map[string]func(context.Context, string, string) (TicketWork, error){"stored": f.a.GetTicketWork, "searched": f.a.SearchTicketWork} {
+		work, err := read(f.ctx, f.conn.ID, "10101")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(work.PullRequests) != 1 || work.PullRequests[0].ReviewProjectID != api {
+			t.Errorf("%s: pull requests %+v; want example/api's 5 shown by the archived project %s", name, work.PullRequests, api)
+		}
+	}
+}
+
+// A fork's branch folds into the merge request its head lookup found,
+// though a thread in the upstream project recorded that merge request:
+// the project a row was listed under says nothing of where its head is.
+// The upstream checkout shows it.
+func TestSearchTicketWorkFoldsAForksBranchIntoTheMergeRequestAnUpstreamThreadRecorded(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/web"},
+		{Forge: "gitlab", Project: "grp/up", Pulls: []forgefake.Pull{
+			{Number: 2, Title: "Fix login", HeadRef: "WEB-1-login", HeadRepo: "alice/up", State: "merged"},
+		}},
+		{Forge: "gitlab", Project: "alice/up", Parent: "grp/up"},
+	}})
+	up := forgeProjectRepo(t, f.a, "https://gitlab.com/grp/up.git")
+	upPath, err := f.a.store.GetProject(up)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.linkThread(t, "t-up", up, upPath.Path)
+	if _, err := f.a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{ThreadID: "t-up", Forge: "gitlab", Host: "gitlab.com",
+		Project: "grp/up", Number: 2, URL: "https://gitlab.com/grp/up/-/merge_requests/2", Branch: "WEB-1-login", WorktreePath: upPath.Path, SeenOpenAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	fork := forgeProjectRepo(t, f.a, "https://gitlab.com/alice/up.git")
+	forkPath, err := f.a.store.GetProject(fork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, forkPath.Path, "branch", "WEB-1-login")
+	f.linkThread(t, "t-fork", fork, forkPath.Path)
+
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(work.PullRequests) != 1 || work.PullRequests[0].Ref.Key() != "gitlab:grp/up:2" || work.PullRequests[0].ReviewProjectID != up {
+		t.Errorf("pull requests %+v; want grp/up's 2 shown by the upstream project", work.PullRequests)
+	}
+	if len(work.Branches) != 0 {
+		t.Errorf("branches %+v; want the fork's WEB-1-login folded into grp/up's 2", work.Branches)
+	}
+}
