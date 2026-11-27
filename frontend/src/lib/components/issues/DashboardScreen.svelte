@@ -77,17 +77,18 @@
   }
 
   // The widget a tile of the summary row opened this screen at: shown once
-  // its dashboard is listed.
+  // its dashboard's answer is laid out, since the widgets above it take
+  // their height from their numbers.
   // svelte-ignore state_referenced_locally
   let showWidget = source ? takeShownWidget(source.board) : '';
   let gridEl: HTMLElement | undefined = $state();
   $effect(() => {
     const d = store.dashboard;
     const grid = gridEl;
-    if (!showWidget || !d || !grid || !d.widgets.some((w) => w.id === showWidget)) return;
-    const cell = grid.querySelector<HTMLElement>(`[data-widget-cell="${CSS.escape(showWidget)}"]`);
+    if (!showWidget || !d || !grid || !store.answer || !d.widgets.some((w) => w.id === showWidget)) return;
+    const id = showWidget;
     showWidget = '';
-    cell?.scrollIntoView({ block: 'start' });
+    requestAnimationFrame(() => grid.querySelector<HTMLElement>(`[data-widget-cell="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'start' }));
   });
 
   /** The screen's width that the grid lays out to. */
