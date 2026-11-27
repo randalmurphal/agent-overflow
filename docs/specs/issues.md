@@ -845,8 +845,9 @@ the worklog's description once posted.
   from the last 5 sprints", a board not read yet as read when it is
   opened, and a board that finished no sprint as having none. Planning
   poker is on unless turned off; off, the project's tickets show no
-  poker and ask the site nothing about it, and on again show the votes
-  read anew. A project with only Linear boards says it has no points
+  poker and ask the site nothing about it, and on again show none of the
+  votes shown before until the ticket's computer answers with the round
+  it holds. A project with only Linear boards says it has no points
   settings, and one with no boards says to add one; what it chose is
   kept for when it lists a Jira board. Not built: the Credit group
   (review credit, support credit and which tickets are support).
