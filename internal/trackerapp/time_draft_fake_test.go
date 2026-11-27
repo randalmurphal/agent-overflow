@@ -782,6 +782,30 @@ func TestAnApprovalThatSkipsEveryEntryTellsItsDay(t *testing.T) {
 	}
 }
 
+// A post's frame names every day its check read and stored: a read of
+// two days two weeks apart stores the days between them too.
+func TestAPostTellsEveryDayItsCheckStored(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	last, err := time.Parse(time.DateOnly, d.day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := last.AddDate(0, 0, -14)
+	web1, web2 := draftTickets["WEB-1"], draftTickets["WEB-2"]
+	v := d.draft(t, TimeDraftEntry{Day: first.Format(time.DateOnly), Ticket: &web1, Hours: 1, Reason: "Built the form"},
+		TimeDraftEntry{Day: d.day, Ticket: &web2, Hours: 1, Reason: "Reviewed the pull request"})
+	d.takeEvents()
+	d.post(t, false, entryRefs(v.Made...)...)
+	var want []string
+	for day := first; !day.After(last); day = day.AddDate(0, 0, 1) {
+		want = append(want, day.Format(time.DateOnly))
+	}
+	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Days, want) {
+		t.Fatalf("the post told %+v; want the days %v", ev, want)
+	}
+}
+
 // An entry drafted for the account the connection was verified as before
 // is not posted as another account's time.
 func TestAnEntryOfAnotherAccountIsNotPosted(t *testing.T) {

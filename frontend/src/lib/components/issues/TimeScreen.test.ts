@@ -703,6 +703,12 @@ describe('what the week shows of a posted draft', () => {
     expect(await view.findByTestId('time-draft-banner-done')).toHaveTextContent('Logged 1h 30m in 2 worklogs');
   });
 
+  it('says what the draft logged as its worklogs now hold it, after one was changed', async () => {
+    answerDraft([log('701', '2026-11-11', 1800)], [drafted(11, '2026-11-11', 120, { state: 'posted', worklog: '701' }), asked(13, '2026-11-12', 25)]);
+    const view = render(TimeScreen, BASE);
+    expect(await view.findByTestId('time-draft-banner')).toHaveTextContent('30m is logged. Answer it in that day\'s column.');
+  });
+
   it('says beside a question left what the draft logged', async () => {
     answerDraft([log('701', '2026-11-11', 3600)], [drafted(11, '2026-11-11', 60, { state: 'posted', worklog: '701' }), asked(13, '2026-11-12', 25)]);
     const view = render(TimeScreen, BASE);
