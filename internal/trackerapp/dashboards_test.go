@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -323,15 +324,28 @@ func TestACountOverlappingAKeepFindsTheWidgetOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.svc.propMu.Lock()
-	done := make(chan trackerdash.Answer, 1)
-	go func() { done <- m.evaluate(t, sub, id) }()
-	waitBlockedIn(t, "trackerapp.(*Service).ownOf")
+	unlock := sync.OnceFunc(m.svc.propMu.Unlock)
+	defer unlock()
+	type outcome struct {
+		answer trackerdash.Answer
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		a, err := m.svc.EvaluateDashboard(t.Context(), sub, trackerdash.Request{Dashboard: id, TimeZone: "UTC"})
+		done <- outcome{a, err}
+	}()
+	waitBlockedIn(t, "trackerapp.(*Service).ownOf", done)
 	err = m.svc.keepLocked(proposalKey{key.slug, key.site, scope.Board}, key, string(scope.Board), q, KeepTarget{Dashboard: id}, id)
-	m.svc.propMu.Unlock()
+	unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := <-done
+	c := <-done
+	if c.err != nil {
+		t.Fatal(c.err)
+	}
+	a := c.answer
 	var counted int
 	for _, w := range a.Widgets {
 		if w.ID == q {
@@ -343,11 +357,17 @@ func TestACountOverlappingAKeepFindsTheWidgetOnce(t *testing.T) {
 	}
 }
 
-// waitBlockedIn waits until a goroutine waits on a mutex inside fn.
-func waitBlockedIn(t *testing.T, fn string) {
+// waitBlockedIn waits until a goroutine waits on a mutex inside fn, and
+// fails if the one that should has already ended.
+func waitBlockedIn[T any](t *testing.T, fn string, ended chan T) {
 	t.Helper()
+	buf := make([]byte, 1<<20)
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-		buf := make([]byte, 1<<20)
+		select {
+		case v := <-ended:
+			t.Fatalf("it ended before blocking in %s: %+v", fn, v)
+		default:
+		}
 		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
 			if strings.Contains(g, "sync.(*Mutex).Lock") && strings.Contains(g, fn) {
 				return

@@ -1213,7 +1213,8 @@ export function dashboardWidgetResultView(data: string): AoResultView | null {
   fact(view.facts, 'counts', str(reply, 'counts'));
   for (const row of list(reply.first_rows)) {
     const key = str(row, 'key');
-    view.lines.push({ key, title: join(key, str(row, 'title')), detail: join(num(row, 'value') !== null ? `${num(row, 'value')}` : '', str(row, 'period'), row.counted === false ? 'not counted' : ''), text: str(row, 'note'), link: null });
+    const amount = num(row, 'value');
+    view.lines.push({ key, title: join(key, str(row, 'title')), detail: join(amount !== null ? widgetAmount(amount, str(reply, 'unit')) : '', str(row, 'period'), row.counted === false ? 'not counted' : ''), text: str(row, 'note'), link: null });
   }
   return view;
 }

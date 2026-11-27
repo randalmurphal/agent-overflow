@@ -544,12 +544,14 @@ describe('tracker tool write results', () => {
     });
   });
 
-  it('says a widget\'s number in its unit, as the dashboard draws it', () => {
-    const card = (unit: string, value: number) => aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({ board: 'Web Team', unit, value, rows: 2, first_rows: [] }), {}, names);
-    expect(card('seconds', 5400)).toMatchObject({ outcome: '1.5h · 2 rows · on Web Team' });
-    expect(card('points', 8)).toMatchObject({ outcome: '8 points · 2 rows · on Web Team' });
-    expect(card('tickets', 1)).toMatchObject({ outcome: '1 ticket · 2 rows · on Web Team' });
-    expect(card('days', 2.5)).toMatchObject({ outcome: '2.5 days · 2 rows · on Web Team' });
+  it('says a widget\'s number and each first row\'s in its unit, as the dashboard draws them', () => {
+    const card = (unit: string, value: number) => aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({
+      board: 'Web Team', unit, value, rows: 2, first_rows: [{ key: 'WEB-1', value, counted: true }],
+    }), {}, names);
+    expect(card('seconds', 5400)).toMatchObject({ outcome: '1.5h · 2 rows · on Web Team', lines: [{ detail: '1.5h' }] });
+    expect(card('points', 8)).toMatchObject({ outcome: '8 points · 2 rows · on Web Team', lines: [{ detail: '8 points' }] });
+    expect(card('tickets', 1)).toMatchObject({ outcome: '1 ticket · 2 rows · on Web Team', lines: [{ detail: '1 ticket' }] });
+    expect(card('days', 2.5)).toMatchObject({ outcome: '2.5 days · 2 rows · on Web Team', lines: [{ detail: '2.5 days' }] });
   });
 
   it('reads a create as its key, and a create that stopped part way as incomplete with its sentence', () => {

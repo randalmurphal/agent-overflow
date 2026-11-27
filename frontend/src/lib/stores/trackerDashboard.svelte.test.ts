@@ -568,4 +568,18 @@ describe('the board\'s own dashboards', () => {
     await flush();
     expect(s.dashboardsError).toBeNull();
   });
+
+  it('reads the list again on Refresh after a read that answered, so Ask follows a provider installed since', async () => {
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
+    held<Answer>('EvaluateTrackerDashboard');
+    const s = open();
+    list.answer(listed([VIEW], [], 'Ask needs a provider.'));
+    await flush();
+    s.refresh();
+    flushSync();
+    expect(list.calls).toHaveLength(2);
+    list.answer(listed([VIEW]));
+    await flush();
+    expect(s.ask).toBe('');
+  });
 });

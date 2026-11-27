@@ -199,6 +199,7 @@
     <DashboardWidget
       view={w}
       value={values.get(w.id)}
+      counting={store.counting}
       range={answer?.range}
       estimates={answer?.estimates ?? ''}
       {stale}

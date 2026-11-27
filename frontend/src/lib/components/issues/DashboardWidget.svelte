@@ -44,6 +44,8 @@
     view: WidgetView;
     /** Its numbers in the answer; none until the first answer lands. */
     value: WidgetValue | undefined;
+    /** A count is out, so a widget with no numbers yet has them coming. */
+    counting?: boolean;
     range: RangeView | undefined;
     estimates: string;
     /** Its numbers are of a request no longer asked. */
@@ -55,7 +57,7 @@
     actions?: Snippet;
   }
 
-  let { view, value, range, estimates, stale = false, onDrill, onPerson, onEpic, onTicket, actions }: Props = $props();
+  let { view, value, counting = false, range, estimates, stale = false, onDrill, onPerson, onEpic, onTicket, actions }: Props = $props();
 
   let showHow = $state(false);
   const unit = $derived(view.unit as DashboardUnit);
@@ -119,7 +121,7 @@
   {:else}
     <div class="flex min-w-0 flex-col gap-2 transition-opacity {stale ? 'opacity-60' : ''}" inert={stale} data-testid="dashboard-widget-body" data-stale={stale}>
       {#if !value}
-        <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-waiting">Counting…</p>
+        <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-waiting">{counting ? 'Counting…' : 'Not counted'}</p>
       {:else if value.error}
         <p class="text-[0.75rem] text-error" role="alert" data-testid="dashboard-widget-error">{value.error}</p>
       {:else if view.form === 'number'}

@@ -91,6 +91,19 @@ describe('a count that fails', () => {
     expect(pressable(screen.getByTestId('dashboard-dismiss'))).toBe(true);
   });
 
+  it('says Counting… in a widget only while its count is out', async () => {
+    setBindingMock('TrackerDashboards', async () => listed([KEPT], [PROPOSED]));
+    let refuse: (err: Error) => void = () => {};
+    setBindingMock('EvaluateTrackerDashboard', () => new Promise<Answer>((_resolve, reject) => { refuse = reject; }));
+    const screen = mount();
+    await flush();
+    expect(screen.getAllByTestId('dashboard-widget-waiting').map((el) => el.textContent)).toEqual(['Counting…', 'Counting…']);
+    refuse(new Error('dashboard_too_slow'));
+    await flush();
+    expect(screen.getByTestId('dashboard-error')).toBeTruthy();
+    expect(screen.getAllByTestId('dashboard-widget-waiting').map((el) => el.textContent)).toEqual(['Not counted', 'Not counted']);
+  });
+
   it('on a kept dashboard picked from Overview leaves Edit, Remove, Keep and Dismiss to press, and none of Overview\'s numbers', async () => {
     setBindingMock('TrackerDashboards', async () => listed([VIEW, KEPT], [PROPOSED]));
     const overview = { range: { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: '' }, estimates: 'points', at: 1, widgets: [{ id: 'w_9', value: { v: 4 } }] } as unknown as Answer;

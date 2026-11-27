@@ -42,7 +42,8 @@
 // Remove are its methods, and every change there, from any client, is a
 // `tracker:dashboards_updated` from that computer, on which the screen
 // lists the dashboards and counts again. A change of that computer's
-// settings lists them again too, for Ask's sentence. A Keep onto a new
+// settings lists them again too, for Ask's sentence, and so does Refresh,
+// for whatever else the list was built from. A Keep onto a new
 // dashboard shows it once the list read after the Keep holds it.
 
 import { untrack } from 'svelte';
@@ -161,8 +162,7 @@ export interface TrackerDashboard {
   setMine(mine: boolean): void;
   narrowPerson(person: Name | null): void;
   narrowEpic(epic: Name | null): void;
-  /** Evaluates now, as Refresh asks, and lists the dashboards again when
-   * the last read of them failed. */
+  /** Lists the dashboards again and evaluates now, as Refresh asks. */
   refresh(): void;
   openDrill(target: DrillTarget): void;
   drillPage(page: number): void;
@@ -456,7 +456,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       closeDrill();
     },
     refresh() {
-      if (dashboardsError !== null) listGen += 1;
+      listGen += 1;
       scheduler.reset();
       scheduler.request({ immediate: true });
     },
