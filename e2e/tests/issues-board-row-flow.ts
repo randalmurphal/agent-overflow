@@ -32,7 +32,7 @@ async function openBoard(page: Page, pane: Locator, compact: boolean): Promise<v
   const picker = pane.getByTestId('issues-tabs-picker');
   if (await picker.isVisible()) {
     await press(picker, compact);
-    await press(page.getByTestId('issues-tab-option').filter({ hasText: /^Board$/ }), compact);
+    await press(page.getByTestId('issues-tab-option').filter({ hasText: 'Board' }).filter({ hasNotText: 'Dashboards' }), compact);
   } else {
     await press(pane.locator('[data-testid="issues-tab"][data-screen="board"]'), compact);
   }
