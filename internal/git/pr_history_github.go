@@ -165,8 +165,11 @@ type githubMoreWalk struct {
 }
 
 // ReadPRHistory reads at most PRHistoryRequests requests: the list from
-// the newest down to where the last read reached, then, half and half,
-// the follow-up pages and the list's gap.
+// the newest down to where the last read reached, then the follow-up
+// pages, then the list's gap with what they leave, and the follow-up
+// pages the gap's pages added with what that leaves. The follow-ups go
+// first so that the stretches the walk holds stay those of the gap pages
+// of one read: the gap walks on only once they are read.
 func (f *githubForge) ReadPRHistory(ctx context.Context, repo RepoReference, in PRHistoryInput) (PRHistory, error) {
 	owner, name, err := splitGitHubProject(repo.Project())
 	if err != nil {
@@ -190,20 +193,14 @@ func (f *githubForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 		if err := w.List.head(b, floor, r.page); err != nil {
 			return err
 		}
-		if err := b.part(r.followLeft); err != nil {
-			return err
-		}
-		if err := b.part(func(half *historyBudget) error { return w.List.walk(half, floor, r.page) }); err != nil {
-			return err
-		}
 		if err := r.followLeft(b); err != nil {
 			return err
 		}
-		return w.List.walk(b, floor, r.page)
+		if err := w.List.walk(b, floor, r.page); err != nil {
+			return err
+		}
+		return r.followLeft(b)
 	}()
-	if errors.Is(err, errHistoryBudget) {
-		err = nil
-	}
 	w.More = r.more
 	out := PRHistory{OwnHead: r.ownHead, Parent: r.parent, PRs: r.prs.prs, Acts: earliestActs(r.acts)}
 	walk, encodeErr := json.Marshal(w)
@@ -398,7 +395,7 @@ func (r *githubHistoryRead) followLeft(b *historyBudget) error {
 	}
 	for len(r.more) > 0 {
 		if !b.take() {
-			return errHistoryBudget
+			return nil
 		}
 		m := r.more[0]
 		page, found, err := r.morePage(m)

@@ -415,19 +415,63 @@ func githubFollowUps(t *testing.T, walk []byte) []githubMoreWalk {
 }
 
 // A pull request the list finds unchanged since the last read costs no
-// follow-up page, however many comments it has.
+// follow-up page, however many approvals and comments it has: the newest
+// pull request, which every steady read's page holds, has more approvals
+// than a page reads and is read on only by the first read.
 func TestGitHubHistoryDoesNotFollowUpAnUnchangedPullRequest(t *testing.T) {
 	t.Parallel()
 	pulls := historyPulls(2)
+	newest := &pulls[1]
+	for i := range 5 {
+		newest.Reviews = append(newest.Reviews, forgefake.Review{Author: fmt.Sprintf("a%d", i), AuthorName: "A", State: "APPROVED", SubmittedAt: historyAt(3)})
+	}
 	for i := range 60 {
-		pulls[0].Comments = append(pulls[0].Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x", CreatedAt: historyAt(3)})
+		newest.Comments = append(newest.Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x", CreatedAt: historyAt(3)})
 	}
 	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}})
 	first := readHistory(t, f, githubHistoryRepo, nil)
+	if got := len(actsOf(first)); got != 65 || first.Owed || f.seen["PullHistoryMore"] != 2 {
+		t.Fatalf("the first read: %d acts, owed %v, %d follow-ups; want pull request 1's 5 approvals and 60 comments in 2", got, first.Owed, f.seen["PullHistoryMore"])
+	}
 	before := f.snapshot()
-	readHistory(t, f, githubHistoryRepo, first.Walk)
-	if got := f.since(before); got["PullHistoryMore"] != 0 {
-		t.Fatalf("a steady read asked %v; want no follow-up of the unchanged pull request 2", got)
+	steady := readHistory(t, f, githubHistoryRepo, first.Walk)
+	if got := f.since(before); !maps.Equal(got, map[string]int{"PullHistory": 1}) || !slices.Equal(historyNumbers(steady), []int64{1}) {
+		t.Fatalf("a steady read asked %v and read %v; want one page holding the unchanged pull request 1 and no follow-up", got, historyNumbers(steady))
+	}
+}
+
+// A read reads the follow-up pages its walk holds before it walks the
+// list's gap on, and spends what they leave on the gap: of 2,000 pull
+// requests whose newest 50 each leave one follow-up page, the first read
+// walks 30 pages of the list, the second reads 29 follow-ups beside its
+// page of the newest, and the third the 21 left and 8 pages of the gap.
+func TestGitHubHistoryFollowsUpBeforeItWalksOn(t *testing.T) {
+	t.Parallel()
+	pulls := historyPulls(2000)
+	for p := len(pulls) - 50; p < len(pulls); p++ {
+		for i := range 51 {
+			pulls[p].Comments = append(pulls[p].Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x", CreatedAt: historyAt(1)})
+		}
+	}
+	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}})
+	var walk []byte
+	for i, want := range []struct {
+		cost    map[string]int
+		left    int
+		reached int
+	}{
+		{map[string]int{"PullHistory": 30}, 50, 1500},
+		{map[string]int{"PullHistory": 1, "PullHistoryMore": 29}, 21, 1500},
+		{map[string]int{"PullHistory": 9, "PullHistoryMore": 21}, 0, 1900},
+	} {
+		before := f.snapshot()
+		h := readHistory(t, f, githubHistoryRepo, walk)
+		walk = h.Walk
+		reach := historyNow.Add(-time.Duration(want.reached) * time.Hour)
+		if cost, left := f.since(before), len(githubFollowUps(t, walk)); !maps.Equal(cost, want.cost) || left != want.left || !h.Reach.Equal(reach) || !h.Owed {
+			t.Fatalf("read %d asked %v, left %d follow-ups and reached %v; want %v, %d and pull request %d's update, %v",
+				i+1, cost, left, h.Reach, want.cost, want.left, want.reached, reach)
+		}
 	}
 }
 

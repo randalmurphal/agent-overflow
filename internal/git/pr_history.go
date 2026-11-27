@@ -145,8 +145,8 @@ func (b *historyBudget) part(fn func(*historyBudget) error) error {
 	return err
 }
 
-// errHistoryBudget stops a part of a read that ran out of requests; the
-// read stores what it read before, and the walk holds the rest.
+// errHistoryBudget stops a read that ran out of requests; the read stores
+// what it read before, and the walk holds the rest.
 var errHistoryBudget = errors.New("the read used its requests")
 
 // listWalk is where a list of pull requests by update time stands. Top

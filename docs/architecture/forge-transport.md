@@ -852,6 +852,8 @@ read that failed before its first page claims none.
   follow-up the read cannot afford stays in the walk (`githubMoreWalk`)
   and leaves it only as its pages are read; one of a pull request the
   store no longer holds, which the read did not read, is dropped. A
+  read reads the follow-ups its walk holds before it walks the gap on,
+  so the walk holds no more than the follow-ups one read's pages left. A
   review started long ago and submitted later sits at its old place in
   the reviews, so on a pull request with more than 50 commenting reviews
   since the last read it can be missed.
