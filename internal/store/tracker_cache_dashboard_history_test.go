@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -120,30 +119,36 @@ func numText(n *trackerdash.Num) string {
 	return fmt.Sprintf("%g, %d not counted", *n.V, n.NC)
 }
 
-// A ticket is open, as the export's tickets say, exactly when its
-// status's group is none of done, canceled and left out, an unclassified
-// status included: the rule the burndown reads of a status it held
-// (statuses.status_group), on a board with each kind of status and a
-// regrouping.
-func TestATicketIsOpenByItsStatusGroup(t *testing.T) {
+// The burndown counts a stretch open by the store's one rule of a status
+// that is not done, the rule tickets.open follows: on a board with each
+// kind of status and a regrouping that leaves In Review out, the
+// burndown's start is the estimate of the tickets the export calls open,
+// Backlog, the unclassified status and In Progress, 1 + 2 + 4.
+func TestTheBurndownCountsOpenAsTheTicketsDo(t *testing.T) {
 	t.Parallel()
-	s, root, regroup := store.DashboardStatusFixtureForTest(t, time.Now().Add(-24*time.Hour).UnixMilli())
+	created := time.Now().Add(-24 * time.Hour).UnixMilli()
+	s, root, regroup := store.DashboardOpenFixtureForTest(t, created)
 	e := trackerdash.NewEvaluator(time.Now)
 	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
 		return s.ExportMirrorBoard(ctx, conn, root, "10", regroup, relations, 0, store.CardShapeForTest)
 	}}
-	m := trackerdash.Metric{Name: "w_1", Title: "Open", Words: []string{"Open by either rule."}, Reduce: trackerdash.ReduceCount, Unit: trackerdash.UnitTickets,
-		SQL: `SELECT t.id AS ticket, t.open || ' ' || iif(coalesce(g.status_group, '') NOT IN ('done', 'canceled', 'left_out'), 1, 0) AS note
-FROM tickets t LEFT JOIN statuses g ON g.id = t.status`}
-	tried, err := e.Try(context.Background(), b, trackerdash.Widget{Form: trackerdash.FormList, Width: 12}, m, "UTC")
+	a, err := e.Evaluate(context.Background(), b, trackerdash.Request{Dashboard: "overview_sprints", TimeZone: "UTC"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []string
-	for _, r := range tried.Value.Tickets {
-		got = append(got, r.Key+" "+r.Note)
+	var start string
+	for _, w := range a.Widgets {
+		if w.ID == "burndown" && len(w.Buckets) > 0 {
+			start = numText(&w.Buckets[0].Cells[0])
+		}
 	}
-	if want := []string{"WEB-1 1 1", "WEB-2 1 1", "WEB-3 0 0", "WEB-4 1 1", "WEB-5 0 0", "WEB-6 0 0"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("open by tickets.open and by the status group = %v; want %v", got, want)
+	m := trackerdash.Metric{Name: "w_1", Title: "Open", Words: []string{"Open tickets' estimate."}, Reduce: trackerdash.ReduceSum, Unit: trackerdash.UnitEstimate,
+		SQL: `SELECT t.id AS ticket, t.points AS value FROM tickets t WHERE t.open = 1`}
+	tried, err := e.Try(context.Background(), b, trackerdash.Widget{Form: trackerdash.FormNumber, Width: 3}, m, "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open := numText(tried.Value.Value); start != "7, 0 not counted" || open != start {
+		t.Fatalf("the burndown's start = %s, the open tickets' estimate %s; want 7 both", start, open)
 	}
 }

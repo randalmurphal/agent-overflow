@@ -437,3 +437,27 @@ func checkVersionIntervals(fail func(string, ...any), truth versionTruth, card i
 		fail("sprint intervals %v of a ticket behind its card (%v)", sprint, behind)
 	}
 }
+
+// A member of a closed sprint carried on to a later one whose history is
+// not read has a status at the closed sprint's completion that is not
+// known (the pace's rule): its done is NULL, not 0; once its history is
+// read, it is known.
+func TestAClosedSprintsMemberWhoseStatusThenIsNotKnownIsNotDoneOrNot(t *testing.T) {
+	t.Parallel()
+	s, root := versionsBoard(t)
+	versionCard(t, s, root, 20_000, "10001", 1, "40", "41")
+	finished := func() []string {
+		conn := exportConn(t)
+		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"sprint_finished"}, 500, CardShapeForTest); err != nil || !ok {
+			t.Fatalf("export: %v, %v", ok, err)
+		}
+		return exportRows(t, conn, `SELECT sprint || '|' || ticket || '|' || coalesce(done, '-') FROM sprint_finished ORDER BY sprint`)
+	}
+	if got, want := finished(), []string{"40|10001|-", "41|10001|1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("history not read: %v; want %v", got, want)
+	}
+	versionHistory(t, s, root, MirrorHistory{IssueID: "10001", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 15_000, From: "1", To: "10001"}}})
+	if got, want := finished(), []string{"40|10001|0", "41|10001|1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("history read: %v; want %v", got, want)
+	}
+}
