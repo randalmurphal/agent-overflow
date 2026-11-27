@@ -31,6 +31,7 @@
     held: HeldBoard;
     sec: BacklogSection;
     moved: readonly MovedRow[];
+    /** The unit the project counts the board in (`BoardShape.counts`). */
     unit: string;
     /** The board's open sprints the unfinished tickets may go to. */
     into: readonly SprintView[];

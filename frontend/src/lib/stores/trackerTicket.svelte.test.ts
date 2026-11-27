@@ -716,7 +716,7 @@ describe('a write from a Board card', () => {
   /** A kanban board of one column that holds issue 10101's card. */
   function boardView(title = 'First story'): BoardView {
     return {
-      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' },
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' }, counts: 'points',
       columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 1, estimate: 0 } }], sprints: [],
       all: { rows: 1, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 100 }, screen: [{ kind: 'column', column: 0 }],
       sections: [{ section: { kind: 'column', column: 0 }, rows: [{ order: 'a', card: detail(title).card }], next: null }],
@@ -864,7 +864,7 @@ describe('a board\'s writes: its sprints and the tickets made on it', () => {
 
   function boardView(): BoardView {
     return {
-      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' },
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' }, counts: 'points',
       columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 0, estimate: 0 } }], sprints: [],
       all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 100 }, screen: [], plan: [], sections: [],
     } as unknown as BoardView;

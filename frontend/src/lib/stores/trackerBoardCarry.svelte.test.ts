@@ -34,7 +34,7 @@ async function flush(): Promise<void> {
 async function heldBoard(rows: RowView[]) {
   const column = { kind: 'column', column: 0 };
   const view = {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' }, counts: 'points',
     columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: rows.length, estimate: rows.length } }], sprints: [],
     all: { rows: rows.length, estimate: rows.length }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 1 }, screen: [column],
     sections: [{ section: column, rows, next: null }],

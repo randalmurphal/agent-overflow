@@ -129,7 +129,7 @@ export function sectionNumbers(held: HeldBoard, sec: BacklogSection, moved: read
     done: sec.kind === 'active' && whole ? sumWhere(rows, (r) => groupOf(held, r) === 'done') : null,
     load: sec.kind === 'future' && whole ? loadOf(held, rows) : null,
     pace,
-    over: pace ? Math.max(0, measureOf(total, held.shape.unit) - measureOf(pace, held.shape.unit)) : 0,
+    over: pace ? Math.max(0, measureOf(total, held.shape.counts) - measureOf(pace, held.shape.counts)) : 0,
   };
 }
 
@@ -214,7 +214,7 @@ function loadOf(held: HeldBoard, rows: readonly RowView[]): PersonLoad[] {
     load.rows += 1;
     load.estimate += r.estimate ?? 0;
   }
-  const unit = held.shape.unit;
+  const unit = held.shape.counts;
   return [...by.values()].sort((a, b) => (a.person === null ? 1 : b.person === null ? -1 : measureOf(b, unit) - measureOf(a, unit)));
 }
 

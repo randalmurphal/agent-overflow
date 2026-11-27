@@ -18,6 +18,7 @@
   interface Props {
     sec: BacklogSection;
     numbers: SectionNumbers;
+    /** The unit the project counts the board in (`BoardShape.counts`). */
     unit: string;
     open: boolean;
     /** Now, to the minute. */

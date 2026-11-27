@@ -125,7 +125,7 @@ function kanban(todo: ColumnSeed, doing: ColumnSeed, extra: Partial<BoardView> =
   }));
   const total = (seed: ColumnSeed) => ({ rows: seed.total ?? seed.rows.length, estimate: 2 * (seed.total ?? seed.rows.length) });
   return {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'Board 1', plans_sprints: false, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'Board 1', plans_sprints: false, estimate: { unit: 'points' }, counts: 'points',
     columns: [
       { name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: total(todo) },
       { name: 'In Progress', statuses: [{ id: 's2', group: 'in_progress' }], total: total(doing) },
@@ -142,7 +142,7 @@ function sprintBoard(rows: RowView[], leftOut?: string[], more = false): BoardVi
   const section = { kind: 'sprint', sprint: '8' };
   const next = more ? { order: rows.at(-1)!.order, issue: rows.at(-1)!.card.id, lifetime: 1, revision: 1 } : null;
   return {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'Board 1', plans_sprints: true, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'Board 1', plans_sprints: true, estimate: { unit: 'points' }, counts: 'points',
     columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }, { id: 's2', group: 'in_progress' }], total: { rows: 0, estimate: 0 } }],
     sprints: [{ id: '8', name: 'Sprint 8', state: 'active', total: { rows: 0, estimate: 0 } }],
     all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: Date.now() },

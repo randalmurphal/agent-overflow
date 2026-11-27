@@ -99,7 +99,10 @@
   const filtered = $derived(filtering(filter));
   const visible = $derived(columns.map((col) => shownColumn(held, col, filter)));
   const now = $derived(getMinuteNow());
+  // A card's estimate is in the board's unit; the columns' totals are in
+  // the unit the project counts the board in.
   const unit = $derived(held.shape.unit);
+  const countIn = $derived(held.shape.counts);
 
   // The cards waiting where they were dropped, drawn there.
   const waiting = $derived(waitingCards(boardKey));
@@ -160,7 +163,7 @@
     return head;
   }));
   // One header count per column, for the strip and the column's header.
-  const counts = $derived(heads.map((h) => columnCount(h.col, h.shown, filtered, unit)));
+  const counts = $derived(heads.map((h) => columnCount(h.col, h.shown, filtered, countIn)));
 
   /** What column `i` says while the carried card is over it. */
   function dropNote(i: number): string | null {

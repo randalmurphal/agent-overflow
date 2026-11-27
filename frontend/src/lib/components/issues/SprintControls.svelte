@@ -18,6 +18,7 @@
     sec: BacklogSection;
     /** The rows counted in another section than the one holding them. */
     moved: readonly MovedRow[];
+    /** The unit the project counts the board in (`BoardShape.counts`). */
     unit: string;
     /** Every sprint of the board, in its order. */
     sprints: readonly SprintView[];

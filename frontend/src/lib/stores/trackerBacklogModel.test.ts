@@ -37,14 +37,14 @@ const U2 = { id: 'u2', name: 'User 2' };
  * and Done (s2) unless `columns` names each column's statuses; s3 is a
  * status the project leaves out of counts, and `regrouped` the statuses
  * it puts in other groups. */
-function board(rows: { '8': RowView[]; '9': RowView[]; backlog: RowView[] }, extra: { unit?: string; pace?: object | null; more?: boolean; regrouped?: Record<string, string>; columns?: string[][] } = {}): HeldBoard {
+function board(rows: { '8': RowView[]; '9': RowView[]; backlog: RowView[] }, extra: { unit?: string; counts?: string; pace?: object | null; more?: boolean; regrouped?: Record<string, string>; columns?: string[][] } = {}): HeldBoard {
   const total = (held: RowView[]) => ({
     rows: held.filter((r) => r.card.status.id !== 's3').length,
     estimate: held.filter((r) => r.card.status.id !== 's3').reduce((n, r) => n + (r.estimate ?? 0), 0),
     unestimated: held.filter((r) => r.card.status.id !== 's3' && r.estimate == null).length,
   });
   const view = {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: extra.unit ?? 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: extra.unit ?? 'points' }, counts: extra.counts ?? extra.unit ?? 'points',
     columns: (extra.columns ?? [['s1'], ['s2']]).map((statuses, i) => ({ name: `Column ${i}`, statuses: statuses.map((id) => ({ id, group: GROUPS[id] })), total: { rows: 0, estimate: 0 } })),
     sprints: [
       { id: '8', name: 'Sprint 8', state: 'active', total: total(rows['8']) },
@@ -145,6 +145,13 @@ describe('a header\'s numbers', () => {
     expect(future.over).toBe(1);
     expect(sectionLine('future', future, 'none').map((p) => p.text).join('')).toBe('4 of about 3 tickets, the last 2 sprints\' average · 1 over');
     expect(sectionLine('backlog', sectionNumbers(held, sections[2], []), 'none').map((p) => p.text).join('')).toBe('2 tickets');
+  });
+
+  it('count tickets on a board with points when the project counts tickets, each person\'s load by tickets', () => {
+    const held = board(ROWS, { counts: 'none', pace: { sprints: 2, rows: 5, estimate: 6 } });
+    const future = sectionNumbers(held, backlogSections(held)[1], []);
+    expect(future.over, '4 tickets against a pace of 5, not 7 points against 6').toBe(0);
+    expect(future.load?.map((l) => l.person?.name ?? null)).toEqual(['User 1', 'User 2', null]);
   });
 
   it('count a row moving out of one section and into another where it goes, with what each was before', () => {

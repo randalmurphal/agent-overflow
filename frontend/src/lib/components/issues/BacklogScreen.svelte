@@ -105,7 +105,10 @@
   const sprintWrites = $derived(kind === 'jira' && held.shape.plansSprints);
   // The board's sprints and the tickets made on it are its own writes.
   const b = $derived(boardWriteContext(boardRef));
+  // A row's estimate is in the board's unit; a section's numbers and the
+  // sprint's completion are in the unit the project counts the board in.
   const unit = $derived(held.shape.unit);
+  const countIn = $derived(held.shape.counts);
   const now = $derived(getMinuteNow());
   const filtered = $derived(filtering(filter));
   const sections = $derived(backlogSections(held));
@@ -376,7 +379,7 @@
             <BacklogSectionHeader
               {sec}
               numbers={numbers[item.section]}
-              {unit}
+              unit={countIn}
               open={isOpen(sec)}
               {now}
               {target}
@@ -415,7 +418,7 @@
             </div>
           {/if}
           {#snippet sprintControls()}
-            <SprintControls {b} {held} {sec} {moved} {unit} sprints={held.shape.sprints} />
+            <SprintControls {b} {held} {sec} {moved} unit={countIn} sprints={held.shape.sprints} />
           {/snippet}
         </div>
       {/snippet}
