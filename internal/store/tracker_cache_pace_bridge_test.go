@@ -122,3 +122,10 @@ func DashboardHistoryFixtureForTest(t *testing.T, created, day int64) (*Store, i
 	}
 	return s, root
 }
+
+// IntervalsFixtureForTest is intervalsFixture, with the history window's
+// start its exports bind.
+func IntervalsFixtureForTest(t *testing.T) (*Store, int64, int64) {
+	s, root := intervalsFixture(t)
+	return s, root, intervalsWindow
+}

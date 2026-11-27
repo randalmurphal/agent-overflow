@@ -82,6 +82,25 @@ func (f *fixture) ticket(t ticket) *fixture {
 		map[bool]int{true: 1}[t.group != "done" && t.group != "canceled" && t.group != "left_out"], map[bool]int{true: 1}[t.group != "left_out"])
 }
 
+// dated is a sprint with its start and end dates (0 for none).
+func (f *fixture) dated(id, name, state string, start, end, completed int64, position int) *fixture {
+	return f.exec(`INSERT INTO sprints VALUES ('%s', '%s', '%s', %s, %s, %s, %d)`, id, name, state, nullable(start), nullable(end), nullable(completed), position)
+}
+
+// stay is a ticket's status interval from from until to (0: now).
+func (f *fixture) stay(ticket, status string, from, to int64) *fixture {
+	return f.exec(`INSERT INTO status_intervals VALUES ('%s', '%s', %d, %s)`, ticket, status, from, nullable(to))
+}
+
+// stretch is a ticket's sprint interval at points (empty: none) from from
+// until to (0: now).
+func (f *fixture) stretch(sprint, ticket, points string, from, to int64) *fixture {
+	if points == "" {
+		points = "NULL"
+	}
+	return f.exec(`INSERT INTO sprint_intervals VALUES ('%s', '%s', %s, %d, %s)`, sprint, ticket, points, from, nullable(to))
+}
+
 func (f *fixture) member(sprint, ticket string, done bool) *fixture {
 	f.exec(`INSERT INTO sprint_tickets VALUES ('%s', '%s')`, sprint, ticket)
 	return f.exec(`INSERT INTO sprint_finished VALUES ('%s', '%s', %d)`, sprint, ticket, map[bool]int{true: 1}[done])
