@@ -71,8 +71,11 @@ export function carryCaretIntoPane(paneId: string): void {
   focusSectionUntilReady(paneId, section);
 }
 
+// A scroller inside an inert subtree (a ticket a pull request's review
+// covers) is one nobody can aim at, and focus() on it does nothing: the
+// pane's first other scroller takes the caret.
 function focusPaneScroller(section: HTMLElement): boolean {
-  const scroller = section.querySelector<HTMLElement>('[data-pane-scroller]');
+  const scroller = Array.from(section.querySelectorAll<HTMLElement>('[data-pane-scroller]')).find((el) => !el.closest('[inert]'));
   if (!scroller) return false;
   scroller.focus({ preventScroll: true });
   return true;

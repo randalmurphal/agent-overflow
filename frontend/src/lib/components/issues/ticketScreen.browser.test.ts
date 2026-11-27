@@ -79,7 +79,7 @@ function mountWith(width: number, opts: { detail: DetailView | null; asked?: boo
       focusAsked: false, onFocusTaken: () => {},
       get startWorkAsked() { return held.get('asked') as boolean; },
       onStartWorkEnded: () => { held.set('asked', false); },
-      onBack: () => {}, onClose: () => {}, onOpenIssue: () => {},
+      onBack: () => {}, onClose: () => {}, onOpenIssue: () => {}, onOpenPullRequest: () => {},
     },
   });
   mounted.push({ app, host });

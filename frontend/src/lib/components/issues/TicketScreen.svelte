@@ -95,6 +95,7 @@
     ticketCommentOrder,
     ticketSectionOpen,
     type TicketPlacement,
+    type TicketPullRequestOpen,
     type TicketSeed,
   } from '../../stores/issuesPane.svelte';
   import { opensTicketPane, ticketPanesOffered } from '../../stores/ticketPanes.svelte';
@@ -189,9 +190,12 @@
     /** Opens another issue of the connection from this ticket: here, or in
      * a pane of its own. */
     onOpenIssue: (issue: string, seed: TicketSeed, ownPane: boolean) => void;
+    /** Shows a pull request of the ticket's Work in the ticket's place
+     * (`TicketTrail.openPullRequest`). */
+    onOpenPullRequest: (pr: TicketPullRequestOpen) => void;
   }
 
-  let { attachment, seed, board, computerName, project, onProject, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, startWorkAsked, onStartWorkEnded, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, computerName, project, onProject, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, startWorkAsked, onStartWorkEnded, onBack, onClose, onOwnPane, onOpenIssue, onOpenPullRequest }: Props = $props();
   setTicketWriteSurface(() => shown);
 
   // The ticket a person opened takes the focus, so a key or a paste of
@@ -730,7 +734,7 @@
       {/if}
     {/if}
   </div>
-  <TicketWork {attachment} {project} {onProject} me={account} startWorkAsked={workAsked} onStartWorkTaken={onStartWorkEnded} />
+  <TicketWork {attachment} {project} {onProject} me={account} startWorkAsked={workAsked} onStartWorkTaken={onStartWorkEnded} {onOpenPullRequest} />
 {/snippet}
 
 {#snippet content()}
