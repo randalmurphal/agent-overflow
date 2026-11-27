@@ -199,6 +199,12 @@ function savedPicks(): Record<string, string> {
   return v && typeof v === 'object' ? (v as Record<string, string>) : {};
 }
 
+/** Shows `dashboard` the next time the board's Dashboards screen opens,
+ * as a pick there does. */
+export function pickDashboardNext(board: TrackerBoardRef, dashboard: string): void {
+  writeFrontendValue(PICK_KEY, { ...savedPicks(), [boardKey(board)]: dashboard });
+}
+
 function boardKey(b: TrackerBoardRef): string {
   return `${b.backend}\n${b.projectId}\n${b.connection}\n${b.board}`;
 }
@@ -365,7 +371,9 @@ export function createTrackerDashboard(opts: {
     $effect(() => onTrackerDashboardsUpdated((backend) => {
       if (opts.source()?.backend !== backend) return;
       listGen += 1;
-      if (opts.shown()) scheduler.request({ immediate: true });
+      // The row's numbers do not move with a limit, and a change of its
+      // pins changes its request once the list is read again.
+      if (opts.shown() && !opts.row) scheduler.request({ immediate: true });
     }));
 
     // What is counted changed, or the screen shows again: the evaluation
@@ -544,9 +552,11 @@ export function createTrackerDashboard(opts: {
  * subscription on a provider whose agents get the tracker tools, its draft
  * naming the board for the person to finish and send, opened as a ticket's
  * Ask opens its thread. The agent answers with the tracker tools'
- * dashboard_widget, whose proposals show on the board's dashboards. */
-export async function askAgentAboutDashboards(backend: BackendKey, subscription: string): Promise<void> {
+ * dashboard_widget, whose proposals show on the board's dashboards. With
+ * `rowWidget`, what the person typed in the board's summary row, the
+ * draft asks for a widget that shows it, proposed for the row. */
+export async function askAgentAboutDashboards(backend: BackendKey, subscription: string, rowWidget: string): Promise<void> {
   const mark = threadRowFrameMark();
-  const made = await withBackendTarget(backend, () => StartTrackerDashboardThread(subscription));
+  const made = await withBackendTarget(backend, () => StartTrackerDashboardThread(subscription, rowWidget));
   await openTicketThread(prependThreadReply(made, mark));
 }

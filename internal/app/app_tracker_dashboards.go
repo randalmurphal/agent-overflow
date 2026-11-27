@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
@@ -84,12 +85,14 @@ func (a *App) trackerToolsProvider(ctx context.Context) string {
 // and answers its row: in the project the board subscription was made
 // for, in its checkout, on the provider trackerToolsProvider picks, its
 // draft, unsent, naming the board by its name and site/ID, which the
-// tracker tools' dashboard_widget takes. A failure to seed the draft
+// tracker tools' dashboard_widget takes. With rowWidget, the words the
+// person typed in the board's summary row, the draft asks for a widget
+// that shows them, proposed for the row. A failure to seed the draft
 // deletes the thread. Nothing else is written.
 //
 //ao:scope threads:operate
 //ao:route home
-func (a *App) StartTrackerDashboardThread(ctx context.Context, subscriptionID string) (store.Thread, error) {
+func (a *App) StartTrackerDashboardThread(ctx context.Context, subscriptionID, rowWidget string) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
 	}
@@ -116,16 +119,21 @@ func (a *App) StartTrackerDashboardThread(ctx context.Context, subscriptionID st
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("start dashboard thread: %w", err)
 	}
-	if err := a.SaveDraft(ctx, thread.ID, dashboardAskSeed(board), nil, nil, nil); err != nil {
+	if err := a.SaveDraft(ctx, thread.ID, dashboardAskSeed(board, rowWidget), nil, nil, nil); err != nil {
 		return store.Thread{}, errors.Join(fmt.Errorf("start dashboard thread: seed the draft: %w", err), a.rollBackCreatedThread("start dashboard thread", project, thread, cut))
 	}
 	return a.store.GetThread(thread.ID)
 }
 
 // dashboardAskSeed is the draft Ask your agent leaves for the person to
-// finish and send.
-func dashboardAskSeed(b trackerapp.DashboardAskBoard) string {
-	return fmt.Sprintf("About the dashboards of the board %s (%s): ", b.Name, b.Handle)
+// finish and send, asking for a widget for the board's summary row that
+// shows rowWidget when it is not empty.
+func dashboardAskSeed(b trackerapp.DashboardAskBoard, rowWidget string) string {
+	seed := fmt.Sprintf("About the dashboards of the board %s (%s): ", b.Name, b.Handle)
+	if w := strings.TrimSpace(rowWidget); w != "" {
+		seed += "propose a widget with pin, for the board's summary row, that shows " + w
+	}
+	return seed
 }
 
 // EvaluateTrackerDashboard counts one dashboard of a subscribed board over

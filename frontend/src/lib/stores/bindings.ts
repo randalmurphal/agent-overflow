@@ -1044,8 +1044,8 @@ export function StartTicketsThread(
 
 /** The thread of a board's Ask your agent (stores/trackerDashboard.svelte.ts):
  * its row, as CreateThread answers one. */
-export function StartTrackerDashboardThread(subscriptionId: string): Promise<Thread> {
-  return StartTrackerDashboardThreadRaw(subscriptionId) as unknown as Promise<Thread>;
+export function StartTrackerDashboardThread(subscriptionId: string, rowWidget: string): Promise<Thread> {
+  return StartTrackerDashboardThreadRaw(subscriptionId, rowWidget) as unknown as Promise<Thread>;
 }
 
 export function MoveDraftToThread(threadId: string, destinationThreadId: string, snapshot: DraftSnapshot) {

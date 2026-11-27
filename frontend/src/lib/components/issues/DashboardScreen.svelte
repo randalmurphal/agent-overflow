@@ -189,7 +189,7 @@
     if (!source || asking) return;
     asking = true;
     try {
-      await askAgentAboutDashboards(source.backend, source.subscription);
+      await askAgentAboutDashboards(source.backend, source.subscription, '');
     } catch (err) {
       addErrorToast(`Could not start a thread about ${boardName}: ${userFacingError(err)}`, err);
     } finally {

@@ -24,6 +24,12 @@
   }
 
   // The Dashboards screen loads on its first switch to Dashboards, once per page.
+  // The board's summary row, loaded the first time a board pins a widget.
+  let summaryRow: Promise<typeof import('./BoardSummaryRow.svelte')> | null = null;
+  function loadSummaryRow(): Promise<typeof import('./BoardSummaryRow.svelte')> {
+    summaryRow ??= import('./BoardSummaryRow.svelte');
+    return summaryRow;
+  }
   let dashboardScreen: Promise<typeof import('./DashboardScreen.svelte')> | null = null;
   function loadDashboardScreen(): Promise<typeof import('./DashboardScreen.svelte')> {
     dashboardScreen ??= import('./DashboardScreen.svelte');
@@ -75,6 +81,7 @@
   import Search from '@lucide/svelte/icons/search';
   import UserRound from '@lucide/svelte/icons/user-round';
   import X from '@lucide/svelte/icons/x';
+  import Funnel from '@lucide/svelte/icons/funnel';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import ToolPaneHeader from '../panes/ToolPaneHeader.svelte';
@@ -111,6 +118,8 @@
     type IssuesScreen,
   } from '../../stores/issuesPane.svelte';
   import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
+  import { createBoardTicketSet } from '../../stores/boardTicketSet.svelte';
+  import { pickDashboardNext } from '../../stores/trackerDashboard.svelte';
   import {
     isBoardChoiceOpenable,
     readTrackerBoardChoices,
@@ -261,7 +270,24 @@
     onlyMine = on;
     saveOnlyMine(on);
   }
-  const filter: CardFilter = $derived({ mine: onlyMine ? me : null, words: searchWords(query) });
+  // The tickets a summary row tile filters the board to, on the Board and
+  // the Backlog; no filter until its first read lands.
+  const ticketSet = createBoardTicketSet({ source: () => dashboardSource, shown: () => selection.boardShown });
+  onDestroy(() => ticketSet.destroy());
+  const filter: CardFilter = $derived({ mine: onlyMine ? me : null, words: searchWords(query), only: ticketSet.tile ? ticketSet.ids : null });
+  let ticketSetFailure: CapturedError | null = $state(null);
+  let ticketSetFailureOf: unknown = null;
+  $effect(() => {
+    const err = ticketSet.error;
+    if (err === ticketSetFailureOf) return;
+    ticketSetFailureOf = err;
+    ticketSetFailure = err ? captureError(err, { context: 'Could not read the tickets the board is filtered to' }) : null;
+  });
+  function openDashboard(dashboard: string): void {
+    if (!board) return;
+    pickDashboardNext(board, dashboard);
+    selection.setScreen('dashboards');
+  }
   const matchCount = $derived.by(() => {
     if (!showsBoard(screen) || !held || !filtering(filter)) return 0;
     let n = 0;
@@ -373,6 +399,28 @@
     return at > 0 ? `Last read ${relativeTime(at, 'locale', board?.backend)}.` : 'Not read yet.';
   }
 </script>
+
+{#snippet ticketSetChip()}
+  {#if ticketSet.tile}
+    {@const tile = ticketSet.tile}
+    <div class="flex items-center gap-2 px-3 pt-2 text-[0.75rem]" data-testid="issues-ticket-set">
+      <span class="inline-flex h-7 min-w-0 items-center gap-2 rounded-[var(--radius-control)] border border-accent bg-accent/15 pl-2.5 pr-1 text-fg-muted compact:h-8">
+        <Icon icon={Funnel} size={13} strokeWidth={2} class="shrink-0" />
+        {#if ticketSet.ids}
+          <span class="truncate" data-testid="issues-ticket-set-text">Showing only <b class="font-semibold text-fg">{tile.title}</b> · {ticketSet.ids.size === 1 ? '1 ticket' : `${ticketSet.ids.size} tickets`}</span>
+        {:else}
+          <span class="truncate" data-testid="issues-ticket-set-text">Finding the tickets of <b class="font-semibold text-fg">{tile.title}</b>…</span>
+        {/if}
+        <IconButton label="Show every ticket" size="xs" variant="tint" testId="issues-ticket-set-clear" onClick={() => ticketSet.pick(null)}>
+          {#snippet children()}<Icon icon={X} size={12} strokeWidth={2.25} />{/snippet}
+        </IconButton>
+      </span>
+    </div>
+    {#if ticketSetFailure}
+      <ErrorNotice message="Could not read the tickets of {tile.title} again: {ticketSetFailure.report.reason}" captured={ticketSetFailure} testId="issues-ticket-set-error" />
+    {/if}
+  {/if}
+{/snippet}
 
 <div class="flex h-full min-h-0 flex-col" data-testid="issues-pane">
   <ToolPaneHeader {paneId} kind="issues" {onPaneDragStart} onBack={compact && ticket ? () => { stepBack(); } : undefined} backTestId="issues-back">
@@ -564,6 +612,7 @@
         {/if}
       {:else if held && attachment && screen === 'backlog'}
         {@const backlogBoard = board}
+        {@render ticketSetChip()}
         {#await loadBacklogScreen()}
           <p class="px-4 py-6 text-sm text-fg-muted" data-testid="backlog-loading">Opening the backlog…</p>
         {:then mod}
@@ -606,6 +655,21 @@
           <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="dashboard-load-error">The Dashboards screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
         {/await}
       {:else if held && attachment && screen !== 'dashboards'}
+        {#if held.shape.pins.length > 0 && dashboardSource}
+          {@const rowSource = dashboardSource}
+          {#await loadSummaryRow() then mod}
+            <mod.default
+              source={rowSource}
+              shown={selection.boardShown}
+              filteredTo={ticketSet.tile?.widget ?? ''}
+              onFilter={(tile) => ticketSet.pick(tile)}
+              onOpenDashboard={openDashboard}
+            />
+          {:catch err}
+            <p class="border-b border-border-subtle px-3 py-1.5 text-xs text-error" role="alert" data-testid="board-row-load-error">The board's summary row could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
+          {/await}
+        {/if}
+        {@render ticketSetChip()}
         <BoardScreen
           boardKey={attachment.key}
           boardRef={board}

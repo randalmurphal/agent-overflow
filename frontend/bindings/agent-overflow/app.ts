@@ -6704,11 +6704,13 @@ export function StartTicketsThread(projectID: string, req: app$0.StartTicketsThr
  * and answers its row: in the project the board subscription was made
  * for, in its checkout, on the provider trackerToolsProvider picks, its
  * draft, unsent, naming the board by its name and site/ID, which the
- * tracker tools' dashboard_widget takes. A failure to seed the draft
+ * tracker tools' dashboard_widget takes. With rowWidget, the words the
+ * person typed in the board's summary row, the draft asks for a widget
+ * that shows them, proposed for the row. A failure to seed the draft
  * deletes the thread. Nothing else is written.
  */
-export function StartTrackerDashboardThread(subscriptionID: string): $CancellablePromise<store$0.Thread> {
-    return $Call.ByID(3031630647, subscriptionID).then(($result: any) => {
+export function StartTrackerDashboardThread(subscriptionID: string, rowWidget: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(3031630647, subscriptionID, rowWidget).then(($result: any) => {
         return $$createType12($result);
     });
 }
