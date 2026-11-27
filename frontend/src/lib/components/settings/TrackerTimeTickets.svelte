@@ -1,8 +1,11 @@
 <script lang="ts">
-  // The body of Settings > Issues > Time: the ticket meetings go on and
-  // the ticket time off goes on, each found by key or title on the
-  // connections of the project's Jira boards (TicketFinder) and saved at
-  // once by its site and key, and Never log to an epic. Each ticket set
+  // The body of Settings > Issues > Time, for a project that lists a Jira
+  // board, whose Time settings apply (trackerapp's ProjectTimeSettings);
+  // another says it has none, and its setup keeps what it holds. The
+  // ticket meetings go on and the ticket time off goes on, each found by
+  // key or title on the connections of the project's Jira boards
+  // (TicketFinder) and saved at once by its site and key, and Never log
+  // to an epic. Each ticket set
   // is checked through one connection of its site, every ticket of a
   // connection in one lookup (stores/trackerSetup's ticket check), which
   // gives its title and says a ticket that is gone or that the
@@ -125,7 +128,7 @@
   }
 </script>
 
-{#if boardConnections.length === 0 && !ticketOf(page.setup, 'meetings') && !ticketOf(page.setup, 'time_off')}
+{#if !boards.some((b) => b.connection_kind === 'jira')}
   <p class="text-[0.75rem] text-fg-muted" data-testid="settings-tracker-time-none">
     {#if boards.length === 0}
       This project lists no boards. Add a Jira board in Boards to choose where its time goes.

@@ -135,7 +135,7 @@ func (h trackerToolsHost) WritePolicy(threadID string) (trackertools.WritePolicy
 }
 
 // TimeSettings are where thread's project puts its time; a thread of no
-// project has the built-in ones. Settings this build cannot read fail the
+// project, or of one that lists no Jira board, has the built-in ones. Settings this build cannot read fail the
 // call: the tickets and the epic rule the person set are not known.
 func (h trackerToolsHost) TimeSettings(threadID string) (trackerapp.TimeSettings, error) {
 	thread, err := h.a.store.GetThread(threadID)

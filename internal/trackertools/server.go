@@ -153,7 +153,9 @@ type Host interface {
 	WritePolicy(threadID string) (WritePolicy, error)
 	// TimeSettings are where the thread's project puts its time (the
 	// meetings and time-off tickets, the epic rule), with no tracker
-	// request. A public error says settings this build cannot read.
+	// request; a project that lists no Jira board has the built-in ones
+	// (trackerapp.Service.ProjectTimeSettings). A public error says
+	// settings this build cannot read.
 	TimeSettings(threadID string) (trackerapp.TimeSettings, error)
 	// Approve asks the person to approve a change and returns when they
 	// answer: nil when they approve, a public error when they deny or do

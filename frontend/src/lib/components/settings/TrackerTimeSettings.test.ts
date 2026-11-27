@@ -17,6 +17,7 @@ import { noteProject } from '../../transport/entityIndex';
 import { getPinnedBackend } from '../../transport/backends';
 import { addProjectLocal } from '../../stores/projects.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
+import { refreshTrackerProjectBoards } from '../../stores/trackerProjectBoards.svelte';
 
 const SITE = 'https://example.atlassian.net';
 
@@ -165,6 +166,20 @@ describe('<TrackerTimeSettings>', () => {
     setBindingMock('ProjectTrackerBoards', async () => []);
     render(TrackerTimeSettings);
     expect((await screen.findByTestId('settings-tracker-time-none')).textContent?.trim()).toBe('This project lists no boards. Add a Jira board in Boards to choose where its time goes.');
+  });
+
+  it('shows the Linear line for a project whose last Jira board was taken off, keeping its tickets for when one is listed again', async () => {
+    stored = setupWith({ meetings: { tracker: 'jira', site: SITE, key: 'OPS-1' } });
+    setBindingMock('TrackerConnections', async () => [trackerConnection(), trackerConnection({ id: 'lin-1', kind: 'linear', site: 'acme' })]);
+    setBindingMock('ProjectTrackerBoards', async () => [trackerBoardChoice({ connection: 'lin-1', connection_kind: 'linear' })]);
+    render(TrackerTimeSettings);
+    expect((await screen.findByTestId('settings-tracker-time-none')).textContent?.trim()).toBe('A Linear project has no time settings: time is logged on Jira.');
+    expect(screen.queryByTestId('tracker-time-ticket')).toBeNull();
+    expect(saves).toEqual([]);
+    setBindingMock('ProjectTrackerBoards', async () => [trackerBoardChoice({ connection: 'lin-1', connection_kind: 'linear' }), trackerBoardChoice()]);
+    await refreshTrackerProjectBoards(HOME_BACKEND, 'p1');
+    await waitFor(() => expect(text(within(row('meetings')).getByTestId('tracker-time-ticket-value'))).toBe('OPS-1 Meetings'));
+    expect(screen.queryByTestId('settings-tracker-time-none')).toBeNull();
   });
 
   it('shows no control for a time section a newer version saved', async () => {
