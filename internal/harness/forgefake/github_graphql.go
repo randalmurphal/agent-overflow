@@ -53,6 +53,8 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "PullsSearch", required: []string{"query", "wantChecks"}, optional: []string{"after"}, run: ghPullsSearch},
 	{kind: "query", name: "PullsByKey", required: []string{"owner", "name", "title", "head", "key", "wantTitle", "wantHead", "wantBranches"}, optional: []string{"titleAfter", "headAfter", "branchesAfter"}, run: ghPullsByKey},
 	{kind: "query", name: "PRsByHead", required: []string{"owner", "name", "head", "states"}, optional: []string{"after"}, run: ghPRsByHead},
+	{kind: "query", name: "PullHistory", required: []string{"owner", "name"}, optional: []string{"after"}, run: ghPullHistory},
+	{kind: "query", name: "PullHistoryMore", required: []string{"owner", "name", "number", "wantReviews", "wantComments"}, optional: []string{"reviewsAfter", "commentsAfter"}, run: ghPullHistoryMore},
 	{kind: "query", name: "MergedPRs", required: []string{"owner", "name", "first"}, optional: []string{"after"}, run: ghMergedPRs},
 	{kind: "query", name: "PRStates", required: []string{"ids"}, run: ghPRStates},
 	{kind: "query", name: "PRMergeTarget", required: []string{"owner", "name", "number"}, run: ghPRMergeTarget},

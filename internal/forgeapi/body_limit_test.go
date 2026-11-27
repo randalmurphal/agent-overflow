@@ -173,3 +173,26 @@ func TestRequestBodyCeilingFitsTheETagStore(t *testing.T) {
 		t.Fatalf("ceiling %d is over a quarter of the ETag store's %d bytes", maxRequestBodyBytes, etagMaxBytes)
 	}
 }
+
+// A document's WithMaxBody bounds its answer in place of the default, and
+// the same document without one keeps the default.
+func TestGraphQLDocumentBodyLimit(t *testing.T) {
+	t.Parallel()
+	size := 3 << 19
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"` + strings.Repeat("x", size) + `"}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	gh := isolatedService(t, srv).GitHub("github.com")
+	var out struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
+	}
+	if _, err := gh.GraphQL(t.Context(), testViewerDocument.WithMaxBody(2<<20), nil, &out); err != nil || len(out.Viewer.Login) != size {
+		t.Fatalf("a bounded document: %d bytes, %v", len(out.Viewer.Login), err)
+	}
+	if _, err := gh.GraphQL(t.Context(), testViewerDocument, nil, &out); !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatalf("the default bound: %v, want ErrBodyTooLarge", err)
+	}
+}

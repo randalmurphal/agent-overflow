@@ -518,18 +518,27 @@ func glabMRList(e *Engine, c *call, m []string) response {
 	if !ok {
 		return fail
 	}
-	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "search", "in", "order_by", "sort", "iids[]")
+	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "search", "in", "order_by", "sort", "iids[]", "updated_after", "updated_before")
 	if err != nil {
 		return unhandled("%v", err)
 	}
 	if iids, named := query["iids[]"]; named {
 		return e.glabMRsByIID(r, query, iids, perPage, page)
 	}
-	if order := query.Get("order_by"); order != "" && order != "updated_at" {
+	order := query.Get("order_by")
+	if order != "" && order != "updated_at" {
 		return unhandled("order_by=%q is not implemented", order)
 	}
-	if sortOrder := query.Get("sort"); sortOrder != "" && sortOrder != "desc" {
+	sortOrder := query.Get("sort")
+	if sortOrder != "" && sortOrder != "desc" && sortOrder != "asc" {
 		return unhandled("sort=%q is not implemented", sortOrder)
+	}
+	if sortOrder == "asc" && order != "updated_at" {
+		return unhandled("sort=asc without order_by=updated_at is not implemented")
+	}
+	updated, err := glabUpdatedFilter(query)
+	if err != nil {
+		return unhandled("%v", err)
 	}
 	state := query.Get("state")
 	if state != "opened" && state != "merged" && state != "all" {
@@ -544,11 +553,21 @@ func glabMRList(e *Engine, c *call, m []string) response {
 		return unhandled("in=%q is not implemented", in)
 	}
 	var matches []map[string]any
-	// Fixture order is creation order; the API's default and the
-	// updated_at order the app asks for are both newest first.
+	// Fixture order is creation order, the API's default newest first;
+	// updated_at orders by update time, a tie newest in fixture order
+	// first (historyOrder).
+	pulls := make([]*Pull, 0, len(r.Pulls))
 	for i := len(r.Pulls) - 1; i >= 0; i-- {
-		p := &r.Pulls[i]
-		if (state != "all" && gitlabStates[p.State] != state) || (branch != "" && p.HeadRef != branch) {
+		pulls = append(pulls, &r.Pulls[i])
+	}
+	if order == "updated_at" {
+		pulls = historyOrder(r)
+		if sortOrder == "asc" {
+			slices.Reverse(pulls)
+		}
+	}
+	for _, p := range pulls {
+		if (state != "all" && gitlabStates[p.State] != state) || (branch != "" && p.HeadRef != branch) || !updated(p) {
 			continue
 		}
 		if search != "" && !strings.Contains(strings.ToLower(p.Title), search) && (in == "title" || !strings.Contains(strings.ToLower(p.Body), search)) {
@@ -599,7 +618,7 @@ func (e *Engine) glabMRsByIID(r *Repo, query url.Values, iids []string, perPage,
 	if state := query.Get("state"); state != "all" {
 		return unhandled("iids[] with state=%q is not implemented", state)
 	}
-	for _, key := range []string{"source_branch", "order_by", "sort"} {
+	for _, key := range []string{"source_branch", "order_by", "sort", "updated_after", "updated_before"} {
 		if query.Has(key) {
 			return unhandled("iids[] with %s is not implemented", key)
 		}

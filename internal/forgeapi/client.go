@@ -160,7 +160,7 @@ func (c *Client) GraphQL(ctx context.Context, doc Document, vars map[string]any,
 	if len(vars) > 0 {
 		payload["variables"] = vars
 	}
-	resp, err := c.call(ctx, Request{Method: http.MethodPost, Body: payload}, true)
+	resp, err := c.call(ctx, Request{Method: http.MethodPost, Body: payload, MaxBodyBytes: doc.maxBody}, true)
 	var gqlErr *GraphQLError
 	if err != nil && !errors.As(err, &gqlErr) {
 		return resp, err
