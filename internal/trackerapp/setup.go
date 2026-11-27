@@ -12,6 +12,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -43,6 +44,9 @@ import (
 //   - estimates: whether the project counts its Jira boards' work by
 //     their estimates or by their tickets, and whether its tickets offer
 //     planning poker (Estimates);
+//   - credit: whether the project counts credit, the rules it counts it
+//     by as they changed over time, and by Jira site which tickets are
+//     support (Credit);
 //   - dashboards: by tracker site and board, the dashboards the project
 //     keeps (BoardDashboards). It is not part of Setup: a replace keeps
 //     it as held, and only its own edits write it (dashboard_setup.go), so
@@ -88,6 +92,7 @@ const (
 	sectionAgents       = "agents"
 	sectionTime         = "time"
 	sectionEstimates    = "estimates"
+	sectionCredit       = "credit"
 	sectionDashboards   = "dashboards"
 	setupSectionVersion = 1
 )
@@ -164,6 +169,7 @@ type Setup struct {
 	Agents       *AgentRules         `json:"agents,omitempty"`
 	Time         *TimeSettings       `json:"time,omitempty"`
 	Estimates    *Estimates          `json:"estimates,omitempty"`
+	Credit       *Credit             `json:"credit,omitempty"`
 }
 
 // UnmarshalJSON reads a replace's setup whole or refuses it: a JSON object
@@ -286,6 +292,75 @@ const estimatesCountTickets = "tickets"
 // countsTickets is whether the project counts its Jira boards' tickets.
 func (e *Estimates) countsTickets() bool { return e != nil && e.Count == estimatesCountTickets }
 
+// Credit is how a project counts credit for the work beside a ticket's
+// own points: whether it counts it (On; off keeps the rules and the
+// support picks), the rules it counts it by (Rules), and which tickets
+// are support (Support). Rules is a list of whole snapshots, each in
+// force from its From until the next one's: a closed sprint counts by
+// the snapshot in force when it completed, anything else by the newest.
+// Support is a classification, not a rule of a sprint: a change of it
+// applies to every sprint. A project with no section counts no credit
+// and reads as off with the default rules (defaultCredit); a section
+// that says no more than that is stored as none. Only a Jira board is
+// counted by it, as by Estimates.
+type Credit struct {
+	On      bool          `json:"on"`
+	Rules   []CreditRules `json:"rules"`
+	Support []SiteSupport `json:"support"`
+}
+
+// CreditRules is one snapshot of a project's credit rules: From, when it
+// took effect (Unix milliseconds; the first is 0), and its values. A
+// reviewer of a finished ticket who is not its assignee and did at least
+// ReviewNeed different kinds of ReviewActions (commented, approved,
+// logged_time) on it gets ReviewShare percent of its points; hours logged
+// on a support ticket count as a point for every HoursPerPoint hours (a
+// ticket for every HoursPerPoint hours where the project counts tickets).
+// A replace's newest snapshot may leave From out, which means from this
+// save; the writer stamps it (stampCredit).
+type CreditRules struct {
+	From          *int64   `json:"from,omitempty"`
+	ReviewShare   int      `json:"review_share"`
+	ReviewNeed    int      `json:"review_need"`
+	ReviewActions []string `json:"review_actions"`
+	HoursPerPoint int      `json:"hours_per_point"`
+}
+
+// SiteSupport is which tickets of one Jira site are support for the
+// project: those of an issue type (by ID), with a label (by name) or on a
+// board (by ID) it lists. A ticket is support when it has no estimate and
+// the entry names it, so on a board that does not estimate every ticket
+// it names is (store mirrorSupportSQL). A support ticket is not counted
+// as a ticket without an estimate, and its logged hours count as credit.
+type SiteSupport struct {
+	Tracker string   `json:"tracker"`
+	Site    string   `json:"site"`
+	Types   []string `json:"types"`
+	Labels  []string `json:"labels"`
+	Boards  []string `json:"boards"`
+}
+
+// creditActions are the review actions a credit rule may count, in the
+// order a rule holds them.
+var creditActions = []string{"commented", "approved", "logged_time"}
+
+// The bounds of a credit rule's values, and of a support entry's lists.
+const (
+	creditMaxShare         = 100
+	creditMaxHoursPerPoint = 16
+	creditMaxSupport       = 100
+)
+
+// defaultCredit is what a project with no credit section reads as: off,
+// with one snapshot from the start, 10% of a finished ticket's points to
+// each reviewer who did at least 2 of the three actions, and a point for
+// every 4 hours of support.
+func defaultCredit() *Credit {
+	from := int64(0)
+	return &Credit{Rules: []CreditRules{{From: &from, ReviewShare: 10, ReviewNeed: 2, ReviewActions: slices.Clone(creditActions), HoursPerPoint: 4}},
+		Support: []SiteSupport{}}
+}
+
 // TimeTicket is a ticket a project's time goes on, by its site and key.
 type TimeTicket struct {
 	Tracker string `json:"tracker"`
@@ -320,18 +395,22 @@ type SetupSave struct {
 // setupChangedSentence is a refused replace's sentence.
 const setupChangedSentence = "this change was not saved: the project's tracker setup changed after it was read; it is shown as it is now"
 
-// StatusGroups is how a project regroups the statuses of one tracker
-// site, as a board read applies it, with its version: a board's view, its
-// section cursors and the totals a patch names carry the version, and a
-// read under another version is refused (ErrStalePage). statuses is the
-// site's entry, each regrouped status's group by name, which a board view
-// carries so that a client counting rows it holds counts each in the
-// group the store's totals do. All three come from one site's entry of
-// the setup, so they change together. The zero value regroups nothing, at
-// version "". tickets is whether the project counts the site's boards by
-// their tickets (Estimates), which a board view says as its unit of
-// counts (unit) and a dashboard counts by; the store's totals carry both
-// rows and estimates, so it is not part of the version.
+// StatusGroups is how a project counts the rows of one tracker site's
+// boards, as a board read applies it (store.MirrorRegroup): its
+// regrouping of the site's statuses and, while the project counts credit,
+// its support tickets (SiteSupport), with the version of both: a board's
+// view, its section cursors and the totals a patch names carry the
+// version, and a read under another version is refused (ErrStalePage).
+// statuses is the site's status groups entry, each regrouped status's
+// group by name, which a board view carries so that a client counting
+// rows it holds counts each in the group the store's totals do; a row's
+// support it reads from the row (RowView.Support). All of them come from
+// the site's entries of the setup, so they change together. The zero
+// value regroups nothing and names no row support, at version "".
+// tickets is whether the project counts the site's boards by their
+// tickets (Estimates), which a board view says as its unit of counts
+// (unit) and a dashboard counts by; the store's totals carry both rows
+// and estimates, so it is not part of the version.
 type StatusGroups struct {
 	regroup  store.MirrorRegroup
 	version  string
@@ -482,7 +561,7 @@ func (s *Service) SetProjectSetup(projectID, revision string, setup Setup) (Setu
 	if err != nil {
 		return SetupSave{}, err
 	}
-	setup, err = validateSetup(setup)
+	setup, err = validateSetup(s.stampCredit(setup))
 	if err != nil {
 		return SetupSave{}, err
 	}
@@ -492,6 +571,48 @@ func (s *Service) SetProjectSetup(projectID, revision string, setup Setup) (Setu
 		return SetupSave{}, err
 	}
 	return save, nil
+}
+
+// stampCredit is setup with its credit section's newest snapshot given
+// the time it takes effect when the replace leaves it out (CreditRules):
+// the start for a section's first snapshot, else this save. A newest
+// snapshot whose values are the ones before it is dropped, so a save that
+// changes no rule adds none. Every snapshot stays: a sprint counts with the
+// snapshot in effect when it completed, whenever that is known. Any other
+// snapshot without its time is left for checkCredit to refuse.
+func (s *Service) stampCredit(setup Setup) Setup {
+	c := setup.Credit
+	if c == nil || len(c.Rules) == 0 || c.Rules[len(c.Rules)-1].From != nil {
+		return setup
+	}
+	credit := *c
+	credit.Rules = slices.Clone(c.Rules)
+	setup.Credit = &credit
+	newest := len(credit.Rules) - 1
+	switch {
+	case newest == 0:
+		credit.Rules[0].From = new(int64(0))
+	case sameCreditValues(credit.Rules[newest-1], credit.Rules[newest]):
+		credit.Rules = credit.Rules[:newest]
+	default:
+		credit.Rules[newest].From = new(s.now().UnixMilli())
+	}
+	return setup
+}
+
+// sameCreditValues reports whether a and b count the same, whatever their
+// times and the order of their actions.
+func sameCreditValues(a, b CreditRules) bool {
+	if a.ReviewShare != b.ReviewShare || a.ReviewNeed != b.ReviewNeed || a.HoursPerPoint != b.HoursPerPoint ||
+		len(a.ReviewActions) != len(b.ReviewActions) {
+		return false
+	}
+	for _, action := range a.ReviewActions {
+		if !slices.Contains(b.ReviewActions, action) {
+			return false
+		}
+	}
+	return true
 }
 
 // replaceSetup does SetProjectSetup's work under setupMu, comparing the
@@ -564,8 +685,8 @@ func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setu
 
 // setupMoved tells what a change of slug's held setup from before to
 // after moves, either nil when none is held: every board subscription of
-// the project on a site whose status groups or count of tickets changed
-// reads again, a change of the count has the dashboards read again, and
+// the project on a site whose status groups, support tickets (both in the
+// version) or count of tickets changed reads again, a change of the count has the dashboards read again, and
 // a change of what is stored is told. A side that holds nothing is not
 // known to agree with the other on any site, so every site counts as
 // moved: a board of the project read with groups that may be stale, or
@@ -726,6 +847,12 @@ type (
 		Count   string `json:"count,omitempty"`
 		Poker   *bool  `json:"poker,omitempty"`
 	}
+	creditV1 struct {
+		Version int           `json:"version"`
+		On      bool          `json:"on"`
+		Rules   []CreditRules `json:"rules"`
+		Support []SiteSupport `json:"support,omitempty"`
+	}
 )
 
 // decodeSetup is the setup data holds, every section this build does not
@@ -750,7 +877,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(sections)) {
 		section := sections[name]
-		if !slices.Contains([]string{sectionStatusGroups, sectionTicketPins, sectionStartWork, sectionAgents, sectionTime, sectionEstimates, sectionDashboards}, name) {
+		if !slices.Contains([]string{sectionStatusGroups, sectionTicketPins, sectionStartWork, sectionAgents, sectionTime, sectionEstimates, sectionCredit, sectionDashboards}, name) {
 			keep(name, section)
 			continue
 		}
@@ -791,6 +918,10 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 			var s estimatesV1
 			err = decodeStrict(section, &s)
 			setup.Estimates = &Estimates{Count: s.Count, Poker: s.Poker}
+		case sectionCredit:
+			var s creditV1
+			err = decodeStrict(section, &s)
+			setup.Credit = &Credit{On: s.On, Rules: s.Rules, Support: s.Support}
 		case sectionDashboards:
 			var s dashboardsV1
 			if err = decodeStrict(section, &s); err == nil {
@@ -871,6 +1002,11 @@ func encodeSetup(setup Setup, dashboards []BoardDashboards, raw map[string]json.
 			return nil, err
 		}
 	}
+	if setup.Credit.stored() {
+		if err := add(sectionCredit, creditV1{Version: setupSectionVersion, On: setup.Credit.On, Rules: setup.Credit.Rules, Support: setup.Credit.Support}); err != nil {
+			return nil, err
+		}
+	}
 	if len(dashboards) > 0 {
 		if err := add(sectionDashboards, dashboardsV1{Version: setupSectionVersion, Boards: dashboards}); err != nil {
 			return nil, err
@@ -914,30 +1050,79 @@ func setupRevision(data []byte) string {
 // heldOf is a valid setup and valid dashboards as the service holds
 // them, with the sections raw keeps (named by newer) and the revision of
 // its file.
+// A section a newer version saved reads as none here; a credit section
+// that is none reads as the default (defaultCredit), whose controls the
+// page shows, unless a newer version saved it.
 func heldOf(setup Setup, dashboards []BoardDashboards, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
-	held := &heldSetup{
-		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins), StartWork: slicesx.OrEmpty(setup.StartWork), Agents: setup.Agents, Time: setup.Time, Estimates: setup.Estimates}, Newer: newer},
-		raw:  raw, dashboards: dashboards, groups: map[siteKey]StatusGroups{},
+	credit := setup.Credit
+	if credit == nil && !slices.Contains(newer, sectionCredit) {
+		credit = defaultCredit()
 	}
+	held := &heldSetup{
+		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins),
+			StartWork: slicesx.OrEmpty(setup.StartWork), Agents: setup.Agents, Time: setup.Time, Estimates: setup.Estimates, Credit: credit}, Newer: newer},
+		raw: raw, dashboards: dashboards, groups: map[siteKey]StatusGroups{},
+	}
+	// What a board read applies on each site: its status groups, and its
+	// support entry while the project counts credit.
+	type counted struct {
+		statuses map[string]string
+		support  *SiteSupport
+	}
+	sites := map[siteKey]counted{}
 	for _, site := range setup.StatusGroups {
-		groups := make(map[string]int, len(site.Statuses))
-		for id, name := range site.Statuses {
+		key := siteKey{site.Tracker, site.Site}
+		sites[key] = counted{statuses: site.Statuses}
+	}
+	if c := held.credit(); c != nil {
+		for i, site := range c.Support {
+			key := siteKey{site.Tracker, site.Site}
+			entry := sites[key]
+			entry.support = &c.Support[i]
+			sites[key] = entry
+		}
+	}
+	for key, site := range sites {
+		groups := make(map[string]int, len(site.statuses))
+		for id, name := range site.statuses {
 			groups[id], _ = setupGroup(name)
 		}
 		regroup, err := store.NewMirrorRegroup(groups)
 		if err != nil {
-			return nil, fmt.Errorf("trackerapp: the status groups of %s %s: %w", site.Tracker, site.Site, err)
+			return nil, fmt.Errorf("trackerapp: the status groups of %s %s: %w", key.tracker, key.site, err)
 		}
-		// json.Marshal writes a map's keys in order, so equal groups have
-		// one version.
-		encoded, err := json.Marshal(site.Statuses)
+		if site.support != nil {
+			rule := store.MirrorSupportRule{Types: site.support.Types, Labels: site.support.Labels, Boards: site.support.Boards}
+			if regroup, err = regroup.WithSupport(rule); err != nil {
+				return nil, fmt.Errorf("trackerapp: the support tickets of %s %s: %w", key.tracker, key.site, err)
+			}
+		}
+		// json.Marshal writes a map's keys in order, so equal groups and
+		// support have one version.
+		encoded, err := json.Marshal(struct {
+			Statuses map[string]string `json:"statuses"`
+			Support  *SiteSupport      `json:"support"`
+		}{site.statuses, site.support})
 		if err != nil {
-			return nil, fmt.Errorf("trackerapp: encode the status groups of %s %s: %w", site.Tracker, site.Site, err)
+			return nil, fmt.Errorf("trackerapp: encode how %s %s is counted: %w", key.tracker, key.site, err)
 		}
 		sum := sha256.Sum256(encoded)
-		held.groups[siteKey{site.Tracker, site.Site}] = StatusGroups{regroup: regroup, version: hex.EncodeToString(sum[:8]), statuses: site.Statuses}
+		held.groups[key] = StatusGroups{regroup: regroup, version: hex.EncodeToString(sum[:8]), statuses: site.statuses}
 	}
 	return held, nil
+}
+
+// credit is the project's credit section when the project counts credit,
+// and nil when it does not: it has no section, or one that is off, or
+// one a newer version saved, which this build cannot read and so holds no
+// section for (heldOf). The one answer
+// to whether a project counts credit, for the counts, the reads and the
+// page.
+func (h *heldSetup) credit() *Credit {
+	if c := h.view.Setup.Credit; c != nil && c.On {
+		return c
+	}
+	return nil
 }
 
 // validateSetup checks setup and returns it normalized: each site as its
@@ -978,10 +1163,10 @@ func validateSetup(setup Setup) (Setup, error) {
 		if site.Fields != nil && key.tracker == store.TrackerKindLinear {
 			return Setup{}, invalidSetup("linear %s pins fields, but a Linear ticket's fields are fixed", key.site)
 		}
-		if err := checkSetupList(key, "field", site.Fields, setupMaxFields); err != nil {
+		if err := checkSetupList(key, "pins", "field", site.Fields, setupMaxFields); err != nil {
 			return Setup{}, err
 		}
-		if err := checkSetupList(key, "section", site.Sections, setupMaxSections); err != nil {
+		if err := checkSetupList(key, "pins", "section", site.Sections, setupMaxSections); err != nil {
 			return Setup{}, err
 		}
 		// No field pinned is a ticket's default, and is stored as none; no
@@ -1033,6 +1218,13 @@ func validateSetup(setup Setup) (Setup, error) {
 			return Setup{}, err
 		}
 		out.Estimates = estimates
+	}
+	if setup.Credit != nil {
+		credit, err := checkCredit(*setup.Credit)
+		if err != nil {
+			return Setup{}, err
+		}
+		out.Credit = credit
 	}
 	slices.SortFunc(out.StartWork, func(a, b StartWorkDefaults) int {
 		if c := compareSites(a.Tracker, a.Site, b.Tracker, b.Site); c != 0 {
@@ -1191,6 +1383,88 @@ func checkEstimates(e Estimates) (*Estimates, error) {
 	return &e, nil
 }
 
+// checkCredit checks a credit section and returns it normalized: each
+// snapshot's actions in creditActions' order, each support entry's site
+// as its connection names it and its lists never null, the entries in
+// site order without one that names nothing. Every snapshot names its
+// From (stampCredit stamps a replace's newest one), the first 0 and each
+// later one after the one before it.
+func checkCredit(c Credit) (*Credit, error) {
+	if len(c.Rules) == 0 {
+		return nil, invalidSetup("%s has no rules", sectionCredit)
+	}
+	rules := make([]CreditRules, len(c.Rules))
+	for i, r := range c.Rules {
+		switch {
+		case r.From == nil:
+			return nil, invalidSetup("rule %d of %s says no time it took effect", i+1, sectionCredit)
+		case i == 0 && *r.From != 0:
+			return nil, invalidSetup("the first rule of %s takes effect at %d, not at the start (0)", sectionCredit, *r.From)
+		case i > 0 && *r.From <= *rules[i-1].From:
+			return nil, invalidSetup("rule %d of %s takes effect at %d, not after the rule before it (%d)", i+1, sectionCredit, *r.From, *rules[i-1].From)
+		case r.ReviewShare < 0 || r.ReviewShare > creditMaxShare:
+			return nil, invalidSetup("rule %d of %s gives a reviewer %d%% of a ticket's points; the share is 0 to %d", i+1, sectionCredit, r.ReviewShare,
+				creditMaxShare)
+		case r.HoursPerPoint < 1 || r.HoursPerPoint > creditMaxHoursPerPoint:
+			return nil, invalidSetup("rule %d of %s counts a point for every %d hours of support; it is 1 to %d", i+1, sectionCredit, r.HoursPerPoint,
+				creditMaxHoursPerPoint)
+		}
+		actions := make([]string, 0, len(creditActions))
+		for _, a := range r.ReviewActions {
+			if !slices.Contains(creditActions, a) {
+				return nil, invalidSetup("rule %d of %s counts review action %q, which is none of %s", i+1, sectionCredit, truncateID(a),
+					strings.Join(creditActions, ", "))
+			}
+			if slices.Contains(actions, a) {
+				return nil, invalidSetup("rule %d of %s counts review action %s twice", i+1, sectionCredit, a)
+			}
+			actions = append(actions, a)
+		}
+		if len(actions) == 0 {
+			return nil, invalidSetup("rule %d of %s counts no review action", i+1, sectionCredit)
+		}
+		slices.SortFunc(actions, func(a, b string) int { return slices.Index(creditActions, a) - slices.Index(creditActions, b) })
+		if r.ReviewNeed < 1 || r.ReviewNeed > len(actions) {
+			return nil, invalidSetup("rule %d of %s needs %d kinds of review action of the %d it counts", i+1, sectionCredit, r.ReviewNeed, len(actions))
+		}
+		from := *r.From
+		r.From, r.ReviewActions = &from, actions
+		rules[i] = r
+	}
+	out := &Credit{On: c.On, Rules: rules, Support: []SiteSupport{}}
+	seen := map[siteKey]bool{}
+	for _, entry := range c.Support {
+		key, err := checkSite(entry.Tracker, entry.Site, sectionCredit, seen)
+		if err != nil {
+			return nil, err
+		}
+		if key.tracker != store.TrackerKindJira {
+			return nil, invalidSetup("%s names support tickets of linear %s, and credit is counted on Jira only", sectionCredit, key.site)
+		}
+		entry.Site = key.site
+		for _, list := range []struct {
+			what string
+			ids  *[]string
+		}{{"support issue type", &entry.Types}, {"support label", &entry.Labels}, {"support board", &entry.Boards}} {
+			if err := checkSetupList(key, "lists", list.what, list.ids, creditMaxSupport); err != nil {
+				return nil, err
+			}
+			*list.ids = slices.Clone(slicesx.OrEmpty(*list.ids))
+		}
+		if len(entry.Types)+len(entry.Labels)+len(entry.Boards) > 0 {
+			out.Support = append(out.Support, entry)
+		}
+	}
+	slices.SortFunc(out.Support, func(a, b SiteSupport) int { return compareSites(a.Tracker, a.Site, b.Tracker, b.Site) })
+	return out, nil
+}
+
+// stored is whether c says more than no section does (defaultCredit),
+// which is the one case encodeSetup writes a credit section.
+func (c *Credit) stored() bool {
+	return c != nil && (c.On || len(c.Support) > 0 || !reflect.DeepEqual(c.Rules, defaultCredit().Rules))
+}
+
 // isTicketProject is whether project is a ticket key's project, as
 // TicketKeys spells it: a capital letter, then one or more capitals,
 // digits or underscores.
@@ -1215,14 +1489,14 @@ func checkSetupID(what, id string) error {
 	return nil
 }
 
-// checkSetupList checks a pinned list of key's site: at most most IDs,
-// each valid and named once.
-func checkSetupList(key siteKey, what string, list *[]string, most int) error {
+// checkSetupList checks a list of key's site (what an entry does with it,
+// verb, "pins"): at most most IDs, each valid and named once.
+func checkSetupList(key siteKey, verb, what string, list *[]string, most int) error {
 	if list == nil {
 		return nil
 	}
 	if len(*list) > most {
-		return invalidSetup("%s %s pins %d %ss, over %d", key.tracker, key.site, len(*list), what, most)
+		return invalidSetup("%s %s %s %d %ss, over %d", key.tracker, key.site, verb, len(*list), what, most)
 	}
 	seen := make(map[string]bool, len(*list))
 	for _, id := range *list {
@@ -1230,7 +1504,7 @@ func checkSetupList(key siteKey, what string, list *[]string, most int) error {
 			return err
 		}
 		if seen[id] {
-			return invalidSetup("%s %s pins %s %q twice", key.tracker, key.site, what, id)
+			return invalidSetup("%s %s %s %s %q twice", key.tracker, key.site, verb, what, id)
 		}
 		seen[id] = true
 	}

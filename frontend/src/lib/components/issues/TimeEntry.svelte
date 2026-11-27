@@ -3,7 +3,8 @@
   // hours (which open the form that changes it), the ticket's title and
   // the entry's description in two lines. While a write of it is out the
   // entry dims and says so; what became of the write shows under it, with
-  // no Save anyway. The entry holds its write's target while it is shown.
+  // no Save anyway. On a support ticket a line says what its hours are
+  // worth in points (`worth`). The entry holds its write's target while it is shown.
   import type { WorklogView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import WriteNote from './WriteNote.svelte';
   import {
@@ -20,6 +21,8 @@
   interface Props {
     ctx: TimeWriteContext;
     worklog: WorklogView;
+    /** What its hours are worth on a support ticket; null for none. */
+    worth: { text: string; title: string } | null;
     /** The ticket open beside the list is this entry's. */
     open: boolean;
     onOpenTicket: (w: WorklogView) => void;
@@ -27,7 +30,7 @@
     onMenu: (w: WorklogView, event: MouseEvent) => void;
   }
 
-  let { ctx, worklog, open, onOpenTicket, onChange, onMenu }: Props = $props();
+  let { ctx, worklog, worth, open, onOpenTicket, onChange, onMenu }: Props = $props();
 
   const target = $derived(worklogTarget(worklog.id));
   $effect(() => holdTimeWriteTarget(ctx, target));
@@ -62,6 +65,9 @@
   {/if}
   {#if worklog.description}
     <p class="line-clamp-2 text-xs text-fg-muted" data-testid="time-entry-description">{worklog.description}</p>
+  {/if}
+  {#if worth}
+    <p class="text-xs text-fg-muted" title={worth.title} data-testid="time-entry-support">Support · {worth.text}</p>
   {/if}
   <!-- Save anyway is the form's: it sends the form's draft, which the
        entry does not hold. -->

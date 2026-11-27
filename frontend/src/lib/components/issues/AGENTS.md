@@ -126,17 +126,20 @@ board methods, events and the patch read in
   ticket and trail. Files are attached through it one at a time per
   ticket, each its own `attach:` write; it holds what a form reads (a
   connection's link types for the link form; a board's projects, a
-  project's issue types and a type's create fields for New ticket), read
+  project's issue types and a type's create fields for New ticket, the
+  first two also for Settings' Credit group's support types), read
   on a person's act and read again by one once it is older than
   `FORM_READ_AGE_MS`, after the screen's Refresh, or after its computer
   connects again. New
   ticket's draft, one per section, is held by the Backlog screen
   (`BacklogScreen.svelte` `createDrafts`), so it outlives the form.
 - `stores/trackerSetup.svelte.ts` holds a project's tracker setup, its
-  statuses and its fields in this window, one read for every surface that
+  statuses, its fields and which of the Time screen's tickets are support
+  tickets of a board in this window, one read for every surface that
   holds them (the ticket's pins, the Start work form and defaults, the
-  Settings > Issues pages), read again, only while held, on reconnect
-  and, for the setup and the statuses, on `tracker:setup_updated`; `editTrackerSetup` is the one save, one at a
+  Settings > Issues pages, the Time screen), read again, only while held,
+  on reconnect and, for the setup, the statuses and the support tickets,
+  on `tracker:setup_updated`; `editTrackerSetup` is the one save, one at a
   time per project, built from the held setup under its revision, and
   what it settles to is what the computer stored. `TicketPin.svelte` is
   the pin a ticket's field row and section header show.

@@ -20,6 +20,8 @@
   interface Props {
     ctx: TimeWriteContext;
     shape: WeekShape;
+    /** What an entry's hours are worth on a support ticket; null for none. */
+    worth: (issue: string, seconds: number) => { text: string; title: string } | null;
     today: string;
     /** Compact: the one day shown; null shows them all. */
     onlyDay: string | null;
@@ -34,7 +36,7 @@
     onLogByHand: (entry: TimeEntryView, anchor: HTMLElement) => void;
   }
 
-  let { ctx, shape, today, onlyDay, openIssue, onOpenTicket, onChange, onEntryMenu, onLogDay, onDayMenu, onOpenDraftTicket, onEditDraft, onLogByHand }: Props = $props();
+  let { ctx, shape, worth, today, onlyDay, openIssue, onOpenTicket, onChange, onEntryMenu, onLogDay, onDayMenu, onOpenDraftTicket, onEditDraft, onLogByHand }: Props = $props();
 
   const days = $derived(onlyDay === null ? shape.days : shape.days.filter((d) => d.day === onlyDay));
 </script>
@@ -73,7 +75,7 @@
       </header>
       <TimeDraftApprove {ctx} target={draftTarget(`day:${d.day}`)} entries={approvable([...d.drafted, ...d.questions])} minutes={d.draftedMinutes} label="Approve" testId="time-draft-approve-day" />
       {#each d.entries as w (w.id)}
-        <TimeEntry {ctx} worklog={w} open={openIssue === w.issue} {onOpenTicket} {onChange} onMenu={onEntryMenu} />
+        <TimeEntry {ctx} worklog={w} worth={worth(w.issue, w.spent_seconds)} open={openIssue === w.issue} {onOpenTicket} {onChange} onMenu={onEntryMenu} />
       {:else}
         {#if d.drafted.length === 0 && d.questions.length === 0}
           <p class="rounded-[var(--radius-field)] border border-dashed border-border-subtle px-2 py-2 text-center text-xs text-fg-muted" data-testid="time-day-empty">{d.uncounted === 'unread' ? 'Not read yet' : 'Nothing logged'}</p>

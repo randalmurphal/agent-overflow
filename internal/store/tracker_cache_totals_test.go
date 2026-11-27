@@ -26,10 +26,11 @@ type testRegroup struct {
 	leftOut []string
 }
 
-// testRegroups are no regrouping and one that moves every status of the
+// testRegroups are no regrouping, one that moves every status of the
 // test catalog to another group, To Do to done, Done to in progress,
 // Won't do to to do, an unknown status to canceled, and In Progress and
-// a status the catalog lacks left out.
+// a status the catalog lacks left out, and no regrouping with a support
+// rule naming the label support and board 12.
 func testRegroups(t *testing.T) []testRegroup {
 	t.Helper()
 	regroup, err := NewMirrorRegroup(map[string]int{
@@ -39,13 +40,18 @@ func testRegroups(t *testing.T) []testRegroup {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return []testRegroup{{name: "no regrouping"}, {name: "regrouped", regroup: regroup, leftOut: []string{"3", "7"}}}
+	support, err := MirrorRegroup{}.WithSupport(MirrorSupportRule{Labels: []string{"support"}, Boards: []string{"12"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []testRegroup{{name: "no regrouping"}, {name: "regrouped", regroup: regroup, leftOut: []string{"3", "7"}},
+		{name: "support", regroup: support}}
 }
 
 // pagedTotals reads every page of section of board with rg and totals its
 // rows as the counts do: a row of a status rg leaves out adds nothing,
-// and a row with no estimate, and every row of a board with no estimate
-// unit, adds no estimate.
+// a row with no estimate, and every row of a board with no estimate unit,
+// adds no estimate, and a support row with none is not without one.
 func pagedTotals(t *testing.T, s *Store, root int64, board string, rg testRegroup, section MirrorSection, estimated bool) MirrorSectionTotal {
 	t.Helper()
 	var total MirrorSectionTotal
@@ -63,7 +69,7 @@ func pagedTotals(t *testing.T, s *Store, root int64, board string, rg testRegrou
 			case !estimated:
 			case row.Estimate != nil:
 				total.Estimate += *row.Estimate
-			default:
+			case !row.Support:
 				total.Unestimated++
 			}
 		}
@@ -112,18 +118,20 @@ func requireCountsMatchPagesWith(t *testing.T, s *Store, root int64, board strin
 		}
 	}
 	var estimates []float64
-	err = scanMirrorRows(s.db, `SELECT `+mirrorRowEstimate("?3")+`, i.status_id FROM tracker_cache_board_issues b
+	err = scanMirrorRows(s.db, `SELECT `+mirrorRowEstimate("?3")+`, i.status_id, `+mirrorSupportSQL("?4", "?2", mirrorRowEstimate("?3"))+`
+		FROM tracker_cache_board_issues b
 		JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id WHERE b.root_id = `+intParam("?1")+` AND b.board_id = ?2`,
-		[]any{root, board, currentEstimateReset(s, root, board)}, func(r rowScanner) error {
+		[]any{root, board, currentEstimateReset(s, root, board), rg.regroup.supportArg()}, func(r rowScanner) error {
 			var e *float64
 			var status string
-			if err := r.Scan(&e, &status); err != nil || slices.Contains(rg.leftOut, status) {
+			var support bool
+			if err := r.Scan(&e, &status, &support); err != nil || slices.Contains(rg.leftOut, status) {
 				return err
 			}
 			want.All.Rows++
 			if e != nil {
 				estimates = append(estimates, *e)
-			} else if estimated {
+			} else if estimated && !support {
 				want.All.Unestimated++
 			}
 			return nil
@@ -177,6 +185,11 @@ func TestMirrorCountsMatchThePages(t *testing.T) {
 		totalsRow("10009", "h", "99", 9),
 		totalsRow("10010", "i", "7", 0.5, "98"),
 		totalsRow("10011", "j", "1", 1.5),
+	}
+	// Two rows with no estimate carry the label the support rule names,
+	// one of them in a sprint.
+	for _, i := range []int{2, 6} {
+		rows[i].Card.Labels = []string{"customer", "support"}
 	}
 	for _, board := range []string{"10", "11", "12"} {
 		mustWriteRowPage(t, s, root, webPage(board, rows...), nil)

@@ -96,6 +96,10 @@ type RowView struct {
 	Card     CardView `json:"card"`
 	Order    string   `json:"order"`
 	Estimate *float64 `json:"estimate,omitempty"`
+	// Support is whether the row is a support ticket of the project that
+	// read it (SiteSupport): a total counts it as no estimate but not as
+	// without one, as the store's totals do.
+	Support bool `json:"support,omitempty"`
 }
 
 // readRoot is connection id's mirror root for a read, once the rows an

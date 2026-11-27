@@ -80,6 +80,9 @@ func (f *fixture) reopen(t *testing.T, between func()) {
 func (s *fakeScenario) upgradedFrom171(t *testing.T) {
 	t.Helper()
 	s.reopen(t, func() {
+		s.sqlOnStore(t, `DROP TRIGGER trg_tracker_cache_totals_support`)
+		s.sqlOnStore(t, `ALTER TABLE tracker_cache_issues DROP COLUMN labels`)
+		s.sqlOnStore(t, `DELETE FROM migration_versions WHERE version = 176`)
 		s.sqlOnStore(t, `DROP INDEX idx_tracker_cache_issues_updated`)
 		s.sqlOnStore(t, `DELETE FROM migration_versions WHERE version = 175`)
 		s.sqlOnStore(t, `DROP TABLE activity_spans`)

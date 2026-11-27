@@ -76,6 +76,7 @@ type MirrorStore interface {
 	ListMirrorSprintNames(rootID int64, boardIDs, sprintIDs []string) ([]store.MirrorSprintName, error)
 	ListMirrorOffBoardLinkedIssues(rootID int64, after string, polled []string) ([]string, bool, error)
 	ListMirrorSection(rootID int64, boardID string, regroup store.MirrorRegroup, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error)
+	ListMirrorSupport(rootID int64, boardID string, regroup store.MirrorRegroup, issueIDs []string) (store.MirrorSupportOf, bool, error)
 	LastMirrorPlanRow(rootID int64, boardID, sprintID string) (issueID, orderKey string, ok bool, err error)
 	ReadMirrorBoardView(rootID int64, boardID string, regroup store.MirrorRegroup, pick func(store.MirrorStructure) []store.MirrorSection) (store.MirrorBoardView, bool, error)
 	ReadMirrorBoardPatch(rootID int64, boardID string, regroup store.MirrorRegroup, sections []store.MirrorSection, issueIDs []string,
