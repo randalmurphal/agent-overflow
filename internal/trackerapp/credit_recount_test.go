@@ -60,10 +60,11 @@ func (m *mirrorFixture) evidenceFailureOf(t *testing.T) string {
 
 // The credit sentence says the evidence read's own failure: a linked tick
 // that fails before the evidence read (an off-board linked card Jira
-// refuses) says none; an evidence read that fails as a whole says why,
-// and the next that reads to its end clears it.
+// refuses) says none; an evidence read that fails as a whole says why
+// and marks no ticket's source failed, so the next reads the ticket, and
+// that read, to its end, clears it.
 func TestTheCreditSentenceSaysTheEvidenceReadsOwnFailure(t *testing.T) {
-	m, _, _ := evidenceFixture(t, 1)
+	m, _, asked := evidenceFixture(t, 1)
 	m.countCredit(t, m.conn.ID, true)
 	m.linkThread("thread-1", "50005")
 	var read func(tracker.EvidenceQuery) (tracker.Evidence, error)
@@ -95,6 +96,9 @@ func TestTheCreditSentenceSaysTheEvidenceReadsOwnFailure(t *testing.T) {
 	}
 	m.p.set(func(p *scripted) { p.evidence = read })
 	m.evidenceTick(t)
+	if reads := asked(); len(reads) == 0 || !slices.ContainsFunc(reads[len(reads)-1], func(in tracker.EvidenceIssue) bool { return in.Issue == "20001" }) {
+		t.Fatalf("after the whole read failed, the next read asked %v; want ticket 20001, which the failure did not mark failed", reads)
+	}
 	if got := m.evidenceFailureOf(t); got != "" {
 		t.Fatalf("after an evidence read that stored, the sentence's failure is %q; want none", got)
 	}
