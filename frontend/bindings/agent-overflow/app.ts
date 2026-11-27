@@ -4835,6 +4835,18 @@ export function ReadThreadRemoteLog(threadID: string, computerID: string, reques
 }
 
 /**
+ * ReadTrackerWorklogDays is a person's Refresh or Read again of the
+ * logged time of the connection's verified account that its boards'
+ * dashboards count: every day of the window, to today in timeZone, is read
+ * again now, and a failure that stopped the reads is forgotten
+ * (trackerapp.Service.ReadWorklogDays). It starts the reads and returns;
+ * the boards' event says when they end (BoardEvent.Logged).
+ */
+export function ReadTrackerWorklogDays(connectionID: string, timeZone: string): $CancellablePromise<void> {
+    return $Call.ByID(751780983, connectionID, timeZone);
+}
+
+/**
  * RecheckAgyAccount evicts the cached Antigravity identity for the configured
  * binary and re-runs ProbeAgyAccount.
  */

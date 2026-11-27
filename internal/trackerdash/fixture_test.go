@@ -1,6 +1,7 @@
 package trackerdash
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
@@ -31,6 +32,12 @@ type fixture struct {
 	groups map[string]string
 	// reading is a board whose first read has not finished.
 	reading bool
+	// earliest is the copy's earliest instant when a kept sprint began
+	// before its window (180 days before testNow); 0 for the window.
+	earliest int64
+	// unverified is a connection with no verified account: the export
+	// names no viewer. Otherwise the viewer is u1.
+	unverified bool
 }
 
 func newFixture(plansSprints bool, estimates string) *fixture {
@@ -149,7 +156,7 @@ func quote(s string) string {
 
 // fill is the fixture as a Fill.
 func (f *fixture) fill() Fill {
-	return func(ctx context.Context, conn *sql.Conn, _ []string) (store.MirrorExport, bool, error) {
+	return func(ctx context.Context, conn *sql.Conn, _ []string, through string) (store.MirrorExport, bool, error) {
 		if _, err := conn.ExecContext(ctx, store.MirrorExportSchema); err != nil {
 			return store.MirrorExport{}, false, err
 		}
@@ -160,11 +167,21 @@ func (f *fixture) fill() Fill {
 				return store.MirrorExport{}, false, fmt.Errorf("%s: %w", s, err)
 			}
 		}
-		return store.MirrorExport{Name: "WEB board", EstimateUnit: unit, PlansSprints: f.plansSprints, FirstReadDone: !f.reading}, true, nil
+		window := ms(testNow) - 180*day
+		// The logged time is the store's: the days from the first to
+		// through alone (store.MirrorLoggedDays).
+		from := time.UnixMilli(window).UTC().AddDate(0, 0, -1).Format(time.DateOnly)
+		for _, table := range []string{"worklogs", "worklog_days"} {
+			if _, err := conn.ExecContext(ctx, `DELETE FROM `+table+` WHERE day NOT BETWEEN ? AND ?`, from, through); err != nil {
+				return store.MirrorExport{}, false, err
+			}
+		}
+		return store.MirrorExport{Name: "WEB board", EstimateUnit: unit, PlansSprints: f.plansSprints, FirstReadDone: !f.reading,
+			Earliest: cmp.Or(f.earliest, window), LoggedFrom: from, Viewer: map[bool]string{false: "u1"}[f.unverified]}, true, nil
 	}
 }
 
-func (f *fixture) board() Board { return Board{Fill: f.fill(), Epics: true, Viewer: "u1"} }
+func (f *fixture) board() Board { return Board{Fill: f.fill(), Epics: true} }
 
 func evaluator() *Evaluator { return NewEvaluator(func() time.Time { return testNow }) }
 
@@ -208,8 +225,14 @@ func num(n *Num) string {
 	switch {
 	case n == nil:
 		return "absent"
+	case (n.Old || n.UR > 0) && n.V != nil:
+		return fmt.Sprintf("%g and not known", *n.V)
 	case n.Gap:
 		return "gap"
+	case n.Old:
+		return "not known, older than kept"
+	case n.UR > 0:
+		return fmt.Sprintf("not known, %d days not read", n.UR)
 	case n.V == nil && n.NC > 0:
 		return fmt.Sprintf("not known, %d not counted", n.NC)
 	case n.V == nil:

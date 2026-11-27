@@ -42,6 +42,7 @@
   import { formatAmount, type DashboardUnit } from '../../utils/dashboardAmount';
   import { userFacingError } from '../../utils/userFacingError';
   import { workGate } from './ticketWorkGate';
+  import DashboardLoggedLine from './DashboardLoggedLine.svelte';
 
   interface Props {
     source: DashboardSource;
@@ -66,6 +67,12 @@
 
   const store: TrackerDashboard = createTrackerDashboard({ source: () => source, shown: () => shown, row: () => pins });
   onDestroy(() => store.destroy());
+
+  /** The board's Refresh: your logged time is read again when a tile
+   * shown needs it, as the Dashboards screen's Refresh reads it. */
+  export function refreshLogged(): void {
+    store.refreshLogged();
+  }
 
   // Every widget of the board's dashboards by ID, with the dashboard that
   // holds it (the first, for a built-in one).
@@ -119,13 +126,24 @@
   }
   // A number's words; a list's tickets; nothing for a chart.
   function chipNumber(v: WidgetView, value: WidgetValue | undefined): { amount: string; word: string } | null {
-    if (!value || value.error) return null;
+    // A widget that cannot count here says why on its tile (WidgetValue.note).
+    if (!value || value.error || value.note) return null;
     if (v.form === 'number') return numWords(value.value as Num | undefined, v.unit as DashboardUnit, estimates);
     if (v.form === 'list') {
+      // A list of your logged time is not known while its days are not
+      // all read (WidgetValue.unread), and never when it counts days older
+      // than those kept (WidgetValue.old).
+      if (value.old) return numWords({ old: true }, v.unit as DashboardUnit, estimates);
+      if (value.unread?.length) return numWords({ ur: value.unread.length }, v.unit as DashboardUnit, estimates);
       const n = (value.tickets?.length ?? 0) + (value.more ?? 0);
       return { amount: String(n), word: n === 1 ? 'ticket' : 'tickets' };
     }
     return null;
+  }
+  /** Whether a tile's rows of your logged time are not known whole, which
+   * its line says (DashboardLoggedLine), so an empty one is not "none". */
+  function loggedUnknown(value: WidgetValue): boolean {
+    return (value.unread?.length ?? 0) > 0 || !!value.old;
   }
   function formIcon(v: WidgetView) {
     return v.form === 'number' ? Hash : v.form === 'list' ? List : ChartColumn;
@@ -251,6 +269,8 @@
                 <span class="text-error" role="alert">{value.error}</span>
               {:else if value.note}
                 <span class="text-fg-muted" data-testid="board-row-tile-note">{value.note}</span>
+              {:else if (value.unread?.length ?? 0) > 0 && store.logged.reading}
+                <span class="text-fg-muted" role="status" data-testid="dashboard-widget-reading">Reading your logged time…</span>
               {:else if w.view.form === 'number'}
                 {@const words = numWords(value.value as Num | undefined, w.view.unit as DashboardUnit, estimates)}
                 <span class="flex items-baseline gap-1"><span class="text-xl font-semibold tabular-nums text-fg" data-testid="board-row-tile-value">{words.amount}</span>{#if words.word}<span class="text-fg-muted">{words.word}</span>{/if}</span>
@@ -259,11 +279,14 @@
                 {:else if words.notCounted}
                   <span class="text-fg-muted">{words.notCounted}</span>
                 {/if}
+                {#if words.notRead}
+                  <span class="text-fg-muted" data-testid="board-row-tile-not-read">{words.notRead}</span>
+                {/if}
               {:else if w.view.form === 'list'}
                 {#each (value.tickets ?? []).slice(0, 3) as r (r.row)}
                   <span class="flex w-full min-w-0 gap-2"><span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{r.key}</span><span class="truncate text-fg">{r.title}</span></span>
                 {:else}
-                  <span class="text-fg-muted">No tickets.</span>
+                  {#if !loggedUnknown(value)}<span class="text-fg-muted">No tickets.</span>{/if}
                 {/each}
                 {#if (value.tickets?.length ?? 0) + (value.more ?? 0) > 3}
                   <span class="text-fg-muted">{(value.tickets?.length ?? 0) + (value.more ?? 0) - 3} more</span>
@@ -272,10 +295,11 @@
                 {#each rowsOf(w.view, value) as r (r.label)}
                   <span class="flex w-full min-w-0 justify-between gap-2"><span class="truncate text-fg-muted">{r.label}</span><span class="tabular-nums text-fg">{r.total}</span></span>
                 {:else}
-                  <span class="text-fg-muted">Nothing to count.</span>
+                  {#if !loggedUnknown(value)}<span class="text-fg-muted">Nothing to count.</span>{/if}
                 {/each}
               {/if}
             </button>
+            <DashboardLoggedLine {value} counts={w.view.how.reads?.includes('worklogs') ?? false} logged={store.logged} />
             {#if editing}
               <button
                 type="button"

@@ -3,6 +3,8 @@
 // how many category labels fit. Pure, so the charts draw to whatever width
 // their box measures and the rules are tested here.
 
+import { formatAmount, inTime, type DashboardUnit } from '../../../utils/dashboardAmount';
+
 /** A value axis from 0: its top and its ticks, each a 1, 2 or 5 step. */
 export interface ValueScale {
   readonly max: number;
@@ -22,6 +24,21 @@ export function valueScale(top: number, count = 4): ValueScale {
   const max = steps * step;
   if (!Number.isFinite(max) || !(step > 0) || steps > 2 * count) return { max: top, ticks: [0, top] };
   return { max, ticks: Array.from({ length: steps + 1 }, (_, i) => Math.round(i * step * 1e6) / 1e6) };
+}
+
+/** A chart's value axis in the unit its values read in, each tick labeled
+ * as the chart's numbers are: for time (inTime), valueScale's ticks in
+ * whole minutes below an hour, which time reads in to the minute, and in
+ * hours from an hour, so no two ticks read the same. */
+export interface UnitScale {
+  readonly max: number;
+  readonly ticks: readonly { readonly value: number; readonly label: string }[];
+}
+
+export function unitScale(top: number, unit: DashboardUnit, estimates: string): UnitScale {
+  const per = !inTime(unit, estimates) ? 1 : top < 3600 ? 60 : 3600;
+  const s = per === 60 ? valueScale(Math.max(top / per, 1), Math.min(4, Math.max(1, Math.ceil(top / per)))) : valueScale(top / per);
+  return { max: s.max * per, ticks: s.ticks.map((t) => ({ value: t * per, label: formatAmount(t * per, unit, estimates) })) };
 }
 
 /** Where band `i` of `n` sits along `length`: its start and its size, with

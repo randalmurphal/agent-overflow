@@ -57,9 +57,9 @@ type writeOp struct {
 	board tracker.BoardID
 	// also are resources read again besides those the result names.
 	also []tracker.Resource
-	// unable, when set, refuses op on the provider the hold found, before
-	// anything is sent.
-	unable func(p tracker.Provider) error
+	// unable, when set, refuses op on the run the hold found (its row and
+	// provider), before anything is sent.
+	unable func(r *run) error
 	// additive is a comment's or a create's step, which an agent's write
 	// records before it is sent (agent_writes.go); nil for any other.
 	additive *additive
@@ -85,7 +85,7 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	}
 	defer finish()
 	if op.unable != nil {
-		if err := op.unable(r.p); err != nil {
+		if err := op.unable(r); err != nil {
 			return WriteView{}, err
 		}
 	}

@@ -133,18 +133,20 @@ func TestReducers(t *testing.T) {
 			t.Errorf("%s of one ticket not counted = %s; want not known", r, num(&got))
 		}
 	}
-	periods := []period{{id: "1"}, {id: "2"}, {id: "4"}}
-	placed := map[string][]contribution{"1": rows[:2], "4": rows[2:3], "3": {{ticket: "z", value: 100, counted: true}}}
-	if got := reduceRange(ReduceAverageOfPeriodSums, periods, map[string][]contribution{}, rows[3:5]); num(&got) != "not known, 1 not counted" {
+	// A range's number (num of a ranged's whole): its rows of three
+	// periods, one with none.
+	ev := &evaluation{}
+	inRange := rows[:3]
+	if got := ev.num(ReduceAverageOfPeriodSums, taken{rows: rows[3:5], periods: 3}); num(&got) != "not known, 1 not counted" {
 		t.Errorf("average of period sums with nothing counted = %s; want not known", num(&got))
 	}
-	if got := reduceRange(ReduceAverageOfPeriodSums, periods, placed, nil); num(&got) != "4.666666666666667" {
-		t.Errorf("average of period sums = %s; want (4 + 0 + 10) / 3, period 3 outside the range", num(&got))
+	if got := ev.num(ReduceAverageOfPeriodSums, taken{rows: inRange, periods: 3}); num(&got) != "4.666666666666667" {
+		t.Errorf("average of period sums = %s; want (4 + 0 + 10) / 3", num(&got))
 	}
-	if got := reduceRange(ReduceCount, periods, placed, nil); num(&got) != "2" {
+	if got := ev.num(ReduceCount, taken{rows: inRange, periods: 3}); num(&got) != "2" {
 		t.Errorf("count over the range = %s; want a and b", num(&got))
 	}
-	if got := reduceRange(ReduceMedian, nil, placed, nil); num(&got) != "none" {
+	if got := ev.num(ReduceMedian, taken{none: true}); num(&got) != "none" {
 		t.Errorf("a range of no periods = %s; want none", num(&got))
 	}
 }

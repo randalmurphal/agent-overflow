@@ -9,12 +9,25 @@ import { formatAmount, unitWord, type DashboardUnit } from '../utils/dashboardAm
 
 /** One number of a dashboard (trackerdash.Num, which the bindings type
  * as any for its own JSON form): a value, none ({}), not known (no `v`
- * and `nc` tickets not counted), or a gap; `nc` beside a value is the
- * tickets the metric could not count. */
+ * and `nc` tickets not counted, `ur` days of your logged time not read,
+ * or `old`: it counts logged time older than the days kept, which nothing
+ * reads), or a gap; `nc` beside a value is the tickets the metric could
+ * not count. */
 export interface Num {
   readonly v?: number;
   readonly nc?: number;
+  readonly ur?: number;
+  readonly old?: boolean;
   readonly gap?: boolean;
+}
+
+/** What a number of logged time older than the days kept says. */
+export const LOGGED_OLD_TEXT = 'older than the logged time kept';
+
+/** What a number of days of logged time not read says: "3 days not
+ * read"; empty for none. */
+export function notReadWords(ur: number | null | undefined): string {
+  return ur ? `${ur} ${ur === 1 ? 'day' : 'days'} not read` : '';
 }
 
 /** What the screen and the drill say while the board's first read has
@@ -44,6 +57,9 @@ export interface NumWords {
   readonly word: string;
   readonly value: string;
   readonly notCounted: string;
+  /** Its days of logged time not read: "3 days not read", or why none
+   * can be (LOGGED_OLD_TEXT), or ''. */
+  readonly notRead: string;
 }
 
 /** The one reading of a number into words; every surface that shows a
@@ -54,19 +70,21 @@ export function numWords(n: Num | null | undefined, unit: DashboardUnit, estimat
     word,
     value: word ? `${amount} ${word}` : amount,
     notCounted: n?.gap ? '' : notCountedWords(n?.nc),
+    notRead: n?.gap ? '' : n?.old ? LOGGED_OLD_TEXT : notReadWords(n?.ur),
   });
   if (!n) return words('None');
   if (n.gap) return words(GAP_TEXT);
   const v = numValue(n);
-  if (v === null) return words(n.nc ? 'Not known' : 'None');
+  if (v === null) return words(n.nc || n.ur || n.old ? 'Not known' : 'None');
   return words(formatAmount(v, unit, estimates), unitWord(v, unit, estimates));
 }
 
 /** A number as one line of words: "3 points", "3 points, 2 not counted",
- * "Not known, 2 not counted", "None" or GAP_TEXT. */
+ * "Not known, 2 not counted", "Not known, 3 days not read", "None" or
+ * GAP_TEXT. */
 export function formatNum(n: Num | null | undefined, unit: DashboardUnit, estimates: string): string {
   const w = numWords(n, unit, estimates);
-  return w.notCounted ? `${w.value}, ${w.notCounted}` : w.value;
+  return [w.value, w.notCounted, w.notRead].filter(Boolean).join(', ');
 }
 
 /** What a drill's header says of its rows: "5 tickets", or "6 rows, 5
@@ -92,7 +110,9 @@ export interface RangeBefore {
 /**
  * The change mark of a number: none for a widget that counts now (no
  * previous value) or one without a value; a gap with the range's
- * sentence when the range before has no data; else the difference,
+ * sentence when the range before has no data, or with its days of your
+ * logged time not read (those before the copy's 180 days never are); else
+ * the difference,
  * colored by the metric's good direction, with the range before's label
  * and the tickets it did not count, which could turn the direction.
  */
@@ -108,6 +128,8 @@ export function changeMark(
   const v = numValue(value);
   if (v === null) return null;
   if (previous.gap) return { kind: 'gap', text: before?.previous_gap ?? '' };
+  if (previous.old) return { kind: 'gap', text: `The range before is ${LOGGED_OLD_TEXT}.` };
+  if (previous.ur) return { kind: 'gap', text: `${previous.ur} ${previous.ur === 1 ? 'day' : 'days'} of the range before ${previous.ur === 1 ? 'is' : 'are'} not read.` };
   const p = numValue(previous);
   if (p === null) return null;
   const then = [before?.previous ?? '', previous.nc ? `${notCountedWords(previous.nc)} then` : ''].filter(Boolean).map((part) => `, ${part}`).join('');
@@ -129,8 +151,10 @@ export function limitSide(good: string): 'above' | 'below' {
 
 /** The unit a widget of `unit` counts in where its answer's estimates
  * are `estimates`, as a limit names it (trackerdash.ValueUnit): tickets,
- * days, points or seconds. `limitFormat` is its inverse. */
+ * days, points or seconds, which logged time (`time`) is in too.
+ * `limitFormat` is its inverse. */
 export function countUnit(unit: DashboardUnit, estimates: string): string {
+  if (unit === 'time') return 'seconds';
   if (unit !== 'estimate') return unit;
   return estimates === 'points' ? 'points' : estimates === 'time' ? 'seconds' : 'tickets';
 }

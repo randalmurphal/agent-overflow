@@ -635,6 +635,136 @@ describe('the board\'s own dashboards', () => {
   });
 });
 
+describe('your logged time', () => {
+  /** A dashboard whose one widget counts your logged time. */
+  const LOGGED_VIEW = { ...VIEW, widgets: [{ id: 'w', how: { reads: ['worklogs'] } }] } as unknown as DashboardView;
+  /** An answer whose one widget counts your logged time, its days not
+   * read `unread`, with the board's computer's reads `logged`. */
+  function loggedAnswer(unread: string[] = [], at = 1, logged: Answer['logged'] = {}): Answer {
+    return { ...answerFor('sprints_5', at), widgets: [{ id: 'w', unread }], logged } as unknown as Answer;
+  }
+
+  /** Opens the store on a dashboard of your logged time and lands `first`. */
+  async function openedLogged(first: Answer) {
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
+    const evaluate = held<Answer>('EvaluateTrackerDashboard');
+    const reads = held<void>('ReadTrackerWorklogDays');
+    const s = open();
+    list.answer(listed([LOGGED_VIEW]));
+    await flush();
+    evaluate.answer(first);
+    await flush();
+    return { s, list, evaluate, reads };
+  }
+
+  it('asks nothing of its own: whether the board\'s computer reads, and why its read failed, are the answer\'s', async () => {
+    const { s, evaluate, reads } = await openedLogged(loggedAnswer(['2026-11-25'], 1, { reading: true }));
+    expect(reads.calls).toHaveLength(0);
+    expect(s.logged.reading).toBe(true);
+    expect(s.logged.failure).toBe('');
+    // The computer tells the board when its reads end, which counts again.
+    told();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    evaluate.answer(loggedAnswer(['2026-11-25'], 2, { failure: 'Jira asked to wait' }));
+    await flush();
+    expect(s.logged.reading).toBe(false);
+    expect(s.logged.failure).toBe('Jira asked to wait');
+    expect(reads.calls).toHaveLength(0);
+  });
+
+  it('reads every day again on Read again, then counts again, whose answer says it reads', async () => {
+    const { s, evaluate, reads } = await openedLogged(loggedAnswer(['2026-11-25'], 1, { failure: 'Jira asked to wait' }));
+    s.logged.retry();
+    await flush();
+    expect(reads.calls).toEqual([['conn-1', Intl.DateTimeFormat().resolvedOptions().timeZone]]);
+    expect(reads.pins).toEqual(['peer-1']);
+    expect(evaluate.calls).toHaveLength(1);
+    reads.answer();
+    await flush();
+    expect(evaluate.calls).toHaveLength(2);
+    evaluate.answer(loggedAnswer(['2026-11-25'], 2, { reading: true }));
+    await flush();
+    expect(s.logged.reading).toBe(true);
+    expect(s.logged.failure).toBe('');
+  });
+
+  it('says why a Read again the computer could not take failed, until the next', async () => {
+    const { s, reads } = await openedLogged(loggedAnswer(['2026-11-25']));
+    s.logged.retry();
+    await flush();
+    reads.fail(new Error('the computer is not connected'));
+    await flush();
+    expect(s.logged.failure).toBe('the computer is not connected');
+    s.logged.retry();
+    await flush();
+    expect(s.logged.failure).toBe('');
+  });
+
+  it('shows a failed Read again only on the computer it asked, and not once a newer ask was taken', async () => {
+    const { s, reads } = await openedLogged(loggedAnswer(['2026-11-25']));
+    // Peer 1's ask is out when the board of another computer shows.
+    s.logged.retry();
+    await flush();
+    source = { backend: 'peer-2', board: { ...testBoard, backend: 'peer-2' }, subscription: 'sub-2', changes: 0, dashboards: 0 };
+    flushSync();
+    await flush();
+    reads.fail(new Error('peer-1 went offline'));
+    await flush();
+    expect(s.logged.failure).toBe('');
+
+    // An older ask that fails after a newer one was taken says nothing.
+    source = { backend: 'peer-1', board: testBoard, subscription: 'sub-1', changes: 0, dashboards: 0 };
+    flushSync();
+    await flush();
+    s.logged.retry();
+    s.logged.retry();
+    await flush();
+    reads.fail(new Error('the first ask failed late'));
+    reads.answer();
+    await flush();
+    expect(s.logged.failure).toBe('');
+  });
+
+  it('shows a failed Read again until an answer says the board\'s computer reads', async () => {
+    const { s, evaluate, reads } = await openedLogged(loggedAnswer(['2026-11-25']));
+    s.logged.retry();
+    await flush();
+    reads.fail(new Error('the computer is not connected'));
+    await flush();
+    expect(s.logged.failure).toBe('the computer is not connected');
+    told();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    evaluate.answer(loggedAnswer(['2026-11-25'], 2));
+    await flush();
+    expect(s.logged.failure).toBe('the computer is not connected');
+    told();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    evaluate.answer(loggedAnswer(['2026-11-25'], 3, { reading: true }));
+    await flush();
+    expect(s.logged.failure).toBe('');
+  });
+
+  it('has Refresh read every day again while a widget counts your logged time, a known number among them, and not otherwise', async () => {
+    const { s, evaluate, reads } = await openedLogged(loggedAnswer([]));
+    s.refresh();
+    await flush();
+    expect(reads.calls).toHaveLength(1);
+    reads.answer();
+    evaluate.answer(loggedAnswer([], 2));
+    await flush();
+    s.destroy();
+
+    const plain = await opened();
+    const none = held<void>('ReadTrackerWorklogDays');
+    plain.s.refresh();
+    await flush();
+    expect(none.calls).toHaveLength(0);
+  });
+});
+
 describe("a board's summary row", () => {
   const ROW_VIEW = { ...VIEW, default_range: 'sprints_3' } as unknown as DashboardView;
   type Tiles = { limits: Record<string, { value: number; unit: string }>; proposed: string[]; max: number };

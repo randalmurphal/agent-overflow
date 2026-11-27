@@ -92,6 +92,8 @@ const (
 	// board with no estimate.
 	UnitEstimate Unit = "estimate"
 	UnitDays     Unit = "days"
+	// UnitTime is logged time, in seconds.
+	UnitTime Unit = "time"
 )
 
 // numbersUnit is the unit m's numbers are in, the one every reader of
@@ -185,9 +187,9 @@ func (m Metric) Validate() error {
 		return fmt.Errorf("metric %s reduces by %q, which is none of count, sum, median, average or average_of_period_sums", m.Name, m.Reduce)
 	}
 	switch m.Unit {
-	case UnitTickets, UnitEstimate, UnitDays:
+	case UnitTickets, UnitEstimate, UnitDays, UnitTime:
 	default:
-		return fmt.Errorf("metric %s counts %q, which is none of tickets, estimate or days", m.Name, m.Unit)
+		return fmt.Errorf("metric %s counts %q, which is none of tickets, estimate, days or time", m.Name, m.Unit)
 	}
 	switch m.Good {
 	case GoodUp, GoodDown, GoodNone:

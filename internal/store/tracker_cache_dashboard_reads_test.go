@@ -97,9 +97,9 @@ func TestADashboardCountCopiesWhatItsQueryReads(t *testing.T) {
 	try := func(t *testing.T, m trackerdash.Metric, fill func([]string) []string) (trackerdash.Tried, []string) {
 		t.Helper()
 		var asked []string
-		b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+		b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string, _ string) (store.MirrorExport, bool, error) {
 			asked = relations
-			return s.ExportMirrorBoard(ctx, conn, root, "10", store.MirrorRegroup{}, fill(relations), 0, store.CardShapeForTest)
+			return s.ExportMirrorBoard(ctx, conn, root, "10", store.MirrorRegroup{}, fill(relations), 0, store.MirrorLoggedDays{}, store.CardShapeForTest)
 		}}
 		tried, err := e.Try(context.Background(), b, trackerdash.Widget{Form: trackerdash.FormNumber, Width: 3}, m, "UTC")
 		if err != nil {

@@ -292,15 +292,6 @@ func sprintDays(sprints []sprintRow, now time.Time, loc *time.Location) (days []
 	return days, label, ""
 }
 
-// value is rows' number in period p by r: none for a day still to come,
-// which has not happened, rather than a zero.
-func (p period) value(r Reducer, rows []contribution) Num {
-	if p.future {
-		return Num{}
-	}
-	return reduceRows(r, rows)
-}
-
 // holding is the rows of rows that hold at t.
 func holding(rows []contribution, t int64) []contribution {
 	var out []contribution

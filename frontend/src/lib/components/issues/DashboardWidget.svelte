@@ -74,11 +74,12 @@
     type Num,
   } from '../../stores/trackerDashboardModel';
   import { formatAmount, unitWord, type DashboardUnit } from '../../utils/dashboardAmount';
-  import type { DrillTarget } from '../../stores/trackerDashboard.svelte';
+  import type { DrillTarget, LoggedTimeRead } from '../../stores/trackerDashboard.svelte';
   import BarChart from './charts/BarChart.svelte';
   import LineChart from './charts/LineChart.svelte';
   import Sparkline from './charts/Sparkline.svelte';
   import DashboardHow from './DashboardHow.svelte';
+  import DashboardLoggedLine from './DashboardLoggedLine.svelte';
   import TicketListActions, { type TicketListSource } from './TicketListActions.svelte';
 
   interface Props {
@@ -97,6 +98,12 @@
     onTicket: (row: TicketRow) => void;
     /** Where a ticket list's selection is written. */
     tickets: TicketListSource;
+    /** The reads of your logged time, which a widget that counts it
+     * shows (DashboardLoggedLine). */
+    logged?: LoggedTimeRead;
+    /** The name of the computer that counts the board (How this is
+     * counted). */
+    computer?: string;
     actions?: Snippet;
     /** A number widget's limit, in the unit it applies in; null for none. */
     limit?: TileLimit | null;
@@ -105,7 +112,12 @@
     tile?: TileControls;
   }
 
-  let { view, value, counting = false, range, estimates, stale = false, onDrill, onPerson, onEpic, onTicket, tickets, actions, limit = null, tile }: Props = $props();
+  let { view, value, counting = false, range, estimates, stale = false, onDrill, onPerson, onEpic, onTicket, tickets, logged, computer = '', actions, limit = null, tile }: Props = $props();
+  const unread = $derived(value?.unread?.length ?? 0);
+  // Rows of your logged time not known whole, which the widget's line
+  // says (DashboardLoggedLine): an empty chart or list of them is not
+  // "nothing".
+  const loggedUnknown = $derived(unread > 0 || !!value?.old);
 
   let showHow = $state(false);
   const unit = $derived(view.unit as DashboardUnit);
@@ -226,7 +238,7 @@
   {/if}
 
   {#if showHow}
-    <DashboardHow {how} />
+    <DashboardHow {how} {computer} />
   {:else}
     <div class="flex min-w-0 flex-col gap-2 transition-opacity {stale ? 'opacity-60' : ''}" inert={stale} data-testid="dashboard-widget-body" data-stale={stale}>
       {#if !value}
@@ -235,6 +247,8 @@
         <p class="text-[0.75rem] text-error" role="alert" data-testid="dashboard-widget-error">{value.error}</p>
       {:else if value.note}
         <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-note">{value.note}</p>
+      {:else if unread > 0 && logged?.reading}
+        <p class="text-[0.75rem] text-fg-muted" role="status" data-testid="dashboard-widget-reading">Reading your logged time…</p>
       {:else if view.form === 'number'}
         <button
           type="button"
@@ -249,6 +263,9 @@
           </span>
           {#if amount.notCounted}
             <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-number-not-counted">{amount.notCounted}</span>
+          {/if}
+          {#if amount.notRead}
+            <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-number-not-read">{amount.notRead}</span>
           {/if}
           {#if over && limit !== null}
             <span class="inline-flex items-center gap-1 text-[0.6875rem] text-fg-muted" data-testid="dashboard-over">
@@ -275,7 +292,7 @@
         {/if}
       {:else if view.form === 'bars'}
         {#if (value.buckets ?? []).length === 0}
-          <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">Nothing to count.</p>
+          {#if !loggedUnknown}<p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">Nothing to count.</p>{/if}
         {:else}
           <BarChart title={view.title} buckets={value.buckets ?? []} {series} horizontal={!byPeriod} {unit} {estimates} onPick={pick} onLabel={narrow} />
         {/if}
@@ -283,7 +300,7 @@
         <LineChart title={view.title} buckets={value.buckets ?? []} {series} {unit} {estimates} onPick={pick} pace={view.pace ?? false} />
       {:else if view.form === 'table'}
         {#if (value.buckets ?? []).length === 0}
-          <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">Nothing to count.</p>
+          {#if !loggedUnknown}<p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">Nothing to count.</p>{/if}
         {:else}
           <div class="overflow-x-auto">
             <table class="w-full table-fixed border-collapse text-[0.75rem]" data-testid="dashboard-table">
@@ -324,7 +341,7 @@
         {/if}
       {:else if view.form === 'list'}
         {#if (value.tickets ?? []).length === 0 && !value.not_counted}
-          <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">No tickets.</p>
+          {#if !loggedUnknown}<p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-empty">No tickets.</p>{/if}
         {:else}
           <TicketListActions rows={value.tickets ?? []} source={tickets} variant="widget" listTestId="dashboard-list" rowTestId="dashboard-list-row" {onTicket}>
             {#snippet row(r)}
@@ -340,6 +357,7 @@
         {/if}
       {/if}
 
+      <DashboardLoggedLine {value} counts={view.how.reads?.includes('worklogs') ?? false} {logged} />
       {#if value && !value.error && view.form !== 'number' && (value.more || value.not_counted)}
         <div class="flex flex-wrap gap-3 text-[0.6875rem]">
           {#if value.more}

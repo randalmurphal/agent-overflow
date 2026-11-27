@@ -258,7 +258,7 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
   "New Thread".
 - `threads.mode` has a CHECK constraint (last rebuilt in v72);
   `threadmode.hiddenModes` holds the workflow modes; six store queries
-  use `hiddenThreadModesClause`. The chain stood at v100 before this
+  use `hiddenThreadModesSQL`. The chain stood at v100 before this
   work.
 - `DeleteThread` runs paced in 500-row chunks; `threadapp.Destroy`
   calls `StopRemoteWork` before and after the session stop.
@@ -330,7 +330,7 @@ failure is attributable.
 
 Rebuild `threads` with `scratch` added to the `mode` CHECK, following
 v72's rebuild shape. `threadmode.ModeScratch` joins `hiddenModes`, which
-makes all six `hiddenThreadModesClause` callers hide it (sidebar lists,
+makes all six `hiddenThreadModesSQL` callers hide it (sidebar lists,
 project counts, both UI search paths) with no further change.
 `threadmode.ValidateSet` keeps refusing a switch into or out of
 `scratch`; promotion has its own path (below).

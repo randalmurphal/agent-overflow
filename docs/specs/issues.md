@@ -634,11 +634,11 @@ dismisses; a number, bar or cell's tickets, a number's change and trend, narrowi
 an epic, selecting rows in a ticket list or a drill to move, assign
 or start a thread on them; a sprint board's burndown and its table of
 what each finished sprint committed, added, removed and completed;
-Stuck's value where the range began; and a number tile's limit and a
+Stuck's value where the range began; a number tile's limit and a
 widget's pin to the board's summary row, which an agent's widget may ask
-for too. A query reads the board's tickets only: pull requests, threads
-and logged time are not built, nor the credit rules in How this is
-counted.
+for too; and a query over the threads linked to the board's tickets and
+over your own logged time. Pull requests in a query are not built, nor
+the credit rules in How this is counted.
 
 - Every board has a built-in dashboard, Overview: its usual pace, days
   from start to done, the tickets stuck now, what was finished per sprint
@@ -671,6 +671,53 @@ counted.
   picker, Team or Mine, the range, Ask your agent, and an edit mode that
   removes widgets.
 - A query may read tickets, pull requests, threads and logged time.
+- A query of threads counts those on the board's computer linked to the
+  board's tickets; How this is counted says so, since a ticket's Work
+  lists the linked threads of every attached computer.
+- A query of logged time reads your own, the connection's account's, in
+  hours, from the last 182 days up to today in the page's time zone, and
+  each row of it counts for you. A number, period, bar or cell that
+  counts it is known only once every one of those days is read, since a
+  row can count in a period other than its own day's (a sprint's
+  tickets, a total so far). Until then it reads "Not known" and says how
+  many days were not read ("Not known, 3 days not read"), on the tile, a
+  hover, and a drill's header, and a comparison it cannot make says "Not
+  compared: 3 days of the range before are not read." One that counts a
+  period that began before those days, or what held before them, reads
+  "Not known" for good and says it is older than the logged time kept,
+  with nothing to read, and no Read again beside it; a list or a chart of
+  such a period says "Not known: it counts days older than the logged
+  time kept.", and a comparison says "Not compared: the range before is
+  older than the logged time kept." A chart or list with nothing in it
+  yet says its days not read rather than "Nothing to count." or "No
+  tickets." A day still to come, and a widget counted by sprint over a
+  range with no sprint, read nothing. A pinned list of it reads "Not
+  known" on its chip while its days are not all read, and filters the
+  board by nothing then: the board shows every ticket and says why; a
+  pinned widget that cannot count here shows no number on its chip.
+- When the board's computer counts such a widget, on the Dashboards
+  screen, the board's summary row or an agent's widget, it reads the days
+  not read from the tracker in one run, newest first, 31 days a tracker
+  read, back to back, while the widget says "Reading your logged time…",
+  and the dashboard counts again when the run ends: a first show with
+  nothing read is one run of 6 reads (182 days). Closing the page does not
+  stop a run already going; its reads are kept for the next show. Time
+  logged outside the app on one of the newest 31 days shows within 10
+  minutes while a widget of it shows: the computer reads those days again
+  when it counts the widget and 5 minutes have passed since they were
+  last read, at most once every 5 minutes for the account (6 reads an
+  hour on an idle board, at most 12 on a busy one); a number already
+  known stays shown meanwhile. After a read fails, the widget says why,
+  beside its number or in place of one it cannot know, with Read again,
+  and nothing more is read on its own until the person presses Read again
+  or Refresh, which read all 182 days again (6 reads), or the account or
+  its time tracking changes. The board's Refresh reads them too while a
+  tile of the board's summary row needs them, and reads no logged time
+  otherwise. A failed Read again or Refresh says why on the computer it
+  asked, until another ask or the computer says it is reading.
+  A page narrowed to another person says "Only your own logged time is
+  read."; a Linear board says it has no time tracking, and a connection
+  whose account is not verified says to check the connection.
 - A number, bar or table cell opens the tickets behind it. Each widget
   shows how it is counted: the rule in plain words, the credit rules it
   reads, the query, and its sources.

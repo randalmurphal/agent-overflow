@@ -529,14 +529,14 @@ func TestSelectiveThreadListsProjectTheirOwnLinks(t *testing.T) {
 			}
 		}
 		projectQuery, projectArgs := listProjectThreadsQuery("p")
-		archiveQuery, archiveArgs := listArchivedThreadsQuery()
+		archiveQuery := listArchivedThreadsQuery()
 		for _, list := range []func() ([]Thread, error){func() ([]Thread, error) { return s.ListThreadsByProject("p") }, s.ListArchivedThreads} {
 			threads, err := list()
 			if err != nil || len(threads) != 1 || threads[0].TicketLink == nil || threads[0].TicketLink.State != TicketLinkCurrent {
 				t.Fatalf("listed %+v, %v; want the one linked thread", threads, err)
 			}
 		}
-		return statementVMSteps(t, s, projectQuery, projectArgs...), statementVMSteps(t, s, archiveQuery, archiveArgs...)
+		return statementVMSteps(t, s, projectQuery, projectArgs...), statementVMSteps(t, s, archiveQuery)
 	}
 	fewProject, fewArchive := measure(1)
 	manyProject, manyArchive := measure(500)
