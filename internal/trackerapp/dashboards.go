@@ -132,8 +132,13 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 }
 
 // ownOf is what key's project keeps for board, and with proposals what
-// agents proposed on it.
+// agents proposed on it. With proposals it reads both under propMu, as a
+// Keep changes them, so a widget a Keep moves is found in one of them.
 func (s *Service) ownOf(key setupKey, board tracker.BoardID, proposals bool) (trackerdash.Own, error) {
+	if proposals {
+		s.propMu.Lock()
+		defer s.propMu.Unlock()
+	}
 	s.setupMu.Lock()
 	held, err := s.heldSetupLocked(key.slug)
 	s.setupMu.Unlock()
@@ -155,11 +160,9 @@ func (s *Service) ownOf(key setupKey, board tracker.BoardID, proposals bool) (tr
 		own.Dashboards = append(own.Dashboards, out)
 	}
 	if proposals {
-		s.propMu.Lock()
 		for _, p := range s.proposals[proposalKey{key.slug, key.site, board}] {
 			own.Proposals = append(own.Proposals, trackerdash.Proposal{Widget: add(p.widget), Thread: p.thread})
 		}
-		s.propMu.Unlock()
 	}
 	return own, nil
 }

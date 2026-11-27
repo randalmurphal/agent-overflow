@@ -3,9 +3,11 @@ package trackerapp
 import (
 	"errors"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerdash"
@@ -296,4 +298,49 @@ func TestAKeepIsToldOnceAndReadsSettled(t *testing.T) {
 	if len(reads) != 1 || reads[0] != (seen{proposed: false, kept: true}) {
 		t.Fatalf("what a reader found at each nudge of one Keep: %+v; want one, kept and not proposed", reads)
 	}
+}
+
+// A count that overlaps a Keep finds the widget proposed or kept, never
+// in neither place: it reads the kept dashboards and the proposals under
+// the proposals' lock, the order a Keep holds them in. The test holds
+// that lock, waits for the count to block on it, and does a Keep's
+// transition by hand.
+func TestACountOverlappingAKeepFindsTheWidgetOnce(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	id := must[string](t)(m.svc.KeepProposal(sub, m.propose(t, openTickets()), KeepTarget{Title: "Bugs"}))
+	q := m.propose(t, openTickets())
+	scope, key, err := m.svc.boardHandle(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.svc.propMu.Lock()
+	done := make(chan trackerdash.Answer, 1)
+	go func() { done <- m.evaluate(t, sub, id) }()
+	waitBlockedIn(t, "trackerapp.(*Service).ownOf")
+	err = m.svc.keepLocked(proposalKey{key.slug, key.site, scope.Board}, key, string(scope.Board), q, KeepTarget{Dashboard: id}, id)
+	m.svc.propMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := <-done
+	proposed := slices.ContainsFunc(a.Proposals, func(v trackerdash.ProposalView) bool { return v.View.ID == q })
+	kept := slices.ContainsFunc(a.Dashboard.Widgets, func(w trackerdash.WidgetView) bool { return w.ID == q })
+	if proposed == kept {
+		t.Fatalf("the count found the widget proposed %v and kept %v; want exactly one", proposed, kept)
+	}
+}
+
+// waitBlockedIn waits until a goroutine waits on a mutex inside fn.
+func waitBlockedIn(t *testing.T, fn string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		buf := make([]byte, 1<<20)
+		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if strings.Contains(g, "sync.(*Mutex).Lock") && strings.Contains(g, fn) {
+				return
+			}
+		}
+	}
+	t.Fatalf("no goroutine blocked on a mutex in %s", fn)
 }
