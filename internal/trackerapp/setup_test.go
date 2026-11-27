@@ -1427,3 +1427,16 @@ func TestAProjectThatCountsTicketsReadsItsBoardInTickets(t *testing.T) {
 		t.Fatal("counting by estimates again did not read the board again in points")
 	}
 }
+
+// Counting tickets is a Jira board's rule: a Linear board of the project
+// keeps its estimates.
+func TestOnlyAJiraBoardIsCountedInTickets(t *testing.T) {
+	t.Parallel()
+	held := must[*heldSetup](t)(heldOf(Setup{Estimates: &Estimates{Count: "tickets"}}, nil, nil, nil, ""))
+	if g := held.counting(siteKey{store.TrackerKindJira, "https://example.atlassian.net"}); g.unit(tracker.UnitPoints) != tracker.UnitNone {
+		t.Error("a Jira board of a project counting tickets is not counted in tickets")
+	}
+	if g := held.counting(siteKey{store.TrackerKindLinear, "example"}); g.unit(tracker.UnitPoints) != tracker.UnitPoints {
+		t.Error("a Linear board of a project counting tickets is counted in tickets")
+	}
+}
