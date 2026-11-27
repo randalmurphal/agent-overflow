@@ -101,6 +101,16 @@ func TestMirrorSupportRows(t *testing.T) {
 		t.Errorf("patch support rows %q, %v, %v; want 10001,10003", supportIDs(patch.Sections[0]), ok, err)
 	}
 
+	// A card read again with a label the rule lists is support from then.
+	relabeled := rows[4]
+	relabeled.Card.UpdatedAt, relabeled.Card.Labels = 6, []string{"support"}
+	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{relabeled}, ReadAt: mirrorReadAt(2)}, nil)
+	if got := supportIDs(rowsOf("10", rule, column)); got != "10001,10003,10005" {
+		t.Errorf("after a card's labels changed: support rows %q, want 10001,10003,10005", got)
+	}
+	relabeled.Card.UpdatedAt, relabeled.Card.Labels = 7, nil
+	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{relabeled}, ReadAt: mirrorReadAt(3)}, nil)
+
 	counts := func(board string, regroup MirrorRegroup) string {
 		t.Helper()
 		c, err := s.CountMirrorSections(root, board, regroup)
