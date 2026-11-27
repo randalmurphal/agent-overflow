@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -166,5 +167,105 @@ func TestMirrorSupportRows(t *testing.T) {
 	}
 	if got := counts("10", rule); got != "all 2, backlog 1, sprint 1, column 2" {
 		t.Errorf("after an estimate reset: without an estimate %s, want all 2, backlog 1, sprint 1, column 2", got)
+	}
+}
+
+// A client that holds a board's totals is given them again by its next
+// patch when a card's type or labels change what is support, though its
+// estimate, status and sprints did not change: the totals revision moves
+// with every input of the totals.
+func TestASupportInputChangeMovesTheTotals(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	plain := sectionRow("10001", "a", "1", -1)
+	mustWriteRowPage(t, s, root, webPage("10", plain), nil)
+	rule, err := MirrorRegroup{}.WithSupport(MirrorSupportRule{Types: []string{"10004"}, Labels: []string{"support"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backlog := []MirrorSection{{Kind: MirrorSectionBacklog}}
+	held := func() MirrorTotalsAt {
+		t.Helper()
+		patch, ok, err := s.ReadMirrorBoardPatch(root, "10", rule, backlog, []string{"10001"}, MirrorTotalsAt{})
+		if err != nil || !ok || patch.Counts == nil {
+			t.Fatalf("the first patch: %+v, %v, %v", patch, ok, err)
+		}
+		return MirrorTotalsAt{Lifetime: patch.Lifetime, Revision: patch.Counts.TotalsRevision}
+	}
+	for i, change := range []struct {
+		name        string
+		edit        func(r *MirrorRow)
+		unestimated int
+	}{
+		{"labeled support", func(r *MirrorRow) { r.Card.Labels = []string{"support"} }, 0},
+		{"the label removed", func(r *MirrorRow) { r.Card.Labels = nil }, 1},
+		{"typed support", func(r *MirrorRow) { r.Card.TypeID = "10004" }, 0},
+	} {
+		at := held()
+		row := plain
+		row.Card.UpdatedAt = int64(10 + i)
+		change.edit(&row)
+		plain = row
+		mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{row}, ReadAt: mirrorReadAt(int64(2 + i))}, nil)
+		patch, ok, err := s.ReadMirrorBoardPatch(root, "10", rule, backlog, []string{"10001"}, at)
+		if err != nil || !ok {
+			t.Fatalf("%s: %v, %v", change.name, ok, err)
+		}
+		if patch.Counts == nil {
+			t.Fatalf("%s: the patch for a client holding the totals at revision %d carries none", change.name, at.Revision)
+		}
+		if got := patch.Counts.Backlog.Unestimated; got != change.unestimated {
+			t.Fatalf("%s: %d without an estimate, want %d", change.name, got, change.unestimated)
+		}
+	}
+}
+
+// Every column of an issue that the section totals read is one whose
+// change advances the totals revision of the issue's boards, through a
+// trigger: a patch for a client holding the totals reads none, so a total
+// input the triggers do not name would leave the client's totals stale.
+// The keys never change.
+func TestEveryIssueColumnTheTotalsReadMovesThem(t *testing.T) {
+	t.Parallel()
+	s, _, _ := newMirror(t)
+	read := map[string]bool{}
+	for _, statement := range []string{mirrorCountRowsSQL, mirrorRegroupedCountRowsSQL, mirrorCountSprintsSQL, mirrorCountSprintsLeftOutSQL} {
+		for _, m := range regexp.MustCompile(`\bi\.([a-z_]+)`).FindAllStringSubmatch(statement, -1) {
+			read[m[1]] = true
+		}
+	}
+	delete(read, "root_id")
+	delete(read, "issue_id")
+	if !read["status_id"] || !read["type_id"] || !read["labels"] {
+		t.Fatalf("the totals read the issue columns %v; the scan lost status, type or labels", read)
+	}
+	rows, err := s.db.Query(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'tracker_cache_issues'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	moved := map[string]bool{}
+	of := regexp.MustCompile(`(?i)AFTER UPDATE OF ([a-z_, ]+) ON tracker_cache_issues`)
+	for rows.Next() {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			t.Fatal(err)
+		}
+		m := of.FindStringSubmatch(text)
+		if m == nil || !strings.Contains(text, "totals_revision = totals_revision + 1") {
+			continue
+		}
+		for _, column := range strings.Split(m[1], ",") {
+			moved[strings.TrimSpace(column)] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for column := range read {
+		if !moved[column] {
+			t.Errorf("the totals read tracker_cache_issues.%s, which no trigger that advances the totals revision names", column)
+		}
 	}
 }
