@@ -1075,7 +1075,8 @@ func (e *Evaluator) relationsOf(ctx context.Context, k *Kind, metrics map[string
 
 // count runs metric m once, its prepared statement from the view, for
 // what its widgets read (r): a state metric keeps only the rows that hold
-// where they read it.
+// where they read it, and an event metric placed in periods only the rows
+// of the periods they take.
 func (o *opened) count(m Metric, r reads) (counted, error) {
 	pr := o.preps[m.Name]
 	if pr.err != nil {
@@ -1086,8 +1087,8 @@ func (o *opened) count(m Metric, r reads) (counted, error) {
 	}
 	now := o.now.UnixMilli()
 	at := r.instants(now)
-	if m.Bucket == BucketSprint {
-		at.sprints = o.sp.sprintIDs()
+	if !pr.p.cols.state() && pr.p.cols.periodBound(m) {
+		at.events, at.takes, at.bySprint = true, r.takes, m.Bucket == BucketSprint
 	}
 	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now), at)
 }
@@ -1427,38 +1428,51 @@ func periodsOf(m Metric, sp span) []period {
 	return sp.periods
 }
 
-// reads is where widgets read a state metric's rows: now, where the range
-// begins, and at the end of periods. A metric that runs for several
-// widgets runs for all of what they read (and).
+// reads is what widgets take of a metric's rows (inRange): of a state
+// metric, the rows that hold now, where the range begins, or at the end
+// of periods; of an event metric placed in periods, the rows of the
+// periods it takes (takes). A metric that runs for several widgets runs
+// for all of what they read (and). The sink keeps no other row (count).
 type reads struct {
 	now, start bool
 	periods    []period
 	day        bool
+	takes      []period
 }
 
 func (r reads) and(o reads) reads {
 	r.now, r.start, r.day = r.now || o.now, r.start || o.start, r.day || o.day
-	for _, p := range o.periods {
-		if !slices.ContainsFunc(r.periods, func(q period) bool { return q.id == p.id }) {
-			r.periods = append(r.periods, p)
+	union := func(to, from []period) []period {
+		for _, p := range from {
+			if !slices.ContainsFunc(to, func(q period) bool { return q.id == p.id }) {
+				to = append(to, p)
+			}
 		}
+		return to
 	}
+	r.periods, r.takes = union(r.periods, o.periods), union(r.takes, o.takes)
 	return r
 }
 
-// widgetReads is where widget w reads metric m's states: a number now,
-// where the range begins and at its periods' ends (its trend); a list,
-// and a chart whose buckets are not periods, now; a chart of periods at
-// their ends.
+// widgetReads is what widget w reads of metric m. Its states: a number
+// now, where the range begins and at its periods' ends (its trend); a
+// list, and a chart whose buckets are not periods, now; a chart of
+// periods at their ends. Its events: every form the range's periods, and
+// a number the previous range's too when it compares with it, which it
+// does not across a gap or by the sprint's days (widget).
 func widgetReads(w Widget, m Metric, sp span) reads {
+	ps := periodsOf(m, sp)
+	takes := ps
+	if w.Form == FormNumber && m.Bucket != BucketDay && sp.previousGap == "" {
+		takes = slices.Concat(ps, sp.previous)
+	}
 	switch {
 	case w.Form == FormNumber:
-		ps := periodsOf(m, sp)
-		return reads{now: true, start: m.Bucket != BucketDay && len(ps) > 0, periods: ps, day: m.Bucket == BucketDay}
+		return reads{now: true, start: m.Bucket != BucketDay && len(ps) > 0, periods: ps, day: m.Bucket == BucketDay, takes: takes}
 	case w.Form == FormList || ranks(w, m):
-		return reads{now: true}
+		return reads{now: true, takes: takes}
 	}
-	return reads{periods: periodsOf(m, sp), day: m.Bucket == BucketDay}
+	return reads{periods: ps, day: m.Bucket == BucketDay, takes: takes}
 }
 
 // instants is r's instants at now, a period to come left out, and where
@@ -1747,15 +1761,18 @@ type DrillAnswer struct {
 	At        int64       `json:"at"`
 }
 
-// drillReads is where drill r of widget w reads metric m's states: at
-// the end of the period its cell names, else now.
+// drillReads is what drill r of widget w reads of metric m (reads): the
+// period its cell names, at its end for a state; else, as the range's
+// number does (Drill), its states now and its events of the range's
+// periods.
 func drillReads(w Widget, m Metric, sp span, r DrillRequest) reads {
+	ps := periodsOf(m, sp)
 	if r.Cell == nil || r.Rest || ranks(w, m) {
-		return reads{now: true}
+		return reads{now: true, takes: ps}
 	}
-	for _, p := range periodsOf(m, sp) {
+	for _, p := range ps {
 		if p.id == r.Cell.Bucket {
-			return reads{periods: []period{p}, day: m.Bucket == BucketDay}
+			return reads{periods: []period{p}, day: m.Bucket == BucketDay, takes: []period{p}}
 		}
 	}
 	return reads{}

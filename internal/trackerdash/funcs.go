@@ -281,10 +281,11 @@ type contribution struct {
 
 // rowSink gathers the rows of the metric that runs, charged against the
 // row limit and the byte budget. One metric runs at a time on a session.
-// A state metric's row is kept only when it holds at one of the instants
-// its widgets read (at), and a metric by sprint's only when its sprint is
-// one they read (at.sprints); the limit and the budget count the rows
-// kept, and no other row is held.
+// It keeps only the rows its widgets take (reads, at): a state metric's
+// that hold at one of the instants they read, and an event metric's
+// placed in periods that fall in one of the periods they take, or have
+// no period to fall in (place lists those by their ticket's span); the
+// limit and the budget count the rows kept, and no other row is held.
 type rowSink struct {
 	cols columns
 	// series is the metric's declared series, which a row's series is one of.
@@ -299,15 +300,31 @@ func (s *rowSink) reset(cols columns, series []string, at heldAt) {
 	s.cols, s.series, s.at, s.rows, s.bytes, s.err = cols, series, at, nil, 0, nil
 }
 
-// heldAt is the instants a state metric's widgets read, sorted, with
-// where they are in words for the row limit's sentence (reads.instants),
-// and for a metric by sprint the sprints they read (span.sprintIDs; nil
-// for any other metric): place puts a row of no other sprint in no
-// period.
+// heldAt is what the sink keeps (rowSink): the instants a state
+// metric's widgets read, sorted, with where they are in words for the
+// row limit's sentence (reads.instants); for an event metric placed in
+// periods (events), the periods they take, by sprint for a metric by
+// sprint (period.places).
 type heldAt struct {
-	at      []int64
-	where   string
-	sprints map[string]bool
+	at       []int64
+	where    string
+	events   bool
+	takes    []period
+	bySprint bool
+}
+
+// taken is whether event row c falls in a period the widgets take, or
+// in none at all (a row of no at, not by sprint).
+func (in heldAt) taken(c contribution) bool {
+	if !in.bySprint && !c.hasAt {
+		return true
+	}
+	for _, p := range in.takes {
+		if p.places(c, in.bySprint) {
+			return true
+		}
+	}
+	return false
 }
 
 // holdAny is whether state row c holds at one of the instants (holdsAt).
@@ -367,12 +384,7 @@ func (s *rowSink) add(onBoard driver.Value, args []driver.Value) error {
 		return s.err
 	}
 
-	if s.cols.state() {
-		if !s.at.holdAny(c) {
-			return nil
-		}
-	}
-	if s.at.sprints != nil && !s.at.sprints[c.bucket] {
+	if s.cols.state() && !s.at.holdAny(c) || s.at.events && !s.at.taken(c) {
 		return nil
 	}
 	if len(s.rows) == maxRows {
