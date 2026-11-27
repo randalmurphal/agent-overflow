@@ -317,6 +317,20 @@ func (c *Client) bulkFetch(ctx context.Context, refs, fields []string, byID bool
 	return out, nil
 }
 
+// OversizedIssueError is a bulk fetch of one issue whose answer is over
+// the transport's bound with the fields asked: the bulk fetch read the
+// issues before it and stopped at it.
+type OversizedIssueError struct {
+	ID  string
+	Err error
+}
+
+func (e *OversizedIssueError) Error() string {
+	return fmt.Sprintf("jira: bulk fetch of %s: %v", e.ID, e.Err)
+}
+
+func (e *OversizedIssueError) Unwrap() error { return e.Err }
+
 // bulkIssue is an issue of a bulk fetch's answer as one reader decodes
 // it: whatever it keeps, it names the issue's ID.
 type bulkIssue interface{ issueID() string }
@@ -334,7 +348,10 @@ func (v issueJSON) issueID() string { return v.ID }
 // answers that left out issues they were asked for, which the caller
 // proves the user's (Client.prove) before it reads an absence as one; a
 // failure after some requests returns what was given each so far with
-// the error.
+// the error. An answer over the transport's bound is asked again in
+// batches of half as many (trackerapi.Halved); one of a single issue
+// fails with an *OversizedIssueError naming it, every issue before it
+// given to each.
 func bulkFetchEach[T bulkIssue](ctx context.Context, c *Client, refs, fields []string, byID bool,
 	each func(issues []T, resp *trackerapi.Response, epoch uint64)) (asked int, failed []BulkFailure, left unnamed, err error) {
 	named := make(map[string]bool, len(refs))
@@ -363,6 +380,14 @@ func bulkFetchEach[T bulkIssue](ctx context.Context, c *Client, refs, fields []s
 		}, &v)
 		if err == nil {
 			err = v.check()
+		}
+		if half, ok := trackerapi.Halved(len(batch), err); ok {
+			// The same issues again, in batches of half as many.
+			size, start = half, start-half
+			continue
+		}
+		if _, large := errors.AsType[*trackerapi.BodyTooLargeError](err); large {
+			return len(refs), failed, left, &OversizedIssueError{ID: batch[0], Err: err}
 		}
 		if err != nil {
 			return len(refs), failed, left, fmt.Errorf("jira: bulk fetch from %s: %w", batch[0], err)

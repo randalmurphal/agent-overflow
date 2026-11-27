@@ -132,16 +132,24 @@ func commentPageOf[J any](ctx context.Context, c *Client, issue, path string, q 
 // commentPages is one walk of every page of issue's comments, oldest
 // first, each decoded as J and given to each. It ends at the total the
 // pages name, and fails at a page that names none, at an empty page
-// before it, and at an error of each.
+// before it, and at an error of each. A page over the transport's bound
+// is asked again with half as many comments (trackerapi.Halved), and the
+// pages after it keep the smaller size.
 func commentPages[J any](ctx context.Context, c *Client, issue string, each func(J) error) error {
 	path, err := issuePath(issue)
 	if err != nil {
 		return err
 	}
-	q := url.Values{"maxResults": {strconv.Itoa(maxCommentPage)}, "orderBy": {"created"}}
+	size := maxCommentPage
+	q := url.Values{"orderBy": {"created"}}
 	for start := 0; ; {
 		q.Set("startAt", strconv.Itoa(start))
+		q.Set("maxResults", strconv.Itoa(size))
 		page, err := commentPageOf[J](ctx, c, issue, path, q)
+		if half, ok := trackerapi.Halved(size, err); ok {
+			size = half
+			continue
+		}
 		if err != nil {
 			return err
 		}

@@ -153,7 +153,7 @@ func (c *Client) lookUpUser(ctx context.Context, accountID string, voter bool) (
 	var u userJSON
 	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "user", Query: url.Values{"accountId": {accountID}}}, &u)
 	if err != nil {
-		if voter && withheld(err) {
+		if voter && Withheld(err) {
 			err = fmt.Errorf("%w: %w", ErrUserWithheld, err)
 			c.voterMisses.put(missEpoch, mark, accountID, err)
 		}
@@ -163,9 +163,10 @@ func (c *Client) lookUpUser(ctx context.Context, accountID string, voter bool) (
 	return u.user(), nil
 }
 
-// withheld reports a user lookup's error that is Jira withholding the
-// user: a confirmed 404, or a 403.
-func withheld(err error) bool {
+// Withheld reports an error of a read of one user or one issue's list
+// that is Jira withholding it: a confirmed 404, or a 403 (a user lookup
+// needs the global Browse users and groups permission).
+func Withheld(err error) bool {
 	se, ok := errors.AsType[*trackerapi.StatusError](err)
 	return errors.Is(err, trackerapi.ErrNotFound) || ok && se.Status == http.StatusForbidden
 }

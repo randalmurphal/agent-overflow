@@ -129,7 +129,7 @@ func TestFakeEvidenceReadsEachFinishedTicketOnce(t *testing.T) {
 		t.Fatalf("%d act receipts stored", n)
 	}
 	root := must[int64](t)(rootOf(s, conn))
-	if due, more, err := s.st.ListMirrorActsDue(root, []store.MirrorActsBoard{{BoardID: string(scope.Board)}}, 0); err != nil || len(due) != 0 || more {
+	if due, more, err := s.st.ListMirrorActsDue(root, []store.MirrorActsBoard{{BoardID: string(scope.Board)}}, 0, millis(s.svc.now())); err != nil || len(due) != 0 || more {
 		t.Fatalf("due after the first use: %v, %v, %v", due, more, err)
 	}
 
@@ -153,5 +153,85 @@ func TestFakeEvidenceReadsEachFinishedTicketOnce(t *testing.T) {
 	}
 	if n := s.storeCount(t, `SELECT count(*) FROM tracker_cache_issue_act_reads`); n != 2*(first+creditTickets) {
 		t.Fatalf("%d act receipts stored", n)
+	}
+}
+
+// creditTempoScenario is a credit scenario of one finished sprint whose
+// first ticket holds a Tempo worklog of User 1 of 1,800 seconds, with
+// Tempo on.
+func creditTempoScenario(t *testing.T) (*fakeScenario, Connection, Scope, Connection) {
+	t.Helper()
+	s := newFakeScenario(t, func(at time.Time) trackerfake.Fixture {
+		site := jiraSeed(at)
+		completed := at.Add(-7 * 24 * time.Hour)
+		finishedSprint(&site, 101, completed)
+		site.Tempo = &trackerfake.TempoAccount{Token: tempoTokenFake, Worklogs: []trackerfake.TempoWorklog{
+			{ID: 7001, Issue: "110100", Author: "acc-user1", StartDate: completed.Add(-48 * time.Hour).Format(time.DateOnly), StartTime: "09:00:00", Spent: 1800}}}
+		return trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}
+	}, "example.atlassian.net")
+	conn := s.addJira()
+	s.writeToken(conn, "fake-jira-token-1")
+	tempo := s.addTempo(conn.ID)
+	s.writeToken(tempo, tempoTokenFake)
+	scope := Scope{Connection: conn.ID, Board: "1"}
+	s.listBoards(conn.ID, scope.Board)
+	s.countCredit(t, conn.ID, true)
+	s.readBoard(t, scope)
+	return s, conn, scope, tempo
+}
+
+// The app's own edit of a Tempo worklog reaches the evidence on the next
+// tick: the worklog write makes the ticket's worklog evidence due, though
+// the fake moves no card.
+func TestFakeEvidenceFollowsTheAppsWorklogEdit(t *testing.T) {
+	s, conn, _, _ := creditTempoScenario(t)
+	s.runLinked(t, conn)
+	if n := s.storeCount(t, `SELECT seconds FROM tracker_cache_issue_acts WHERE source = 2 AND act_id = '7001'`); n != 1800 {
+		t.Fatalf("collected %d seconds", n)
+	}
+	day := s.clock.Now().Add(-9 * 24 * time.Hour).Format(time.DateOnly)
+	got := must[WorklogDays](t)(s.svc.RefreshWorklogs(t.Context(), conn.ID, "acc-user1", day, day))
+	if len(got.Worklogs) != 1 {
+		t.Fatalf("worklogs %+v", got)
+	}
+	spent := int64(3600)
+	must[WriteView](t)(s.svc.EditWorklog(t.Context(), conn.ID, WorklogEditRequest{From: got.Worklogs[0], SpentSeconds: &spent}))
+	s.runLinked(t, conn)
+	if n := s.storeCount(t, `SELECT seconds FROM tracker_cache_issue_acts WHERE source = 2 AND act_id = '7001'`); n != 3600 {
+		t.Fatalf("after the edit the evidence holds %d seconds", n)
+	}
+}
+
+// Turning Tempo off while the evidence read's Tempo search is held fails
+// nothing: the tick reports More, and the next reads under Jira's time.
+func TestFakeEvidenceReadAcrossTurningTempoOff(t *testing.T) {
+	s, conn, _, tempo := creditTempoScenario(t)
+	origin := trackerfake.Origin{Tracker: trackerfake.TrackerTempo}
+	if err := s.e.AddFault(trackerfake.Fault{Origin: origin, Route: "POST 4/worklogs/search", Kind: trackerfake.FaultHold, Times: 1}); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		out Outcome
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := s.svc.SyncLinked(context.Background(), conn.ID, LinkedDue{Evidence: true}, Background)
+		done <- result{out, err}
+	}()
+	waitHeld(t, s.e, "POST 4/worklogs/search")
+	must[Connection](t)(s.svc.SetEnabled(tempo.ID, false))
+	if err := s.e.Release(origin, "POST 4/worklogs/search", false); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil || r.out.Failure != nil || !r.out.More() {
+		t.Fatalf("the tick %+v, %v; want no failure and More", r.out, r.err)
+	}
+	if out := must[Outcome](t)(s.svc.SyncLinked(t.Context(), conn.ID, LinkedDue{Evidence: true}, Background)); out.Failure != nil {
+		t.Fatalf("the next tick failed: %+v", out.Failure)
+	}
+	if n := s.storeCount(t, `SELECT count(*) FROM tracker_cache_issue_act_reads WHERE source = 2 AND read_at > 0`); n == 0 {
+		t.Fatal("the next tick stored no worklog receipt")
 	}
 }

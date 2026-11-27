@@ -1,13 +1,16 @@
 package trackerapp
 
 import (
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // evidenceFixture is a mirror fixture whose board holds rows, each in the
@@ -37,9 +40,14 @@ func evidenceFixture(t *testing.T, rows int) (m *mirrorFixture, cs *countingStor
 			var ev tracker.Evidence
 			for _, in := range q.Issues {
 				at := time.UnixMilli(1_799_000_000_000).UTC()
-				ev.Issues = append(ev.Issues, tracker.IssueEvidence{Issue: in.Issue, Updated: at,
-					Comments: []tracker.Act{{ID: "c-" + string(in.Issue), Author: user2.ID, At: at}},
-					Worklogs: []tracker.Act{{ID: "w-" + string(in.Issue), Author: user1.ID, At: at, Spent: time.Hour}}})
+				if in.Comments {
+					ev.Read = append(ev.Read, tracker.SourceEvidence{Issue: in.Issue, Source: tracker.EvidenceComments, Updated: at,
+						Acts: []tracker.Act{{ID: "c-" + string(in.Issue), Author: user2.ID, At: at}}})
+				}
+				if in.Worklogs {
+					ev.Read = append(ev.Read, tracker.SourceEvidence{Issue: in.Issue, Source: tracker.EvidenceWorklogs, Updated: at,
+						Acts: []tracker.Act{{ID: "w-" + string(in.Issue), Author: user1.ID, At: at, Spent: time.Hour}}})
+				}
 			}
 			ev.Users = []tracker.User{user1, user2}
 			return ev, nil
@@ -70,14 +78,20 @@ func (m *mirrorFixture) evidenceTick(t *testing.T) Outcome {
 }
 
 // With no project counting credit, the evidence unit lists nothing and
-// asks the tracker nothing; nor does a section that is off.
+// asks the tracker nothing; nor does a section that is off. It reads the
+// connection's own board listings alone, never the board picker's
+// listing of every project.
 func TestEvidenceWithoutCreditReadsNothing(t *testing.T) {
 	m, cs, asked := evidenceFixture(t, 1)
 	m.evidenceTick(t)
 	m.countCredit(t, m.conn.ID, false)
 	m.evidenceTick(t)
-	if calls := cs.take(); calls["ListMirrorActsDue"]+calls["ReplaceMirrorActs"] != 0 || len(asked()) != 0 {
+	calls := cs.take()
+	if calls["ListMirrorActsDue"]+calls["ReplaceMirrorActs"]+calls["ListTrackerBoardChoices"] != 0 || len(asked()) != 0 {
 		t.Fatalf("store calls %v, reads %v", calls, asked())
+	}
+	if calls["ListConnectionProjectBoards"] != 2 {
+		t.Fatalf("store calls %v; want the connection's listings read once a tick", calls)
 	}
 }
 
@@ -116,11 +130,11 @@ func TestEvidenceIsReadOncePerUpdate(t *testing.T) {
 	if got := units(out); !slices.Equal(got, []Unit{UnitEvidence}) || out.More() || !out.Changes().Catalog {
 		t.Fatalf("outcome %+v", out)
 	}
-	if fmt.Sprint(asked()) != "[[{20001 0001-01-01 00:00:00 +0000 UTC} {20002 0001-01-01 00:00:00 +0000 UTC}]]" {
+	if fmt.Sprint(asked()) != "[[{20001 true true 0001-01-01 00:00:00 +0000 UTC} {20002 true true 0001-01-01 00:00:00 +0000 UTC}]]" {
 		t.Fatalf("reads %v", asked())
 	}
 	root := m.root()
-	got, _, err := m.st.ListMirrorActsDue(root, []store.MirrorActsBoard{{BoardID: string(testBoard)}}, 0)
+	got, _, err := m.st.ListMirrorActsDue(root, []store.MirrorActsBoard{{BoardID: string(testBoard)}}, 0, millis(m.svc.now()))
 	if err != nil || len(got) != 0 {
 		t.Fatalf("due after the read: %v, %v", got, err)
 	}
@@ -157,9 +171,9 @@ func TestEvidenceReadsABoundedPageATick(t *testing.T) {
 	}
 }
 
-// A read during which the connection's time source changed stores
-// nothing, and the unit reports More so the next tick reads under the new
-// source.
+// A read during which the connection's time source changed stores its
+// comments and no worklog, and the unit reports More so the next tick
+// reads under the new source.
 func TestEvidenceReadAcrossATimeSourceChangeIsReadAgain(t *testing.T) {
 	m, _, asked := evidenceFixture(t, 1)
 	m.countCredit(t, m.conn.ID, true)
@@ -178,8 +192,74 @@ func TestEvidenceReadAcrossATimeSourceChangeIsReadAgain(t *testing.T) {
 	if out := m.evidenceTick(t); !out.More() {
 		t.Fatalf("outcome %+v", out)
 	}
-	rows, _, err := m.st.ListMirrorActsDue(m.root(), []store.MirrorActsBoard{{BoardID: string(testBoard)}}, 0)
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("due after the refused read: %v, %v", rows, err)
+	rows, _, err := m.st.ListMirrorActsDue(m.root(), []store.MirrorActsBoard{{BoardID: string(testBoard)}}, 0, millis(m.svc.now()))
+	if err != nil || fmt.Sprint(rows) != "[{20001 false true 0}]" {
+		t.Fatalf("due after the refused read: %v, %v; want its worklogs alone", rows, err)
+	}
+}
+
+// A ticket whose read failed for it alone is recorded with why and not
+// asked again for a day, so the next tick reaches the tickets behind it
+// and the unit stops reporting More; the attempts are reported to the
+// loop's failure report. The tickets of the first page asked again a day
+// later are read.
+func TestEvidenceSkipsAFailedTicketForADay(t *testing.T) {
+	m, _, asked := evidenceFixture(t, 201)
+	m.countCredit(t, m.conn.ID, true)
+	m.p.set(func(p *scripted) {
+		inner := p.evidence
+		p.evidence = func(q tracker.EvidenceQuery) (tracker.Evidence, error) {
+			ev, err := inner(q)
+			if len(asked()) <= 4 {
+				ev.Read = nil
+				for _, in := range q.Issues {
+					ev.Failed = append(ev.Failed, tracker.SourceFailure{Issue: in.Issue, Source: tracker.EvidenceComments, Err: errors.New("Jira is busy")},
+						tracker.SourceFailure{Issue: in.Issue, Source: tracker.EvidenceWorklogs, Err: errors.New("Jira is busy")})
+				}
+			}
+			return ev, err
+		}
+	})
+	if out := m.evidenceTick(t); !out.More() || len(asked()) != 4 {
+		t.Fatalf("first tick: more %v, %d reads", out.More(), len(asked()))
+	}
+	_, _, errs := m.events.snapshot()
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "could not read 400 tickets' comments or worklogs") || !strings.Contains(errs[0].Error(), "Jira is busy") {
+		t.Fatalf("reported %v", errs)
+	}
+	if n := m.storeCount(t, `SELECT count(*) FROM tracker_cache_issue_act_reads WHERE tried_reason = 'Jira is busy' AND read_at = 0`); n != 400 {
+		t.Fatalf("%d attempts recorded", n)
+	}
+	if out := m.evidenceTick(t); out.More() || len(asked()) != 5 || fmt.Sprint(asked()[4]) != "[{20201 true true 0001-01-01 00:00:00 +0000 UTC}]" {
+		t.Fatalf("second tick: more %v, reads %v", out.More(), asked()[4:])
+	}
+	if out := m.evidenceTick(t); out.More() || len(asked()) != 5 {
+		t.Fatalf("third tick: more %v, %d reads", out.More(), len(asked()))
+	}
+	m.pass(24*time.Hour + time.Second)
+	if out := m.evidenceTick(t); !out.More() || len(asked()) != 9 {
+		t.Fatalf("a day later: more %v, %d reads", out.More(), len(asked()))
+	}
+}
+
+// A read that fails for every ticket after part of it was read stores
+// that part, with its receipts, and fails the tick.
+func TestEvidenceStoresWhatAFailedReadReturned(t *testing.T) {
+	m, _, _ := evidenceFixture(t, 2)
+	m.countCredit(t, m.conn.ID, true)
+	m.p.set(func(p *scripted) {
+		inner := p.evidence
+		p.evidence = func(q tracker.EvidenceQuery) (tracker.Evidence, error) {
+			ev, _ := inner(q)
+			ev.Read = ev.Read[:1]
+			return ev, &trackerapi.TransientError{Err: errors.New("reset")}
+		}
+	})
+	out := must[Outcome](t)(m.svc.SyncLinked(t.Context(), m.conn.ID, LinkedDue{Evidence: true}, Background))
+	if out.Failure == nil {
+		t.Fatalf("outcome %+v; want the tick failed", out)
+	}
+	if n := m.storeCount(t, `SELECT count(*) FROM tracker_cache_issue_act_reads WHERE issue_id = '20001' AND source = 1 AND read_at > 0`); n != 1 {
+		t.Fatalf("the comments read before the failure: %d receipts", n)
 	}
 }

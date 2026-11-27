@@ -235,6 +235,18 @@ func (e *BodyTooLargeError) Error() string {
 	return fmt.Sprintf("%s %s %s: the answer is over its %d-byte limit", e.Tracker, e.Method, e.URL, e.Limit)
 }
 
+// Halved is the size a read of sized requests (a page of a list, a batch
+// of a bulk read) asks for next after err: half of size when err is an
+// answer over its bound and size is above one, so a list of large items
+// is read in smaller requests rather than not at all. ok is false for any
+// other error, and for an answer of one item over the bound.
+func Halved(size int, err error) (half int, ok bool) {
+	if _, large := errors.AsType[*BodyTooLargeError](err); !large || size <= 1 {
+		return size, false
+	}
+	return size / 2, true
+}
+
 // WriteNotApplied reports whether err, the error of one write, proves the
 // tracker did not apply it: the request was never sent, an upload's
 // stopped short of the length it declared (*SourceError, *CutError), or

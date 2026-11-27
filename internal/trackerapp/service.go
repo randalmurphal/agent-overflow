@@ -32,6 +32,7 @@ type Store interface {
 	ProjectTrackerBoardListed(projectID, connectionID, boardID string) (string, bool, error)
 	GetProject(id string) (store.Project, error)
 	ListTrackerBoardChoices(projectID string) ([]store.TrackerBoardChoice, error)
+	ListConnectionProjectBoards(connectionID string) ([]store.ConnectionProjectBoard, error)
 	ReplaceProjectTrackerBoards(projectID string, held []store.HeldTrackerBoard, boards []store.ProjectTrackerBoard) (bool, store.TrackerBoardListing, error)
 	ReadyTrackerBoards(ctx context.Context, boards []store.TrackerBoardRef) error
 

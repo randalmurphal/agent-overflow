@@ -146,11 +146,14 @@ type Provider interface {
 	// issues q names. A failure returns no history.
 	History(ctx context.Context, q HistoryQuery) (History, error)
 	// Evidence is who commented on and logged time on the issues q names,
-	// after q.Check: an issue the
-	// tracker does not return (deleted, hidden, or one it could not read)
-	// is left out, and a failure returns nothing. Without
-	// Capabilities.Evidence it fails wrapping ErrUnsupported before any
-	// request.
+	// after q.Check: each source asked of each issue is read whole or, when
+	// it failed for that issue alone (the tracker did not return the issue
+	// or said it failed, an answer too large even alone, an author not
+	// confirmed a person's), in Evidence.Failed with why. A failure every
+	// issue shares (the tracker unreachable, the credential refused, a
+	// rate limit) fails the call; the Evidence it returns holds the sources
+	// read whole before it. Without Capabilities.Evidence it fails wrapping
+	// ErrUnsupported before any request.
 	Evidence(ctx context.Context, q EvidenceQuery) (Evidence, error)
 
 	// Detail is one issue's detail.

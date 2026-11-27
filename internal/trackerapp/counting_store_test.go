@@ -243,12 +243,22 @@ func (c *countingStore) ListProjectTrackerBoards(projectID string) ([]store.Proj
 	return c.Store.ListProjectTrackerBoards(projectID)
 }
 
-func (c *countingStore) ListMirrorActsDue(root int64, boards []store.MirrorActsBoard, from int64) ([]store.MirrorActsDue, bool, error) {
+func (c *countingStore) ListMirrorActsDue(root int64, boards []store.MirrorActsBoard, from, now int64) ([]store.MirrorActsDue, bool, error) {
 	c.count("ListMirrorActsDue")
-	return c.Store.ListMirrorActsDue(root, boards, from)
+	return c.Store.ListMirrorActsDue(root, boards, from, now)
 }
 
-func (c *countingStore) ReplaceMirrorActs(root, sourceGen int64, read store.MirrorRead, issues []store.MirrorIssueActs, catalog store.MirrorCatalog) ([]store.MirrorActsResult, store.MirrorCatalogWrite, error) {
+func (c *countingStore) ReplaceMirrorActs(root, sourceGen int64, read store.MirrorRead, issues []store.MirrorIssueActs, tried []store.MirrorActsAttempt, catalog store.MirrorCatalog) (store.MirrorCatalogWrite, error) {
 	c.count("ReplaceMirrorActs")
-	return c.Store.ReplaceMirrorActs(root, sourceGen, read, issues, catalog)
+	return c.Store.ReplaceMirrorActs(root, sourceGen, read, issues, tried, catalog)
+}
+
+func (c *countingStore) ListTrackerBoardChoices(projectID string) ([]store.TrackerBoardChoice, error) {
+	c.count("ListTrackerBoardChoices")
+	return c.Store.ListTrackerBoardChoices(projectID)
+}
+
+func (c *countingStore) ListConnectionProjectBoards(connectionID string) ([]store.ConnectionProjectBoard, error) {
+	c.count("ListConnectionProjectBoards")
+	return c.Store.ListConnectionProjectBoards(connectionID)
 }

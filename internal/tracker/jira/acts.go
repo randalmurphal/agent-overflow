@@ -2,7 +2,9 @@ package jira
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
@@ -104,62 +106,104 @@ func actList[J interface{ act() (Act, error) }](js []J, startAt int, total *int)
 	return out, nil
 }
 
-// BulkActs reads, by issue ID, each issue's update time and the comments,
-// and with worklogs the worklogs, Jira embeds in it, in one bulk fetch per
-// batch (BulkFetchByID's walk). An issue Jira does not return (deleted,
-// hidden, or one it could not read) is left out. An embedded list may hold
-// the first comments or worklogs only (ActList.Complete); CommentActs and
-// WorklogActs read the rest.
-func (c *Client) BulkActs(ctx context.Context, ids []string, worklogs bool) ([]IssueActs, error) {
+// BulkActs reads, by issue ID, each issue's update time and, as asked,
+// the comments and worklogs Jira embeds in it, in one bulk fetch per batch
+// (BulkFetchByID's walk). An issue whose answer alone is over the
+// transport's bound is read for its update time only, its lists marked
+// incomplete. failed are the issues Jira answered it could not read; an
+// issue in neither list (deleted or hidden) is left out. An embedded list
+// may hold the first comments or worklogs only (ActList.Complete);
+// CommentActs and WorklogActs read the rest.
+func (c *Client) BulkActs(ctx context.Context, ids []string, comments, worklogs bool) (acts []IssueActs, failed []BulkFailure, err error) {
 	if err := c.admit(ctx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, id := range ids {
 		if err := checkID("issue", id); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	fields := []string{"comment", "updated"}
+	fields := []string{"updated"}
+	if comments {
+		fields = append(fields, "comment")
+	}
 	if worklogs {
 		fields = append(fields, "worklog")
 	}
-	return trackerapi.Walk(ctx, func(ctx context.Context) ([]IssueActs, error) {
-		var out []IssueActs
-		var decodeErr error
-		_, _, left, err := bulkFetchEach(ctx, c, ids, fields, true, func(issues []actsIssueJSON, _ *trackerapi.Response, _ uint64) {
-			for _, is := range issues {
-				if decodeErr != nil {
-					return
+	type read struct {
+		acts   []IssueActs
+		failed []BulkFailure
+	}
+	out, err := trackerapi.Walk(ctx, func(ctx context.Context) (read, error) {
+		var out read
+		var left unnamed
+		walk := func(ids, fields []string, decode func(actsIssueJSON) (IssueActs, error)) error {
+			var decodeErr error
+			_, failed, l, err := bulkFetchEach(ctx, c, ids, fields, true, func(issues []actsIssueJSON, _ *trackerapi.Response, _ uint64) {
+				for _, is := range issues {
+					if decodeErr != nil {
+						return
+					}
+					var acts IssueActs
+					acts, decodeErr = decode(is)
+					out.acts = append(out.acts, acts)
 				}
-				var acts IssueActs
-				acts, decodeErr = is.acts(worklogs)
-				out = append(out, acts)
+			})
+			out.failed = append(out.failed, failed...)
+			for _, m := range l {
+				if !slices.Contains(left, m) {
+					left = append(left, m)
+				}
 			}
-		})
-		if err == nil {
-			err = decodeErr
+			if err == nil {
+				err = decodeErr
+			}
+			return err
 		}
-		if err == nil {
-			err = c.prove(ctx, "a bulk fetch of comments and worklogs", left)
+		var oversized []string
+		for rest := ids; len(rest) > 0; {
+			err := walk(rest, fields, func(is actsIssueJSON) (IssueActs, error) { return is.acts(comments, worklogs) })
+			big, ok := errors.AsType[*OversizedIssueError](err)
+			if !ok {
+				if err != nil {
+					return read{}, err
+				}
+				break
+			}
+			oversized = append(oversized, big.ID)
+			rest = rest[slices.Index(rest, big.ID)+1:]
 		}
-		if err != nil {
-			return nil, fmt.Errorf("jira: comments and worklogs of %d issues: %w", len(ids), err)
+		if len(oversized) > 0 {
+			err := walk(oversized, []string{"updated"}, func(is actsIssueJSON) (IssueActs, error) { return is.updatedOnly() })
+			if err != nil {
+				return read{}, err
+			}
+		}
+		if err := c.prove(ctx, "a bulk fetch of comments and worklogs", left); err != nil {
+			return read{}, err
 		}
 		return out, nil
 	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("jira: comments and worklogs of %d issues: %w", len(ids), err)
+	}
+	return out.acts, out.failed, nil
 }
 
-// acts is v's acts; an issue with no update time, or whose comment field,
-// or worklog field when worklogs, is missing, is a malformed answer.
-func (v actsIssueJSON) acts(worklogs bool) (IssueActs, error) {
+// acts is v's acts as asked; an issue with no update time, or whose
+// comment field when comments or worklog field when worklogs is missing,
+// is a malformed answer.
+func (v actsIssueJSON) acts(comments, worklogs bool) (IssueActs, error) {
 	f := v.Fields
 	updated, err := parseTime(f.Updated)
-	if err != nil || f.Comment == nil || worklogs && f.Worklog == nil {
+	if err != nil || comments && f.Comment == nil || worklogs && f.Worklog == nil {
 		return IssueActs{}, &AnswerError{Message: fmt.Sprintf("malformed answer: issue %s came without its update time or acts", v.ID)}
 	}
 	out := IssueActs{ID: v.ID, Updated: updated}
-	if out.Comments, err = actList(f.Comment.Comments, f.Comment.StartAt, f.Comment.Total); err != nil {
-		return IssueActs{}, fmt.Errorf("issue %s comments: %w", v.ID, err)
+	if comments {
+		if out.Comments, err = actList(f.Comment.Comments, f.Comment.StartAt, f.Comment.Total); err != nil {
+			return IssueActs{}, fmt.Errorf("issue %s comments: %w", v.ID, err)
+		}
 	}
 	if worklogs {
 		if out.Worklogs, err = actList(f.Worklog.Worklogs, f.Worklog.StartAt, f.Worklog.Total); err != nil {
@@ -167,6 +211,16 @@ func (v actsIssueJSON) acts(worklogs bool) (IssueActs, error) {
 		}
 	}
 	return out, nil
+}
+
+// updatedOnly is v read for its update time alone, its lists incomplete:
+// an issue whose answer with them was over the transport's bound.
+func (v actsIssueJSON) updatedOnly() (IssueActs, error) {
+	updated, err := parseTime(v.Fields.Updated)
+	if err != nil {
+		return IssueActs{}, &AnswerError{Message: fmt.Sprintf("malformed answer: issue %s came without its update time", v.ID)}
+	}
+	return IssueActs{ID: v.ID, Updated: updated}, nil
 }
 
 // CommentActs reads every comment of issue as an act, oldest first, page
