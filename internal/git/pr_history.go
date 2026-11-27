@@ -49,6 +49,13 @@ type PRHistory struct {
 	Reach time.Time
 	// Walked reports that the first full read is done.
 	Walked bool
+	// Behind reports that a stream's read on from the updates it last
+	// read (GitHub's from the newest down to them, GitLab's from them up
+	// to the newest) used the read's pages before it reached them: more
+	// changed since the last read than one read holds. Reach then holds
+	// for nothing, and the caller reads again at once, which reads on
+	// from where this one stopped.
+	Behind bool
 }
 
 // PRHistoryPR is one pull request. State is open, draft, merged or

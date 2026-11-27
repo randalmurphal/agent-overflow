@@ -219,3 +219,112 @@ func TestGitLabHistoryRefusesAPageOfOneUpdateTime(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// newerPulls are n pulls numbered from first, updated a minute apart
+// after historyNow, the newest last.
+func newerPulls(first, n int) []forgefake.Pull {
+	out := make([]forgefake.Pull, 0, n)
+	for i := range n {
+		at := historyNow.Add(time.Duration(i+1) * time.Minute).Format(time.RFC3339)
+		out = append(out, forgefake.Pull{Number: first + i, Title: fmt.Sprintf("WEB-%d Change", first+i), HeadRef: fmt.Sprintf("web-%d", first+i),
+			Author: "user1", AuthorName: "User 1", CreatedAt: at, UpdatedAt: at})
+	}
+	return out
+}
+
+// A GitHub read that finds more changed since the last read than its
+// pages hold says it is behind, and reaches back only as far as it read;
+// the next read reads down to where it stopped and is whole again.
+func TestGitHubHistorySaysWhenMoreChangedThanOneReadHolds(t *testing.T) {
+	t.Parallel()
+	pulls := historyPulls(100)
+	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}}
+	f := newFactsForge(t, fixture)
+	first := readHistory(t, f, githubHistoryRepo, nil, nil)
+	if !first.Walked || first.Behind {
+		t.Fatalf("first read: walked %v, behind %v", first.Walked, first.Behind)
+	}
+	fixture.Repos[0].Pulls = append(pulls, newerPulls(1000, 600)...)
+	if _, err := f.engine.Seed(fixture); err != nil {
+		t.Fatal(err)
+	}
+	busy := readHistory(t, f, githubHistoryRepo, first.Walk, nil)
+	if !busy.Behind || busy.Reach.IsZero() || len(busy.PRs) != 500 {
+		t.Fatalf("a read of 600 changes: behind %v, reach %v, %d pull requests", busy.Behind, busy.Reach, len(busy.PRs))
+	}
+	next := readHistory(t, f, githubHistoryRepo, busy.Walk, nil)
+	read := map[int64]bool{}
+	for _, h := range []PRHistory{busy, next} {
+		for _, n := range historyNumbers(h) {
+			read[n] = true
+		}
+	}
+	missing := 0
+	for i := 1000; i < 1600; i++ {
+		if !read[int64(i)] {
+			missing++
+		}
+	}
+	if next.Behind || !next.Walked || !next.Reach.IsZero() || missing != 0 {
+		t.Fatalf("the read after: behind %v, walked %v, reach %v, %d of the 600 changes unread", next.Behind, next.Walked, next.Reach, missing)
+	}
+}
+
+// A GitLab read reads on from the newest update it read while its first
+// walk back is still going, so a merge request changed meanwhile is read
+// at once; a read that finds more merge requests changed, or more
+// events, than its pages hold says it is behind, and the next is not.
+func TestGitLabHistoryReadsOnFromTheNewestWhileItWalksBack(t *testing.T) {
+	t.Parallel()
+	pulls := historyPulls(1500)
+	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "gitlab", Project: "grp/web", Pulls: pulls}}}
+	f := newFactsForge(t, fixture)
+	f.core.nowFn = func() time.Time { return historyNow }
+	first := readHistory(t, f, gitlabHistoryRepo, nil, nil)
+	if first.Walked || first.Behind || first.Reach.IsZero() {
+		t.Fatalf("first read: walked %v, behind %v, reach %v", first.Walked, first.Behind, first.Reach)
+	}
+	reseed := func(p []forgefake.Pull) {
+		t.Helper()
+		fixture.Repos[0].Pulls = p
+		if _, err := f.engine.Seed(fixture); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reseed(append(slices.Clone(pulls), newerPulls(2000, 1)...))
+	second := readHistory(t, f, gitlabHistoryRepo, first.Walk, nil)
+	if got := historyNumbers(second); !slices.Contains(got, 2000) || !second.Walked || second.Behind || !second.Reach.IsZero() {
+		t.Fatalf("second read: has 2000 %v, walked %v, behind %v, reach %v", slices.Contains(got, 2000), second.Walked, second.Behind, second.Reach)
+	}
+
+	changed := append(slices.Clone(pulls), newerPulls(2000, 1100)...)
+	reseed(changed)
+	busy := readHistory(t, f, gitlabHistoryRepo, second.Walk, nil)
+	if !busy.Behind {
+		t.Fatal("a read of 1,100 changed merge requests is not behind")
+	}
+	caughtUp := readHistory(t, f, gitlabHistoryRepo, busy.Walk, nil)
+	if caughtUp.Behind || len(caughtUp.PRs) < 100 {
+		t.Fatalf("the read after: behind %v, %d merge requests", caughtUp.Behind, len(caughtUp.PRs))
+	}
+	for i := range 1100 {
+		at := historyNow.Add(time.Duration(i+1) * time.Second).Format(time.RFC3339)
+		changed[i].Reviews = []forgefake.Review{{ID: int64(90000 + i), Author: "user2", AuthorName: "User 2", State: "APPROVED", SubmittedAt: at}}
+	}
+	reseed(changed)
+	approvals := readHistory(t, f, gitlabHistoryRepo, caughtUp.Walk, nil)
+	if !approvals.Behind || len(approvals.Acts)+countActs(approvals.PRs) != 1000 {
+		t.Fatalf("a read of 1,100 approvals: behind %v, %d acts", approvals.Behind, len(approvals.Acts)+countActs(approvals.PRs))
+	}
+	if next := readHistory(t, f, gitlabHistoryRepo, approvals.Walk, nil); next.Behind || len(next.Acts)+countActs(next.PRs) != 100 {
+		t.Fatalf("the read after: behind %v, %d acts", next.Behind, len(next.Acts)+countActs(next.PRs))
+	}
+}
+
+func countActs(prs []PRHistoryPR) int {
+	n := 0
+	for _, pr := range prs {
+		n += len(pr.Acts)
+	}
+	return n
+}

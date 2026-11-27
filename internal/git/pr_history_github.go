@@ -137,7 +137,7 @@ func (f *githubForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 		w = githubHistoryWalk{Gap: true, GapLo: floor}
 	}
 	r := githubHistoryRead{ctx: ctx, client: client, owner: owner, name: name, repo: repo, byNumber: map[int64]int{}}
-	moved := false
+	moved, behind := false, false
 	err = func() error {
 		if w.Top > 0 {
 			// From the newest down to Top.
@@ -162,6 +162,7 @@ func (f *githubForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 				cursor = page.cursor
 			}
 			if !reached {
+				behind = true
 				lo := w.Top
 				if w.Gap {
 					lo = w.GapLo
@@ -193,7 +194,7 @@ func (f *githubForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 		}
 		return nil
 	}()
-	out := PRHistory{OwnHead: r.ownHead, Parent: r.parent, PRs: r.prs, Walked: w.Walked}
+	out := PRHistory{OwnHead: r.ownHead, Parent: r.parent, PRs: r.prs, Walked: w.Walked, Behind: behind}
 	if !moved {
 		return out, err
 	}

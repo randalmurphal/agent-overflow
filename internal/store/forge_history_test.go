@@ -253,4 +253,14 @@ func TestForgeHistoryRecordsTheWalkAndTheFailure(t *testing.T) {
 	case !src.Covers(testWindow, testWindow) || src.Covers(testWindow-1, testWindow):
 		t.Fatal("a full read covers every ticket created inside the window, and none before it")
 	}
+	// A read left behind its newest updates covers nothing until one is
+	// not.
+	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Walk: []byte(`{"at":3}`), Walked: true, Behind: true, ReadAt: 8_000_000})
+	if src = source(); src.HasReach || src.Covers(5_000_000, testWindow) || !src.Walked {
+		t.Fatalf("after a read left behind: %+v", src)
+	}
+	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Walk: []byte(`{"at":4}`), Walked: true, ReadAt: 9_000_000})
+	if src = source(); !src.HasReach || !src.Covers(5_000_000, testWindow) {
+		t.Fatalf("after a read that caught up: %+v", src)
+	}
 }

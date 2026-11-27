@@ -10,7 +10,8 @@ package store
 //     whose head repository is that fork. It holds the reader's walk
 //     (walk, JSON only the reader reads), how far back every update is
 //     read (reach, the forge's Unix ms; 0 is back to the window's start;
-//     NULL until a read lands), whether the first full read is done
+//     NULL until a read lands, and while the last one left a stream
+//     behind its newest updates), whether the first full read is done
 //     (walked), the repository's own head identity in the forge's terms
 //     (own_head), the parent the forge names when it is a fork, the last
 //     read's wall time (read_at) and its failure (failure_kind, the
@@ -52,7 +53,6 @@ CREATE TABLE forge_history_sources (
  failed_at INTEGER NOT NULL DEFAULT 0 CHECK(failed_at >= 0),
  CHECK((failure_kind = '') = (failure = '') AND (failure = '') = (failed_at = 0) AND (failure <> '' OR failure_detail = '')),
  CHECK((parent_namespace = '') = (parent_repo = '')),
- CHECK(walked = 0 OR reach IS NOT NULL),
  UNIQUE(repo_key, keep_head)
 );
 CREATE TABLE forge_history_prs (

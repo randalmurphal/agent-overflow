@@ -237,8 +237,11 @@ type forgeHistoryFailureDetail struct {
 // readForgeHistorySource reads the next part of ref's history and stores
 // it, unless its last read is younger than olderThan, or another read of
 // it is running, after which it reads only if that read left it so old.
-// A read ctx ends stores nothing. A forge failure is recorded on the
-// source with what the read read before it, and logged under its
+// A read left behind the newest updates (git.PRHistory.Behind) is stored
+// and followed at once by the next, until one is not, so a repository
+// that changes faster than one read holds is never left behind for a
+// round. A read ctx ends stores nothing. A forge failure is recorded on
+// the source with what the read read before it, and logged under its
 // correlation id; the error returned is the store's, or ctx's. A source
 // removed meanwhile is no error.
 func (a *App) readForgeHistorySource(ctx context.Context, ref store.ForgeHistoryRef, olderThan time.Duration) error {
@@ -265,34 +268,40 @@ func (a *App) readForgeHistorySource(ctx context.Context, ref store.ForgeHistory
 	if src.ReadAt > 0 && now.Sub(time.UnixMilli(src.ReadAt)) < olderThan {
 		return nil
 	}
-	windowStart := forgeHistoryWindowStart(now)
 	repo := forgeHistoryRepo(ref)
-	h, readErr := a.gitCore().ReadPRHistory(ctx, repo, gitops.PRHistoryInput{Walk: src.Walk, WindowStart: windowStart,
-		Known: func(numbers []int64) (map[int64]bool, error) { return a.store.KnownForgeHistoryPRs(ref, numbers) }})
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	read := forgeHistoryRead(ref, h)
-	read.ReadAt, read.WindowStart = now.UnixMilli(), windowStart.UnixMilli()
-	if readErr != nil {
-		fail := a.newRepoForgeFailure(repo, readErr)
-		log.Printf("forge history: read of %s failed (id: %s): %v", repo.Key(), fail.correlationID, readErr)
-		detail, err := json.Marshal(forgeHistoryFailureDetail{ErrorDetails: fail.detail, Reserve: fail.reserve, ResumeAt: fail.resumeAt})
-		if err != nil {
-			return fmt.Errorf("record the failed read of %s: %w", repo.Key(), err)
+	walk := src.Walk
+	for {
+		windowStart := forgeHistoryWindowStart(now)
+		h, readErr := a.gitCore().ReadPRHistory(ctx, repo, gitops.PRHistoryInput{Walk: walk, WindowStart: windowStart,
+			Known: func(numbers []int64) (map[int64]bool, error) { return a.store.KnownForgeHistoryPRs(ref, numbers) }})
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		read.FailureKind, read.Failure, read.FailureDetail = fail.kind, fail.wire, detail
+		read := forgeHistoryRead(ref, h)
+		read.ReadAt, read.WindowStart = now.UnixMilli(), windowStart.UnixMilli()
+		if readErr != nil {
+			fail := a.newRepoForgeFailure(repo, readErr)
+			log.Printf("forge history: read of %s failed (id: %s): %v", repo.Key(), fail.correlationID, readErr)
+			detail, err := json.Marshal(forgeHistoryFailureDetail{ErrorDetails: fail.detail, Reserve: fail.reserve, ResumeAt: fail.resumeAt})
+			if err != nil {
+				return fmt.Errorf("record the failed read of %s: %w", repo.Key(), err)
+			}
+			read.FailureKind, read.Failure, read.FailureDetail = fail.kind, fail.wire, detail
+		}
+		err = a.store.ApplyForgeHistory(read)
+		switch {
+		case errors.Is(err, store.ErrForgeHistoryGone):
+			return nil
+		case err != nil || readErr != nil || !h.Behind:
+			return err
+		}
+		walk, now = h.Walk, a.forgeHistoryNow()
 	}
-	err = a.store.ApplyForgeHistory(read)
-	if errors.Is(err, store.ErrForgeHistoryGone) {
-		return nil
-	}
-	return err
 }
 
 // forgeHistoryRead is h as the store applies it to ref.
 func forgeHistoryRead(ref store.ForgeHistoryRef, h gitops.PRHistory) store.ForgeHistoryRead {
-	read := store.ForgeHistoryRead{Source: ref, OwnHead: h.OwnHead, Walk: h.Walk, Reach: forgeHistoryMilli(h.Reach), Walked: h.Walked}
+	read := store.ForgeHistoryRead{Source: ref, OwnHead: h.OwnHead, Walk: h.Walk, Reach: forgeHistoryMilli(h.Reach), Walked: h.Walked, Behind: h.Behind}
 	if h.Parent != nil {
 		read.ParentNamespace, read.ParentRepo = h.Parent.Namespace, h.Parent.Repo
 	}

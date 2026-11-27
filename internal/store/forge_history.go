@@ -55,7 +55,8 @@ type ForgeHistorySource struct {
 	Walk []byte
 	// Reach is the forge time (Unix ms) back to which every update is
 	// read, 0 back to the window's start; HasReach is false until a read
-	// lands.
+	// lands, and while the last one left a stream behind its newest
+	// updates (ForgeHistoryRead.Behind).
 	Reach    int64
 	HasReach bool
 	// Walked reports that the first full read is done.
@@ -128,10 +129,12 @@ type ForgeHistoryRead struct {
 	// the source does not keep, is dropped.
 	Acts []ForgeHistoryAct
 	// Walk, Reach and Walked replace the stored ones when Walk is set:
-	// a read that read nothing leaves them.
+	// a read that read nothing leaves them. Behind is a read that left a
+	// stream behind its newest updates, whose reach holds for nothing.
 	Walk   []byte
 	Reach  int64
 	Walked bool
+	Behind bool
 	// ReadAt is the read's wall time (Unix ms).
 	ReadAt int64
 	// FailureKind, Failure and FailureDetail are the read's failure
@@ -381,8 +384,9 @@ func (s *Store) ApplyForgeHistory(read ForgeHistoryRead) (err error) {
 		}
 	}
 	if read.Walk != nil {
+		reach := sql.NullInt64{Int64: read.Reach, Valid: !read.Behind}
 		if _, err := tx.Exec(`UPDATE forge_history_sources SET walk = ?2, reach = ?3, walked = walked OR ?4 WHERE id = ?1`,
-			id, string(read.Walk), read.Reach, read.Walked); err != nil {
+			id, string(read.Walk), reach, read.Walked); err != nil {
 			return fmt.Errorf("%s: record the walk: %w", action, err)
 		}
 	}

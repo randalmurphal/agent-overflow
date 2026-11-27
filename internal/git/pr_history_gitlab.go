@@ -30,12 +30,13 @@ type gitlabHistoryWalk struct {
 }
 
 // gitlabListWalk is the merge request list's part. Top is the newest
-// update read (Unix ms): each read reads on from it, oldest update first,
-// each page asking for those updated at or after the last one read, so a
-// merge request updated meanwhile moves past the read and is read again
-// and none is skipped. The first read walks back from the newest: Hi is
-// the oldest update it has read, each page asking for those updated at or
-// before it, until the window's start.
+// update read (Unix ms): each read after the first reads on from it,
+// oldest update first, each page asking for those updated at or after the
+// last one read, so a merge request updated meanwhile moves past the read
+// and is read again and none is skipped. The first read walks back from
+// the newest, and each read after it walks on with the pages the read on
+// from Top left: Hi is the oldest update it has read, each page asking
+// for those updated at or before it, until the window's start.
 type gitlabListWalk struct {
 	Top     int64 `json:"top,omitempty"`
 	Walking bool  `json:"walking,omitempty"`
@@ -142,7 +143,7 @@ func (f *gitlabForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 		}
 		return r.missing(in.Known)
 	}()
-	out.PRs, out.Acts = r.prs, r.acts
+	out.PRs, out.Acts, out.Behind = r.prs, r.acts, r.behind
 	out.Walked = w.List.Walked && w.Approved.Walked && w.Commented.Walked
 	if !moved {
 		return out, err
@@ -176,16 +177,43 @@ type gitlabHistoryRead struct {
 	prs      []PRHistoryPR
 	byNumber map[int64]int
 	acts     []PRHistoryAct
+	// behind is set when a stream's read on from its newest update used
+	// its pages before it reached the stream's end (PRHistory.Behind).
+	behind bool
 }
 
 // list reads the merge request list's part, reporting whether it read a
-// page.
+// page: on from Top, then the walk back with the pages left.
 func (r *gitlabHistoryRead) list(w *gitlabListWalk) (bool, error) {
 	moved := false
 	if w.Top == 0 && !w.Walking && !w.Walked {
 		w.Walking = true
 	}
 	pages := 0
+	if w.Top > 0 {
+		caught := false
+		for !caught && pages < PRHistoryPages {
+			query := url.Values{"order_by": {"updated_at"}, "sort": {"asc"}, "updated_after": {fromUnixMilli(w.Top).Format(time.RFC3339Nano)}}
+			page, err := r.listPage(query)
+			pages++
+			if err != nil {
+				return moved, err
+			}
+			moved = true
+			fresh := 0
+			for _, mr := range page {
+				if updated := mr.Updated.UnixMilli(); updated > w.Top {
+					w.Top, fresh = updated, fresh+1
+				}
+			}
+			caught = len(page) < gitlabPageSize
+			if !caught && fresh == 0 {
+				return moved, fmt.Errorf("GitLab history of %s: more than %d merge requests share the update time %s, so the read cannot move past it",
+					r.repo.Key(), gitlabPageSize, fromUnixMilli(w.Top).Format(time.RFC3339Nano))
+			}
+		}
+		r.behind = r.behind || !caught
+	}
 	for w.Walking && pages < PRHistoryPages {
 		query := url.Values{"order_by": {"updated_at"}, "sort": {"desc"}}
 		if w.Hi > 0 {
@@ -216,31 +244,6 @@ func (r *gitlabHistoryRead) list(w *gitlabListWalk) (bool, error) {
 		if closed {
 			w.Walking, w.Hi, w.Walked = false, 0, true
 			w.Top = max(w.Top, r.floor)
-		}
-	}
-	if w.Walking {
-		return moved, nil
-	}
-	for pages < PRHistoryPages {
-		query := url.Values{"order_by": {"updated_at"}, "sort": {"asc"}, "updated_after": {fromUnixMilli(w.Top).Format(time.RFC3339Nano)}}
-		page, err := r.listPage(query)
-		pages++
-		if err != nil {
-			return moved, err
-		}
-		moved = true
-		fresh := 0
-		for _, mr := range page {
-			if updated := mr.Updated.UnixMilli(); updated > w.Top {
-				w.Top, fresh = updated, fresh+1
-			}
-		}
-		if len(page) < gitlabPageSize {
-			break
-		}
-		if fresh == 0 {
-			return moved, fmt.Errorf("GitLab history of %s: more than %d merge requests share the update time %s, so the read cannot move past it",
-				r.repo.Key(), gitlabPageSize, fromUnixMilli(w.Top).Format(time.RFC3339Nano))
 		}
 	}
 	return moved, nil
@@ -322,8 +325,8 @@ func (r *gitlabHistoryRead) events(action string, w *gitlabEventsWalk, now time.
 		w.After, w.Page = split.AddDate(0, 0, -1).Format(time.DateOnly), 1
 		w.Walking, w.Before, w.WalkPage = true, split.AddDate(0, 0, 1).Format(time.DateOnly), 1
 	}
-	pages := 0
-	for pages < PRHistoryPages {
+	pages, caught := 0, false
+	for !caught && pages < PRHistoryPages {
 		events, next, err := r.eventsPage(action, url.Values{"after": {w.After}, "sort": {"asc"}, "page": {strconv.Itoa(w.Page)}})
 		pages++
 		if err != nil {
@@ -345,10 +348,12 @@ func (r *gitlabHistoryRead) events(action string, w *gitlabEventsWalk, now time.
 			if w.Page > gitlabEventsRebasePages && w.TopAt > 0 {
 				w.After, w.Page = fromUnixMilli(w.TopAt).AddDate(0, 0, -1).Format(time.DateOnly), 1
 			}
+			caught = true
 			break
 		}
 		w.Page = next
 	}
+	r.behind = r.behind || !caught
 	for w.Walking && pages < PRHistoryPages {
 		events, next, err := r.eventsPage(action, url.Values{"before": {w.Before}, "sort": {"desc"}, "page": {strconv.Itoa(w.WalkPage)}})
 		pages++
