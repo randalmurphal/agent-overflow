@@ -395,8 +395,7 @@ func TestStartSession_CodexCarriesTheTrackerToolsEntryAndGuide(t *testing.T) {
 // before it calls anything, so their size is a decision. This measures them
 // as a client receives them through the transport, and fails past the bound
 // saying the sizes it found. The session has a Jira connection, so its list
-// carries the time tools, 984 of its bytes (268 and 714, and the commas
-// that join them); dashboard_widget is 304.
+// carries the time tools and dashboard_widget.
 func TestTrackerMCPToolListAndGuideStayWithinTheirBound(t *testing.T) {
 	t.Parallel()
 	const bound = 3_307
