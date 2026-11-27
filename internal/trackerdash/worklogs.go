@@ -66,14 +66,12 @@ func (ev *evaluation) unread(from, to, now int64) []string {
 	}
 }
 
-// unreadOf is the days not read of periods ps, the ones still to come
-// left out, in order.
+// unreadOf is the days not read of periods ps, in order; a period still
+// to come has none (unread stops at now).
 func (ev *evaluation) unreadOf(ps []period, now int64) []string {
 	var out []string
 	for _, p := range ps {
-		if !p.future {
-			out = append(out, ev.unread(p.from, p.to, now)...)
-		}
+		out = append(out, ev.unread(p.from, p.to, now)...)
 	}
 	slices.Sort(out)
 	return slices.Compact(out)

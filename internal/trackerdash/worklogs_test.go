@@ -101,6 +101,34 @@ func TestLoggedTimeCountsOnlyWhereItsDaysWereRead(t *testing.T) {
 	}
 }
 
+// A number of logged time that counts now, its rows placed at no instant,
+// counts every day the copy can hold: with none read, the 180 days from
+// the copy's earliest to today are not read; with one not read, that one.
+func TestLoggedTimeCountingNowNeedsEveryDayTheCopyHolds(t *testing.T) {
+	t.Parallel()
+	all := func(f *fixture) Board {
+		b := loggedTime(f)
+		b.Own.Metrics["w_3"] = Metric{Name: "w_3", Title: "All your hours", Words: []string{"All your logged time."},
+			SQL: `SELECT ticket, seconds AS value FROM worklogs`, Reduce: ReduceSum, Unit: UnitTime}
+		b.Own.Dashboards[0].Widgets = append(b.Own.Dashboards[0].Widgets, Widget{ID: "all", Metric: "w_3", Form: FormNumber, Width: 3})
+		return b
+	}
+	r := Request{Dashboard: "mine", Range: RangeWeeks2, TimeZone: "UTC"}
+	n := widgetOf(t, mustEvaluate(t, evaluator(), all(worklogBoard()), r), "all")
+	if len(n.Unread) != 180 || n.Unread[0] != "2026-05-30" || n.Unread[179] != "2026-11-25" || num(n.Value) != "not known, 180 days not read" {
+		t.Fatalf("none read: %s, %d unread from %v", num(n.Value), len(n.Unread), n.Unread[:min(1, len(n.Unread))])
+	}
+	read := append(daysOf("2026-05-30", "2026-11-22"), "2026-11-24", "2026-11-25")
+	n = widgetOf(t, mustEvaluate(t, evaluator(), all(worklogBoard(read...)), r), "all")
+	if !reflect.DeepEqual(n.Unread, []string{"2026-11-23"}) || num(n.Value) != "not known, 1 days not read" {
+		t.Fatalf("one not read: %s, unread %v", num(n.Value), n.Unread)
+	}
+	n = widgetOf(t, mustEvaluate(t, evaluator(), all(worklogBoard(daysOf("2026-05-30", "2026-11-25")...)), r), "all")
+	if n.Unread != nil || num(n.Value) != "5400" {
+		t.Fatalf("all read: %s, unread %v", num(n.Value), n.Unread)
+	}
+}
+
 // A day of a weekend is read like any other: time logged on Saturday 21
 // November, its weekend not read, leaves that week not known by two days,
 // and the page is told to read them.
