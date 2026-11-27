@@ -1473,7 +1473,7 @@ selected computer.
 | `CreateTrackerIssue`, `EditTrackerIssue`, `MoveTrackerIssue`, `SetTrackerEstimate`, `RankTrackerIssues`, `MoveTrackerIssuesToSprint`, `CreateTrackerSprint`, `StartTrackerSprint`, `CompleteTrackerSprint`, `EditTrackerSprint`, `AddTrackerComment`, `EditTrackerComment`, `DeleteTrackerComment`, `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog` | `Create`, `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`, `StartSprint`, `CompleteSprint`, `EditSprint`, `AddComment`, `EditComment`, `DeleteComment`, `Link`, `Unlink`, `AddWorklog`, `EditWorklog`, `DeleteWorklog` | operate | connection, budget 3m |
 | `TrackerWorklogs(connectionID, author, from, to)` | `Worklogs` | read | connection |
 | `RefreshTrackerWorklogs(connectionID, author, from, to)` | `RefreshWorklogs` | read | connection |
-| `ThreadTimeEntries(threadID)` | `ThreadTimeEntries` | read | thread |
+| `ThreadTimeEntries(threadID, callID)` | `ThreadTimeEntries` | read | thread |
 | `EditTrackerTimeEntry(connectionID, ref, edit)`, `RemoveTrackerTimeEntries(connectionID, refs)` | `EditTimeEntry`, `RemoveTimeEntries` | operate | connection |
 | `PostTrackerTimeEntries(connectionID, in)` | `PostTimeEntries` | operate | connection, budget 3m |
 | `TrackerPokerSupport(connectionID)` | `PokerSupport` | read | connection |
@@ -2850,7 +2850,8 @@ tests).
 notification row of kind `time_draft` (`Drafted time for Tue Nov 24`),
 naming the call, the connection and the days, and never rewrites it; a
 thread reads the call's entries as they are now through
-`ThreadTimeEntries`.
+`ThreadTimeEntries`, one call's at a time, so the read is bounded by the
+call (at most 250 entries) however long the thread has drafted.
 
 ## Tests
 

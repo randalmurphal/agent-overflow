@@ -895,3 +895,23 @@ func TestAWeeksDraftCostsBoundedRequests(t *testing.T) {
 		}
 	})
 }
+
+// A thread's entries are read one call at a time, so a card reads its
+// call's entries whatever else the thread drafted, and a read that names
+// no call is refused.
+func TestAThreadsEntriesAreReadOneCallAtATime(t *testing.T) {
+	t.Parallel()
+	d := newDraftScenario(t, "jira")
+	web2 := draftTickets["WEB-2"]
+	first := d.draft(t, d.on("WEB-1", 1, "Built the form"))
+	second := d.draft(t, TimeDraftEntry{Day: d.days()[0], Ticket: &web2, Hours: 2, Reason: "Reviewed"})
+	for call, want := range map[string]int64{"call-1": first.Made[0].ID, "call-2": second.Made[0].ID} {
+		got := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1", call))
+		if len(got) != 1 || got[0].ID != want {
+			t.Errorf("%s's entries are %+v; want entry %d alone", call, got, want)
+		}
+	}
+	if _, err := d.svc.ThreadTimeEntries("thread-1", ""); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("a read with no call: %v; want it refused", err)
+	}
+}
