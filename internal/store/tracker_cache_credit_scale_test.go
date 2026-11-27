@@ -113,8 +113,7 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 	}{{"none read", func(int) { mustExec(t, s.db, `DELETE FROM tracker_cache_issue_act_reads WHERE root_id = ?`, root) }}, {"every one read", read}} {
 		cost := measureScale(t, rec, c.prepare, listDue)
 		c.prepare(0)
-		var steps int
-		steps = countMirrorVMSteps(t, func() { err = listDue(0) })
+		steps := countMirrorVMSteps(t, func() { err = listDue(0) })
 		if err != nil {
 			t.Fatal(err)
 		}
