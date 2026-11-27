@@ -264,3 +264,23 @@ func TestForgeHistoryRecordsTheWalkAndTheFailure(t *testing.T) {
 		t.Fatalf("after a read that caught up: %+v", src)
 	}
 }
+
+// Each statement of the writer reaches the stored rows by their keys
+// from its read's list, so a read costs its own rows however many the
+// source holds.
+func TestForgeHistoryWriterPlans(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for name, query := range map[string]string{
+		"pull requests": forgeHistoryPRsSQL, "clear keys": forgeHistoryClearKeysSQL, "keys": forgeHistoryKeysSQL,
+		"clear acts": forgeHistoryClearActsSQL, "acts": forgeHistoryActsSQL, "prune": forgeHistoryPruneSQL,
+	} {
+		plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+query, 1, "[]")
+		t.Logf("%s:\n%s", name, plan)
+		for _, line := range strings.Split(plan, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "SCAN forge_history") {
+				t.Errorf("%s scans a table: %s", name, line)
+			}
+		}
+	}
+}

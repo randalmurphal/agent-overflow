@@ -360,17 +360,11 @@ func (s *Store) ApplyForgeHistory(read ForgeHistoryRead) (err error) {
 		args []any
 	}{
 		{"store pull requests", forgeHistoryPRsSQL, []any{id, prs}},
-		{"clear keys", `DELETE FROM forge_history_keys WHERE source_id = CAST(?1 AS INTEGER) AND number IN (SELECT p.value ->> 'n' FROM json_each(?2) p)`, []any{id, prs}},
-		{"store keys", `INSERT INTO forge_history_keys(key, source_id, number)
-			SELECT DISTINCT k.value ->> 'k', ?1, k.value ->> 'n' FROM json_each(?2) k
-			JOIN forge_history_prs p ON p.source_id = CAST(?1 AS INTEGER) AND p.number = k.value ->> 'n' AND p.kept = 1`, []any{id, keysJSON}},
-		{"clear acts", `DELETE FROM forge_history_acts WHERE source_id = CAST(?1 AS INTEGER) AND number IN (SELECT value FROM json_each(?2))`, []any{id, wholeJSON}},
-		{"store acts", `INSERT INTO forge_history_acts(source_id, number, kind, login, name, at)
-			SELECT ?1, a.value ->> 'n', a.value ->> 'kind', a.value ->> 'login', a.value ->> 'name', a.value ->> 'at' FROM json_each(?2) a
-			JOIN forge_history_prs p ON p.source_id = CAST(?1 AS INTEGER) AND p.number = a.value ->> 'n' AND p.kept = 1 WHERE true
-			ON CONFLICT(source_id, number, kind, login) DO UPDATE SET at = min(at, excluded.at), name = excluded.name`, []any{id, actsJSON}},
-		{"prune", `DELETE FROM forge_history_prs WHERE source_id = CAST(?1 AS INTEGER) AND updated_at < CAST(?2 AS INTEGER) AND NOT EXISTS (
-			SELECT 1 FROM forge_history_acts a WHERE a.source_id = CAST(?1 AS INTEGER) AND a.number = forge_history_prs.number AND a.at > CAST(?2 AS INTEGER) - 1)`, []any{id, read.WindowStart}},
+		{"clear keys", forgeHistoryClearKeysSQL, []any{id, prs}},
+		{"store keys", forgeHistoryKeysSQL, []any{id, keysJSON}},
+		{"clear acts", forgeHistoryClearActsSQL, []any{id, wholeJSON}},
+		{"store acts", forgeHistoryActsSQL, []any{id, actsJSON}},
+		{"prune", forgeHistoryPruneSQL, []any{id, read.WindowStart}},
 	}
 	for _, step := range steps {
 		if _, err := tx.Exec(step.sql, step.args...); err != nil {
@@ -419,6 +413,24 @@ WHERE true
 ON CONFLICT(source_id, number) DO UPDATE SET kept = excluded.kept, url = excluded.url, title = excluded.title, head_ref = excluded.head_ref,
 	head_repo = excluded.head_repo, state = excluded.state, author = excluded.author, author_name = excluded.author_name,
 	created_at = excluded.created_at, updated_at = excluded.updated_at, merged_at = excluded.merged_at, closed_at = excluded.closed_at`
+
+// The writer's other statements, each driven by its JSON list (?2) and
+// reaching the stored rows of source ?1 by their keys: a read costs its
+// own rows, whatever the source holds (TestForgeHistoryWriterPlans). The
+// prune walks the source's update index below the window's start (?2).
+const (
+	forgeHistoryClearKeysSQL = `DELETE FROM forge_history_keys WHERE source_id = CAST(?1 AS INTEGER) AND number IN (SELECT p.value ->> 'n' FROM json_each(?2) p)`
+	forgeHistoryKeysSQL      = `INSERT INTO forge_history_keys(key, source_id, number)
+SELECT DISTINCT k.value ->> 'k', ?1, k.value ->> 'n' FROM json_each(?2) k
+CROSS JOIN forge_history_prs p ON p.source_id = CAST(?1 AS INTEGER) AND p.number = k.value ->> 'n' AND p.kept = 1`
+	forgeHistoryClearActsSQL = `DELETE FROM forge_history_acts WHERE source_id = CAST(?1 AS INTEGER) AND number IN (SELECT value FROM json_each(?2))`
+	forgeHistoryActsSQL      = `INSERT INTO forge_history_acts(source_id, number, kind, login, name, at)
+SELECT ?1, a.value ->> 'n', a.value ->> 'kind', a.value ->> 'login', a.value ->> 'name', a.value ->> 'at' FROM json_each(?2) a
+CROSS JOIN forge_history_prs p ON p.source_id = CAST(?1 AS INTEGER) AND p.number = a.value ->> 'n' AND p.kept = 1 WHERE true
+ON CONFLICT(source_id, number, kind, login) DO UPDATE SET at = min(at, excluded.at), name = excluded.name`
+	forgeHistoryPruneSQL = `DELETE FROM forge_history_prs WHERE source_id = CAST(?1 AS INTEGER) AND updated_at < CAST(?2 AS INTEGER) AND NOT EXISTS (
+	SELECT 1 FROM forge_history_acts a WHERE a.source_id = CAST(?1 AS INTEGER) AND a.number = forge_history_prs.number AND a.at > CAST(?2 AS INTEGER) - 1)`
+)
 
 // ForgeHistoryRow is a kept pull request that names a key, with its
 // source and acts.
