@@ -186,8 +186,11 @@ only this shape.
   summary (the app takes a 404 there, and a 200 with no
   `summary.pullrequest`, as a site that keeps no development data: Work
   says nothing and the cause is logged); a GitHub or other integration's
-  instance type and shape; a pull request with no `url` or `status`
-  (counted with the links Work cannot open); a draft's status, and any
+  instance type and shape; a pull request with no `url` (counted with
+  the links Work cannot open) or no `status` (listed with no state, or
+  with the state a linked thread recorded); what `errors` and
+  `configErrors` hold (Work says how many, and none of their text); a
+  draft's status, and any
   status but the three above; a token that lacks the "View development
   tools" project permission; paging of a long list; rate limits; how long
   the endpoints take to answer. The app shows a status it does not know

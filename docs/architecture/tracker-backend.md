@@ -2150,8 +2150,9 @@ delete is refused and the links the delete read are the ones it ends.
   word. The service returns each failed read as a
   `trackerapp.DevelopmentFailure` beside the rows the others answered;
   `DevelopmentProblem` says each with its endpoint and integration and,
-  for a refused credential or a rate limit, the HTTP status, or that the
-  read did not answer within its wait. A site that keeps no data says
+  for a refused credential or a rate limit that endpoint answered, the
+  HTTP status; when the wait passed, it says that, beside each read that
+  failed otherwise. A site that keeps no data says
   nothing and its cause is logged. No failure settles the connection's
   problem, since the endpoints are undocumented
   ([measured](../references/tracker-api-measurements.md#development-data)).

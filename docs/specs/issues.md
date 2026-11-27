@@ -538,8 +538,10 @@ own word. A link to an address the app cannot open as a pull request, or
 with no address, is not listed; Work says how many there are. Each
 integration is read on its own: one whose read fails leaves the others'
 rows, and each failed read is said under the pull requests with its
-endpoint, beside the rest. A read that does not answer within its wait
-is said, and Refresh reads it again. A ticket the data links nothing to
+endpoint, beside the rest; errors Jira reports from an integration are
+counted, not quoted. A read that does not answer within its wait is
+said beside the other failures, and Refresh reads it again. A ticket the
+data links nothing to
 says nothing, and so does a site whose summary answers 404 or has no
 pull request part (unmeasured: what a site with no forge integration
 answers). On a success it costs one request to Jira for a ticket with no

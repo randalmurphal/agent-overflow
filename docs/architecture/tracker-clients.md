@@ -400,8 +400,9 @@ problem on that record, which stays usable.
   answers 404 or has no pull request part is a `DevAbsentError` (what a
   site with no forge integration answers is unmeasured), an answer
   otherwise outside the measured shape a `DevShapeError`, and one whose
-  `errors` or `configErrors` name something a `DevStatusError` quoting
-  the first three elements, each cut to 300 bytes, and counting the rest.
+  `errors` or `configErrors` name something a `DevStatusError`
+  counting each list, with none of their text: what an integration writes
+  there is unmeasured, and no sentence or log carries it.
   A pull request with no URL or status is returned as given
   ([measured](../references/tracker-api-measurements.md#development-data)).
 - **People.** Who the token belongs to, a user by account ID, a user found
