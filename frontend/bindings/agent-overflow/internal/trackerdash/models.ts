@@ -15,6 +15,13 @@ import { Create as $Create } from "@wailsio/runtime";
 export class Answer {
     "range": RangeView;
     "reading"?: boolean;
+
+    /**
+     * Evidence says, while credit the dashboard counts is not read for
+     * some ticket, that the read of who worked on the tickets is failing
+     * and why (Board.EvidenceFailure); "" otherwise.
+     */
+    "evidence"?: string;
     "estimates": string;
     "person"?: Name | null;
     "epic"?: Name | null;
@@ -44,21 +51,21 @@ export class Answer {
      */
     static createFrom($$source: any = {}): Answer {
         const $$createField0_0 = $$createType0;
-        const $$createField3_0 = $$createType2;
         const $$createField4_0 = $$createType2;
-        const $$createField6_0 = $$createType4;
+        const $$createField5_0 = $$createType2;
+        const $$createField7_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("range" in $$parsedSource) {
             $$parsedSource["range"] = $$createField0_0($$parsedSource["range"]);
         }
         if ("person" in $$parsedSource) {
-            $$parsedSource["person"] = $$createField3_0($$parsedSource["person"]);
+            $$parsedSource["person"] = $$createField4_0($$parsedSource["person"]);
         }
         if ("epic" in $$parsedSource) {
-            $$parsedSource["epic"] = $$createField4_0($$parsedSource["epic"]);
+            $$parsedSource["epic"] = $$createField5_0($$parsedSource["epic"]);
         }
         if ("widgets" in $$parsedSource) {
-            $$parsedSource["widgets"] = $$createField6_0($$parsedSource["widgets"]);
+            $$parsedSource["widgets"] = $$createField7_0($$parsedSource["widgets"]);
         }
         return new Answer($$parsedSource as Partial<Answer>);
     }
@@ -659,7 +666,9 @@ export class Request {
  * TicketRow is one row of a metric in a ticket list or a drill: a ticket
  * as one row counts it. Row is the row's place among the answer's rows,
  * unique within it, since a ticket can count more than once (done in two
- * sprints). Period is the sprint or week a row of the range falls in.
+ * sprints). Assignee is the person the row counts for: the metric's
+ * person column, else the ticket's assignee. Period is the sprint or week
+ * a row of the range falls in, Series the metric's series it is in.
  * Value is the row's number in the metric's unit, absent for a metric
  * that counts tickets, whose rows' values are not what it counts.
  */
@@ -674,6 +683,7 @@ export class TicketRow {
     "value"?: number | null;
     "counted": boolean;
     "period"?: string;
+    "series"?: string;
     "note"?: string;
 
     /** Creates a new TicketRow instance. */
