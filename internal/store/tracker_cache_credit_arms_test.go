@@ -110,6 +110,24 @@ func TestSupportTimeBeforeADatedFutureSprintCountsInIt(t *testing.T) {
 	}
 }
 
+// Support work before the board's first sprint started is in no sprint:
+// a support ticket last changed then, whose worklogs the evidence read
+// never lists (it reads the support tickets changed in the window), is
+// not listed as unread in the first sprint.
+func TestSupportBeforeTheBoardsFirstSprintCountsInNone(t *testing.T) {
+	t.Parallel()
+	s, root := creditFixture(t)
+	early := sectionRow("10006", "10006", "1", -1)
+	early.Card.UpdatedAt = 50
+	mustWriteRowPage(t, s, root, webPage("10", early), nil)
+	rows, _ := creditOf(t, s, root, creditRegroup(t, creditRules(false)))
+	for _, r := range rows {
+		if strings.Contains(r, " 10006 ") {
+			t.Fatalf("credit lists %q; want nothing of 10006, changed before sprint 20 began", r)
+		}
+	}
+}
+
 // The pace and the export place support time alike, whatever the
 // history window: sprint 20's two hours at 500 count in both with the
 // window at 600. Worklogs held only from a later start than the sprint's
