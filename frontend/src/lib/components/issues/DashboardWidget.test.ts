@@ -280,10 +280,22 @@ describe('your logged time', () => {
     expect(whole.queryByTestId('dashboard-widget-unread')).toBeNull();
   });
 
+  it('offers Read again for days still not read when no read is out and none failed', async () => {
+    const r = read();
+    const w = draw(logged, unread, RANGE, { logged: r });
+    expect(w.getByTestId('dashboard-widget-unread').textContent).toContain('Not known: 2 days not read of your logged time.');
+    expect(w.getByTestId('dashboard-widget-unread').textContent).not.toContain('undefined');
+    await fireEvent.click(w.getByTestId('dashboard-widget-unread-retry'));
+    expect(r.retry).toHaveBeenCalledTimes(1);
+    w.unmount();
+    const reading = draw(logged, unread, RANGE, { logged: read({ reading: true }) });
+    expect(reading.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
   it('says in How this is counted which days of it the page reads', async () => {
     const w = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue);
     await fireEvent.click(w.getByTestId('dashboard-how-toggle'));
-    expect(w.getByTestId('dashboard-how-worklogs').textContent).toBe('It counts your own logged time. While it shows, this page reads from the tracker the days of the range, and of the range before it compares with, that were not read yet. A day more than 180 days ago is not read, so a number that counts one is not known.');
+    expect(w.getByTestId('dashboard-how-worklogs').textContent).toBe('It counts your own logged time, and its numbers are known once every day of the last 180 days up to today is read. While it shows, this page reads from the tracker the days not read yet, 31 days a read, and reads the newest 31 days again when the board changes, at most once every 5 minutes; Refresh reads them all again. A day more than 180 days ago is not read, so a number that counts one is not known.');
     w.unmount();
     const tickets = draw(view({}), { id: 'pace', value: { v: 2 } } as WidgetValue);
     await fireEvent.click(tickets.getByTestId('dashboard-how-toggle'));
