@@ -18,10 +18,10 @@ async function flush(): Promise<void> {
   flushSync();
 }
 
-let screen: ReturnType<typeof render> | null = null;
+let unmount: (() => void) | null = null;
 afterEach(() => {
-  screen?.unmount();
-  screen = null;
+  unmount?.();
+  unmount = null;
 });
 
 describe('the list of dashboards', () => {
@@ -34,7 +34,8 @@ describe('the list of dashboards', () => {
     let lists = 0;
     setBindingMock('TrackerDashboards', () => answers[lists++]());
     setBindingMock('EvaluateTrackerDashboard', () => new Promise<Answer>(() => {}));
-    screen = render(DashboardScreen, { props: { source: SOURCE, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    const screen = render(DashboardScreen, { props: { source: SOURCE, boardName: 'WEB board', shown: true, compact: false, computerName: 'Laptop', onOpenTicket: () => {} } });
+    unmount = screen.unmount;
     await flush();
     expect(screen.getByTestId('dashboard-title').textContent).toBe('Overview');
     trackerDashboardsUpdated('home');
