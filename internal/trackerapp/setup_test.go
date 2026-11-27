@@ -1252,6 +1252,9 @@ func TestTimeSettingsAreSavedWithTheirDefaults(t *testing.T) {
 	if got := stored.Setup.Time; got == nil || !reflect.DeepEqual(*got, want) {
 		t.Fatalf("the time settings after a restart: %+v", got)
 	}
+	if got, err := m.svc.ProjectTimeSettings(m.project()); err != nil || !reflect.DeepEqual(got, want) || got.Meetings.SiteName() != strings.TrimPrefix(m.conn.Site, "https://") {
+		t.Fatalf("ProjectTimeSettings = %+v, %v", got, err)
+	}
 	epics := m.saveSetup(t, m.project(), Setup{Time: &TimeSettings{Meetings: want.Meetings, NeverEpics: &off}})
 	if got := epics.Stored.Setup.Time; got == nil || got.TimeOff != nil || got.RefusesEpics() {
 		t.Fatalf("time off cleared and epics allowed: %+v", got)
@@ -1298,6 +1301,12 @@ func TestTimeSettingsANewerVersionSavedAreKept(t *testing.T) {
 	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
 	if !slices.Equal(stored.Newer, []string{"time"}) || stored.Setup.Time != nil {
 		t.Fatalf("a time section a newer version saved: %+v", stored)
+	}
+	if _, err := m.svc.ProjectTimeSettings(m.project()); !errors.Is(err, ErrSetupNewer) {
+		t.Fatalf("the time settings a newer version saved: %v; want ErrSetupNewer", err)
+	}
+	if _, err := m.svc.ProjectAgentRules(m.project()); err != nil {
+		t.Fatalf("the agent rules beside a newer time section: %v", err)
 	}
 	if _, err := m.svc.SetProjectSetup(m.project(), stored.Revision, Setup{Time: &TimeSettings{Meetings: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-1"}}}); !errors.Is(err, ErrSetupNewer) {
 		t.Fatalf("a change of a newer time section: %v", err)
