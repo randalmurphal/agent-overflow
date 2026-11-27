@@ -120,6 +120,10 @@
   function step(by: number): void {
     tile?.setLimit(Math.max(0, limitShown + by * limitStep(unit, estimates)));
   }
+  // What the limit's popover reads of the controls, in one value, so no
+  // expression of it reads `tile` beside another value as it goes.
+  const limitOff = $derived(!tile || !!tile.blocked || tile.busy);
+  const limitNote = $derived(limit === null ? 'No limit is set.' : `The tile turns amber${tile?.pinned ? ', here and on the board row' : ''}.`);
   const bellShown = $derived(!!tile && view.form === 'number' && (!tile.onlyOn || limit !== null));
   const pinShown = $derived(!!tile && (!tile.onlyOn || tile.pinned));
 
@@ -332,14 +336,14 @@
     <div class="flex w-[280px] flex-col gap-2 rounded-[var(--radius-card)] border border-border-subtle bg-surface-1 p-3 text-[0.75rem] shadow-menu compact:w-full" data-testid="dashboard-limit">
       <h4 class="font-medium text-fg">Warn me when this is {side}</h4>
       <div class="flex items-center gap-2">
-        <Button size="xs" variant="ghost" testId="dashboard-limit-lower" title="Lower" disabled={!!tile.blocked || tile.busy || limitShown <= 0} onclick={() => step(-1)}>−</Button>
+        <Button size="xs" variant="ghost" testId="dashboard-limit-lower" title="Lower" disabled={limitOff || limitShown <= 0} onclick={() => step(-1)}>−</Button>
         <b class="tabular-nums text-fg" data-testid="dashboard-limit-value">{formatAmount(limitShown, unit, estimates)}</b>
-        <Button size="xs" variant="ghost" testId="dashboard-limit-raise" title="Raise" disabled={!!tile.blocked || tile.busy} onclick={() => step(1)}>+</Button>
+        <Button size="xs" variant="ghost" testId="dashboard-limit-raise" title="Raise" disabled={limitOff} onclick={() => step(1)}>+</Button>
         <span class="text-fg-muted">{unitWord(limitShown, unit, estimates)}</span>
         <span class="flex-1"></span>
-        <Button size="xs" variant="tinted" testId="dashboard-limit-switch" title={tile.blocked} disabled={!!tile.blocked || tile.busy} onclick={() => tile.setLimit(limit !== null ? null : limitShown)}>{limit !== null ? 'Turn off' : 'Turn on'}</Button>
+        <Button size="xs" variant="tinted" testId="dashboard-limit-switch" title={tile?.blocked} disabled={limitOff} onclick={() => tile?.setLimit(limit !== null ? null : limitShown)}>{limit !== null ? 'Turn off' : 'Turn on'}</Button>
       </div>
-      <p class="text-fg-muted" data-testid="dashboard-limit-note">{limit !== null ? `The tile turns amber${tile.pinned ? ', here and on the board row' : ''}.` : 'No limit is set.'}</p>
+      <p class="text-fg-muted" data-testid="dashboard-limit-note">{limitNote}</p>
     </div>
   </Popover>
 {/if}

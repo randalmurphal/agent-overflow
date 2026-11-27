@@ -255,7 +255,7 @@
             {#if editing}
               <button
                 type="button"
-                class="absolute -right-2 -top-2 inline-flex size-5 items-center justify-center rounded-full border border-border-subtle bg-surface-2 text-fg-muted hover:bg-error hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50 compact:size-8"
+                class="absolute -right-2 -top-2 inline-flex size-5 items-center justify-center rounded-full border border-border-subtle bg-surface-2 text-fg-muted hover:bg-error/15 hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50 compact:size-8"
                 title={editBlocked ?? 'Remove from this row'}
                 aria-label="Remove {w.view.title} from this row"
                 disabled={!!editBlocked || store.busy.has(w.view.id)}

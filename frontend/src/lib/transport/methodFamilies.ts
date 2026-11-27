@@ -92,6 +92,8 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   3031630647: 'subscription', // StartTrackerDashboardThread
   350315805: 'subscription', // DismissTrackerWidget
   446977083: 'subscription', // RemoveTrackerWidget
+  3937459196: 'subscription', // SetTrackerWidgetLimit
+  610896236: 'subscription', // PinTrackerWidget
 
   // Tracker connection ids: every call that names a connection belongs to
   // the computer that holds it.
