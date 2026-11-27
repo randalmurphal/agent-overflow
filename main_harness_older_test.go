@@ -10,14 +10,15 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/olderrelease"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
 )
 
 // TestOlderComputerSurfaceIsV0019s: the harness's older computer leaves
-// out exactly the methods the frontend's tests answer as v0.0.19 does
-// (frontend/src/test/helpers/olderComputer.ts), each a method this build
-// binds; answers null for exactly the ones the frontend's tests do, each
+// out exactly the methods this build binds and the frozen release
+// (internal/olderrelease) does not; answers null for exactly the ones the
+// frontend's tests do (frontend/src/test/helpers/olderComputer.ts), each
 // served and answering a value in this build; and answers every settings
 // snapshot without exactly the keys the frontend's tests leave out, each a
 // key this build always sends.
@@ -37,7 +38,6 @@ func TestOlderComputerSurfaceIsV0019s(t *testing.T) {
 		name    string
 		harness []string
 	}{
-		{"METHODS_AFTER_V0_0_19", keysOf(absent)},
 		{"RESULTLESS_AT_V0_0_19", resultless},
 		{"SETTINGS_AFTER_V0_0_19", slices.Clone(settingsAfterV0019)},
 	} {
@@ -49,6 +49,12 @@ func TestOlderComputerSurfaceIsV0019s(t *testing.T) {
 	}
 
 	bound := transport.NewMethodAllowList()
+	released := olderrelease.Frozen()
+	for name := range bound {
+		if absent[name] == released.Has(name) {
+			t.Errorf("%s: the older computer leaves it out: %v; %s binds it: %v", name, absent[name], released.Tag, released.Has(name))
+		}
+	}
 	dispatcher := transport.NewDispatcher()
 	if _, err := dispatcher.Register(&App{}, transport.RegisterOptions{
 		Package: "main", TypeName: "App", AllowList: bound, Skip: absent, Reshape: reshape,
@@ -107,14 +113,6 @@ func TestOlderComputerSurfaceIsV0019s(t *testing.T) {
 	if len(full)-len(older) != len(settingsAfterV0019) {
 		t.Errorf("the older computer's settings drop %d keys, want %d", len(full)-len(older), len(settingsAfterV0019))
 	}
-}
-
-func keysOf(set map[string]bool) []string {
-	keys := make([]string, 0, len(set))
-	for key := range set {
-		keys = append(keys, key)
-	}
-	return keys
 }
 
 // frontendNames reads the sorted quoted names of the array const `name`.
