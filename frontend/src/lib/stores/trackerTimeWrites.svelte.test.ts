@@ -2,11 +2,16 @@
 // weeks, Save anyway, and the toast for an outcome nobody shows.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { WorklogView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { PostTimeView, TimeEntryView, WorklogView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { attachTrackerWeek, type TrackerWeekAttachment } from './trackerTime.svelte';
 import {
   addTarget,
   addWorklog,
+  changeDraftEntry,
+  draftTarget,
+  entryTarget,
+  postDraftEntries,
+  removeDraftEntries,
   deleteWorklog,
   editWorklog,
   holdTimeWriteTarget,
@@ -122,5 +127,78 @@ describe('a worklog write', () => {
     setBindingMock('DeleteTrackerWorklog', async () => APPLIED);
     await deleteWorklog(CTX, FROM);
     expect(getToasts()).toHaveLength(1);
+  });
+});
+
+function entry(id: number, extra: Partial<TimeEntryView> = {}): TimeEntryView {
+  return { id, revision: 3, connection: 'c1', day: '2026-11-10', issue: '10001', key: 'WEB-1', minutes: 60, reason: 'Commits', by: 'agent', thread: 't1', call: 'call-1', state: 'drafted', ...extra };
+}
+
+describe('a change of an agent\'s draft', () => {
+  const DAY = draftTarget('day:2026-11-10');
+
+  it('approves the entries as read once while it is pending, and holds the computer\'s sentence under its target', async () => {
+    const answer = deferred<PostTimeView>();
+    const post = setBindingMock('PostTrackerTimeEntries', () => answer.promise);
+    const release = holdTimeWriteTarget(CTX, DAY);
+    const first = postDraftEntries(CTX, DAY, [entry(1), entry(2, { revision: 5 })]);
+    expect(await postDraftEntries(CTX, DAY, [entry(1)])).toBeNull();
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledWith('c1', { entries: [{ id: 1, revision: 3 }, { id: 2, revision: 5 }], alone: undefined });
+    expect(timeWrite(CTX, DAY)?.pending).toBe(true);
+    const sentence = 'Posted 1 of 2 entries for Tue Nov 10. WEB-2, 1h, was refused: Worklog is closed.';
+    answer.resolve({ entries: [], posted: 1, of: 2, sentence });
+    expect((await first)?.outcome).toEqual({ kind: 'applied', note: sentence });
+    expect(timeWriteText(timeWrite(CTX, DAY)!)).toBe(sentence);
+    release();
+    expect(timeWrite(CTX, DAY)).toBeNull();
+  });
+
+  it('logs one entry alone under the entry\'s target', async () => {
+    const post = setBindingMock('PostTrackerTimeEntries', async () => ({ entries: [], posted: 1, of: 1, sentence: 'Posted 1 of 1 entries for Tue Nov 10.' }));
+    await postDraftEntries(CTX, entryTarget(1), [entry(1)], true);
+    expect(post).toHaveBeenCalledWith('c1', { entries: [{ id: 1, revision: 3 }], alone: true });
+  });
+
+  it('puts a receipt on the weeks showing a day the post could not read back, and says so', async () => {
+    setBindingMock('PostTrackerTimeEntries', async () => ({
+      entries: [], posted: 1, of: 1, sentence: 'Posted 1 of 1 entries for Tue Nov 10.',
+      stale: [{ resources: [{ kind: 'worklogs', author: 'acct-1', day: '2026-11-10' }], failure: { message: 'Jira did not answer', kind: 'unreachable' } }],
+    } as unknown as PostTimeView));
+    const release = holdTimeWriteTarget(CTX, DAY);
+    await postDraftEntries(CTX, DAY, [entry(1)]);
+    const said = 'Posted 1 of 1 entries for Tue Nov 10. The week shows it after its next read: Jira did not answer';
+    expect(timeWriteText(timeWrite(CTX, DAY)!)).toBe(said);
+    expect(week.current.receipts.map((r) => r.sentence)).toEqual([said]);
+    release();
+  });
+
+  it('answers the entry as the computer stored it, a merged one included, and holds nothing for a plain change', async () => {
+    const merged = entry(9, { minutes: 85, revision: 1 });
+    const edit = setBindingMock('EditTrackerTimeEntry', async () => merged);
+    const release = holdTimeWriteTarget(CTX, entryTarget(4));
+    const done = await changeDraftEntry(CTX, entry(4, { key: undefined, issue: undefined }), { ticket: { issue: '10001', key: 'WEB-1' } });
+    expect(edit).toHaveBeenCalledWith('c1', { id: 4, revision: 3 }, { ticket: { issue: '10001', key: 'WEB-1' } });
+    expect(done).toEqual({ outcome: { kind: 'applied', note: null }, value: merged });
+    expect(timeWrite(CTX, entryTarget(4))).toBeNull();
+    release();
+  });
+
+  it('says how many a discard removed when some changed since they were read', async () => {
+    setBindingMock('RemoveTrackerTimeEntries', async () => [entry(1)]);
+    const week = draftTarget('week:2026-11-09');
+    const release = holdTimeWriteTarget(CTX, week);
+    await removeDraftEntries(CTX, week, [entry(1), entry(2)]);
+    expect(timeWriteText(timeWrite(CTX, week)!)).toBe('1 of 2 entries were removed; the others changed or were posted since they were read.');
+    release();
+  });
+
+  it('says in a toast what became of a change nobody shows, its error as the computer gave it', async () => {
+    setBindingMock('EditTrackerTimeEntry', async () => { throw new Error('WEB-1 already has an entry not yet posted that day'); });
+    await changeDraftEntry(CTX, entry(4), { hours: 2 });
+    expect(getToasts().map((t) => t.message)).toEqual(['The change of the entry on WEB-1 for Nov 10 was not confirmed']);
+    setBindingMock('PostTrackerTimeEntries', async () => ({ entries: [], posted: 0, of: 1, sentence: 'Posted 0 of 1 entries for Tue Nov 10. WEB-1, 1h, was refused: Worklog is closed.' }));
+    await postDraftEntries(CTX, DAY, [entry(1)]);
+    expect(getToasts().map((t) => t.message).at(-1)).toBe('The approval of the draft: Posted 0 of 1 entries for Tue Nov 10. WEB-1, 1h, was refused: Worklog is closed.');
   });
 });

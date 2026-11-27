@@ -88,7 +88,8 @@ export function weekLabel(monday: string): string {
 export type UncountedReason = 'unread' | 'partial';
 
 /** What a day holds, as the compact strip marks it: a question waiting,
- * drafted time not logged, logged time, or nothing. */
+ * draft time not logged (drafted, being posted, or of unknown outcome),
+ * logged time, or nothing. */
 export type DayMark = 'question' | 'drafted' | 'logged' | 'none';
 
 /** One day of the week shown. */
@@ -213,8 +214,10 @@ export function weekShape(monday: string, answer: WorklogDays): WeekShape {
     const drafted = draft.filter((e) => !isQuestion(e));
     for (const e of draft) if (isDrafted(e) && e.thread) threads.add(e.thread);
     const draftedMinutes = postedMinutes(drafted);
+    // An entry being posted or of unknown outcome is not logged as far as
+    // this computer knows, and waits on the person as a drafted one does.
     const mark: DayMark = questions.length > 0 ? 'question'
-      : drafted.some(isDrafted) ? 'drafted'
+      : drafted.some((e) => e.state !== 'posted') ? 'drafted'
         : entries.length > 0 || drafted.length > 0 ? 'logged' : 'none';
     return { day, entries, uncounted, total: uncounted ? null : entries.reduce((s, w) => s + w.spent_seconds, 0), drafted, questions, draftedMinutes, mark };
   });

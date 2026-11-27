@@ -6,6 +6,7 @@ import { tick } from 'svelte';
 import type { WorklogDays, WorklogView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import {
   attachTrackerWeek,
+  DRAFT_REREAD_DELAY_MS,
   refreshTrackerWeek,
   refreshTrackerWorklogDays,
   rereadTrackerWorklogDays,
@@ -15,6 +16,7 @@ import {
   type TrackerWeekRef,
 } from './trackerTime.svelte';
 import { __setBackendStatusForTest } from './transportStatus.svelte';
+import { trackerTimeEntriesGap, trackerTimeEntriesUpdated } from './trackerBoardEvents';
 import { addWorklog } from './trackerTimeWrites.svelte';
 import { getPinnedBackend } from '../transport/backends';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
@@ -374,6 +376,54 @@ describe('what a write asks of the weeks', () => {
     expect(refresh.calls).toHaveLength(2);
     setTrackerWeekShown(week.key, true);
     expect(refresh.calls).toHaveLength(3);
+    week.release();
+  });
+});
+
+describe('an agent\'s draft changing', () => {
+  it('reads the stored copy of a shown week holding a day it names, once a burst, and no other', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    refresh.answer({ worklogs: [] });
+    await flush();
+    const frame = { connection: 'c1', author: 'acct-1', days: ['2026-11-10'], threads: ['t1'] };
+    trackerTimeEntriesUpdated({ ...frame, days: ['2026-11-20'] }, 'peer-1');
+    trackerTimeEntriesUpdated({ ...frame, author: 'acct-2' }, 'peer-1');
+    trackerTimeEntriesUpdated(frame, 'peer-2');
+    await vi.advanceTimersByTimeAsync(DRAFT_REREAD_DELAY_MS * 6);
+    expect(stored.calls).toHaveLength(1);
+    for (let i = 0; i < 3; i += 1) trackerTimeEntriesUpdated(frame, 'peer-1');
+    await vi.advanceTimersByTimeAsync(DRAFT_REREAD_DELAY_MS);
+    expect(stored.calls).toHaveLength(2);
+    expect(refresh.calls).toHaveLength(1);
+    // A week not shown reads when it shows, as it always does.
+    stored.answer({ worklogs: [] });
+    await flush();
+    setTrackerWeekShown(week.key, false);
+    trackerTimeEntriesUpdated(frame, 'peer-1');
+    await vi.advanceTimersByTimeAsync(DRAFT_REREAD_DELAY_MS * 6);
+    expect(stored.calls).toHaveLength(2);
+    week.release();
+  });
+
+  it('reads every shown week of the computer on a gap, settled by their answers', async () => {
+    const stored = held('TrackerWorklogs');
+    held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    await flush();
+    expect(trackerTimeEntriesGap('peer-2')).toBeUndefined();
+    let settled = false;
+    void trackerTimeEntriesGap('peer-1')!.then(() => { settled = true; });
+    expect(stored.calls).toHaveLength(2);
+    await flush();
+    expect(settled).toBe(false);
+    stored.answer({ worklogs: [] });
+    await flush();
+    expect(settled).toBe(true);
     week.release();
   });
 });

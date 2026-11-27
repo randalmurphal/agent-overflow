@@ -174,8 +174,19 @@ export async function sendWrite(
   send: () => Promise<WriteView>,
   failure?: (err: unknown) => WriteOutcome | null,
 ): Promise<WriteOutcome> {
-  const sent = await sendCall(backend, computer, subject, send, failure);
-  return sent.ok ? writeOutcome(sent.value, subject) : sent.outcome;
+  try {
+    return writeOutcome(await withBackendTarget(backend, send), subject);
+  } catch (err) {
+    return sendFailure(err, computer, subject, failure);
+  }
+}
+
+// What a send's failure means: the caller's reading of it, else a lost
+// answer for a transport failure, else the failure itself.
+function sendFailure(err: unknown, computer: string, subject: WriteSubject, failure?: (err: unknown) => WriteOutcome | null): WriteOutcome {
+  const known = failure?.(err);
+  if (known) return known;
+  return isTransportClassError(err) ? { kind: 'lost', message: lostWriteSentence(computer, subject) } : { kind: 'failed', error: err };
 }
 
 /** Sends a call that answers something other than a write's view (an
@@ -191,11 +202,6 @@ export async function sendCall<T>(
   try {
     return { ok: true, value: await withBackendTarget(backend, send) };
   } catch (err) {
-    const known = failure?.(err);
-    if (known) return { ok: false, outcome: known };
-    return {
-      ok: false,
-      outcome: isTransportClassError(err) ? { kind: 'lost', message: lostWriteSentence(computer, subject) } : { kind: 'failed', error: err },
-    };
+    return { ok: false, outcome: sendFailure(err, computer, subject, failure) };
   }
 }
