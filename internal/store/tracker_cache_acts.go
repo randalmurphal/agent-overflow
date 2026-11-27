@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 )
@@ -74,10 +75,11 @@ type mirrorActRow struct {
 // an issue's rows by the primary key's prefix.
 var (
 	// mirrorActsStateSQL reads, for each listed issue and source, whether
-	// the mirror keeps the issue and the read order of its receipt (0 for
-	// none) and how many acts it holds.
+	// the mirror keeps the issue, the read order of its receipt (0 for
+	// none), the card update and the worklogs' start it is for, and how
+	// many acts it holds.
 	mirrorActsStateSQL = `SELECT e.value ->> 'i', e.value ->> 's',
-	    iif(i.issue_id IS NULL, 0, ` + mirrorIssueKept("i.root_id", "i.issue_id") + `), coalesce(r.read_at, 0),
+	    iif(i.issue_id IS NULL, 0, ` + mirrorIssueKept("i.root_id", "i.issue_id") + `), coalesce(r.read_at, 0), coalesce(r.read_for, 0), coalesce(r.read_from, 0),
 	    (SELECT count(*) FROM tracker_cache_issue_acts a WHERE a.root_id = CAST(?1 AS INTEGER) AND a.issue_id = e.value ->> 'i' AND a.source = e.value ->> 's')
 	  FROM json_each(?3) e
 	  LEFT JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = e.value ->> 'i'
@@ -92,7 +94,16 @@ var (
 	mirrorActsUpsertSQL = `INSERT INTO tracker_cache_issue_acts(root_id, issue_id, source, act_id, person, at, seconds)
 	  SELECT ?1, a.value ->> 'i', a.value ->> 's', a.value ->> 'a', a.value ->> 'p', a.value ->> 't', a.value ->> 'x' FROM json_each(?4) a WHERE true
 	  ON CONFLICT(root_id, issue_id, source, act_id) DO UPDATE SET person = excluded.person, at = excluded.at, seconds = excluded.seconds
-	  WHERE person IS NOT excluded.person OR at IS NOT excluded.at OR seconds IS NOT excluded.seconds`
+	  WHERE person IS NOT excluded.person OR at IS NOT excluded.at OR seconds IS NOT excluded.seconds
+	  RETURNING issue_id`
+	// mirrorActsCreditSQL advances the totals revision of each board of
+	// root ?1 that holds a row of an issue of the JSON list ?2, each row
+	// found by key, once a board: credit, which the Backlog's pace counts
+	// (readMirrorPaceTx), read the issues' evidence.
+	mirrorActsCreditSQL = `UPDATE tracker_cache_boards SET totals_revision = totals_revision + 1
+	  WHERE root_id = CAST(?1 AS INTEGER) AND board_id IN (
+	    SELECT b.board_id FROM json_each(?2) l
+	    CROSS JOIN tracker_cache_board_issues b ON b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = l.value)`
 	// mirrorActReadsSQL records each listed read's receipt and clears an
 	// attempt that failed before it.
 	mirrorActReadsSQL = `INSERT INTO tracker_cache_issue_act_reads(root_id, issue_id, source, read_for, read_at, read_wall, read_from)
@@ -208,8 +219,8 @@ func (s *Store) storedMirrorActs(rootID int64, keys []mirrorActsKeyRow) ([]int, 
 			var issue string
 			var source, n int
 			var kept bool
-			var readAt int64
-			if err := r.Scan(&issue, &source, &kept, &readAt, &n); err != nil {
+			var readAt, readFor, readFrom int64
+			if err := r.Scan(&issue, &source, &kept, &readAt, &readFor, &readFrom, &n); err != nil {
 				return err
 			}
 			out[at[issue+"\x00"+strconv.Itoa(source)]] = n
@@ -271,7 +282,9 @@ func checkMirrorIssueActs(issues []MirrorIssueActs, tried []MirrorActsAttempt) e
 // replaceMirrorActsTx writes the admitted of keys in tx: the first
 // len(issues) are issues' reads, the rest attempts. Under another time
 // source generation than sourceGen it writes no worklog and reports
-// refused.
+// refused. It advances the totals revision of each board holding an
+// issue whose evidence it changed, once (mirrorActsCreditSQL); an attempt
+// changes no evidence.
 func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTimes, keys []mirrorActsKeyRow, issues []MirrorIssueActs) (refused bool, _ error) {
 	if len(keys) == 0 {
 		return false, nil
@@ -292,16 +305,23 @@ func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTi
 		index[k.Issue+"\x00"+strconv.Itoa(k.Source)] = i
 	}
 	admitted := make([]bool, len(keys))
+	// credited holds the issues whose evidence credit reads changed: a
+	// receipt new or for another card update or worklogs' start (what
+	// makes evidence read), or an act added, changed or removed.
+	credited := map[string]bool{}
 	err = scanMirrorRows(tx, mirrorActsStateSQL, []any{rootID, nil, listed}, func(r rowScanner) error {
 		var issue string
 		var source, n int
 		var kept bool
-		var storedAt int64
-		if err := r.Scan(&issue, &source, &kept, &storedAt, &n); err != nil {
+		var storedAt, storedFor, storedFrom int64
+		if err := r.Scan(&issue, &source, &kept, &storedAt, &storedFor, &storedFrom, &n); err != nil {
 			return err
 		}
 		i := index[issue+"\x00"+strconv.Itoa(source)]
 		admitted[i] = kept && storedAt < times.at && (!refused || source != MirrorActWorklog)
+		if admitted[i] && i < len(issues) && (storedAt == 0 || storedFor != keys[i].ReadFor || storedFrom != keys[i].From) {
+			credited[issue] = true
+		}
 		return nil
 	})
 	if err != nil {
@@ -342,21 +362,39 @@ func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTi
 			if err != nil {
 				return refused, err
 			}
-			if _, err := tx.Exec(mirrorActsRemoveSQL, rootID, k.Issue, k.Source, found); err != nil {
+			res, err := tx.Exec(mirrorActsRemoveSQL, rootID, k.Issue, k.Source, found)
+			if err != nil {
 				return refused, fmt.Errorf("remove the acts of issue %s source %d: %w", k.Issue, k.Source, err)
+			}
+			removed, err := res.RowsAffected()
+			if err != nil {
+				return refused, fmt.Errorf("count the acts removed of issue %s source %d: %w", k.Issue, k.Source, err)
+			}
+			if removed > 0 {
+				credited[k.Issue] = true
 			}
 		}
 		args := []any{rootID, times.at, listedReads, encodedActs, times.wall}
-		for _, step := range []struct {
-			what, query string
-			args        []any
-		}{
-			{"write acts", mirrorActsUpsertSQL, args[:4]},
-			{"record the reads", mirrorActReadsSQL, args},
-		} {
-			if _, err := tx.Exec(step.query, step.args...); err != nil {
-				return refused, fmt.Errorf("%s: %w", step.what, err)
-			}
+		err = scanMirrorRows(tx, mirrorActsUpsertSQL, args[:4], func(r rowScanner) error {
+			var issue string
+			err := r.Scan(&issue)
+			credited[issue] = true
+			return err
+		})
+		if err != nil {
+			return refused, fmt.Errorf("write acts: %w", err)
+		}
+		if _, err := tx.Exec(mirrorActReadsSQL, args...); err != nil {
+			return refused, fmt.Errorf("record the reads: %w", err)
+		}
+	}
+	if len(credited) > 0 {
+		moved, err := encodeMirrorIDs(slices.Sorted(maps.Keys(credited)))
+		if err != nil {
+			return refused, err
+		}
+		if _, err := tx.Exec(mirrorActsCreditSQL, rootID, moved); err != nil {
+			return refused, fmt.Errorf("advance the totals of the boards whose credit the evidence moved: %w", err)
 		}
 	}
 	if len(attempts) > 0 {

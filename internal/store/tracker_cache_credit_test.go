@@ -188,3 +188,52 @@ func TestAPaceWithoutCreditRunsTodaysStatement(t *testing.T) {
 		}
 	}
 }
+
+// Evidence credit counts moves the totals revision of each board holding
+// its issue, once a write, when it changes: a closed sprint's ticket
+// whose evidence was never read is read and found to hold no act (it goes
+// from not read to read), then the same read again changes nothing, then
+// a comment found moves it, and a failed attempt does not.
+func TestMirrorEvidenceMovesTheTotalsWhenItChanges(t *testing.T) {
+	t.Parallel()
+	s, root := creditFixture(t)
+	regroup := creditRegroup(t, creditRules(false))
+	for _, step := range []struct {
+		name   string
+		write  func()
+		moves  bool
+		unread int
+		review float64
+	}{
+		{"read, no act", func() {
+			replaceActs(t, s, root, 30, nil, MirrorIssueActs{IssueID: "10002", Source: MirrorActComment, ReadFor: 900},
+				MirrorIssueActs{IssueID: "10002", Source: MirrorActWorklog, ReadFor: 900})
+		}, true, 0, 0.5},
+		{"the same read again", func() {
+			replaceActs(t, s, root, 40, nil, MirrorIssueActs{IssueID: "10002", Source: MirrorActComment, ReadFor: 900},
+				MirrorIssueActs{IssueID: "10002", Source: MirrorActWorklog, ReadFor: 900})
+		}, false, 0, 0.5},
+		{"a comment found", func() {
+			replaceActs(t, s, root, 50, nil, MirrorIssueActs{IssueID: "10002", Source: MirrorActComment, ReadFor: 900,
+				Acts: []MirrorAct{act("c9", "acc-user3", 400, 0)}})
+		}, true, 0, 0.5},
+		{"a failed attempt", func() {
+			replaceActs(t, s, root, 60, []MirrorActsAttempt{{IssueID: "10002", Source: MirrorActWorklog, Reason: "issue 10002: refused"}})
+		}, false, 0, 0.5},
+	} {
+		before, err := s.CountMirrorSections(root, "10", regroup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		step.write()
+		after, err := s.CountMirrorSections(root, "10", regroup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if moved := after.TotalsRevision != before.TotalsRevision; moved != step.moves || after.TotalsRevision > before.TotalsRevision+1 ||
+			len(after.Pace) != 1 || after.Pace[0].Unread != step.unread || after.Pace[0].Review != step.review {
+			t.Errorf("%s: totals revision %d -> %d, pace %+v; want it to move %v (once), %d not read, review %g", step.name, before.TotalsRevision,
+				after.TotalsRevision, after.Pace, step.moves, step.unread, step.review)
+		}
+	}
+}
