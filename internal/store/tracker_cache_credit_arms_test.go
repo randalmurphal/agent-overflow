@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -139,6 +141,68 @@ func TestWhoHadAFinishedTicketIsReadFromAHistoryThatCoversIt(t *testing.T) {
 			t.Errorf("%s: the totals revision stayed %d", step.name, now)
 		}
 		revision = currentTotalsRevision(s, root, "10")
+	}
+}
+
+// A history that does not reach back to the finish does not say who had
+// the ticket then: 10007, resolved at 400 while User 1's and User 2's now,
+// whose history the tracker no longer answers for (recorded empty, known
+// only from its update at 900), names no person and counts its points
+// for the team, its reviews one row not counted.
+func TestAHistoryThatStartsAfterTheFinishNamesNoOne(t *testing.T) {
+	t.Parallel()
+	s, root := creditFixture(t)
+	r := sectionRow("10007", "10007", "10001", 3, "20")
+	r.Card.UpdatedAt, r.Card.ResolvedAt, r.Card.AssigneeID = 900, 400, "acc-user2"
+	mustWriteRowPage(t, s, root, webPage("10", r), nil)
+	replaceActs(t, s, root, 30, nil,
+		MirrorIssueActs{IssueID: "10007", Source: MirrorActComment, ReadFor: 900, Acts: []MirrorAct{act("c7", "acc-user3", 600, 0)}},
+		MirrorIssueActs{IssueID: "10007", Source: MirrorActWorklog, ReadFor: 900, Acts: []MirrorAct{act("w7", "acc-user3", 650, 3600)}})
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10007", CompleteFrom: 900}}),
+		MirrorCatalog{}, mirrorReadOf(root, 40)); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := creditOf(t, s, root, creditRegroup(t, creditRules(false)))
+	const unknown = "who had it when it finished is not known"
+	want := []string{
+		"20 400 10007 finished - 3.0 1.0 3.0 - - - - - - " + unknown,
+		"20 400 10007 review - - - 3.0 10 2 - - - - " + unknown,
+	}
+	if got := creditRowsOf(rows, "10007"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("credit\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A finish is read from a history only when it is read for the card: on a
+// board without sprints, 10001 moved to done at 800, was reopened, and was
+// resolved again at 1500. Until its history is read for that edit, it
+// finished at its resolution, not at the move its history holds.
+func TestAStaleHistoryDoesNotSayWhenATicketFinished(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	st := webStructure()
+	st.Board.ID, st.Board.PlansSprints, st.Sprints = "10", false, nil
+	mustReplaceStructure(t, s, root, st, true)
+	card := func(updated, resolved int64) {
+		r := sectionRow("10001", "10001", "10001", 5)
+		r.Card.UpdatedAt, r.Card.ResolvedAt, r.Card.AssigneeID = updated, resolved, "acc-user1"
+		r.Card.Data = []byte(`{"summary":"edited ` + strconv.FormatInt(updated, 10) + `"}`)
+		mustWriteRowPage(t, s, root, webPage("10", r), nil)
+	}
+	card(900, 800)
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001",
+		Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 800, From: "1", To: "10001"}}}}), MirrorCatalog{}, mirrorReadOf(root, 10)); err != nil {
+		t.Fatal(err)
+	}
+	card(1600, 1500)
+	conn := exportConn(t)
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", creditRegroup(t, creditRules(false)), []string{"credit"}, 100, math.MaxInt64,
+		MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok {
+		t.Fatalf("export: %v, %v", ok, err)
+	}
+	got := exportRows(t, conn, `SELECT concat_ws(' ', coalesce(at, '-'), coalesce(person, '-'), coalesce(note, '-')) FROM main.credit WHERE kind = 'finished'`)
+	if want := []string{"1500 - who had it when it finished is not read yet"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("finished %q; want %q", got, want)
 	}
 }
 

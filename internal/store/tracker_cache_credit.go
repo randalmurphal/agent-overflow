@@ -16,13 +16,15 @@ import (
 //     status not known is listed, not counted) or an active sprint's done
 //     now, at its last move into done at or before the completion
 //     (mirrorExportStatusChangeSQL); on one that does not, a ticket done
-//     now and updated since the window, at its last move into done, else
-//     its resolution. The assignee then is the last assignee change at or
-//     before it, else what the first after it is from, else the assignee
-//     now, read only from a history that covers the card's version
-//     (mirrorHistoryReadForCardSQL): until it does, the ticket names no
-//     person, and its reviews are one row not counted, as who had it
-//     decides who reviewed it.
+//     now and updated since the window, at its last move into done, read
+//     only from a history that covers the card's version
+//     (mirrorHistoryReadForCardSQL), else its resolution. The assignee
+//     then is the last assignee change at or before it, else what the
+//     first after it is from, else the assignee now, read only from a
+//     history that covers the card's version and is complete from before
+//     the finish: until one does, the ticket names no person, its points
+//     still counted, and its reviews are one row not counted, as who had
+//     it decides who reviewed it.
 //   - Each other person who acted on a finished ticket is a reviewer: one
 //     row with the kinds of action done, counted ReviewShare percent of
 //     its points when it did ReviewNeed of the kinds the rule counts, and
@@ -190,15 +192,15 @@ func mirrorCreditCountsInSQL(at string) string {
 // sprint is closed and its end (until for an open sprint and a week: acts
 // count up to it), the sprint's rule (NULL: the one in force at the
 // finish), the board's unit, the issue, whether its history covers its
-// card (mirrorHistoryReadForCardSQL), its points, whether it counted done
+// card (mirrorHistoryReadForCardSQL) and from when (0: from its creation), its points, whether it counted done
 // (NULL: not known), whether it is a support ticket (credited by its
 // time alone), and its receipts, c_ its comments' and w_ its worklogs'.
-const mirrorCreditMemberColumns = `sprint_id, closed, hi, rule, unit, root_id, issue_id, history_gen, covered, updated_at, resolved_at, assignee_id, points,
+const mirrorCreditMemberColumns = `sprint_id, closed, hi, rule, unit, root_id, issue_id, history_gen, covered, history_from, updated_at, resolved_at, assignee_id, points,
 	    done, support, c_read_at, c_read_for, c_tried_at, c_tried_reason, w_read_at, w_read_for, w_read_from, w_tried_at, w_tried_reason`
 
 // mirrorCreditIssueSQL are an issue i's columns of cr_m from its history
 // to its receipts.
-const mirrorCreditIssueSQL = `i.history_gen, ` + `(` + mirrorHistoryReadForCardSQL + `), i.updated_at, i.resolved_at, i.assignee_id`
+const mirrorCreditIssueSQL = `i.history_gen, ` + `(` + mirrorHistoryReadForCardSQL + `), i.history_from, i.updated_at, i.resolved_at, i.assignee_id`
 
 // mirrorCreditReceiptsSQL are an issue i's receipts as cr_m holds them.
 const mirrorCreditReceiptsSQL = `r1.read_at, r1.read_for, r1.tried_at, r1.tried_reason, r2.read_at, r2.read_for, r2.read_from, r2.tried_at, r2.tried_reason`
@@ -261,14 +263,16 @@ func mirrorCreditWhySQL(issue, readAt, reason string) string {
 // mirrorCreditFinishedSQL is the CTEs cr_d0, cr_d1 and cr_f of cr_m's
 // tickets that counted done, or whose status then is not known, and are
 // not support tickets: cr_d0 gives each the moment it moved to done (its
-// last move into done by its sprint's end or until, else its resolution
-// by then; NULL: not known), cr_d1 the rule it counts by (its sprint's,
-// else the one in force when it finished) and whether who had it then is
-// not known (unowned: the moment is not known and its history holds an
-// assignee change); cr_f the rule's terms, the person it was assigned to
-// at that moment (NULL when unowned, or while its history does not cover
-// its card, covered), and why its reviews are not read for its card (NULL when
-// they are): its history not covering it, else the first source the rule
+// last move into done by its sprint's end or until, read from a history
+// that covers its card, else its resolution by then; NULL: not known),
+// cr_d1 the rule it counts by (its sprint's, else the one in force when it
+// finished), whether who had it then is not known (unowned: the moment is
+// not known and its history holds an assignee change) and whether its
+// history says who had it then (reaches: it covers the card, from before
+// the moment); cr_f the rule's terms, the person it was assigned to at
+// that moment (NULL unless reaches, or when unowned), and why its reviews
+// are not read for its card (NULL when they are): its history not
+// covering it or not reaching the moment, else the first source the rule
 // counts that is not current (mirrorActsCurrentSQL).
 func mirrorCreditFinishedSQL(p mirrorCreditParams) string {
 	assignee := func(cmp, value, order string) string {
@@ -280,20 +284,21 @@ func mirrorCreditFinishedSQL(p mirrorCreditParams) string {
 	comments := `(cm.rule_now ->> 'commented' = 1 AND NOT ` + mirrorActsCurrentSQL(receipt("cm.c_"), "cm.updated_at", "") + `)`
 	worklogs := `(cm.rule_now ->> 'logged_time' = 1 AND NOT ` + mirrorActsCurrentSQL(receipt("cm.w_"), "cm.updated_at", "0") + `)`
 	return `cr_d0 AS MATERIALIZED (
-	  SELECT cm.*, coalesce(` + mirrorExportStatusChangeSQL("cm", "max", mirrorDoneStatusesSQL(p.groups), "cm.hi") + `,
+	  SELECT cm.*, coalesce(CASE WHEN cm.covered THEN ` + mirrorExportStatusChangeSQL("cm", "max", mirrorDoneStatusesSQL(p.groups), "cm.hi") + ` END,
 	      iif(cm.resolved_at > 0 AND cm.resolved_at <= cm.hi, cm.resolved_at, NULL)) AS moment
 	  FROM cr_m cm WHERE cm.done IS NOT 0 AND NOT cm.support),
 	  cr_d1 AS MATERIALIZED (
 	  SELECT cm.*, coalesce(cm.rule, ` + mirrorCreditRuleSQL(p.rules, `coalesce(cm.moment, `+mirrorExportNever+`)`) + `) AS rule_now,
-	    cm.moment IS NULL AND ` + reassigned + ` AS unowned
+	    cm.moment IS NULL AND ` + reassigned + ` AS unowned, coalesce(cm.covered AND (cm.history_from = 0 OR cm.history_from <= cm.moment), 0) AS reaches
 	  FROM cr_d0 cm),
 	  cr_f AS MATERIALIZED (
 	  SELECT cm.sprint_id, cm.closed, cm.hi, cm.rule_now ->> 'share' AS rule_share, cm.rule_now ->> 'need' AS rule_need,
 	    cm.rule_now ->> 'commented' AS rule_commented, cm.rule_now ->> 'approved' AS rule_approved, cm.rule_now ->> 'logged_time' AS rule_logged,
-	    cm.root_id, cm.issue_id, cm.history_gen, cm.covered, cm.assignee_id, cm.points, cm.done, cm.moment, cm.unowned,
-	    iif(cm.covered, nullif(coalesce(` + assignee("<=", "to_value", " DESC") + `, ` + assignee(">", "from_value", "") + `,
+	    cm.root_id, cm.issue_id, cm.history_gen, cm.covered, cm.reaches, cm.assignee_id, cm.points, cm.done, cm.moment, cm.unowned,
+	    iif(cm.reaches, nullif(coalesce(` + assignee("<=", "to_value", " DESC") + `, ` + assignee(">", "from_value", "") + `,
 	      iif(cm.unowned, '', cm.assignee_id)), ''), NULL) AS person,
 	    CASE WHEN NOT cm.covered THEN '` + mirrorCreditOwnerUnread + `'
+	         WHEN NOT cm.reaches THEN '` + mirrorCreditOwnerUnknown + `'
 	         WHEN ` + comments + ` THEN ` + mirrorCreditWhySQL("cm.issue_id", "cm.c_read_at", "cm.c_tried_reason") + `
 	         WHEN ` + worklogs + ` THEN ` + mirrorCreditWhySQL("cm.issue_id", "cm.w_read_at", "cm.w_tried_reason") + ` END AS unread
 	  FROM cr_d1 cm)`
@@ -302,6 +307,13 @@ func mirrorCreditFinishedSQL(p mirrorCreditParams) string {
 // mirrorCreditOwnerUnread is why a finished ticket names no person and
 // counts none of its reviews while its history does not cover its card.
 const mirrorCreditOwnerUnread = `who had it when it finished is not read yet`
+
+// mirrorCreditOwnerUnknown is why a finished ticket names no person when
+// its history cannot say who had it at its finish: the history starts
+// after it, or the finish is not known and the history holds an
+// assignee change (unowned; the reviews of such a ticket are only the
+// people who never had it).
+const mirrorCreditOwnerUnknown = `who had it when it finished is not known`
 
 // mirrorCreditKindsSQL names the kinds of review action whose conditions
 // hold, as a review row's did and review_kinds list them: "commented,
@@ -346,7 +358,7 @@ func mirrorCreditRowsSQL(p mirrorCreditParams, weeks bool) string {
 	    CASE WHEN f.done IS NULL THEN 'its status when the sprint ended is not known'
 	         WHEN f.moment IS NULL AND f.sprint_id IS NULL THEN 'when it finished is not known'
 	         WHEN NOT f.covered THEN '` + mirrorCreditOwnerUnread + `'
-	         WHEN f.unowned THEN 'who had it when it finished is not known' END
+	         WHEN f.unowned OR NOT f.reaches THEN '` + mirrorCreditOwnerUnknown + `' END
 	  FROM cr_f f
 	  UNION ALL
 	  SELECT f.sprint_id, f.moment, f.issue_id, 'review', NULL, NULL, NULL, f.points, f.rule_share, f.rule_need, ` + kinds("f") + `, NULL, NULL, NULL, NULL, f.unread
