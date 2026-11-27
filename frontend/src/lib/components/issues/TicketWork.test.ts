@@ -177,7 +177,7 @@ describe('Work', () => {
     });
     expect(rows.map((r) => r.dataset.opens)).toEqual(['review', 'forge']);
     await fireEvent.click(rows[0]);
-    expect(opened).toHaveBeenCalledWith({ pr: { forge: 'github', host: 'github.com', namespace: 'example', repo: 'widgets', number: 9 }, projectId: 'p1', url: shown.url, title: 'WEB-1 Docs' });
+    expect(opened).toHaveBeenCalledWith({ pr: { forge: 'github', host: 'github.com', namespace: 'example', repo: 'widgets', number: 9 }, projectId: 'p1', url: shown.url });
     expect(external).not.toHaveBeenCalled();
     await fireEvent.click(rows[1]);
     await waitFor(() => expect(external).toHaveBeenCalledWith(forgeOnly.url));

@@ -370,7 +370,6 @@ export interface TicketPullRequestOpen {
   readonly pr: PRRef;
   readonly projectId: string;
   readonly url: string;
-  readonly title: string;
 }
 
 /** A ticket a surface outside the pane asked it to open (a thread's

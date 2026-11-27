@@ -153,7 +153,7 @@
   // the row opens on the forge.
   function reviewOf(pr: TicketPullRequest): TicketPullRequestOpen | null {
     const ref = pr.reviewProjectId ? prRefFromWire(pr.ref) : null;
-    return ref && pr.reviewProjectId ? { pr: ref, projectId: pr.reviewProjectId, url: pr.url, title: pr.title || pr.branch } : null;
+    return ref && pr.reviewProjectId ? { pr: ref, projectId: pr.reviewProjectId, url: pr.url } : null;
   }
 
   function openPull(pr: TicketPullRequest): void {

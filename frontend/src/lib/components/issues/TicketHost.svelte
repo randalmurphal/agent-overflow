@@ -42,6 +42,7 @@
   // compact the pane's
   // header holds the one Back, so the bar has none. Back steps out of
   // what is open in the review, then shows the ticket.
+  import { untrack } from 'svelte';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import Button from '../primitives/Button.svelte';
@@ -102,6 +103,37 @@
   }
 
   let screen: TicketScreen | undefined = $state();
+
+  // The review takes the keyboard once, when a person opens it from a
+  // Work row: its container at once, then the body when it has loaded,
+  // unless the person moved the focus anywhere else meanwhile (a pane, a
+  // composer, the bar's buttons). The body may load after a wait, so the
+  // decision made at the open is never acted on after the person moved.
+  let reviewFocusAsked = false;
+  function openPullRequest(pr: TicketPullRequestOpen): void {
+    reviewFocusAsked = true;
+    trail.openPullRequest(pr);
+  }
+  function holdReviewFocus(el: HTMLElement): () => void {
+    // Untracked: what the focus's own handlers read (the pane host's
+    // focus follow) must not rerun this.
+    untrack(() => {
+      if (reviewFocusAsked && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
+    });
+    const moved = (e: FocusEvent): void => {
+      if (e.target !== el) reviewFocusAsked = false;
+    };
+    document.addEventListener('focusin', moved, true);
+    return () => {
+      document.removeEventListener('focusin', moved, true);
+      reviewFocusAsked = false;
+    };
+  }
+  function reviewShown(root: HTMLElement): void {
+    if (!reviewFocusAsked) return;
+    reviewFocusAsked = false;
+    root.focus({ preventScroll: true });
+  }
 
   /** One step back inside the ticket: over a pull request, what is open
    * in its review (a CI log, the conflicts, the compact file rail), else
@@ -191,7 +223,7 @@
           onClose={() => trail.close()}
           {onOwnPane}
           onOpenIssue={openIssue}
-          onOpenPullRequest={(pr) => trail.openPullRequest(pr)}
+          onOpenPullRequest={openPullRequest}
         />
       {/key}
     {:catch err}
@@ -199,12 +231,12 @@
     {/await}
     </div>
     {#if review}
-      <div class="absolute inset-0 flex min-h-0 flex-col bg-surface-0" data-testid="ticket-review" data-pr={prKey(review.pr)} {@attach paneFindSurface(hostPaneId, () => hasPaneFindProvider(reviewFindKey) ? reviewFindKey : null)}>
+      <div class="absolute inset-0 flex min-h-0 flex-col bg-surface-0 focus:outline-none" tabindex="-1" data-testid="ticket-review" data-pr={prKey(review.pr)} {@attach paneFindSurface(hostPaneId, () => hasPaneFindProvider(reviewFindKey) ? reviewFindKey : null)} {@attach holdReviewFocus}>
         {@render reviewBar(review)}
         {#await loadTicketReview()}
           <p class="px-4 py-6 text-sm text-fg-muted" role="status" data-testid="ticket-review-loading">Opening the pull request…</p>
         {:then mod}
-          <mod.default open={review} backend={shown.open.ref.backend} {hostPaneId} {compact} />
+          <mod.default open={review} backend={shown.open.ref.backend} {hostPaneId} {compact} onShown={reviewShown} />
         {:catch err}
           <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="ticket-review-load-error">The review could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again, or open it on the forge.</p>
         {/await}

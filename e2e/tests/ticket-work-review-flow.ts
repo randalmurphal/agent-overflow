@@ -12,7 +12,9 @@
 // Work not read again; the bar's Back on desktop and the header's on the
 // phone do the same; a pull request of a fork's parent, which the fork's
 // checkout cannot show, opens on the forge; a review whose code fails to
-// load keeps its bar, Back and Open on GitHub; on desktop the review
+// load keeps its bar, Back and Open on GitHub; the review takes the
+// keyboard when it opens, but not from where the person moved it while
+// its code loaded; on desktop the review
 // beside the Backlog at 380 px keeps its bar and title bar inside the
 // ticket's column; and on desktop, in the ticket's own pane, the review's
 // bar is the pane's header, painted over nothing of the ticket's, and the
@@ -50,6 +52,17 @@ async function reviewProject(harness: HarnessApp, name: string, key = 'WEB-1'): 
   };
   await publishPullRequest(harness, path, repo, { 'src/cursor.ts': 'export const cursor = 1;\n' });
   return { repo: repo.project };
+}
+
+/** What holds the keyboard: the review's body, the bar's forge button,
+ * or what else. */
+function keyboardIn(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    if (!active || active === document.body) return 'body';
+    if (active.closest('[data-testid="ticket-review-body"]')) return 'review body';
+    return active.closest('[data-testid]')?.getAttribute('data-testid') ?? active.tagName;
+  });
 }
 
 /** Opens Work's row of 801 once the forge search has answered. */
@@ -95,6 +108,8 @@ export function registerTicketWorkReviewFlow({ compact }: WorkSurface): void {
     await expect(shown.getByTestId('ticket-review-number')).toHaveText('#801');
     await expect(review.getByTestId('review-pr-title')).toHaveAttribute('title', TITLE);
     await expect(review.getByTestId('review-pr-state')).toHaveText(/merged/i);
+    // Opened by a person, it takes the keyboard.
+    await expect.poll(() => keyboardIn(page)).toBe('review body');
     await expect(under).toHaveAttribute('inert', '');
     await expect(under).toBeHidden();
     // The phone's header holds the one Back.
@@ -191,6 +206,36 @@ export function registerTicketWorkReviewFlow({ compact }: WorkSurface): void {
     else await press(shown.getByTestId('ticket-review-back'), false);
     await expect(shown).toHaveCount(0);
     await expect(work).toBeVisible();
+  });
+
+  test('a review whose code loads after the person moved the keyboard leaves it where they put it', async ({ harness, page }) => {
+    test.setTimeout(150_000);
+    await reviewProject(harness, compact ? 'compact-work-review-held' : 'work-review-held');
+    await harness.open(page);
+    const { work } = await openWork(page, WEB1, compact);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let asked!: () => void;
+    const requested = new Promise<void>((resolve) => { asked = resolve; });
+    await page.route(/\/TicketReview-[^/]*\.js(\?|$)/, async (route) => {
+      asked();
+      await held;
+      await route.continue();
+    });
+    await openRow(work, compact);
+    const pane = page.getByTestId('issues-pane');
+    const shown = pane.getByTestId('ticket-review');
+    await requested;
+    await expect(shown.getByTestId('ticket-review-loading')).toBeVisible();
+    // While the code loads the person moves to the bar's forge button.
+    const forge = shown.getByTestId('ticket-review-forge');
+    await forge.focus();
+    await expect.poll(() => keyboardIn(page)).toBe('ticket-review-forge');
+    release();
+    await shownReview(pane);
+    await expect.poll(() => keyboardIn(page)).toBe('ticket-review-forge');
+    // A key pressed now reaches the button, not the review.
+    await expect(forge).toBeFocused();
   });
 
   if (!compact) {

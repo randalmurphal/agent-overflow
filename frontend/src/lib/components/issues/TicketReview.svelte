@@ -25,9 +25,12 @@
     /** The layout pane showing the ticket. */
     hostPaneId: string;
     compact: boolean;
+    /** Called once the review is on screen, with what takes its keyboard;
+     * the host decides whether it does. */
+    onShown: (root: HTMLElement) => void;
   }
 
-  let { open, backend, hostPaneId, compact }: Props = $props();
+  let { open, backend, hostPaneId, compact, onShown }: Props = $props();
 
   provideHostedBack(() => compact);
   // A layout pane's id is fixed for this component's life.
@@ -37,9 +40,7 @@
   const subject = $derived({ ownerPaneId: hostPaneId, backend, projectId: open.projectId, pr: open.pr });
 
   let root: HTMLElement | undefined = $state();
-  // A person opened it: it takes the focus, so the review's keys and
-  // find are its.
-  onMount(() => root?.focus({ preventScroll: true }));
+  onMount(() => { if (root) onShown(root); });
   onDestroy(() => disposePRReviewStates(owner));
 </script>
 
