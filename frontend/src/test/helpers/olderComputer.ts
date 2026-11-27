@@ -40,6 +40,7 @@ export const METHODS_AFTER_V0_0_19 = [
   'SetThreadTicket', 'ClearThreadTicket', 'ThreadsForTicket', 'GetTicketWork', 'SearchTicketWork', 'StartTicketThread',
   'TrackerDashboards', 'EvaluateTrackerDashboard', 'TrackerDashboardDrill', 'StartTrackerDashboardThread',
   'KeepTrackerWidget', 'DismissTrackerWidget', 'RemoveTrackerWidget',
+  'RecordActivity', 'GetActivityRecording',
 ] as const;
 
 /**

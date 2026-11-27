@@ -22,6 +22,9 @@ tickets waiting for the person's approval unless the project turned that
 off. They read and draft the person's time, and ask to log the draft of
 named days, which is logged only once the person approves what the
 prompt shows ([Agent tools](../architecture/tracker-backend.md#agent-tools)).
+What they read beside the logged time is the [activity](#activity) each
+computer measured and the day's commits; reviews and calendar meetings
+are not read yet.
 
 ## Goal
 
@@ -760,6 +763,39 @@ the worklog's description once posted.
   reads that ticket again, its copy may still answer. With Never log to an epic on, a draft entry on an epic is
   refused, and the agent puts the hours on a ticket under the epic or
   asks. Time logged by hand is not held to it.
+
+### Activity
+
+- While a Jira connection is on, each computer records when the person
+  gave input to the app on its screens, and on which thread, and which
+  threads started a turn each day. A computer with no Jira connection on
+  records nothing: turning the last one off keeps what came before and
+  records nothing after, and turning one on records from then.
+- Input is a key, a press, a scroll or a touch. A minute counts when
+  there was input in the 3 minutes before it, the last input of a burst
+  included. Moving the pointer is not input. A screen asleep or in the
+  background adds nothing when it wakes.
+- The thread is the one the screen shows: on the phone, an agent thread
+  opened from the Agents rail counts on that thread. When the thread or
+  the layout the screen shows changes, the time up to the change stays
+  with what was shown before it, and the time after goes to what is
+  shown now. A change adds no time of its own.
+- `phone` time is time in the compact layout: the phone shell, or a
+  browser on a narrow touch screen.
+- A computer counts the screens attached to it, and only those of its
+  own person: its own window, a browser on it, and its own devices. A
+  screen attached only to another computer is not in its answer.
+- Reading a page in the desktop's browser pane counts only within 3
+  minutes of the last input to the app, since the page takes its own
+  input. The operating system's menus and dialogs do not count either.
+- A thread's minutes go to the ticket it is linked to now, so relinking
+  it moves its past minutes. Days are the computer's local dates. Linear
+  tickets get no minutes.
+- When the computer cannot write what it measured, an agent's read says
+  since when, and so does `GetActivityRecording` for the Time screen. A
+  crash loses at most the last 5 minutes measured.
+- The measure is kept 92 days. Its mechanism, costs and limits are in
+  [Activity](../architecture/tracker-backend.md#activity).
 
 ### Setup
 

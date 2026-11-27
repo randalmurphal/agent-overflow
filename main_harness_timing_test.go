@@ -193,6 +193,7 @@ var harnessTimerOwners = map[string]string{
 	"agent-settled-window":  "Isolation.AgentSettledWindow",
 	"tracker-poll":          "Isolation.TrackerPollInterval",
 	"tracker-approval-wait": "Isolation.TrackerApprovalWait",
+	"activity-flush":        "Isolation.ActivityFlush",
 	"unreachable-settle":    "page unreachable-settle",
 	"agent-row-linger":      "page agent-row-linger",
 }
