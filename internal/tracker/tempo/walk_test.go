@@ -133,6 +133,17 @@ var walkCases = map[string]struct {
 			})), err
 		}, "[201 202]",
 	},
+	"IssueWorklogs": {
+		"/4/worklogs/search", worklogItem,
+		func(ctx context.Context, c *Client) (string, error) {
+			l, err := c.IssueWorklogs(ctx, IssueWorklogQuery{Issues: []int64{10101}})
+			return fmt.Sprint(slices.Collect(func(yield func(int64) bool) {
+				for _, w := range l {
+					yield(w.ID)
+				}
+			})), err
+		}, "[201 202]",
+	},
 	"Worklogs": {
 		"/4/worklogs/user/acc-1", worklogItem,
 		func(ctx context.Context, c *Client) (string, error) {

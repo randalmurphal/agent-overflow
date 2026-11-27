@@ -712,6 +712,13 @@ API v4.
   `api.us.tempo.io`); the wrong one returns an authorization error.
 - The spec lists `200` for `POST /4/worklogs` and `PUT /4/worklogs/{id}`
   and `204` for `DELETE /4/worklogs/{id}`.
+- `POST /4/worklogs/search` takes `WorklogSearchInput` (`issueIds`,
+  `authorIds`, `projectIds`, `from`, `to`, `updatedFrom`, `orderBy`, none
+  required) and `offset` and `limit` (default 50, no maximum stated), and
+  answers `PageableWorklog`, ordered by start and ID when no order is
+  given. A worklog's `startDateTimeUtc` is not required. Not measured:
+  whether one person's token sees other people's worklogs there, and the
+  largest page it answers.
 - Worklogs take the numeric issue ID, not the key, and identify the author
   by Atlassian account ID
   ([v4 comparison](https://help.tempo.io/planner/latest/tempo-api-version-4-0-vs-version-3-0-a-comparison)).

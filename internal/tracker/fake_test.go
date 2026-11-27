@@ -50,9 +50,12 @@ func (fakeProvider) NewRows(context.Context, IssueID, []BoardID) (Placement, err
 }
 func (fakeProvider) Cards(context.Context, []IssueID) (Cards, error)        { return Cards{}, nil }
 func (fakeProvider) History(context.Context, HistoryQuery) (History, error) { return History{}, nil }
-func (fakeProvider) Detail(context.Context, IssueID) (Detail, error)        { return Detail{}, nil }
-func (fakeProvider) Details(context.Context, []IssueID) (Details, error)    { return Details{}, nil }
-func (fakeProvider) Moves(context.Context, IssueID) ([]Move, error)         { return nil, nil }
+func (fakeProvider) Evidence(context.Context, EvidenceQuery) (Evidence, error) {
+	return Evidence{}, nil
+}
+func (fakeProvider) Detail(context.Context, IssueID) (Detail, error)     { return Detail{}, nil }
+func (fakeProvider) Details(context.Context, []IssueID) (Details, error) { return Details{}, nil }
+func (fakeProvider) Moves(context.Context, IssueID) ([]Move, error)      { return nil, nil }
 func (fakeProvider) Comments(context.Context, IssueID, PageToken) (CommentPage, error) {
 	return CommentPage{}, nil
 }

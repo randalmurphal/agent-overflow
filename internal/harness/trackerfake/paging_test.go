@@ -290,6 +290,7 @@ var pagedRows = map[string]pager{
 	"GET 4/worklogs/user/{account}":                               tempoPager("GET", "/4/worklogs/user/acc-user1?from=2026-11-01&to=2026-11-30&", "", "results[].tempoWorklogId"),
 	"GET 4/work-attributes":                                       tempoPager("GET", "/4/work-attributes?", "", "results[].key"),
 	"POST 4/accounts/search":                                      tempoPager("POST", "/4/accounts/search?", `{}`, "results[].key"),
+	"POST 4/worklogs/search":                                      tempoPager("POST", "/4/worklogs/search?", `{"issueIds":[10101]}`, "results[].tempoWorklogId"),
 	"Query.users":                                                 linearPager("users(%s) { nodes { id } pageInfo { hasNextPage endCursor } }", "data.users.nodes[].id"),
 	"Query.teams":                                                 linearPager("teams(%s) { nodes { id } pageInfo { hasNextPage endCursor } }", "data.teams.nodes[].id"),
 	"Query.workflowStates":                                        linearPager("workflowStates(%s) { nodes { id } pageInfo { hasNextPage endCursor } }", "data.workflowStates.nodes[].id"),

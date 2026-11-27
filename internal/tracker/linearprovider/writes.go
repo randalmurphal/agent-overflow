@@ -415,6 +415,12 @@ func (p *Provider) PullRequests(context.Context, tracker.IssueID) ([]tracker.Lin
 	return nil, fmt.Errorf("linearprovider: pull requests: %w", tracker.ErrUnsupported)
 }
 
+// Evidence fails wrapping tracker.ErrUnsupported before any request:
+// credit counts no Linear work (Capabilities.Evidence names none).
+func (p *Provider) Evidence(context.Context, tracker.EvidenceQuery) (tracker.Evidence, error) {
+	return tracker.Evidence{}, fmt.Errorf("linearprovider: evidence: %w", tracker.ErrUnsupported)
+}
+
 // Download fails wrapping tracker.ErrUnsupported: Linear holds no files.
 func (p *Provider) Download(_ context.Context, in tracker.DownloadInput) error {
 	if err := in.Check(); err != nil {

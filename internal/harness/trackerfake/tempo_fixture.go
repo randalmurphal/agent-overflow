@@ -95,6 +95,9 @@ type TempoWorklog struct {
 	Attributes  []TempoAttrPair `json:"attributes,omitempty"`
 	Created     time.Time       `json:"created,omitzero"`
 	Updated     time.Time       `json:"updated,omitzero"`
+	// OmitsUTCStart is a worklog whose answer names no
+	// startDateTimeUtc, which Tempo's spec does not require.
+	OmitsUTCStart bool `json:"omitsUtcStart,omitempty"`
 }
 
 // TempoAttrPair is a worklog's value of a work attribute.

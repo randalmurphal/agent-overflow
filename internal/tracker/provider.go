@@ -48,6 +48,11 @@ type Capabilities struct {
 	// or when it began at least this long after an earlier answer for the
 	// same update arrived. The one copy of each provider's margin.
 	HistorySettle time.Duration
+	// Evidence reports that Provider.Evidence reads who commented on and
+	// logged time on an issue, the time from the connection's time source
+	// (Provider.Time): Jira does; Linear, whose work credit does not
+	// count, does not.
+	Evidence bool
 }
 
 // FieldScope is where a field's values are asked for: an existing issue,
@@ -144,6 +149,16 @@ type Provider interface {
 	// History is the status, sprint, estimate and assignee changes of the
 	// issues q names. A failure returns no history.
 	History(ctx context.Context, q HistoryQuery) (History, error)
+	// Evidence is who commented on and logged time on the issues q names,
+	// after q.Check: each source asked of each issue is read whole or, when
+	// it failed for that issue alone (the tracker did not return the issue
+	// or said it failed, an answer too large even alone, an author not
+	// confirmed a person's), in Evidence.Failed with why. A failure every
+	// issue shares (the tracker unreachable, the credential refused, a
+	// rate limit) fails the call; the Evidence it returns holds the sources
+	// read whole before it. Without Capabilities.Evidence it fails wrapping
+	// ErrUnsupported before any request.
+	Evidence(ctx context.Context, q EvidenceQuery) (Evidence, error)
 
 	// Detail is one issue's detail.
 	Detail(ctx context.Context, issue IssueID) (Detail, error)

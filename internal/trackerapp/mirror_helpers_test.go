@@ -28,6 +28,7 @@ type scripted struct {
 	newRows     func(tracker.IssueID, []tracker.BoardID) (tracker.Placement, error)
 	cards       func([]tracker.IssueID) (tracker.Cards, error)
 	history     func(tracker.HistoryQuery) (tracker.History, error)
+	evidence    func(tracker.EvidenceQuery) (tracker.Evidence, error)
 	detail      func(tracker.IssueID) (tracker.Detail, error)
 	structure   func(tracker.BoardID, time.Time) (tracker.Structure, error)
 	fields      func() ([]tracker.Field, error)
@@ -227,6 +228,19 @@ func (p *scripted) History(ctx context.Context, q tracker.HistoryQuery) (tracker
 	if err := p.wait(ctx, "History"); err != nil {
 		var zero tracker.History
 		return zero, err
+	}
+	return h(q)
+}
+
+func (p *scripted) Evidence(ctx context.Context, q tracker.EvidenceQuery) (tracker.Evidence, error) {
+	p.mu.Lock()
+	h := p.evidence
+	p.mu.Unlock()
+	if !p.called(ctx, "Evidence", func() bool { return h != nil }) {
+		return tracker.Evidence{}, errUnscripted
+	}
+	if err := p.wait(ctx, "Evidence"); err != nil {
+		return tracker.Evidence{}, err
 	}
 	return h(q)
 }
