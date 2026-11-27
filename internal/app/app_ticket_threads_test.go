@@ -197,6 +197,142 @@ func TestStartTicketThreadThatFailsLeavesNothing(t *testing.T) {
 	}
 }
 
+// A thread on several tickets is made in the project's checkout, titled
+// with their keys, linked to none, with each ticket's file attached in the
+// order named and the text in its draft, unsent; a thread on one is titled
+// and linked as that ticket's Ask.
+func TestStartTicketsThreadMakesOneThreadWithEveryTicket(t *testing.T) {
+	t.Parallel()
+	f := newTicketThreadFixture(t)
+
+	several, err := f.a.StartTicketsThread(f.ctx, f.project, StartTicketsThreadRequest{
+		ConnectionID: f.conn.ID, IssueIDs: []string{"10102", "10101", "20001"}, Text: "find out why these are stuck"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if several.Title != "WEB-2, WEB-1 and OPS-1" || several.WorktreePath != "" || several.TicketLink != nil {
+		t.Fatalf("the thread = %q in %q linked %+v", several.Title, several.WorktreePath, several.TicketLink)
+	}
+	if listed, err := f.a.store.ThreadListed(several.ID); err != nil || !listed {
+		t.Fatalf("the thread is listed: %v, %v", listed, err)
+	}
+	draft, err := f.a.GetDraft(several.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.Content != "find out why these are stuck" {
+		t.Fatalf("the draft = %q", draft.Content)
+	}
+	var names []string
+	for _, id := range draft.AttachmentIDs {
+		record, path, ok, err := f.a.attachments.Get(id)
+		if err != nil || !ok || record.ThreadID != several.ID {
+			t.Fatalf("attachment %s = %+v (%v, %v)", id, record, ok, err)
+		}
+		text, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := strings.TrimSuffix(filepath.Base(path), ".md")
+		if !strings.HasPrefix(string(text), key+" as its tracker holds it") {
+			t.Fatalf("%s's file reads\n%s", key, text)
+		}
+		names = append(names, key)
+	}
+	if !slices.Equal(names, []string{"WEB-2", "WEB-1", "OPS-1"}) {
+		t.Fatalf("the files = %v; want each ticket's in the order named", names)
+	}
+
+	one, err := f.a.StartTicketsThread(f.ctx, f.project, StartTicketsThreadRequest{ConnectionID: f.conn.ID, IssueIDs: []string{"10101"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.Title != "WEB-1 First story" || one.TicketLink == nil || one.TicketLink.Origin != store.TicketOriginAsk || one.TicketLink.Key != "WEB-1" {
+		t.Fatalf("the thread on one ticket = %q linked %+v", one.Title, one.TicketLink)
+	}
+	if draft, _ := f.draftOf(t, one.ID); draft.Content != "" {
+		t.Fatalf("the draft on one ticket = %q", draft.Content)
+	}
+}
+
+// Five tickets or more name the first three keys and count the rest.
+func TestTicketThreadTitleNamesTheFirstThreeKeys(t *testing.T) {
+	t.Parallel()
+	details := func(keys ...string) []trackerapp.DetailView {
+		out := make([]trackerapp.DetailView, len(keys))
+		for i, key := range keys {
+			out[i].Card.Key, out[i].Card.Title = key, "Title of "+key
+		}
+		return out
+	}
+	for want, in := range map[string][]trackerapp.DetailView{
+		"WEB-1 Title of WEB-1":           details("WEB-1"),
+		"WEB-1 and WEB-2":                details("WEB-1", "WEB-2"),
+		"WEB-1, WEB-2, WEB-3 and 1 more": details("WEB-1", "WEB-2", "WEB-3", "WEB-4"),
+		"WEB-1, WEB-2, WEB-3 and 2 more": details("WEB-1", "WEB-2", "WEB-3", "WEB-4", "WEB-5"),
+	} {
+		if got := ticketThreadTitle(in); got != want {
+			t.Errorf("title of %d tickets = %q; want %q", len(in), got, want)
+		}
+	}
+}
+
+// A request naming no ticket, more than a message carries, an empty ID or
+// one ticket twice is refused before anything is read or made.
+func TestStartTicketsThreadRefusesABadSelection(t *testing.T) {
+	t.Parallel()
+	f := newTicketThreadFixture(t)
+	tooMany := make([]string, MaxThreadTickets+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprint(10101 + i)
+	}
+	for want, ids := range map[string][]string{
+		"names at least one ticket":   nil,
+		"at most 8 tickets":           tooMany,
+		"one was empty":               {"10101", " "},
+		"issue 10101 was named twice": {"10101", "10102", "10101"},
+	} {
+		_, err := f.a.StartTicketsThread(f.ctx, f.project, StartTicketsThreadRequest{ConnectionID: f.conn.ID, IssueIDs: ids})
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("StartTicketsThread(%v) = %v; want %q", ids, err, want)
+		}
+	}
+	if threads, err := f.a.store.ListThreadsByProject(f.project); err != nil || len(threads) != 0 {
+		t.Fatalf("threads = %+v, %v", threads, err)
+	}
+}
+
+// A failure at any step leaves no thread: a ticket that cannot be read
+// before anything is made, and the thread, a ticket's file or the draft
+// after the thread is made, which deletes it with the files it had.
+func TestStartTicketsThreadThatFailsLeavesNothing(t *testing.T) {
+	t.Parallel()
+	for step, refuse := range map[string]string{
+		"the ticket read": "",
+		"the thread":      `CREATE TRIGGER refuse BEFORE INSERT ON threads BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
+		"a file":          `CREATE TRIGGER refuse BEFORE INSERT ON attachments WHEN (SELECT count(*) FROM attachments WHERE thread_id = NEW.thread_id) >= 1 BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
+		"the draft":       `CREATE TRIGGER refuse BEFORE INSERT ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
+	} {
+		t.Run(step, func(t *testing.T) {
+			t.Parallel()
+			f := newTicketThreadFixture(t)
+			ids, want := []string{"10101", "10102"}, "injected failure"
+			if refuse == "" {
+				ids, want = []string{"10101", "99999"}, "99999"
+			} else {
+				execOnStore(t, f.dbPath, refuse)
+			}
+			_, err := f.a.StartTicketsThread(f.ctx, f.project, StartTicketsThreadRequest{ConnectionID: f.conn.ID, IssueIDs: ids, Text: "why"})
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("StartTicketsThread = %v; want %q", err, want)
+			}
+			if threads, err := f.a.store.ListThreadsByProject(f.project); err != nil || len(threads) != 0 {
+				t.Fatalf("threads left = %+v, %v", threads, err)
+			}
+		})
+	}
+}
+
 // gitProject is a new project of f's App on a git checkout with one
 // commit on main.
 func (f *ticketThreadFixture) gitProject(t *testing.T, name string) store.Project {

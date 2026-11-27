@@ -569,6 +569,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "StartSSHConnection", ID: 2623175319, Scope: "host", Route: "home", Remote: true},                                                 // main.App.StartSSHConnection
 	{Name: "StartTerminal", ID: 3009548683, Scope: "terminal:operate", Route: "selected"},                                                    // main.App.StartTerminal
 	{Name: "StartTicketThread", ID: 2291054583, Scope: "threads:operate", Route: "project", Budget: 12 * time.Minute},                        // main.App.StartTicketThread
+	{Name: "StartTicketsThread", ID: 1584226996, Scope: "threads:operate", Route: "project", Budget: 7 * time.Minute},                        // main.App.StartTicketsThread
 	{Name: "StartTrackerDashboardThread", ID: 3031630647, Scope: "threads:operate", Route: "home"},                                           // main.App.StartTrackerDashboardThread
 	{Name: "StartTrackerSprint", ID: 1961738625, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                           // main.App.StartTrackerSprint
 	{Name: "StopBackgroundTasks", ID: 2580445357, Scope: "threads:operate", Route: "thread"},                                                 // main.App.StopBackgroundTasks

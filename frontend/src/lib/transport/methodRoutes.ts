@@ -517,6 +517,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2623175319: 'home', // StartSSHConnection
 	3009548683: 'selected', // StartTerminal
 	2291054583: 'project', // StartTicketThread
+	1584226996: 'project', // StartTicketsThread
 	3031630647: 'home', // StartTrackerDashboardThread
 	1961738625: 'home', // StartTrackerSprint
 	2580445357: 'thread', // StopBackgroundTasks
@@ -704,6 +705,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	2301582015: 180000, // SetTrackerEstimate
 	1201673152: 60000, // SpendProviderAccountReset
 	2291054583: 720000, // StartTicketThread
+	1584226996: 420000, // StartTicketsThread
 	1961738625: 180000, // StartTrackerSprint
 	2692607191: 600000, // SubmitPRReview
 	3558393553: 60000, // ThreadOwnerChanges

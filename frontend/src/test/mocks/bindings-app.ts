@@ -405,6 +405,7 @@ export const ThreadsForTicket = dispatch('ThreadsForTicket');
 export const GetTicketWork = dispatch('GetTicketWork');
 export const SearchTicketWork = dispatch('SearchTicketWork');
 export const StartTicketThread = dispatch('StartTicketThread');
+export const StartTicketsThread = dispatch('StartTicketsThread');
 export const SwitchThread = dispatch('SwitchThread');
 
 // Terminal operations (ThreadTerminalDrawer, TerminalBody, etc).

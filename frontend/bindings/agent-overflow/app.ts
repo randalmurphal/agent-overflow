@@ -6623,6 +6623,24 @@ export function StartTicketThread(projectID: string, req: app$0.StartTicketThrea
 }
 
 /**
+ * StartTicketsThread makes one thread in projectID on the tickets req
+ * names, at most MaxThreadTickets, each named once, and answers its row:
+ * in the project's checkout, with every ticket's file attached to its
+ * draft in the order named, and the draft's text req.Text, unsent. A
+ * thread of one ticket is titled and linked as that ticket's Ask is
+ * (StartTicketThread); a thread of several is linked to none, since a
+ * thread links one ticket, and titled with their keys ("WEB-1, WEB-2,
+ * WEB-3 and 2 more"). Every ticket is read before anything is made; a
+ * failure at any later step deletes the thread, which ends its link.
+ * Nothing is written to the tracker.
+ */
+export function StartTicketsThread(projectID: string, req: app$0.StartTicketsThreadRequest): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(1584226996, projectID, req).then(($result: any) => {
+        return $$createType12($result);
+    });
+}
+
+/**
  * StartTrackerDashboardThread makes the thread of a board's Ask your agent
  * and answers its row: in the project the board subscription was made
  * for, in its checkout, on the provider trackerToolsProvider picks, its
