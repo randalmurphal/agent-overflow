@@ -17,9 +17,9 @@ export class Answer {
     "reading"?: boolean;
 
     /**
-     * Evidence says, while credit a widget counts in its range is not read
-     * for some ticket, that the last read of who worked on the tickets
-     * failed and why (EvidenceSentence); "" otherwise.
+     * Evidence says, beside a widget that reads the credit relation while
+     * the last read of who worked on the tickets failed as a whole, that
+     * it failed and why (EvidenceSentence); "" otherwise.
      */
     "evidence"?: string;
     "estimates": string;
