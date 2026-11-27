@@ -6,12 +6,13 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
- * Answer is one evaluation of a dashboard. Reading is whether the board's
- * first read has not finished, so its numbers count the tickets read so
- * far.
+ * Answer is one evaluation of a dashboard and of the widgets agents
+ * proposed on the board: the values of the dashboard's widgets and then
+ * of the proposals, by widget ID, which the screen draws in the layout
+ * Listing gives. Reading is whether the board's first read has not
+ * finished, so its numbers count the tickets read so far.
  */
 export class Answer {
-    "dashboard": DashboardView;
     "range": RangeView;
     "reading"?: boolean;
     "estimates": string;
@@ -22,9 +23,6 @@ export class Answer {
 
     /** Creates a new Answer instance. */
     constructor($$source: Partial<Answer> = {}) {
-        if (!("dashboard" in $$source)) {
-            this["dashboard"] = (new DashboardView());
-        }
         if (!("range" in $$source)) {
             this["range"] = (new RangeView());
         }
@@ -46,25 +44,21 @@ export class Answer {
      */
     static createFrom($$source: any = {}): Answer {
         const $$createField0_0 = $$createType0;
-        const $$createField1_0 = $$createType1;
-        const $$createField4_0 = $$createType3;
-        const $$createField5_0 = $$createType3;
-        const $$createField7_0 = $$createType5;
+        const $$createField3_0 = $$createType2;
+        const $$createField4_0 = $$createType2;
+        const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("dashboard" in $$parsedSource) {
-            $$parsedSource["dashboard"] = $$createField0_0($$parsedSource["dashboard"]);
-        }
         if ("range" in $$parsedSource) {
-            $$parsedSource["range"] = $$createField1_0($$parsedSource["range"]);
+            $$parsedSource["range"] = $$createField0_0($$parsedSource["range"]);
         }
         if ("person" in $$parsedSource) {
-            $$parsedSource["person"] = $$createField4_0($$parsedSource["person"]);
+            $$parsedSource["person"] = $$createField3_0($$parsedSource["person"]);
         }
         if ("epic" in $$parsedSource) {
-            $$parsedSource["epic"] = $$createField5_0($$parsedSource["epic"]);
+            $$parsedSource["epic"] = $$createField4_0($$parsedSource["epic"]);
         }
         if ("widgets" in $$parsedSource) {
-            $$parsedSource["widgets"] = $$createField7_0($$parsedSource["widgets"]);
+            $$parsedSource["widgets"] = $$createField6_0($$parsedSource["widgets"]);
         }
         return new Answer($$parsedSource as Partial<Answer>);
     }
@@ -138,7 +132,7 @@ export class BucketValue {
      * Creates a new BucketValue instance from a string or object.
      */
     static createFrom($$source: any = {}): BucketValue {
-        const $$createField3_0 = $$createType6;
+        const $$createField3_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("cells" in $$parsedSource) {
             $$parsedSource["cells"] = $$createField3_0($$parsedSource["cells"]);
@@ -182,8 +176,8 @@ export class DashboardView {
      * Creates a new DashboardView instance from a string or object.
      */
     static createFrom($$source: any = {}): DashboardView {
-        const $$createField2_0 = $$createType8;
-        const $$createField4_0 = $$createType10;
+        const $$createField2_0 = $$createType7;
+        const $$createField4_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("ranges" in $$parsedSource) {
             $$parsedSource["ranges"] = $$createField2_0($$parsedSource["ranges"]);
@@ -258,7 +252,7 @@ export class DrillAnswer {
      * Creates a new DrillAnswer instance from a string or object.
      */
     static createFrom($$source: any = {}): DrillAnswer {
-        const $$createField11_0 = $$createType12;
+        const $$createField11_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("rows" in $$parsedSource) {
             $$parsedSource["rows"] = $$createField11_0($$parsedSource["rows"]);
@@ -344,7 +338,7 @@ export class DrillRequest {
      * Creates a new DrillRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): DrillRequest {
-        const $$createField7_0 = $$createType14;
+        const $$createField7_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("cell" in $$parsedSource) {
             $$parsedSource["cell"] = $$createField7_0($$parsedSource["cell"]);
@@ -428,8 +422,8 @@ export class How {
      * Creates a new How instance from a string or object.
      */
     static createFrom($$source: any = {}): How {
-        const $$createField0_0 = $$createType15;
-        const $$createField5_0 = $$createType15;
+        const $$createField0_0 = $$createType14;
+        const $$createField5_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("words" in $$parsedSource) {
             $$parsedSource["words"] = $$createField0_0($$parsedSource["words"]);
@@ -509,6 +503,39 @@ export class PeriodView {
 }
 
 /**
+ * ProposalView is a proposed widget as the screen lays it out, and the
+ * thread that proposed it.
+ */
+export class ProposalView {
+    "view": WidgetView;
+    "thread": string;
+
+    /** Creates a new ProposalView instance. */
+    constructor($$source: Partial<ProposalView> = {}) {
+        if (!("view" in $$source)) {
+            this["view"] = (new WidgetView());
+        }
+        if (!("thread" in $$source)) {
+            this["thread"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProposalView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProposalView {
+        const $$createField0_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("view" in $$parsedSource) {
+            $$parsedSource["view"] = $$createField0_0($$parsedSource["view"]);
+        }
+        return new ProposalView($$parsedSource as Partial<ProposalView>);
+    }
+}
+
+/**
  * RangeOption is one range a dashboard can count over.
  */
 export class RangeOption {
@@ -569,7 +596,7 @@ export class RangeView {
      * Creates a new RangeView instance from a string or object.
      */
     static createFrom($$source: any = {}): RangeView {
-        const $$createField2_0 = $$createType17;
+        const $$createField2_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("periods" in $$parsedSource) {
             $$parsedSource["periods"] = $$createField2_0($$parsedSource["periods"]);
@@ -730,10 +757,10 @@ export class WidgetValue {
      * Creates a new WidgetValue instance from a string or object.
      */
     static createFrom($$source: any = {}): WidgetValue {
-        const $$createField4_0 = $$createType6;
-        const $$createField5_0 = $$createType15;
-        const $$createField6_0 = $$createType19;
-        const $$createField7_0 = $$createType12;
+        const $$createField4_0 = $$createType5;
+        const $$createField5_0 = $$createType14;
+        const $$createField6_0 = $$createType18;
+        const $$createField7_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("trend" in $$parsedSource) {
             $$parsedSource["trend"] = $$createField4_0($$parsedSource["trend"]);
@@ -794,8 +821,8 @@ export class WidgetView {
      * Creates a new WidgetView instance from a string or object.
      */
     static createFrom($$source: any = {}): WidgetView {
-        const $$createField8_0 = $$createType15;
-        const $$createField9_0 = $$createType20;
+        const $$createField8_0 = $$createType14;
+        const $$createField9_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("series" in $$parsedSource) {
             $$parsedSource["series"] = $$createField8_0($$parsedSource["series"]);
@@ -808,24 +835,23 @@ export class WidgetView {
 }
 
 // Private type creation functions
-const $$createType0 = DashboardView.createFrom;
-const $$createType1 = RangeView.createFrom;
-const $$createType2 = Name.createFrom;
-const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = WidgetValue.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = $Create.Array($Create.Any);
-const $$createType7 = RangeOption.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = WidgetView.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = TicketRow.createFrom;
-const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = DrillCell.createFrom;
-const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = $Create.Array($Create.Any);
-const $$createType16 = PeriodView.createFrom;
-const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = BucketValue.createFrom;
-const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = How.createFrom;
+const $$createType0 = RangeView.createFrom;
+const $$createType1 = Name.createFrom;
+const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = WidgetValue.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = $Create.Array($Create.Any);
+const $$createType6 = RangeOption.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = WidgetView.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = TicketRow.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = DrillCell.createFrom;
+const $$createType13 = $Create.Nullable($$createType12);
+const $$createType14 = $Create.Array($Create.Any);
+const $$createType15 = PeriodView.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = BucketValue.createFrom;
+const $$createType18 = $Create.Array($$createType17);
+const $$createType19 = How.createFrom;

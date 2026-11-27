@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/threadmcp"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerapp"
+	"agent-overflow/internal/trackerdash"
 	"agent-overflow/internal/trackertools"
 )
 
@@ -311,6 +312,18 @@ func (t trackerToolsAdapter) MoveToSprint(ctx context.Context, connection string
 
 func (t trackerToolsAdapter) AddComment(ctx context.Context, connection string, in trackerapp.CommentRequest) (trackerapp.WriteView, error) {
 	return t.a.AddTrackerComment(ctx, connection, in)
+}
+
+// TryWidget counts an agent's widget as the dashboards count, under the
+// evaluator's own deadline, and answers its refusal as the dashboard
+// methods do (dashboardError).
+func (t trackerToolsAdapter) TryWidget(ctx context.Context, project, connection, board string, w trackerapp.KeptWidget, thread string, show bool) (trackerdash.Tried, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return trackerdash.Tried{}, err
+	}
+	out, err := svc.TryWidget(ctx, project, trackerapp.Scope{Connection: connection, Board: tracker.BoardID(board)}, w, thread, show)
+	return out, dashboardError(err)
 }
 
 // EndWrites runs a call's refresh within a write's budget

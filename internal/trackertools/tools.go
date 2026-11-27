@@ -82,6 +82,16 @@ var toolTable = []toolSpec{
 		call: (*Server).update,
 	},
 	{
+		name:        "dashboard_widget",
+		description: "Count a dashboard widget; show proposes it to the user. Call with no widget for the rules.",
+		properties: map[string]any{
+			"board":  property("string", ""),
+			"widget": property("object", ""),
+			"show":   property("boolean", ""),
+		},
+		call: (*Server).dashboardWidget,
+	},
+	{
 		name:        "time_read",
 		description: "The user's logged and drafted time by day, this week unless given.",
 		properties: map[string]any{

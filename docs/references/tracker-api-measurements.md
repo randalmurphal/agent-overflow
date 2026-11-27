@@ -867,7 +867,7 @@ changes each (20,000 at 2,000 issues), 100 sprints and 20 people
 | of which the store's fill | 30 ms (27 to 44) | 249 ms (244 to 277) |
 | Evaluation, this sprint | 38 ms (36 to 56) | 335 ms (309 to 370) |
 | Drill of the stuck tickets, first page of 100 rows | 23 ms (22 to 25) | 146 ms (142 to 158) |
-| Answer as JSON | 12,516 bytes | 12,518 bytes |
+| Answer as JSON (values only; the layout is the list's, measured after the list took it) | 2,147 bytes | 2,149 bytes |
 | Drill page as JSON | 17,924 bytes | 17,928 bytes |
 | Go allocations of one evaluation, last 5 sprints | 2.8 MB in 37,639 | 30.2 MB in 351,076 |
 

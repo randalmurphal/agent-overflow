@@ -4,7 +4,7 @@
 // The numbers themselves are the board's computer's (trackerdash), one
 // evaluation per answer.
 
-import { formatEstimate } from '../components/issues/boardFormat';
+import { formatAmount, unitWord, type DashboardUnit } from '../utils/dashboardAmount';
 
 /** One number of a dashboard (trackerdash.Num, which the bindings type
  * as any for its own JSON form): a value, none ({}), not known (no `v`
@@ -15,9 +15,6 @@ export interface Num {
   readonly nc?: number;
   readonly gap?: boolean;
 }
-
-/** A metric's unit, as trackerdash.Unit. */
-export type DashboardUnit = 'tickets' | 'estimate' | 'days';
 
 /** What the screen and the drill say while the board's first read has
  * not finished (an answer's `reading`). */
@@ -30,28 +27,6 @@ export const GAP_TEXT = 'No data';
 export function numValue(n: Num | null | undefined): number | null {
   if (!n || n.gap || n.v === undefined || n.v === null) return null;
   return n.v;
-}
-
-function trim(n: number): string {
-  const rounded = Math.round(n * 10) / 10;
-  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
-}
-
-/** A value in its unit, without the unit's word: points and days to one
- * place, time as hours or minutes, tickets whole unless averaged. */
-export function formatAmount(v: number, unit: DashboardUnit, estimates: string): string {
-  if (unit === 'estimate' && estimates === 'time') return formatEstimate(v, 'time') ?? '0m';
-  return trim(v);
-}
-
-/** The unit's word after an amount: "3 points", "1 ticket", "2.5 days";
- * empty for time, whose amount carries it. */
-export function unitWord(v: number, unit: DashboardUnit, estimates: string): string {
-  const counting = unit === 'tickets' || (unit === 'estimate' && estimates === 'none');
-  if (counting) return v === 1 ? 'ticket' : 'tickets';
-  if (unit === 'days') return v === 1 ? 'day' : 'days';
-  if (estimates === 'time') return '';
-  return v === 1 ? 'point' : 'points';
 }
 
 /** What a number of tickets not counted says: "3 not counted"; empty

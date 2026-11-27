@@ -7,8 +7,10 @@ and the Issues pane with its Board and Backlog
 screens, opened from the tool row's Issues entry, and the Ticket screen,
 opened from a card or a row, from a thread's linked ticket or from a pull
 request's ticket chip; a thread's ticket link, in the sidebar and the
-thread header. The other screens are not built; the [Board](#board),
+thread header, and the Dashboards screen. The other screens are not
+built; the [Board](#board),
 [Backlog](#backlog-and-sprint-planning), [Ticket](#ticket),
+[Dashboards](#dashboards),
 [Tickets, pull requests and branches](#tickets-pull-requests-and-branches)
 and [Thread link](#thread-link) sections say what of them is. A
 project's status groups are set in Settings > Issues > Status groups, its
@@ -631,6 +633,15 @@ sidebar and the thread header, on desktop and on a phone.
 
 ### Dashboards
 
+Status: built: Overview, the dashboards a project keeps and the picker,
+Team or Mine, the range, Ask your agent, edit mode, which removes
+widgets and removes the dashboard with its last one (there is no
+Delete), and the widget an agent proposes, which the person keeps or
+dismisses; a number, bar or cell's tickets, a number's change and trend, and narrowing to a person or
+an epic. A query reads the board's tickets only: pull requests, threads
+and logged time are not built, nor the credit rules in How this is
+counted, selecting rows in a ticket list, or a number tile's limit.
+
 - Every board has a built-in dashboard, Overview: its usual pace, days
   from start to done, the tickets stuck now, what was finished per sprint
   or week, who is carrying what, what was created and finished, and on
@@ -662,9 +673,15 @@ sidebar and the thread header, on desktop and on a phone.
 - Until the board's first read has finished, the dashboard and each
   drill say "This board's first read has not finished: these numbers
   count the tickets read so far.", and nothing is compared.
-- While a new range or narrowing is counted, the last answer stays
-  dimmed and takes no click. A count that fails says "Not counted again"
-  and why beside the last answer.
+- While a new range or narrowing is counted, the last answer's numbers
+  stay dimmed and take no click. A count that fails says "Not counted
+  again" and why beside the last answer. Another dashboard picked shows
+  none of the last one's numbers. The widgets, the proposals and Keep,
+  Dismiss, Edit and Remove are there whatever a count does.
+- Ask your agent opens a new thread in the board's project, its draft
+  unsent and naming the board by name and site/ID, on a provider whose
+  agents get the tracker tools. With none turned on and installed on the
+  board's computer, Ask is disabled and says why.
 - Clicking a person or an epic narrows every widget on the page to it. A
   chip in the toolbar clears it.
 - Rows in a ticket-list widget can be selected, then moved, assigned or

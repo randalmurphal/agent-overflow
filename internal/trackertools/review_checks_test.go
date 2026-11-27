@@ -95,7 +95,7 @@ func TestAnAmbiguousLinearValueOfACreateNamesWhatWorks(t *testing.T) {
 	linear.Kind = "linear"
 	w.f.sources = []trackerapp.TicketSource{linear}
 	w.f.boards["conn-linear/team"] = trackerapp.BoardSummary{Name: "Web", Project: "team-id"}
-	w.h.createBoards["WEB"] = []CreateBoard{{Connection: "conn-linear", Board: "team"}}
+	w.h.createBoards["WEB"] = []ListedBoard{{Connection: "conn-linear", Board: "team"}}
 	w.f.write = func(name string, _ any) (trackerapp.WriteView, error) {
 		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Step: name, State: "refused", Refusal: &trackerapp.RefusalView{
 			Reason:     "ambiguous",
@@ -164,7 +164,7 @@ func TestACreatesStepsOutliveItsCaller(t *testing.T) {
 	t.Parallel()
 	w := newWriteFixture(t)
 	w.f.types = []trackerapp.IssueTypeView{{ID: "10002", Name: "Task"}}
-	w.h.createBoards["WEB"] = []CreateBoard{{Connection: "conn-jira", Board: "1", Thread: true}}
+	w.h.createBoards["WEB"] = []ListedBoard{{Connection: "conn-jira", Board: "1", Thread: true}}
 	w.f.details["conn-jira/10042"] = writableDetail("WEB-42", "10042")
 	w.f.honorCtx = true
 	ctx, cancel := context.WithCancel(t.Context())
@@ -189,7 +189,7 @@ func TestACreatesNotSentNamesEveryStepNotRun(t *testing.T) {
 	t.Parallel()
 	w := newWriteFixture(t)
 	w.f.types = []trackerapp.IssueTypeView{{ID: "10002", Name: "Task"}}
-	w.h.createBoards["WEB"] = []CreateBoard{{Connection: "conn-jira", Board: "1", Thread: true}}
+	w.h.createBoards["WEB"] = []ListedBoard{{Connection: "conn-jira", Board: "1", Thread: true}}
 	w.f.details["conn-jira/10042"] = writableDetail("WEB-42", "10042")
 	w.f.write = func(name string, _ any) (trackerapp.WriteView, error) {
 		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Issue: "10042", Step: name, State: "applied"}}, Created: "10042", CreatedKey: "WEB-42"}, nil
@@ -213,7 +213,7 @@ func TestARepeatedCreateIsQualifiedOnce(t *testing.T) {
 	other := trackerapp.TicketSource{ID: "conn-other", Site: "other.atlassian.net", Kind: "jira"}
 	w.f.sources = append(w.f.sources, other)
 	w.f.types = []trackerapp.IssueTypeView{{ID: "10002", Name: "Task"}}
-	w.h.createBoards["WEB"] = []CreateBoard{{Connection: "conn-jira", Board: "1", Thread: true}}
+	w.h.createBoards["WEB"] = []ListedBoard{{Connection: "conn-jira", Board: "1", Thread: true}}
 	if _, ok := w.f.cards["conn-jira/10042"]; ok {
 		t.Fatal("the mirror holds the ticket")
 	}

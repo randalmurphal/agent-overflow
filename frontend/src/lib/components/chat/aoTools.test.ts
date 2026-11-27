@@ -291,6 +291,9 @@ describe('AO tool presentation', () => {
       ['ticket_create', { project: 'WEB', title: 'Login fails on Safari' }, 'create', 'WEB "Login fails on Safari"'],
       ['ticket_update', { keys: ['WEB-12', 'WEB-18'], comment: 'Ready.' }, 'update', 'WEB-12, WEB-18'],
       ['ticket_update', { keys: ['WEB-1', 'WEB-2', 'WEB-3', 'WEB-4', 'WEB-5'] }, 'update', 'WEB-1, WEB-2, WEB-3 and 2 more'],
+      ['dashboard_widget', {}, 'widget', 'the rules'],
+      ['dashboard_widget', { widget: { title: 'Open bugs' } }, 'widget', '"Open bugs"'],
+      ['dashboard_widget', { board: 'Web Team', widget: { title: 'Open bugs' }, show: true }, 'widget', '"Open bugs" · shown'],
     ])('%s %j', (tool, input, label, what) => {
       const p = aoToolPresentation(meta(TRACKER_TOOLS_SERVER, tool, input))!;
       expect(p).toMatchObject({ icon: 'file', label, what, headerLabel: `Ticket ${label}` });
