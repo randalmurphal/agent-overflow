@@ -1979,7 +1979,8 @@ Every tick's changes and every open ticket's read pass through one change
 funnel (`trackerapp/funnel.go`):
 
 - The tick's own board gets its changed rows and cards and its removed
-  rows.
+  rows; a row read again as it was is changed when the read is the first
+  after the board's estimate reset, from which its estimate counts.
 - Every subscribed board of the connection gets its rows of the changed
   cards and histories, and its rows whose parent's name changed
   (`Changes.Parents`; a parent's keep, rank or estimate moves no row).
