@@ -51,25 +51,31 @@ func init() {
 }
 
 // recordVMSteps adds the steps stmt ran since its last run to the count,
-// while counting. A counter that went back (statementVMSteps resets it)
-// counts from zero.
+// while counting. The counter is SQLite's unsigned 32-bit one: a counter
+// that went back from past half its range wrapped and counts on through
+// the wrap; one that went back from below it was reset
+// (statementVMSteps resets it) and counts from zero.
 func recordVMSteps(stmt driver.Stmt, query string) {
 	tls, pstmt, err := sqliteStmtHandles(stmt)
 	if err != nil || pstmt == 0 {
 		return
 	}
-	now := int(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0))
+	now := int(uint32(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0)))
 	vmSteps.mu.Lock()
 	defer vmSteps.mu.Unlock()
 	if vmSteps.last == nil {
 		vmSteps.last = map[driver.Stmt]int{}
 	}
 	last := vmSteps.last[stmt]
-	if now < last {
-		last = 0
+	ran := now - last
+	switch {
+	case now < last && last >= 1<<31:
+		ran += 1 << 32
+	case now < last:
+		ran = now
 	}
 	if vmSteps.counting && (vmSteps.query == "" || vmSteps.query == query) {
-		vmSteps.total += now - last
+		vmSteps.total += ran
 		vmSteps.runs++
 	}
 	vmSteps.last[stmt] = now

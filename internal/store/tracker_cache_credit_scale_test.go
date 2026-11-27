@@ -259,3 +259,70 @@ func creditScaleSetup(t *testing.T, s *Store, root int64, size benchMirrorSize) 
 		WHERE root_id = ? AND issue_id IN (SELECT value FROM json_each(?))`, testNow, root, list)
 	return members, evidence
 }
+
+// cardsMovedAtScale measures a board read that writes every card of board
+// 0 of a mirror of size again at a later update time, in pages of 100 as
+// the first sync writes them: with every card's evidence receipts for its
+// card before the read, so the credit card trigger
+// (trg_tracker_cache_credit_card_moved) advances the board's totals for
+// each; with no receipts, its probe alone; and both with the trigger
+// dropped.
+// It restores the trigger and leaves no receipts.
+func cardsMovedAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *mirrorWriteRecorder) {
+	t.Helper()
+	board := benchBoardID(0)
+	var trigger string
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_tracker_cache_credit_card_moved'`).Scan(&trigger); err != nil {
+		t.Fatal(err)
+	}
+	updated := int64(2_000_000_000_000)
+	write := func(int) error {
+		updated++
+		rows := make([]MirrorRow, size.issues)
+		for i := range rows {
+			rows[i] = benchRow(0, i, updated)
+		}
+		for page := range slices.Chunk(rows, 100) {
+			if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: board, Rows: page, ReadAt: nextMirrorRead(s, root)}), []byte("cursor")); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	receipts := func(int) {
+		mustExec(t, s.db, `INSERT OR REPLACE INTO tracker_cache_issue_act_reads(root_id, issue_id, source, read_for, read_at, read_wall)
+			SELECT i.root_id, i.issue_id, src.value, i.updated_at, 1, ? FROM tracker_cache_board_issues b
+			CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id, json_each('[1,2]') src
+			WHERE b.root_id = ? AND b.board_id = ?`, testNow, root, board)
+	}
+	none := func(int) { mustExec(t, s.db, `DELETE FROM tracker_cache_issue_act_reads WHERE root_id = ?`, root) }
+	revision := func() (n int64) {
+		if err := s.db.QueryRow(`SELECT totals_revision FROM tracker_cache_boards WHERE root_id = ? AND board_id = ?`, root, board).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, c := range []struct {
+		name    string
+		prepare func(int)
+		drop    bool
+	}{{"every receipt passed", receipts, false}, {"no receipts", none, false}, {"trigger dropped, every receipt passed", receipts, true},
+		{"trigger dropped, no receipts", none, true}} {
+		if c.drop {
+			mustExec(t, s.db, `DROP TRIGGER trg_tracker_cache_credit_card_moved`)
+		}
+		cost := measureScale(t, rec, c.prepare, write)
+		c.prepare(0)
+		before := revision()
+		var err error
+		steps := countMirrorVMSteps(t, func() { err = write(0) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("credit, a board read writing %d cards, %-38s %10d VM steps %s, totals revision +%d", size.issues, c.name, steps, cost, revision()-before)
+		if c.drop {
+			mustExec(t, s.db, trigger)
+		}
+	}
+	none(0)
+}

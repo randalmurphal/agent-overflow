@@ -179,6 +179,7 @@ func mirrorAtScale(t *testing.T, size benchMirrorSize) {
 	for _, name := range slices.Sorted(maps.Keys(support)) {
 		t.Logf("%-58s %s", name, support[name])
 	}
+	cardsMovedAtScale(t, s, root, size, rec)
 	readyListedAgainAtScale(t, filled, filledRec)
 	mirrorPlansAtScale(t, s)
 }
