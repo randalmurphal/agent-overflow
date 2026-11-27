@@ -42,6 +42,13 @@ func TestDirectoryReads(t *testing.T) {
 		{"id":"10000","key":"WEB","name":"Web","projectTypeKey":"software"},
 		{"id":"10001","key":"APP","name":"App","projectTypeKey":"service_desk"}]}`))
 	f.On("GET", "/rest/api/3/issue/createmeta/10000/issuetypes", jiratest.Reply(200, `{"issueTypes":[{"id":"10002","name":"Story","hierarchyLevel":0},{"id":"10003","name":"Epic","hierarchyLevel":1}],"total":2}`))
+	// The project's own types, which a user who may create none reads: a
+	// type the create screen leaves out among them.
+	f.On("GET", "/rest/api/3/project/10000", func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantQuery(t, r, "expand", "issueTypes")
+		jiratest.Reply(200, `{"id":"10000","key":"WEB","name":"Web","projectTypeKey":"software","issueTypes":[
+			{"id":"10002","name":"Story","hierarchyLevel":0},{"id":"10004","name":"Support","hierarchyLevel":0}]}`)(w, r, b)
+	})
 	f.On("GET", "/rest/agile/1.0/board", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		jiratest.WantQuery(t, r, "projectKeyOrId", "10000")
 		jiratest.Reply(200, `{"isLast":true,"values":[
@@ -62,6 +69,10 @@ func TestDirectoryReads(t *testing.T) {
 	if err != nil || !slices.Equal(types, []tracker.IssueType{{ID: "10002", Name: "Story"}, {ID: "10003", Name: "Epic", Level: 1}}) {
 		t.Errorf("types %+v %v", types, err)
 	}
+	types, err = p.ProjectIssueTypes(t.Context(), "10000")
+	if err != nil || !slices.Equal(types, []tracker.IssueType{{ID: "10002", Name: "Story"}, {ID: "10004", Name: "Support"}}) {
+		t.Errorf("the project's types %+v %v", types, err)
+	}
 	boards, err := p.Boards(t.Context(), "10000")
 	if err != nil || !slices.Equal(boards, []tracker.Board{{ID: "3", Name: "Board 3", Project: "10000", Sprints: true}, {ID: "5", Name: "Board 5"}}) {
 		t.Errorf("boards %+v %v", boards, err)
@@ -73,6 +84,9 @@ func TestDirectoryReads(t *testing.T) {
 	for _, bad := range []tracker.ProjectID{"WEB", "", "01", "-1"} {
 		if _, err := p.Boards(t.Context(), bad); !errors.Is(err, tracker.ErrInvalidInput) {
 			t.Errorf("project %q: %v", bad, err)
+		}
+		if _, err := p.ProjectIssueTypes(t.Context(), bad); !errors.Is(err, tracker.ErrInvalidInput) {
+			t.Errorf("the types of project %q: %v", bad, err)
 		}
 	}
 }
