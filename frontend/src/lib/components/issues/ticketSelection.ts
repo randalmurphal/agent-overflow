@@ -6,11 +6,13 @@
 //
 // Nothing below the frontend bounds how many of a batch's calls run at
 // once: the tracker's HTTP client multiplexes them over one HTTP/2
-// connection and paces only a site that answered 429. So the batches do:
-// at most BULK_AT_ONCE of their reads and writes are out at a time, all
-// lists' batches together.
+// connection and paces a site only once it has said it is rate limited
+// (a 429, or Linear's RATELIMITED answer). So the batches do: at most
+// BULK_AT_ONCE of their reads and writes are out at a time, all lists'
+// batches together. A read for a picker that closed before its turn is
+// not sent (`signal`).
 
-import type { MoveView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { MoveView, UserListView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { PickItem, PickList } from './TicketPicker.svelte';
 import { pickedEdit } from './ticketEditors';
 import { keyPrefix } from '../../stores/ticketWork.svelte';
@@ -21,10 +23,11 @@ import { userFacingError } from '../../utils/userFacingError';
 /** How many calls of one batch are out at a time. */
 export const BULK_AT_ONCE = 4;
 
-/** A selected ticket: where it is written, and the status its row shows. */
+/** A selected ticket: where it is written, and the status it is in. */
 export interface ListTicket {
   readonly ctx: TicketWriteContext;
-  /** The status's name, as the row shows it. */
+  /** The status's name: where this list last moved it, else as its row
+   * shows it. */
   readonly status: string;
 }
 
@@ -33,27 +36,41 @@ let out = 0;
 const waiting: (() => void)[] = [];
 
 /** Takes one of the batches' BULK_AT_ONCE slots: answers its release
- * once taken, which passes it to the next waiting call or frees it. */
-function takeSlot(): Promise<() => void> {
+ * once taken, which passes it to the next waiting call or frees it. A
+ * call still waiting when `signal` aborts leaves the line and rejects. */
+function takeSlot(signal?: AbortSignal): Promise<() => void> {
   const release = () => {
     const next = waiting.shift();
     if (next) next();
     else out--;
   };
+  signal?.throwIfAborted();
   if (out < BULK_AT_ONCE) {
     out++;
     return Promise.resolve(release);
   }
-  return new Promise((resolve) => waiting.push(() => resolve(release)));
+  return new Promise((resolve, reject) => {
+    const take = () => {
+      signal?.removeEventListener('abort', leave);
+      resolve(release);
+    };
+    const leave = () => {
+      waiting.splice(waiting.indexOf(take), 1);
+      reject(signal!.reason);
+    };
+    signal?.addEventListener('abort', leave, { once: true });
+    waiting.push(take);
+  });
 }
 
 /** Runs `step` on each item, with every batch's calls together at most
  * BULK_AT_ONCE out at a time, and answers each result in the items'
  * order. A step that throws is its result's rejection; the others still
- * run. */
-export function eachBounded<T, R>(items: readonly T[], step: (item: T) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
+ * run. An item still waiting for its turn when `signal` aborts is not run,
+ * and its result is the abort. */
+export function eachBounded<T, R>(items: readonly T[], step: (item: T) => Promise<R>, signal?: AbortSignal): Promise<PromiseSettledResult<R>[]> {
   return Promise.allSettled(items.map(async (item) => {
-    const release = await takeSlot();
+    const release = await takeSlot(signal);
     try {
       return await step(item);
     } finally {
@@ -84,7 +101,8 @@ export interface ListStatus {
  * `tickets[i]`'s). A ticket takes the first move to a status that asks for
  * no fields; a status that some ticket reaches only by a move that asks
  * for fields, or does not reach, is off, naming the ticket. A ticket
- * already in a status needs no move there. */
+ * already in a status needs no move there: Jira lists a move into the
+ * status an issue is in when its workflow lets every status move there. */
 export function commonMoves(tickets: readonly ListTicket[], moves: readonly (readonly MoveView[])[]): ListStatus[] {
   const order: { id: string; name: string }[] = [];
   const seen = new Set<string>();
@@ -129,19 +147,19 @@ function named(labels: readonly string[]): string {
 export type MovesRead = { readonly moves: readonly (readonly MoveView[])[] } | { readonly failed: readonly string[] };
 
 /** Reads where each ticket can move (TrackerMoves, one tracker request
- * each), at most BULK_AT_ONCE at a time. */
-export async function readMoves(tickets: readonly ListTicket[]): Promise<MovesRead> {
-  const read = await eachBounded(tickets, (t) => ticketMoves(t.ctx));
+ * each), at most BULK_AT_ONCE at a time, until `signal` aborts. */
+export async function readMoves(tickets: readonly ListTicket[], signal: AbortSignal): Promise<MovesRead> {
+  const read = await eachBounded(tickets, (t) => ticketMoves(t.ctx), signal);
   const failed = read.flatMap((r, i) => r.status === 'rejected' ? [`Could not read where ${tickets[i].ctx.label} can move: ${userFacingError(r.reason)}`] : []);
   if (failed.length > 0) return { failed };
   return { moves: read.map((r) => (r as PromiseFulfilledResult<MoveView[]>).value) };
 }
 
-/** What a batch of writes came to: how many the tracker made, and how
- * many were asked. A ticket whose write of the same target was already
- * out is not sent again and counts as not made. */
+/** What a batch of writes came to: the tickets the tracker made it on, by
+ * key, and how many were asked. A ticket whose write of the same target
+ * was already out is not sent again and counts as not made. */
 export interface BatchOutcome {
-  readonly made: number;
+  readonly made: ReadonlySet<string>;
   readonly sent: number;
 }
 
@@ -162,7 +180,10 @@ async function sendEach(
     }
   }));
   for (const r of results) if (r.status === 'rejected') throw r.reason;
-  const made = results.filter((r) => r.status === 'fulfilled' && r.value?.kind === 'applied').length;
+  const made = new Set(tickets.filter((_, i) => {
+    const r = results[i];
+    return r.status === 'fulfilled' && r.value?.kind === 'applied';
+  }).map((t) => t.key));
   return { made, sent: tickets.length };
 }
 
@@ -180,27 +201,25 @@ export function assignTickets(tickets: readonly ListTicket[], person: PickItem |
 
 /** The people whose name starts with `text` who may be assigned every
  * selected ticket: one read per project, by the first ticket of each key
- * prefix, at most BULK_AT_ONCE at a time, and the people every answer
- * names, in the first answer's order. A project whose read failed says so
- * in `failed`, and the others' people show. */
-export async function assignablePeople(tickets: readonly ListTicket[], text: string): Promise<PickList> {
+ * prefix, at most BULK_AT_ONCE at a time until `signal` aborts, and the
+ * people every answer names, in the first answer's order. A project whose
+ * read failed leaves nobody known to be assignable to every ticket, so
+ * the read fails naming each such project and why. */
+export async function assignablePeople(tickets: readonly ListTicket[], text: string, signal: AbortSignal): Promise<PickList> {
   const byProject = new Map<string, ListTicket>();
   for (const t of tickets) if (!byProject.has(keyPrefix(t.ctx.label))) byProject.set(keyPrefix(t.ctx.label), t);
   const asked = [...byProject.entries()];
-  const read = await eachBounded(asked, ([, t]) => assignableUsers(t.ctx, text));
-  const failed: string[] = [];
+  const read = await eachBounded(asked, ([, t]) => assignableUsers(t.ctx, text), signal);
+  const failed = read.flatMap((r, i) => r.status === 'rejected' ? [`Could not read who may be assigned ${asked[i][0]} tickets: ${userFacingError(r.reason)}`] : []);
+  if (failed.length > 0) throw new Error(failed.join(' '));
   let people: PickItem[] | null = null;
   let more = false;
-  read.forEach((r, i) => {
-    if (r.status === 'rejected') {
-      failed.push(`Could not read who may be assigned ${asked[i][0]} tickets: ${userFacingError(r.reason)}`);
-      return;
-    }
+  for (const r of read as PromiseFulfilledResult<UserListView>[]) {
     more ||= r.value.more ?? false;
     const ids = new Set((r.value.users ?? []).map((u) => u.id));
     people = people === null
       ? (r.value.users ?? []).map((u) => ({ id: u.id, name: u.name || u.id }))
       : people.filter((p) => ids.has(p.id));
-  });
-  return { items: people ?? [], more, failed };
+  }
+  return { items: people ?? [], more };
 }

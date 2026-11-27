@@ -142,19 +142,20 @@ export async function askAboutTicket(t: TicketWriteContext, project: string): Pr
 
 /** Start a thread on tickets selected together, all of one connection:
  * one thread in `project` with each ticket's file attached to its draft
- * and `text` in it, unsent, opened in a pane. Nothing on the tickets
- * changes. Answers whether it was made; a failure leaves nothing and says
- * why in a toast. */
-export async function askAboutTickets(tickets: readonly TicketWriteContext[], project: string, text: string): Promise<boolean> {
+ * and `text` in it, unsent, opened in a pane once `made` has run (a drill
+ * closes there). Nothing on the tickets changes. Answers whether it was
+ * made; a failure leaves nothing and says why in a toast. */
+export async function askAboutTickets(tickets: readonly TicketWriteContext[], project: string, text: string, made: () => void): Promise<boolean> {
   const mark = threadRowFrameMark();
-  let made: Thread;
+  let thread: Thread;
   try {
-    made = await StartTicketsThread(project, { connectionId: tickets[0].ref.connection, issueIds: tickets.map((t) => t.ref.issue), text });
+    thread = await StartTicketsThread(project, { connectionId: tickets[0].ref.connection, issueIds: tickets.map((t) => t.ref.issue), text });
   } catch (err) {
     addErrorToast(`Could not start a thread on ${tickets.map((t) => t.label).join(', ')}: ${userFacingError(err)}`, err);
     return false;
   }
-  await openTicketThread(prependThreadReply(made, mark));
+  made();
+  await openTicketThread(prependThreadReply(thread, mark));
   return true;
 }
 

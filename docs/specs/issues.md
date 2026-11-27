@@ -689,21 +689,27 @@ How this is counted, or a number tile's limit.
   chip in the toolbar clears it.
 - Rows in a ticket-list widget or a drill can be selected: a row's box
   shows on hover, and on every row once one is selected. The bar says how
-  many are selected and offers Move to, Assign and Start a thread. A count
-  again keeps the selected rows it still lists.
+  many are selected and offers Move to, Assign and Start a thread, and
+  says under them why one cannot run. A count again keeps the selected
+  rows it still lists, and closes an open Move to, Assign or Start a
+  thread whose tickets it changed, so none acts on a ticket the list no
+  longer shows.
 - Move to lists the statuses the selected tickets can move to. A ticket
-  already in the status is left as it is ("3 tickets moved to Done, 1
-  already in Done"). A status that a ticket cannot reach, or reaches only
+  already in the status, as its row shows it or where this list last
+  moved it, is left as it is ("3 tickets moved to Done, 1 already in
+  Done"). A status that a ticket cannot reach, or reaches only
   by a move that asks for fields, is off and names the ticket. Assign
   lists the people every selected ticket's project may assign, and
-  Unassigned. Each ticket is its own write, at most four sent at a time,
+  Unassigned; when a project's list cannot be read it offers nobody and
+  says which project and why. Each ticket is its own write, at most four sent at a time,
   and what the tracker refused shows under that ticket's row ("2 of 3
   tickets moved to Done"). The bar's note says what came of it for 5 s.
 - Start a thread makes one new thread in the board's project on up to 8
   tickets, one file each on its unsent draft with the text typed, and
   opens it. It is linked to a ticket only when there is one; several are
   named in its title ("WEB-1, WEB-2, WEB-3 and 2 more"). Nothing on the
-  tickets changes.
+  tickets changes. A drill closes as its thread opens. A start that is
+  refused keeps the text and the selection.
 - An answer to a one-off question appears as a provisional widget. It joins
   the dashboard only when kept.
 - A number tile can carry a limit. Over the limit, the tile is marked on
