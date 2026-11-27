@@ -51,7 +51,12 @@ const BOARD_ISSUES = 'GET rest/software/1.0/board/{board}/issue';
 /** EvaluateTrackerDashboard's method ID on the wire. */
 const EVALUATE_TRACKER_DASHBOARD = 2206254666;
 const FIRST_READ = "This board's first read has not finished: these numbers count the tickets read so far.";
-const iso = (offset: number) => new Date(Date.now() + offset).toISOString();
+// Every time the seed names counts from one reading of the clock, so two
+// at the same offset are one instant: WEB-20's update and its move into
+// In Progress. A change the tracker dates after the ticket's update is of
+// a later version, and the store leaves it out of when the status began.
+const SEEDED_AT = Date.now();
+const iso = (offset: number) => new Date(SEEDED_AT + offset).toISOString();
 const POINTS = 'customfield_10016';
 
 let changeId = 30000;
