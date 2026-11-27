@@ -135,8 +135,10 @@ this is its shape.
   keeps no such data fails wrapping `tracker.ErrNoDevelopmentData`;
   Linear fails as unsupported before any request.
 - Evidence: who commented on and logged time on up to 100 issues
-  (`Evidence`, for credit): each act's ID, author, time and, for a
-  worklog, time spent, with the issue's update time the read was for
+  (`Evidence`, for credit), each issue asking for its comments, its
+  worklogs from `WorklogsFrom`, or both: per issue and source, each act's
+  ID, author, time and, for a worklog, time spent, with the issue's update
+  time the read was for, or a failure of that source alone
   (`Capabilities.Evidence`). Jira reads the comments and update times in
   one bulk fetch, and the worklogs from the connection's time source:
   its own worklogs in the same fetch, an issue holding more comments or
@@ -145,12 +147,26 @@ this is its shape.
   worklogs through Tempo's worklog search by issue ID
   (`POST /4/worklogs/search`), one search for the issues of each
   `WorklogsFrom`, from the day before it, since Tempo dates a worklog on
-  its author's clock, each author named by a Jira user lookup. Worklogs
-  are kept from the issue's `WorklogsFrom`. An app's, a customer's and
-  an authorless act are left out. Linear fails as unsupported. No live
-  call has confirmed that the Tempo search answers another person's
-  worklogs with one person's token, nor the largest page it answers: its
-  spec states no maximum, and the client asks for 1,000 a page.
+  its author's clock. A Tempo worklog before its bound is dropped before
+  its author is looked up in Jira, each author once a read; one with no
+  UTC start is placed by its date and time on its author's Jira time
+  zone. A batch, a comment page, a worklog page or a Tempo page whose
+  answer is over the transport's bound is read again in halves
+  (`trackerapi.Halved`); an issue whose answer alone is over it is read
+  for its update time and its lists through their pages. Worklogs are
+  kept from the issue's `WorklogsFrom`. An app's, a customer's and an
+  authorless act are left out. Jira returns an account type with every
+  comment and worklog author; an act whose author names none fails its
+  source, since whether a person made it is not known. A source fails
+  alone, with its reason, when Jira did not return its issue or said it
+  could not read it, withheld its list, its author's account (naming the
+  Browse users and groups permission a lookup needs) or the author's time
+  zone a Tempo worklog needs, or one item of it is over the bound; any
+  other failure fails the read, with the sources read before it. Linear
+  fails as unsupported. No live call has confirmed that the Tempo search
+  answers another person's worklogs with one person's token, nor the
+  largest page it answers: its spec states no maximum, and the client
+  asks for 1,000 a page.
 - Finding: issues by key, and a page of cards matching text.
 - Writes: create, edit fields, move to a status (with the fields the move
   takes), set an estimate on a board, rank between neighbors, move to a
@@ -651,7 +667,7 @@ classification:
 | `tracker_cache_issue_bodies` | The ticket bodies of the open tickets' issues and the most recently opened, 200 a mirror: what a ticket shows besides its card, one JSON document each. |
 | `tracker_cache_worklogs` | Logged time by issue, author and day. A Tempo connection has no mirror of its own; its worklogs are in its Jira connection's. |
 | `tracker_cache_worklog_days` | The latest read of an author's day, an unchanged or empty day included; a replace from an earlier read leaves the day. |
-| `tracker_cache_issue_acts`, `_issue_act_reads` | Who commented on and logged time on an issue, for credit, and the card update each kind was last read for. |
+| `tracker_cache_issue_acts`, `_issue_act_reads` | Who commented on and logged time on an issue, for credit, and per source the receipt of its last read (the card update it was for, when, and the worklogs' start) and the last failed attempt with its reason. |
 | `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. The linked-issues scope has no cursor: it reads its cards by ID. |
 | `tracker_cache_open_tickets` | One row per open ticket's pump, named by the process's session and the pump's number: the issue it keeps in the mirror while the ticket is open. |
 | `tracker_cache_issue_missing` | The latest read of a linked issue that did not return it, while no card the mirror holds is from a later read ([Thread links](#thread-links)). |
@@ -1005,7 +1021,7 @@ and writes share:
 | Detail | one issue, or a connection's open tickets together | the detail document |
 | Structure | one board | columns, statuses, estimate, sprints, users |
 | Worklogs | an author's span of days, from the time tracker | that author's worklogs of those days, replaced whole |
-| Evidence | up to 50 issues' comments and worklogs | each issue's comment and worklog authors, replaced per issue and kind |
+| Evidence | up to 50 issues' due comments and worklogs | each issue's comment and worklog authors, replaced per issue and source, or the source's failed attempt |
 
 - **Delta.** Each tick reads pages of a board's changed rows from its
   cursor. One transaction stores a page's rows and the cursor that page
@@ -1175,23 +1191,49 @@ and writes share:
   one more, so a reader sees the old history until the switch, never part
   of either.
 - **Evidence** is read for credit: who commented on and logged time on
-  the tickets of the boards a project counting credit lists, each
-  connection's in its linked tick, after the history unit. With no such
-  project, or a provider that reads no evidence, the unit lists and reads
-  nothing. A ticket is due until a read for its card's update stored a
-  receipt of its comments and of its worklogs (`ListMirrorActsDue`): the
-  members of the boards' active sprints done now, then the members of
-  each sprint closed in the history window (180 days), newest first,
-  done at its completion, then the board's support tickets, whose
-  worklogs are read from the window's start. The listing walks each sprint by its key and sorts nothing, so
-  an idle unit costs one read per sprint member, not per issue. A unit
-  reads at most 4 batches of 50 a tick and reports More while tickets
-  are due. A ticket the tracker does not return stores nothing and stays
-  due. Each read is stored with the update it was for, replaced per
-  ticket and kind (`ReplaceMirrorActs`), its authors in the first
-  transaction; a read that began no later than the stored one is
-  superseded. A read whose worklogs a time source change refuses stores
-  nothing and reports More, so the next tick reads under the new source.
+  the tickets of the boards a project counting credit lists (its credit
+  section on), each connection's in its linked tick, after the history
+  unit. The unit reads the connection's own board listings
+  (`ListConnectionProjectBoards`) and each project's setup once. With no
+  such project, or a provider that reads no evidence, it lists and reads
+  nothing. Which source of which ticket is due, from when, is the
+  listing's rule (`ListMirrorActsDue`), per source, from the receipts
+  `ReplaceMirrorActs` stores:
+  - the members of the boards' active sprints done now, their comments
+    and every worklog; then the members of each sprint closed in the
+    history window (180 days), newest first, done at its completion,
+    the same; then each project's support tickets (its support rule)
+    whose card moved in the window, walked by the update index, their
+    worklogs from the window's start. A ticket two arms or two projects
+    list is listed once, with every source any needs and the earliest
+    worklog start.
+  - A source is due when it has no receipt or one for an earlier card
+    update, and worklogs also when the receipt covers them from later
+    than the need, or, of an active sprint's member or a support ticket,
+    when it was read more than a day ago: a deleted worklog, a time
+    source's daily summary or a late import moves no card. A worklog
+    write, an edit included, moves the issue's update time, as measured
+    on Jira Cloud, also for worklogs a time source syncs into Jira, so a
+    closed sprint's member is read again only when its card moves.
+  - The app's own worklog write makes the ticket's worklog evidence due
+    (`ReplaceMirrorWorklogs`), for every worklog it adds, changes, moves
+    or removes.
+  - A read never narrows a receipt's coverage: its worklogs are read
+    from the earlier of the need and the receipt's start.
+
+  A unit reads at most 4 batches of 50 a tick and reports More while the
+  listing has more. A source that failed for its ticket alone is stored
+  as an attempt with its reason and is not due for a day, so the next
+  tick reaches the tickets behind it; the tick's attempts reach the
+  linked loop's failure report as a count with the first reason. A read
+  that fails for every ticket stores what it read before the failure,
+  then fails the tick. Each read is stored with the update it was for,
+  replaced per ticket and source, its authors in the first transaction;
+  a read that began no later than the stored one is superseded. Under a
+  time source change the read's comments are stored and its worklogs
+  refused, and the unit reports More, so the next tick reads under the
+  new source; a read that failed because the change closed its client
+  reports More without a failure.
 - **Linked issues.** The cards unit reads the linked issues no polled
   board has a row of (`ListMirrorOffBoardLinkedIssues`): a board whose
   pump is not over, not paused while hidden and tells no failure. It takes

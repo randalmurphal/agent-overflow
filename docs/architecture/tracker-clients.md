@@ -378,7 +378,11 @@ problem on that record, which stays usable.
   exists), so an empty object or an error envelope never reads as every
   issue absent. `BulkFetchByID` fetches IDs alone and fails on an answer
   holding an issue with no ID, one not asked or one twice, before
-  anything is collapsed. Text a person or a tracker wrote enters
+  anything is collapsed. A bulk fetch batch whose answer is over the
+  body bound is asked again in halves (`trackerapi.Halved`, as the
+  comment, worklog and Tempo pages are), and a single issue over it
+  fails as `*OversizedIssueError` naming it, after the issues before it
+  were handed over. Text a person or a tracker wrote enters
   a JQL string only through `QuoteJQL`, `QuoteJQLText` (after `~`) or
   `QuoteJQLList` (an `in` list). `MatchJQL` asks
   `jql/match` which of up to 50 issue IDs each of up to 10 queries
