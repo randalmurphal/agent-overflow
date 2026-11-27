@@ -4477,6 +4477,41 @@ export class WorklogEditRequest {
 }
 
 /**
+ * WorklogRead is what one ReadWorklogDays did. Read reports that it read
+ * days from the tracker, so the counts of logged time may have changed.
+ * More reports that days are left to read now: the caller calls again
+ * while the widgets still show. Failure is why the read failed; nothing
+ * more is read on its own until a person asks. RereadIn is how long, in
+ * ms, until a board's change can have the newest days read again: the
+ * caller asks again with WorklogReadChanged then, if the widgets still
+ * show.
+ */
+export class WorklogRead {
+    "read"?: boolean;
+    "more"?: boolean;
+    "failure"?: FailureView | null;
+    "rereadIn"?: number;
+
+    /** Creates a new WorklogRead instance. */
+    constructor($$source: Partial<WorklogRead> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorklogRead instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorklogRead {
+        const $$createField2_0 = $$createType10;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("failure" in $$parsedSource) {
+            $$parsedSource["failure"] = $$createField2_0($$parsedSource["failure"]);
+        }
+        return new WorklogRead($$parsedSource as Partial<WorklogRead>);
+    }
+}
+
+/**
  * WorklogRequest is a new worklog of the credential's own user.
  */
 export class WorklogRequest {

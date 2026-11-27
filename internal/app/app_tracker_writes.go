@@ -260,7 +260,7 @@ func (a *App) RefreshTrackerWorklogs(ctx context.Context, connectionID, author, 
 // widgets show, at most 31 days of the logged time of the connection's
 // verified account that the history window still needs, and answers what
 // it did (trackerapp.Service.ReadWorklogDays). today is the dashboard's
-// day; reason is shown, changed or person. It runs at the slow budget,
+// day; reason is shown, changed or person. It runs at the default budget,
 // as RefreshTrackerWorklogs does, and makes at most the one read
 // RefreshTrackerWorklogs makes.
 //

@@ -435,6 +435,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ReadReviewDiff", ID: 2473150982, Scope: "session", Route: "home", CallerBound: true},                                             // main.App.ReadReviewDiff
 	{Name: "ReadShellAttachmentOutput", ID: 3285994337, Scope: "threads:read", Route: "thread"},                                              // main.App.ReadShellAttachmentOutput
 	{Name: "ReadThreadRemoteLog", ID: 2424974671, Scope: "terminal:operate", Route: "thread"},                                                // main.App.ReadThreadRemoteLog
+	{Name: "ReadTrackerWorklogDays", ID: 751780983, Scope: "tracker:read", Route: "home"},                                                    // main.App.ReadTrackerWorklogDays
 	{Name: "RecheckAgyAccount", ID: 4079519754, Scope: "access:admin", Route: "home"},                                                        // main.App.RecheckAgyAccount
 	{Name: "RecheckClaudeAccount", ID: 2274850917, Scope: "access:admin", Route: "home"},                                                     // main.App.RecheckClaudeAccount
 	{Name: "RecheckCodexAccount", ID: 227978482, Scope: "access:admin", Route: "home"},                                                       // main.App.RecheckCodexAccount

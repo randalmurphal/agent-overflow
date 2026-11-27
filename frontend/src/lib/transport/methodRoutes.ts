@@ -383,6 +383,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2473150982: 'home', // ReadReviewDiff
 	3285994337: 'thread', // ReadShellAttachmentOutput
 	2424974671: 'thread', // ReadThreadRemoteLog
+	751780983: 'home', // ReadTrackerWorklogDays
 	4079519754: 'home', // RecheckAgyAccount
 	2274850917: 'home', // RecheckClaudeAccount
 	227978482: 'home', // RecheckCodexAccount

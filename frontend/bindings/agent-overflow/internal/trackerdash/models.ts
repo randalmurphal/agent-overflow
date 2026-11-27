@@ -21,12 +21,6 @@ export class Answer {
     "at": number;
     "widgets": WidgetValue[];
 
-    /**
-     * Viewer is the account whose logged time the copy holds, whose days
-     * not read (WidgetValue.Unread) the page reads; "" before one.
-     */
-    "viewer"?: string;
-
     /** Creates a new Answer instance. */
     constructor($$source: Partial<Answer> = {}) {
         if (!("range" in $$source)) {
