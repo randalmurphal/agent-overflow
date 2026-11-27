@@ -25,6 +25,7 @@ func TestTrackerSetupMethodsCarryTheirScopeAndRoute(t *testing.T) {
 	for name, scope := range map[string]transport.Scope{
 		"ProjectTrackerSetup":      transport.ScopeTrackerRead,
 		"ProjectTrackerStatuses":   transport.ScopeTrackerRead,
+		"ProjectTrackerPace":       transport.ScopeTrackerRead,
 		"ProjectTrackerSiteFields": transport.ScopeTrackerRead,
 		"SetProjectTrackerSetup":   transport.ScopeTrackerOperate,
 	} {

@@ -44,6 +44,22 @@ func (a *App) ProjectTrackerStatuses(ctx context.Context, projectID string) (tra
 	return out, trackerError(err)
 }
 
+// ProjectTrackerPace is the usual pace of each Jira board the project
+// lists, as its Points and credit page shows it: what the board's last
+// finished sprints finished on average, in the unit the project counts
+// the board in, as sprint planning measures against it. It reads this
+// computer's copy and makes no tracker request.
+//
+//ao:scope tracker:read
+func (a *App) ProjectTrackerPace(ctx context.Context, projectID string) ([]trackerapp.BoardPace, error) {
+	svc, err := a.trackerService()
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.ProjectPace(projectID)
+	return out, trackerError(err)
+}
+
 // ProjectTrackerSiteFields are the fields the tickets of a Jira site can
 // pin, as the project's Fields page lists them for each site its boards
 // or its pins name, read from the tracker's field catalog, which the

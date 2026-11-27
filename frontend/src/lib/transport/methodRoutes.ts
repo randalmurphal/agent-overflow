@@ -363,6 +363,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2105157519: 'home', // PreviewNotificationSound
 	2575010484: 'project', // ProjectDeletionPreview
 	1066511111: 'project', // ProjectTrackerBoards
+	342403521: 'project', // ProjectTrackerPace
 	3259060803: 'project', // ProjectTrackerSetup
 	1545287804: 'project', // ProjectTrackerSiteFields
 	315742236: 'project', // ProjectTrackerStatuses

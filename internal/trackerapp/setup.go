@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker"
 )
 
 // A project's tracker setup: the per-project choices of the Issues
@@ -39,6 +40,9 @@ import (
 //   - time: the Jira tickets meeting and time-off hours go on, and
 //     whether an agent's time draft may put hours on an epic
 //     (TimeSettings);
+//   - estimates: whether the project counts its Jira boards' work by
+//     their estimates or by their tickets, and whether its tickets offer
+//     planning poker (Estimates);
 //   - dashboards: by tracker site and board, the dashboards the project
 //     keeps (BoardDashboards). It is not part of Setup: a replace keeps
 //     it as held, and only its own edits write it (dashboard_setup.go), so
@@ -83,6 +87,7 @@ const (
 	sectionStartWork    = "start_work"
 	sectionAgents       = "agents"
 	sectionTime         = "time"
+	sectionEstimates    = "estimates"
 	sectionDashboards   = "dashboards"
 	setupSectionVersion = 1
 )
@@ -158,6 +163,7 @@ type Setup struct {
 	StartWork    []StartWorkDefaults `json:"start_work"`
 	Agents       *AgentRules         `json:"agents,omitempty"`
 	Time         *TimeSettings       `json:"time,omitempty"`
+	Estimates    *Estimates          `json:"estimates,omitempty"`
 }
 
 // UnmarshalJSON reads a replace's setup whole or refuses it: a JSON object
@@ -262,6 +268,24 @@ type TimeSettings struct {
 // RefusesEpics is whether an agent's draft may not put hours on an epic.
 func (t TimeSettings) RefusesEpics() bool { return t.NeverEpics == nil || *t.NeverEpics }
 
+// Estimates is how a project counts the work of its Jira boards, and
+// whether its Jira tickets offer planning poker. Count is "tickets" when
+// the project counts tickets in place of the boards' estimates, as a
+// board with no estimates is counted, and absent for the boards'
+// estimates; Poker is false when the project turned planning poker off.
+// Only a Jira board is counted by it: a project that lists none keeps
+// the section for when it lists one.
+type Estimates struct {
+	Count string `json:"count,omitempty"`
+	Poker *bool  `json:"poker,omitempty"`
+}
+
+// estimatesCountTickets is Estimates.Count for counting tickets.
+const estimatesCountTickets = "tickets"
+
+// countsTickets is whether the project counts its Jira boards' tickets.
+func (e *Estimates) countsTickets() bool { return e != nil && e.Count == estimatesCountTickets }
+
 // TimeTicket is a ticket a project's time goes on, by its site and key.
 type TimeTicket struct {
 	Tracker string `json:"tracker"`
@@ -304,11 +328,25 @@ const setupChangedSentence = "this change was not saved: the project's tracker s
 // carries so that a client counting rows it holds counts each in the
 // group the store's totals do. All three come from one site's entry of
 // the setup, so they change together. The zero value regroups nothing, at
-// version "".
+// version "". tickets is whether the project counts the site's boards by
+// their tickets (Estimates), which a board view says as its unit of
+// counts (unit) and a dashboard counts by; the store's totals carry both
+// rows and estimates, so it is not part of the version.
 type StatusGroups struct {
 	regroup  store.MirrorRegroup
 	version  string
 	statuses map[string]string
+	tickets  bool
+}
+
+// unit is the unit the project counts a board of the site whose
+// estimates are in board in: the board's own, or none when the project
+// counts tickets.
+func (g StatusGroups) unit(board tracker.EstimateUnit) tracker.EstimateUnit {
+	if g.tickets {
+		return tracker.UnitNone
+	}
+	return board
 }
 
 // setupGroup is the store's number of the group named name, which a
@@ -539,7 +577,11 @@ func (s *Service) setupMoved(slug string, before, after *heldSetup) {
 		return
 	}
 	s.readBoardsAgain(slug, func(site siteKey) bool {
-		return before == nil || after == nil || before.groups[site].version != after.groups[site].version
+		if before == nil || after == nil {
+			return true
+		}
+		was, now := before.counting(site), after.counting(site)
+		return was.version != now.version || was.tickets != now.tickets
 	})
 	s.setupChanged()
 }
@@ -570,7 +612,15 @@ func (s *Service) boardStatusGroups(key setupKey) (StatusGroups, error) {
 	if err != nil {
 		return StatusGroups{}, err
 	}
-	return held.groups[key.site], nil
+	return held.counting(key.site), nil
+}
+
+// counting is how the setup counts the boards of site: its status
+// groups, and on a Jira site whether it counts tickets.
+func (h *heldSetup) counting(site siteKey) StatusGroups {
+	g := h.groups[site]
+	g.tickets = site.tracker == store.TrackerKindJira && h.view.Setup.Estimates.countsTickets()
+	return g
 }
 
 // heldSetupLocked is slug's held setup, read from its file when none is
@@ -665,6 +715,11 @@ type (
 		TimeOff    *TimeTicket `json:"time_off,omitempty"`
 		NeverEpics *bool       `json:"never_epics,omitempty"`
 	}
+	estimatesV1 struct {
+		Version int    `json:"version"`
+		Count   string `json:"count,omitempty"`
+		Poker   *bool  `json:"poker,omitempty"`
+	}
 )
 
 // decodeSetup is the setup data holds, every section this build does not
@@ -689,7 +744,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(sections)) {
 		section := sections[name]
-		if !slices.Contains([]string{sectionStatusGroups, sectionTicketPins, sectionStartWork, sectionAgents, sectionTime, sectionDashboards}, name) {
+		if !slices.Contains([]string{sectionStatusGroups, sectionTicketPins, sectionStartWork, sectionAgents, sectionTime, sectionEstimates, sectionDashboards}, name) {
 			keep(name, section)
 			continue
 		}
@@ -726,6 +781,10 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 			var s timeV1
 			err = decodeStrict(section, &s)
 			setup.Time = &TimeSettings{Meetings: s.Meetings, TimeOff: s.TimeOff, NeverEpics: s.NeverEpics}
+		case sectionEstimates:
+			var s estimatesV1
+			err = decodeStrict(section, &s)
+			setup.Estimates = &Estimates{Count: s.Count, Poker: s.Poker}
 		case sectionDashboards:
 			var s dashboardsV1
 			if err = decodeStrict(section, &s); err == nil {
@@ -801,6 +860,11 @@ func encodeSetup(setup Setup, dashboards []BoardDashboards, raw map[string]json.
 			return nil, err
 		}
 	}
+	if setup.Estimates != nil {
+		if err := add(sectionEstimates, estimatesV1{Version: setupSectionVersion, Count: setup.Estimates.Count, Poker: setup.Estimates.Poker}); err != nil {
+			return nil, err
+		}
+	}
 	if len(dashboards) > 0 {
 		if err := add(sectionDashboards, dashboardsV1{Version: setupSectionVersion, Boards: dashboards}); err != nil {
 			return nil, err
@@ -846,7 +910,7 @@ func setupRevision(data []byte) string {
 // its file.
 func heldOf(setup Setup, dashboards []BoardDashboards, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
 	held := &heldSetup{
-		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins), StartWork: slicesx.OrEmpty(setup.StartWork), Agents: setup.Agents, Time: setup.Time}, Newer: newer},
+		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins), StartWork: slicesx.OrEmpty(setup.StartWork), Agents: setup.Agents, Time: setup.Time, Estimates: setup.Estimates}, Newer: newer},
 		raw:  raw, dashboards: dashboards, groups: map[siteKey]StatusGroups{},
 	}
 	for _, site := range setup.StatusGroups {
@@ -956,6 +1020,13 @@ func validateSetup(setup Setup) (Setup, error) {
 			return Setup{}, err
 		}
 		out.Time = settings
+	}
+	if setup.Estimates != nil {
+		estimates, err := checkEstimates(*setup.Estimates)
+		if err != nil {
+			return Setup{}, err
+		}
+		out.Estimates = estimates
 	}
 	slices.SortFunc(out.StartWork, func(a, b StartWorkDefaults) int {
 		if c := compareSites(a.Tracker, a.Site, b.Tracker, b.Site); c != 0 {
@@ -1092,6 +1163,26 @@ func checkTime(t TimeSettings) (*TimeSettings, error) {
 		return nil, nil
 	}
 	return &t, nil
+}
+
+// checkEstimates checks an estimates section: nil when it sets nothing.
+// Counting by the boards' estimates and planning poker are the built-in
+// rules: only their other choice is stored.
+func checkEstimates(e Estimates) (*Estimates, error) {
+	switch e.Count {
+	case "", estimatesCountTickets:
+	case "estimates":
+		e.Count = ""
+	default:
+		return nil, invalidSetup("%s counts by %q, which is neither estimates nor tickets", sectionEstimates, truncateID(e.Count))
+	}
+	if e.Poker != nil && *e.Poker {
+		e.Poker = nil
+	}
+	if e.Count == "" && e.Poker == nil {
+		return nil, nil
+	}
+	return &e, nil
 }
 
 // isTicketProject is whether project is a ticket key's project, as
