@@ -17,9 +17,9 @@ export class Answer {
     "reading"?: boolean;
 
     /**
-     * Evidence says, while credit the dashboard counts is not read for
-     * some ticket, that the read of who worked on the tickets is failing
-     * and why (Board.EvidenceFailure); "" otherwise.
+     * Evidence says, while credit a widget counts in its range is not read
+     * for some ticket, that the last read of who worked on the tickets
+     * failed and why (EvidenceSentence); "" otherwise.
      */
     "evidence"?: string;
     "estimates": string;
