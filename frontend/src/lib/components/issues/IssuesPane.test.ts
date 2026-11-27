@@ -5055,6 +5055,32 @@ describe("the board's summary row", () => {
     view.unmount();
   });
 
+  it('says an empty tile of your logged time is not known while its days are not read, not that it has nothing', async () => {
+    const ranked = { id: 'w_5', title: 'Hours by assignee', form: 'bars', width: 6, unit: 'time', bucket: 'person', how: { ...how, reads: ['worklogs'] } };
+    const list = { id: 'w_6', title: 'Tickets I logged time on', form: 'list', width: 6, unit: 'time', how: { ...how, reads: ['worklogs'] } };
+    const kept = { ...KEPT, widgets: [...KEPT.widgets, ranked, list] };
+    install({ view: { ...sprintBoard([row('1', 'a', 's1')]), plan: [], pins: ['w_5', 'w_6'] } as unknown as BoardView });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, kept], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' };
+    let unread = ['2026-11-25'];
+    setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [{ id: 'w_5', unread }, { id: 'w_6', unread }], logged: {} }));
+    const view = mount();
+    await view.findAllByTestId('board-row-chip');
+    await fireEvent.click(view.getByTestId('board-row-toggle'));
+    await waitFor(() => expect(view.getAllByTestId('dashboard-widget-unread')).toHaveLength(2));
+    const tiles = view.getByTestId('board-row-tiles');
+    expect(tiles.textContent).not.toContain('Nothing to count.');
+    expect(tiles.textContent).not.toContain('No tickets.');
+    view.unmount();
+    unread = [];
+    // The row stays open for the next pane.
+    const read = mount();
+    await read.findByTestId('board-row-tiles');
+    await waitFor(() => expect(read.getByTestId('board-row-tiles').textContent).toContain('Nothing to count.'));
+    expect(read.getByTestId('board-row-tiles').textContent).toContain('No tickets.');
+    read.unmount();
+  });
+
   it('takes a tile off, adds one from a dashboard, says a full row is full, and asks the agent for a new one', async () => {
     install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['stuck'] } as Partial<BoardView>) });
     setBindingMock('TrackerDashboards', async () => listing());
