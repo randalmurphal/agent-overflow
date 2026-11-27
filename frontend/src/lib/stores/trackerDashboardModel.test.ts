@@ -3,7 +3,7 @@
 // and the tone by the metric's good direction.
 
 import { describe, expect, it } from 'vitest';
-import { changeMark, drillCountWords, formatNum, GAP_TEXT, numValue, numWords } from './trackerDashboardModel';
+import { changeMark, drillCountWords, formatNum, GAP_TEXT, numValue, numWords, worklogReads } from './trackerDashboardModel';
 import { band, labelEvery, valueScale } from '../components/issues/charts/chartScale';
 
 describe('a number', () => {
@@ -23,9 +23,26 @@ describe('a number', () => {
   it('says what it could not count beside it, and is not known when it counted nothing', () => {
     expect(formatNum({ v: 12, nc: 3 }, 'days', 'points')).toBe('12 days, 3 not counted');
     expect(formatNum({ nc: 2 }, 'tickets', 'points')).toBe('Not known, 2 not counted');
-    expect(numWords({ nc: 2 }, 'tickets', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '2 not counted' });
-    expect(numWords({ v: 1, nc: 1 }, 'tickets', 'points')).toEqual({ amount: '1', word: 'ticket', value: '1 ticket', notCounted: '1 not counted' });
+    expect(numWords({ nc: 2 }, 'tickets', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '2 not counted', notRead: '' });
+    expect(numWords({ v: 1, nc: 1 }, 'tickets', 'points')).toEqual({ amount: '1', word: 'ticket', value: '1 ticket', notCounted: '1 not counted', notRead: '' });
     expect(numValue({ nc: 2 })).toBeNull();
+  });
+
+  it('of logged time says the days it could not read, and is not known when it counted nothing', () => {
+    expect(formatNum({ ur: 3 }, 'time', 'points')).toBe('Not known, 3 days not read');
+    expect(formatNum({ ur: 1 }, 'time', 'points')).toBe('Not known, 1 day not read');
+    expect(numWords({ ur: 2 }, 'time', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '', notRead: '2 days not read' });
+    expect(formatNum({ gap: true, ur: 2 }, 'time', 'points')).toBe(GAP_TEXT);
+    expect(formatNum({ v: 0 }, 'time', 'points')).toBe('0m');
+  });
+});
+
+describe('the reads of your logged time', () => {
+  it('cover the days in reads of at most 31 days, from the first day each has not covered', () => {
+    expect(worklogReads([])).toEqual([]);
+    expect(worklogReads(['2026-01-01'])).toEqual([{ from: '2026-01-01', to: '2026-01-01' }]);
+    expect(worklogReads(['2026-01-01', '2026-01-31', '2026-02-01'])).toEqual([{ from: '2026-01-01', to: '2026-01-31' }, { from: '2026-02-01', to: '2026-02-01' }]);
+    expect(worklogReads(['2026-01-05', '2026-03-01'])).toEqual([{ from: '2026-01-05', to: '2026-01-05' }, { from: '2026-03-01', to: '2026-03-01' }]);
   });
 });
 
