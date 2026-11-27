@@ -100,6 +100,24 @@ describe('<TrackerStartWorkSettings>', () => {
     expect(saves[2].start_work?.find((d) => d.project === 'OPS'), 'the other entry is kept').toEqual({ tracker: 'jira', site: SITE, project: 'OPS', branch: 'ops/{key}' });
   });
 
+  it('turns the move on at the place\'s own first status in progress, which the computer lists first, not the site\'s first', async () => {
+    // OPS's board, listed first, has its own workflow: the site's first
+    // in-progress status is OPS's, and WEB lists its own boards' first.
+    statuses = {
+      sites: [{
+        tracker: 'jira', site: SITE,
+        statuses: [{ id: '20001', name: 'Working', group: 'in_progress' }, { id: '10000', name: 'To Do', group: 'todo' }, { id: '10001', name: 'In Progress', group: 'in_progress' }],
+      }],
+      places: [{ tracker: 'jira', site: SITE, project: 'WEB', statuses: ['10000', '10001', '20001'] }, { tracker: 'jira', site: SITE, project: 'OPS', statuses: ['20001', '10000', '10001'] }],
+    };
+    await shown();
+    await fireEvent.click(within(place('WEB')).getByRole('switch', { name: 'Move the ticket' }));
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(web(saves[0])?.status).toBe('10001');
+    const picker = await within(place('WEB')).findByTestId('tracker-start-work-status') as HTMLSelectElement;
+    expect([...picker.options].map((o) => o.value)).toEqual(['10000', '10001', '20001']);
+  });
+
   it('saves assigning off, naming the branch off and on, and the repository, the project itself stored as none', async () => {
     await shown();
     const w = () => within(place('WEB'));

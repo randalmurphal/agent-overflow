@@ -36,10 +36,16 @@
 // or stalls holds up no other: read on hold, on reconnect and on the
 // site's Try again. A tracker read, which no change of the setup moves;
 // the page holds a site again when the connections that reach it change.
+//
+// The Time page's check of its tickets (`TrackerLookup`) is held by the
+// connection asked and the keys, one read for every ticket of a
+// connection, read on hold, on reconnect and on Try again: the page's
+// computer's tracker read, which a new ticket makes a new read of.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { AgentRules, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, SetProjectTrackerSetup } from './bindings';
+import type { AgentRules, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace, TimeTicket } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, SetProjectTrackerSetup, TrackerLookup } from './bindings';
+import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend } from '../transport/entityIndex';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
@@ -173,9 +179,24 @@ class HeldSiteFields extends HeldRead<PinField[]> {
   }
 }
 
+class HeldTicketCheck extends HeldRead<LookupView> {
+  constructor(project: string, readonly on: BackendKey, readonly connection: string, readonly keys: readonly string[]) {
+    super(project);
+  }
+
+  override backend(): BackendKey {
+    return this.on;
+  }
+
+  protected call(): Promise<LookupView> {
+    return withBackendTarget(this.on, () => TrackerLookup(this.connection, [...this.keys]));
+  }
+}
+
 const setups = new SvelteMap<string, HeldSetup>();
 const statuses = new SvelteMap<string, HeldStatuses>();
 const fields = new SvelteMap<string, HeldSiteFields>();
+const checks = new SvelteMap<string, HeldTicketCheck>();
 
 function acquire<E extends HeldRead<unknown>>(map: SvelteMap<string, E>, key: string, make: () => E): () => void {
   let entry = map.get(key);
@@ -360,6 +381,58 @@ export function withAgentRule(setup: Setup, rule: AgentRule, on: boolean): Setup
   return { ...setup, agents: { ...setup.agents, [rule]: on } };
 }
 
+/** The roles a project's time settings name a ticket for. */
+export type TimeTicketRole = 'meetings' | 'time_off';
+
+/** `setup` with the ticket `role`'s time goes on, or none for null. */
+export function withTimeTicket(setup: Setup, role: TimeTicketRole, ticket: TimeTicket | null): Setup {
+  return { ...setup, time: { ...setup.time, [role]: ticket } };
+}
+
+/** Whether the setup keeps an agent's time draft off epics: absent is
+ * on, the app's built-in rule (trackerapp.TimeSettings.RefusesEpics). */
+export function neverEpicsOn(setup: Setup | null | undefined): boolean {
+  return setup?.time?.never_epics !== false;
+}
+
+/** `setup` with Never log to an epic on or off. The computer stores it
+ * turned on as none (trackerapp's validateSetup). */
+export function withNeverEpics(setup: Setup, on: boolean): Setup {
+  return { ...setup, time: { ...setup.time, never_epics: on } };
+}
+
+/** A check of the tickets `keys` through `connection` on computer
+ * `backend` for `project`'s Time page. */
+function ticketCheckKey(project: string, backend: BackendKey, connection: string, keys: readonly string[]): string {
+  return [project, backend, connection, ...keys].join('\u0000');
+}
+
+/** Holds the check of `keys` through `connection` on `backend` while the
+ * caller shows it, reading it now; the returned function releases the
+ * hold. Other keys are a new read. */
+export function acquireTrackerTicketCheck(project: string, backend: BackendKey, connection: string, keys: readonly string[]): () => void {
+  return acquire(checks, ticketCheckKey(project, backend, connection, keys), () => new HeldTicketCheck(project, backend, connection, keys));
+}
+
+/** A check of tickets as the Time page shows it. */
+export interface TrackerTicketCheckState {
+  readonly found: LookupView | null;
+  readonly error: unknown;
+}
+
+const NO_CHECK: TrackerTicketCheckState = { found: null, error: null };
+
+/** The check of `keys` through `connection` as held. Reactive. */
+export function trackerTicketCheckOf(project: string, backend: BackendKey, connection: string, keys: readonly string[]): TrackerTicketCheckState {
+  const entry = checks.get(ticketCheckKey(project, backend, connection, keys));
+  return entry ? { found: entry.value, error: entry.error } : NO_CHECK;
+}
+
+/** Checks `keys` through `connection` again if a surface holds them. */
+export function refreshTrackerTicketCheck(project: string, backend: BackendKey, connection: string, keys: readonly string[]): Promise<void> {
+  return checks.get(ticketCheckKey(project, backend, connection, keys))?.read() ?? Promise.resolve();
+}
+
 /** Reads again every held entry of a project on `backend`, or of a project
  * whose computer this window does not know. A setup being saved is read
  * once its save settles: a read sent beside the save may answer the file
@@ -383,7 +456,7 @@ onTrackerSetupUpdated(readAgainOn);
 onBackendStatusChange((backend, status) => {
   if (status.status !== 'connected') return;
   readAgainOn(backend);
-  for (const entry of fields.values()) {
+  for (const entry of [...fields.values(), ...checks.values()]) {
     const owner = entry.backend();
     if (owner === undefined || owner === backend) void entry.read();
   }
@@ -393,4 +466,5 @@ export function resetTrackerSetupForTest(): void {
   setups.clear();
   statuses.clear();
   fields.clear();
+  checks.clear();
 }

@@ -40,12 +40,13 @@
     return trackerConnectionName(connection ?? { label: '', kind: place.tracker, site: place.site });
   }
 
-  /** The statuses the move picker of `place` offers, as the site lists
-   * them. */
+  /** The statuses the move picker of `place` offers, in the place's
+   * order: its own boards' first, so the first in progress is of its own
+   * workflow. */
   function placeStatuses(project: string, place: StartPlace): StatusView[] {
     const site = trackerStatusesOf(project).sites?.find((s) => s.tracker === place.tracker && s.site === place.site);
-    const ids = new Set(place.statuses);
-    return (site?.statuses ?? []).filter((s) => ids.has(s.id));
+    const byId = new Map((site?.statuses ?? []).map((s) => [s.id, s]));
+    return place.statuses.flatMap((id) => byId.get(id) ?? []);
   }
 
   /** The status a move turns on with: the first the project counts in

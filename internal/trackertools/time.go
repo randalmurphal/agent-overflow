@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -105,14 +106,18 @@ type timeUnread struct {
 	Days    []string `json:"days,omitempty"`
 }
 
-// timeReadAnswer is time_read's answer; ActivityGap says since when the
+// timeReadAnswer is the days read, the connections that could not be,
+// the keys of the tickets the project's Time settings put meeting and
+// time-off hours on, absent when not set; ActivityGap says since when the
 // app has not recorded the person's activity, while it cannot, and
 // CommitsUnread why a repository's commits are not in the days.
 type timeReadAnswer struct {
-	Days          []timeDay    `json:"days"`
-	Unread        []timeUnread `json:"unread,omitempty"`
-	ActivityGap   string       `json:"activity_gap,omitempty"`
-	CommitsUnread []string     `json:"commits_unread,omitempty"`
+	Days           []timeDay    `json:"days"`
+	Unread         []timeUnread `json:"unread,omitempty"`
+	MeetingsTicket string       `json:"meetings_ticket,omitempty"`
+	TimeOffTicket  string       `json:"time_off_ticket,omitempty"`
+	ActivityGap    string       `json:"activity_gap,omitempty"`
+	CommitsUnread  []string     `json:"commits_unread,omitempty"`
 }
 
 // timeSources are the Jira connections among sources; none is the
@@ -155,7 +160,7 @@ func (s *Server) readRange(args timeReadArgs) (string, string, error) {
 	return from.Format(time.DateOnly), to.Format(time.DateOnly), nil
 }
 
-func (s *Server) timeRead(ctx context.Context, _ Caller, raw json.RawMessage) (any, error) {
+func (s *Server) timeRead(ctx context.Context, caller Caller, raw json.RawMessage) (any, error) {
 	var args timeReadArgs
 	if err := decode(raw, &args); err != nil {
 		return nil, err
@@ -172,9 +177,13 @@ func (s *Server) timeRead(ctx context.Context, _ Caller, raw json.RawMessage) (a
 	if err != nil {
 		return nil, err
 	}
+	settings, err := s.h.TimeSettings(caller.Thread)
+	if err != nil {
+		return nil, err
+	}
 	first, _ := time.Parse(time.DateOnly, from)
 	last, _ := time.Parse(time.DateOnly, to)
-	out := timeReadAnswer{}
+	out := timeReadAnswer{MeetingsTicket: settingKey(sources, settings.Meetings), TimeOffTicket: settingKey(sources, settings.TimeOff)}
 	byDay := map[string]*timeDay{}
 	for d := first; !d.After(last); d = d.AddDate(0, 0, 1) {
 		out.Days = append(out.Days, timeDay{Day: d.Format(time.DateOnly), Logged: []loggedTime{}})
@@ -305,6 +314,15 @@ func (s *Server) readActivity(ctx context.Context, sources []trackerapp.TicketSo
 	return nil
 }
 
+// settingKey is the key of a ticket the Time settings name, as answers
+// write keys; empty for none.
+func settingKey(sources []trackerapp.TicketSource, t *trackerapp.TimeTicket) string {
+	if t == nil {
+		return ""
+	}
+	return qualifier(sources, t.SiteName())(t.Key)
+}
+
 // byName is who last wrote an entry, as answers name them: agent, or you
 // for the person.
 func byName(by string) string {
@@ -351,7 +369,8 @@ func fitTime(out timeReadAnswer) (timeReadAnswer, error) {
 			n++
 			return shown
 		}
-		cut := timeReadAnswer{Days: make([]timeDay, len(out.Days)), Unread: out.Unread, ActivityGap: out.ActivityGap, CommitsUnread: out.CommitsUnread}
+		cut := out
+		cut.Days = make([]timeDay, len(out.Days))
 		for i, d := range out.Days {
 			c := timeDay{Day: d.Day, Logged: make([]loggedTime, len(d.Logged)), Active: d.Active, Phone: d.Phone, Tickets: d.Tickets,
 				CommitsMore: d.CommitsMore}
@@ -463,6 +482,10 @@ func (s *Server) timeDraft(ctx context.Context, caller Caller, raw json.RawMessa
 	if _, err := s.h.WritePolicy(caller.Thread); err != nil {
 		return nil, err
 	}
+	settings, err := s.h.TimeSettings(caller.Thread)
+	if err != nil {
+		return nil, err
+	}
 	sources, err := s.sources()
 	if err != nil {
 		return nil, err
@@ -492,7 +515,7 @@ func (s *Server) timeDraft(ctx context.Context, caller Caller, raw json.RawMessa
 	var found []ticket
 	if len(keys) > 0 {
 		if found, _, err = s.resolveKeys(ctx, caller.Thread, keys, entryKeyArg); err != nil {
-			return nil, err
+			return nil, goneSetting(settings, err)
 		}
 	}
 	name := func(k keyAt) string {
@@ -529,8 +552,21 @@ func (s *Server) timeDraft(ctx context.Context, caller Caller, raw json.RawMessa
 		req.Entries[i] = trackerapp.TimeDraftEntry{Day: strings.TrimSpace(e.Day), Hours: e.Hours, Reason: e.Reason}
 	}
 	for n, t := range found {
-		view := &trackerapp.TimeOfferView{Issue: t.issue, Key: t.key, Title: s.ticketTitle(t)}
-		if k := at[n]; k.offer < 0 {
+		title, kind, err := s.ticketCard(t)
+		k := at[n]
+		// An entry's own ticket is held to the epic rule; an offer is the
+		// person's to pick. A type neither the lookup nor the mirror has
+		// is not known, and nothing is asked for it.
+		if k.offer < 0 && settings.RefusesEpics() {
+			if err != nil {
+				return nil, err
+			}
+			if kind != nil && kind.Level >= 1 {
+				return nil, invalidf("%s %s is an epic, and this project's Time settings keep time off epics; put the hours on a ticket under it, or leave out key and offer tickets under it.", name(k), keys[n])
+			}
+		}
+		view := &trackerapp.TimeOfferView{Issue: t.issue, Key: t.key, Title: title}
+		if k.offer < 0 {
 			req.Entries[k.entry].Ticket = view
 		} else {
 			req.Entries[k.entry].Offers = append(req.Entries[k.entry].Offers, *view)
@@ -573,18 +609,44 @@ func draftRefusal(err error) string {
 	return text
 }
 
-// ticketTitle is t's title: the lookup's, or the mirror's card's, with no
-// request; empty when neither has it.
-func (s *Server) ticketTitle(t ticket) string {
-	if t.title != "" {
-		return t.title
+// ticketCard is t's title and type: the lookup's, or the mirror's card's,
+// with no request; empty and nil when neither has them. A failed read of
+// the mirror is the error, beside the lookup's title: a title only names
+// the entry on the Time screen, where its key does too, so only the epic
+// rule fails on it.
+func (s *Server) ticketCard(t ticket) (string, *trackerapp.IssueTypeView, error) {
+	if t.kind != nil {
+		return t.title, t.kind, nil
 	}
 	v, ok, err := s.t.MirrorIssue(t.connection, t.issue)
 	if err != nil || !ok {
-		// A title only names the entry on the Time screen; its key does too.
-		return ""
+		return t.title, nil, err
 	}
-	return v.Card.Title
+	return cmp.Or(t.title, v.Card.Title), v.Card.Type, nil
+}
+
+// goneSetting is err, a key's refusal, as the agent is told it when the
+// key is a ticket the project's Time settings name, which no longer
+// exists or this connection cannot see: so the person picks another there.
+func goneSetting(settings trackerapp.TimeSettings, err error) error {
+	var gone *keyNotFound
+	if !errors.As(err, &gone) {
+		return err
+	}
+	for _, set := range []struct {
+		ticket *trackerapp.TimeTicket
+		role   string
+	}{{settings.Meetings, "meetings"}, {settings.TimeOff, "time-off"}} {
+		if t := set.ticket; t != nil && strings.EqualFold(t.Key, gone.key) && slices.Contains(gone.sites, t.SiteName()) {
+			// A question with no key is drafted on the only Jira
+			// connection on, or on the site the call's keys name.
+			site := t.SiteName()
+			return errorsx.Public(CodeNotFound, fmt.Sprintf("%s, this project's %s ticket in Settings > Issues > Time, cannot be found on %s, or this connection cannot see it. "+
+				"Ask the user which ticket: leave out key, and with more than one Jira connection on, offer a ticket of %s unless another entry has a key there. Tell them to choose another %s ticket in those settings.",
+				t.Key, set.role, site, site, set.role), err)
+		}
+	}
+	return err
 }
 
 func kindName(kind string) string {

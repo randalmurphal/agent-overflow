@@ -734,6 +734,19 @@ const STATIC_FIELDS = [
     conditional: true,
   },
   {
+    id: 'tracker-time.project',
+    section: 'tracker-time',
+    label: 'Project',
+    hint: 'Choose the project whose time to set.',
+  },
+  {
+    id: 'tracker-time.logging',
+    section: 'tracker-time',
+    label: 'Logging',
+    keywords: ['jira', 'time', 'worklog', 'timesheet', 'meetings', 'time off', 'holiday', 'leave', 'epic', 'draft'],
+    conditional: true,
+  },
+  {
     id: 'tracker-agents.project',
     section: 'tracker-agents',
     label: 'Project',

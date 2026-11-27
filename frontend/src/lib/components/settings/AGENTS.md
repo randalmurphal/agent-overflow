@@ -28,7 +28,7 @@ from layout or from another provider's fields.
 
 ## Issues pages
 
-A per-project Issues page (Status groups, Fields, Starting work, Agents)
+A per-project Issues page (Status groups, Fields, Starting work, Time, Agents)
 is a body on `TrackerProjectSettings.svelte`, which picks the project
 (`TrackerProjectSelect.svelte`, the page's computer's projects), holds
 the project's tracker setup (`stores/trackerSetup.svelte.ts`) while it

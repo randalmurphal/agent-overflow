@@ -1145,6 +1145,60 @@ func TestProjectStatusesOfferEachPlaceItsStatuses(t *testing.T) {
 	}
 }
 
+// A Jira project's place lists its own boards' statuses first: two
+// Jira projects of one site with their own workflows, the other's board
+// listed first, still turn Move on with the place's own in-progress
+// status.
+func TestProjectStatusesListAPlacesOwnBoardsStatusesFirst(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	m.p.set(func(s *scripted) {
+		s.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+			st := webStructure(b)
+			if b == "2" {
+				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"ops-doing"}}}
+				st.Catalog.Statuses = []tracker.Status{{ID: "ops-doing", Name: "Working", Group: tracker.GroupInProgress}}
+			}
+			return st, nil
+		}
+	})
+	current, err := m.st.ListProjectTrackerBoards(m.project())
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := make([]store.HeldTrackerBoard, len(current))
+	for i, b := range current {
+		held[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+	}
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), held, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), nil, []store.ProjectTrackerBoard{
+		{ConnectionID: m.conn.ID, BoardID: "2", TrackerProject: "OPS"},
+		{ConnectionID: m.conn.ID, BoardID: string(testBoard), TrackerProject: "WEB"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, board := range []tracker.BoardID{"2", testBoard} {
+		scope := Scope{Connection: m.conn.ID, Board: board}
+		if _, err := m.svc.SubscribeBoard(m.project(), scope, []Section{{Kind: SectionBacklog}}, true, untied); err != nil {
+			t.Fatal(err)
+		}
+		m.events.waitFor(t, "the read of board "+string(board), func(boards []BoardEvent, _ []IssueEvent, _ []error) bool {
+			return slices.ContainsFunc(boards, func(e BoardEvent) bool { return e.Scope == scope && e.ReadAgain })
+		})
+	}
+	view := must[ProjectStatuses](t)(m.svc.ProjectStatuses(m.project()))
+	want := []StartPlace{
+		{Tracker: "jira", Site: m.conn.Site, Project: "OPS", Statuses: []string{"ops-doing", "s1", "s2", "s3"}},
+		{Tracker: "jira", Site: m.conn.Site, Project: "WEB", Statuses: []string{"s1", "s2", "s3", "ops-doing"}},
+	}
+	if !reflect.DeepEqual(view.Places, want) {
+		t.Fatalf("the places:\n got %+v\nwant %+v", view.Places, want)
+	}
+}
+
 // The statuses read takes a read board's column statuses alone, never its
 // whole structure (GetMirrorBoard: its data, columns and sprints).
 func TestProjectStatusesReadNoBoardStructure(t *testing.T) {
@@ -1162,5 +1216,146 @@ func TestProjectStatusesReadNoBoardStructure(t *testing.T) {
 	}
 	if n := cs.take()["GetMirrorBoard"]; n != 0 {
 		t.Errorf("the read took the board's whole structure %d times", n)
+	}
+}
+
+// A project's time tickets are saved by site and key, each site as its
+// connection names it, and read back after a restart; refusing epics is
+// the built-in rule, stored only when turned off; a section that sets
+// nothing is none; and a ticket that is not a Jira ticket key is refused
+// with why, writing nothing.
+func TestTimeSettingsAreSavedWithTheirDefaults(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	if view := must[SetupView](t)(m.svc.ProjectSetup(m.project())); view.Setup.Time != nil {
+		t.Fatalf("a project with no setup has time settings %+v", view.Setup.Time)
+	}
+	spelled := strings.TrimSuffix(strings.ToUpper(m.conn.Site), "/") + "/"
+	off := false
+	save := m.saveSetup(t, m.project(), Setup{Time: &TimeSettings{
+		Meetings: &TimeTicket{Tracker: "jira", Site: spelled, Key: "OPS-1"},
+		TimeOff:  &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-2"},
+	}})
+	want := TimeSettings{Meetings: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-1"}, TimeOff: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-2"}}
+	if got := save.Stored.Setup.Time; got == nil || !reflect.DeepEqual(*got, want) || !got.RefusesEpics() {
+		t.Fatalf("the time settings as stored: %+v", got)
+	}
+	data, err := os.ReadFile(m.setupPathOf(t, m.project()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"time": {`) || !strings.Contains(string(data), `"version": 1`) || strings.Contains(string(data), "never_epics") {
+		t.Fatalf("the file:\n%s", data)
+	}
+	m.restart(t)
+	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	if got := stored.Setup.Time; got == nil || !reflect.DeepEqual(*got, want) {
+		t.Fatalf("the time settings after a restart: %+v", got)
+	}
+	if got, err := m.svc.ProjectTimeSettings(m.project()); err != nil || !reflect.DeepEqual(got, want) || got.Meetings.SiteName() != strings.TrimPrefix(m.conn.Site, "https://") {
+		t.Fatalf("ProjectTimeSettings = %+v, %v", got, err)
+	}
+	epics := m.saveSetup(t, m.project(), Setup{Time: &TimeSettings{Meetings: want.Meetings, NeverEpics: &off}})
+	if got := epics.Stored.Setup.Time; got == nil || got.TimeOff != nil || got.RefusesEpics() {
+		t.Fatalf("time off cleared and epics allowed: %+v", got)
+	}
+	on := true
+	cleared := m.saveSetup(t, m.project(), Setup{Time: &TimeSettings{NeverEpics: &on}})
+	if cleared.Stored.Setup.Time != nil {
+		t.Fatalf("time settings that set nothing are stored as %+v", cleared.Stored.Setup.Time)
+	}
+	if after, _ := os.ReadFile(m.setupPathOf(t, m.project())); strings.Contains(string(after), `"time"`) {
+		t.Fatalf("time settings cleared left their section:\n%s", after)
+	}
+
+	// A key is the Jira parser's (IsTicketKey), stored in capitals.
+	for key, stored := range map[string]string{"ops-1": "OPS-1", "A-1": "A-1"} {
+		got := m.saveSetup(t, m.project(), Setup{Time: &TimeSettings{TimeOff: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: key}}})
+		if tt := got.Stored.Setup.Time; tt == nil || tt.TimeOff == nil || tt.TimeOff.Key != stored {
+			t.Errorf("the key %s is stored as %+v; want %s", key, tt, stored)
+		}
+	}
+
+	for name, tc := range map[string]struct {
+		ticket TimeTicket
+		says   string
+	}{
+		"a Linear ticket": {TimeTicket{Tracker: "linear", Site: "example", Key: "ENG-1"}, "time is logged on Jira only"},
+		"no key":          {TimeTicket{Tracker: "jira", Site: m.conn.Site}, "not a ticket key"},
+		"a project alone": {TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS"}, "not a ticket key"},
+		"a number alone":  {TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "10101"}, "not a ticket key"},
+		"no site":         {TimeTicket{Tracker: "jira", Key: "OPS-1"}, "empty jira site"},
+	} {
+		ticket := tc.ticket
+		before, _ := os.ReadFile(m.setupPathOf(t, m.project()))
+		_, err := m.svc.SetProjectSetup(m.project(), setupRevision(before), Setup{Time: &TimeSettings{TimeOff: &ticket}})
+		if !errors.Is(err, ErrInvalidSetup) || !strings.Contains(err.Error(), tc.says) {
+			t.Errorf("%s: %v; want a refusal saying %q", name, err, tc.says)
+		}
+		if after, _ := os.ReadFile(m.setupPathOf(t, m.project())); string(after) != string(before) {
+			t.Errorf("%s: a refused save wrote the file", name)
+		}
+	}
+}
+
+// Time settings are a Jira project's: with the last Jira board taken off
+// for a Linear one, the project has the built-in settings and its file
+// keeps the tickets; with a Jira board listed again, they apply again.
+func TestTimeSettingsApplyOnlyWhileAJiraBoardIsListed(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	want := TimeSettings{Meetings: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-1"}}
+	m.saveSetup(t, m.project(), Setup{Time: &want})
+	linear := m.addLinear()
+	relist := func(boards ...store.ProjectTrackerBoard) {
+		t.Helper()
+		current, err := m.st.ListProjectTrackerBoards(m.project())
+		if err != nil {
+			t.Fatal(err)
+		}
+		held := make([]store.HeldTrackerBoard, len(current))
+		for i, b := range current {
+			held[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+		}
+		if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), held, boards); err != nil {
+			t.Fatal(err)
+		}
+	}
+	relist(store.ProjectTrackerBoard{ConnectionID: linear.ID, BoardID: "team-1"})
+	if got, err := m.svc.ProjectTimeSettings(m.project()); err != nil || !reflect.DeepEqual(got, TimeSettings{}) || !got.RefusesEpics() {
+		t.Fatalf("the time settings of a Linear-only project = %+v, %v; want the built-in ones", got, err)
+	}
+	if data, _ := os.ReadFile(m.setupPathOf(t, m.project())); !strings.Contains(string(data), `"OPS-1"`) {
+		t.Fatalf("the file lost the tickets:\n%s", data)
+	}
+	relist(store.ProjectTrackerBoard{ConnectionID: linear.ID, BoardID: "team-1"}, store.ProjectTrackerBoard{ConnectionID: m.conn.ID, BoardID: string(testBoard)})
+	if got, err := m.svc.ProjectTimeSettings(m.project()); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("the time settings with a Jira board listed again = %+v, %v", got, err)
+	}
+}
+
+// A time section a newer version saved is kept from a save of the other
+// sections, and a change to it is refused.
+func TestTimeSettingsANewerVersionSavedAreKept(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	newer := `{"version": 2, "calendar": "on"}`
+	m.writeSetupFile(t, m.project(), `{"time": `+newer+`}`)
+	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	if !slices.Equal(stored.Newer, []string{"time"}) || stored.Setup.Time != nil {
+		t.Fatalf("a time section a newer version saved: %+v", stored)
+	}
+	if _, err := m.svc.ProjectTimeSettings(m.project()); !errors.Is(err, ErrSetupNewer) {
+		t.Fatalf("the time settings a newer version saved: %v; want ErrSetupNewer", err)
+	}
+	if _, err := m.svc.ProjectAgentRules(m.project()); err != nil {
+		t.Fatalf("the agent rules beside a newer time section: %v", err)
+	}
+	if _, err := m.svc.SetProjectSetup(m.project(), stored.Revision, Setup{Time: &TimeSettings{Meetings: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-1"}}}); !errors.Is(err, ErrSetupNewer) {
+		t.Fatalf("a change of a newer time section: %v", err)
+	}
+	save := m.saveSetup(t, m.project(), m.regrouped(map[string]string{"s1": "done"}))
+	if data, _ := os.ReadFile(m.setupPathOf(t, m.project())); !strings.Contains(string(data), `"time": `+newer) || !slices.Equal(save.Stored.Newer, []string{"time"}) {
+		t.Fatalf("the kept section as written:\n%s", data)
 	}
 }

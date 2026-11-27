@@ -370,10 +370,16 @@ no step runs at root creation, restore or start.
   `{title}`, whether the branch is named after the ticket
   (`name_branch`, false for an empty branch box, stored only when
   false), and the repository, an app project of this computer; each field
-  optional, and an entry that sets nothing dropped) and `agents`
+  optional, and an entry that sets nothing dropped), `agents`
   (`change_tickets` and `ask_several`, each true when absent and stored
   only when false, and the section dropped when it turns neither off;
-  [Writes by agents](#writes-by-agents)). The writer (`validateSetup`)
+  [Writes by agents](#writes-by-agents)) and `time` (`meetings` and
+  `time_off`, each a Jira ticket by site and key, `WEB-1`, never an issue
+  ID, so a client saves what a finder answers with no read; and
+  `never_epics`, true when absent and stored only when false; the
+  section dropped when it sets nothing; it applies only while the
+  project lists a Jira board, and `ProjectTimeSettings` answers the
+  built-in settings otherwise, with the file keeping the section). The writer (`validateSetup`)
   owns these defaults: a client sends the value it shows. Beside them,
   `dashboards` (by tracker site and board, the dashboards the project
   keeps) is written only by its own edits ([Own dashboards and
@@ -457,8 +463,9 @@ no step runs at root creation, restore or start.
   would add to them. A Linear team offers its own boards' statuses (two
   teams share a site); a Jira status is the site's and a Jira board can
   show several projects' tickets, so a Jira project offers every status
-  the project's boards on its site show, and Start work checks the
-  ticket's own moves. A board
+  the project's boards on its site show, those of its own boards (the
+  boards whose tracker project it is) first, so the first in progress is
+  of its own workflow, and Start work checks the ticket's own moves. A board
   is one statement of its column statuses (`GetMirrorBoardStatuses`, at
   most 200 rows), not its structure: no sprints or board data. Names
   come from the root's catalog, looked up 500 at a time. With 20 boards of
@@ -487,6 +494,16 @@ no step runs at root creation, restore or start.
   typed, at most 20 of its matches, ranked on the name. A client reads a
   site only while the page shows it: on the page's show, on reconnect, on
   Try again and when the connections that reach the site change.
+- **The tickets the Time page shows** are checked with `TrackerLookup`,
+  no method of their own: each ticket set through one connection that is
+  on and reaches its site (a connection of the project's boards first),
+  every ticket of a connection in one lookup, so a page with both tickets
+  set on one site is one request, and a key no issue answers to is one
+  more (the lookup reads it alone to tell an old key from a gone one). The
+  lookup gives the title, and its `unmatched` is a ticket that is gone or
+  that the connection cannot see, which Jira does not tell apart. A
+  client checks only while the page shows the tickets: on the page's
+  show, on reconnect, on Try again and when a ticket changes.
 
 ## Tables
 
@@ -2436,8 +2453,9 @@ method makes, has the default method budget. The tool list carries no
 always-load marker (`threadmcp.Server.OmitAlwaysLoad`): no agy session is
 given it.
 
-**Keys.** With one connection on, a key is the tracker's (`WEB-12`). With
-several on, every key an answer gives names its site, `site/KEY`
+**Keys.** With one connection on, a key of its site is the tracker's
+(`WEB-12`), and a key of another site, such as a Time setting's, names
+its site. With several on, every key an answer gives names its site, `site/KEY`
 (`example.atlassian.net/WEB-12`, `example/ENG-4`), so a key a search
 gives reads that ticket whatever the other connections hold. A read with
 no key reads the ticket the thread is linked to
@@ -2929,7 +2947,14 @@ worklogs and the Jira issues they name
 (`TestAWeeksDraftCostsBoundedRequests`). Each day answers its worklogs (`logged`), the draft's entries not yet logged
 (`drafted`, by `agent` or `you`, in state drafted, sent or unknown) and
 its open questions. A connection whose read failed is named in `unread`
-with its sentence; the call fails only when every connection did.
+with its sentence; the call fails only when every connection did. The
+answer names the tickets the thread's project's Time settings put
+meeting and time-off hours on (`meetings_ticket`, `time_off_ticket`,
+each absent when not set, and written as [Keys](#agent-tools) are),
+read from the setup with no request (`Host.TimeSettings`). Time
+settings that cannot be read, or that a newer version saved, fail
+`time_read` and a draft of entries with their sentence; a post reads no
+Time setting.
 Each day also answers what this computer measured of it, and the answer
 says while that measure is incomplete ([Activity](#activity)).
 
@@ -2946,7 +2971,16 @@ them (`store.TimeDayOverError`, checked in the write's transaction); a
 ticket is drafted once a day, and no day is in the future. A read-only thread is
 refused (`Host.WritePolicy`, read at admission and again just before the
 store write, so a thread made read-only during the key lookup drafts
-nothing). The draft replaces the drafted entries that
+nothing). A key of the project's meetings or time-off ticket that no site
+finds is refused naming the setting, so the agent asks and the person
+picks another (`goneSetting`, from the not-found refusal's cause); a key
+the mirror holds resolves with no request, so a ticket gone from Jira
+drafts until this computer reads it again. With
+Never log to an epic on, an entry whose own ticket is an epic (type level
+1 or more) is refused; the type is the lookup's card's or the mirror's,
+which the draft reads anyway, and an entry whose type neither has, such
+as the thread's linked ticket the mirror does not hold, is drafted with
+no request asked for it. An offer of an epic is the person's to pick. The draft replaces the drafted entries that
 the calling thread drafted on each day the call names; another thread's
 entries, the person's, and entries sent, posted or of unknown outcome
 stay, and a new entry for a ticket that has one not yet logged that day

@@ -340,19 +340,21 @@ func TestTimeDraftAnswersWithAReceipt(t *testing.T) {
 // time_read answers what this computer measured of each day beside its
 // logged time: the active minutes and the phone's share when there is
 // any, the minutes on each Jira ticket the focused threads are linked to
-// with a ticket only a turn touched named without minutes, at most
-// commitsShown commits and how many more, the recording gap while there
-// is one, and each repository whose commits could not be read; a day with
-// nothing measured carries none of it, and a failed read of the activity
-// fails the call.
+// with a ticket only a turn touched named without minutes and a ticket
+// of a site that is not on named with its site, at most commitsShown
+// commits and how many more, the recording gap while there is one, and
+// each repository whose commits could not be read; a day with nothing
+// measured carries none of it, and a failed read of the activity fails
+// the call.
 func TestTimeReadAnswersTheMeasuredDay(t *testing.T) {
 	t.Parallel()
 	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, time: map[string]trackerapp.WorklogDays{timeJira.ID: {}},
 		links: map[string]trackerapp.JiraTicket{
 			"t1": {Site: timeJira.Site, Key: "WEB-3"}, "t2": {Site: timeJira.Site, Key: "WEB-2"}, "t4": {Site: timeJira.Site, Key: "WEB-4"},
+			"t5": {Site: timeJira2.Site, Key: "WEB-5"},
 		}}
 	day := activity.Day{Day: "2026-11-24", Active: 124*time.Minute + 40*time.Second, Phone: 30 * time.Minute, Threads: map[string]time.Duration{
-		"t1": 89*time.Minute + 40*time.Second, "t2": 10 * time.Minute, "t3": 20 * time.Minute, "": 5 * time.Minute,
+		"t1": 89*time.Minute + 40*time.Second, "t2": 10 * time.Minute, "t3": 20 * time.Minute, "t5": 15 * time.Minute, "": 5 * time.Minute,
 	}, Ran: []string{"t1", "t4"}}
 	var commits []Commit
 	for i := range commitsShown + 2 {
@@ -369,8 +371,8 @@ func TestTimeReadAnswersTheMeasuredDay(t *testing.T) {
 	for i := range commitsShown {
 		lines = append(lines, fmt.Sprintf(`{"at":"09:%02d","subject":"Change %d"}`, i, i))
 	}
-	want := `{"days":[{"day":"2026-11-24","logged":[],"active":125,"phone":30,"tickets":[{"key":"WEB-3","minutes":90},{"key":"WEB-2","minutes":10},{"key":"WEB-4"}],` +
-		`"commits":[` + strings.Join(lines, ",") + `],"commits_more":2},{"day":"2026-11-25","logged":[]}],"activity_gap":"since 2026-11-25 14:05",` +
+	want := `{"days":[{"day":"2026-11-24","logged":[],"active":125,"phone":30,"tickets":[{"key":"WEB-3","minutes":90},` +
+		`{"key":"other.atlassian.net/WEB-5","minutes":15},{"key":"WEB-2","minutes":10},{"key":"WEB-4"}],"commits":[` + strings.Join(lines, ",") + `],"commits_more":2},{"day":"2026-11-25","logged":[]}],"activity_gap":"since 2026-11-25 14:05",` +
 		`"commits_unread":["Shop: git log in /src/shop failed: fatal: bad object HEAD"]}`
 	if answer != want {
 		t.Fatalf("time_read = %s\nwant %s", answer, want)
@@ -436,4 +438,198 @@ func TestTimeReadsWeekOfActivityBytes(t *testing.T) {
 	}
 	without, with := read(&fakeHost{}), read(&fakeHost{activity: ActivityDays{Days: days}})
 	t.Logf("a week's answer is %d bytes without the activity and %d with it: %d more", len(without), len(with), len(with)-len(without))
+}
+
+// timeTicket is a ticket of timeJira's site a project's Time settings name.
+func timeTicket(key string) *trackerapp.TimeTicket {
+	return &trackerapp.TimeTicket{Tracker: "jira", Site: "https://" + timeJira.Site, Key: key}
+}
+
+// time_read names the tickets the project's Time settings put meeting and
+// time-off hours on, as its answers write keys, and nothing when none is
+// set; settings this build cannot read fail the call with their sentence.
+func TestTimeReadNamesTheProjectsMeetingsAndTimeOffTickets(t *testing.T) {
+	t.Parallel()
+	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, time: map[string]trackerapp.WorklogDays{timeJira.ID: {}, timeJira2.ID: {}}}
+	h := &fakeHost{}
+	s := timeServer(f, h)
+	day := map[string]any{"from": "2026-11-24", "to": "2026-11-24"}
+	answer, err := timeCall(t, s, "time_read", day)
+	if err != nil || answer != `{"days":[{"day":"2026-11-24","logged":[]}]}` {
+		t.Fatalf("time_read with no Time settings = %s, %v", answer, err)
+	}
+	h.time = trackerapp.TimeSettings{Meetings: timeTicket("OPS-1"), TimeOff: timeTicket("OPS-2")}
+	answer, err = timeCall(t, s, "time_read", day)
+	if want := `{"days":[{"day":"2026-11-24","logged":[]}],"meetings_ticket":"OPS-1","time_off_ticket":"OPS-2"}`; err != nil || answer != want {
+		t.Fatalf("time_read = %s, %v\nwant %s", answer, err, want)
+	}
+	f.sources = []trackerapp.TicketSource{timeJira, timeJira2}
+	h.time = trackerapp.TimeSettings{TimeOff: timeTicket("OPS-2")}
+	answer, err = timeCall(t, s, "time_read", day)
+	if err != nil || !strings.HasSuffix(answer, `"time_off_ticket":"example.atlassian.net/OPS-2"}`) || strings.Contains(answer, "meetings_ticket") {
+		t.Fatalf("time_read with two connections = %s, %v", answer, err)
+	}
+	h.timeErr = errorsx.Public("tracker_setup_newer", "A newer version of Agent Overflow saved this project's Time settings, so this version cannot tell where its time goes; ask the user to update the app.", nil)
+	_, err = timeCall(t, s, "time_read", day)
+	refused(t, err, "tracker_setup_newer", "A newer version of Agent Overflow saved this project's Time settings, so this version cannot tell where its time goes; ask the user to update the app.")
+}
+
+// A draft entry on a meetings or time-off ticket that Jira no longer
+// finds is refused with what to do, the setting named; another key that
+// is not found keeps the lookup's own sentence.
+func TestTimeDraftSaysASettingsTicketThatIsGone(t *testing.T) {
+	t.Parallel()
+	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, lookup: map[string]map[string]string{timeJira.ID: {"WEB-1": "10101"}}}
+	h := &fakeHost{time: trackerapp.TimeSettings{Meetings: timeTicket("OPS-1"), TimeOff: timeTicket("OPS-2")}}
+	s := timeServer(f, h)
+	entry := func(key string) map[string]any {
+		return map[string]any{"day": "2026-11-24", "key": key, "hours": 1, "reason": "Standup"}
+	}
+	_, err := timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{entry("WEB-1"), entry("ops-1")}})
+	refused(t, err, CodeNotFound, "OPS-1, this project's meetings ticket in Settings > Issues > Time, cannot be found on example.atlassian.net, or this connection cannot see it. "+
+		"Ask the user which ticket: leave out key, and with more than one Jira connection on, offer a ticket of example.atlassian.net unless another entry has a key there. Tell them to choose another meetings ticket in those settings.")
+	_, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "hours": 8, "reason": "Holiday", "offer": []string{"OPS-2"}}}})
+	refused(t, err, CodeNotFound, "OPS-2, this project's time-off ticket in Settings > Issues > Time, cannot be found on example.atlassian.net, or this connection cannot see it. "+
+		"Ask the user which ticket: leave out key, and with more than one Jira connection on, offer a ticket of example.atlassian.net unless another entry has a key there. Tell them to choose another time-off ticket in those settings.")
+	_, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{entry("WEB-99")}})
+	refused(t, err, CodeNotFound, "No ticket WEB-99 on example.atlassian.net.")
+	if len(f.drafts) != 0 {
+		t.Fatalf("a refused draft reached the draft: %v", f.drafts)
+	}
+
+	// With one Jira connection on, the advice's question with no key and
+	// no offer drafts.
+	f.draft = func(string, trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) {
+		return trackerapp.TimeDraftView{}, nil
+	}
+	if _, err := timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "hours": 8, "reason": "Holiday"}}}); err != nil || len(f.drafts) != 1 {
+		t.Fatalf("the question the advice asks for on one connection: %v, drafts %v", err, f.drafts)
+	}
+
+	// With two Jira connections on, a day's only entry on the gone
+	// time-off ticket follows the advice: a question offering a ticket of
+	// the site, which drafts.
+	f.sources = []trackerapp.TicketSource{timeJira, timeJira2}
+	holiday := map[string]any{"day": "2026-11-24", "hours": 8, "reason": "Holiday"}
+	_, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "key": "example.atlassian.net/OPS-2", "hours": 8, "reason": "Holiday"}}})
+	if code, message, _ := errorsx.PublicDetails(err); code != CodeNotFound || !strings.Contains(message, "with more than one Jira connection on, offer a ticket of example.atlassian.net unless another entry has a key there") {
+		t.Fatalf("the gone time-off ticket with two connections on: %v", err)
+	}
+	holiday["offer"] = []string{"example.atlassian.net/WEB-1"}
+	if _, err := timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{holiday}}); err != nil || len(f.drafts) != 2 {
+		t.Fatalf("the question the advice asks for: %v, drafts %v", err, f.drafts)
+	}
+}
+
+// With Never log to an epic on, the default, an entry whose own ticket
+// the lookup or the mirror types as an epic is refused, asking nothing
+// more of the tracker; an offer of an epic, an entry whose type neither
+// has, and any entry with the rule off are drafted.
+func TestTimeDraftKeepsTimeOffEpics(t *testing.T) {
+	t.Parallel()
+	epic := &trackerapp.IssueTypeView{ID: "10000", Name: "Epic", Level: 1}
+	story := &trackerapp.IssueTypeView{ID: "10001", Name: "Story", Level: 0}
+	newTracker := func() *fakeTracker {
+		f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira},
+			lookup:  map[string]map[string]string{timeJira.ID: {"WEB-1": "10101", "WEB-9": "10109"}},
+			details: map[string]trackerapp.DetailView{"conn-jira/10101": {Card: trackerapp.CardView{Title: "First story", Type: story}}, "conn-jira/10109": {Card: trackerapp.CardView{Title: "The epic", Type: epic}}},
+			// The mirror holds WEB-8, an epic, and WEB-7, whose card has no type.
+			keyed: map[string][]trackerapp.KeyedTicket{"WEB-8": {{Connection: timeJira.ID, Issue: "10108"}}, "WEB-7": {{Connection: timeJira.ID, Issue: "10107"}}},
+			cards: map[string]trackerapp.CardView{"conn-jira/10108": {Title: "Mirrored epic", Type: epic}, "conn-jira/10107": {Title: "Untyped"}}}
+		f.draft = func(string, trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) {
+			return trackerapp.TimeDraftView{}, nil
+		}
+		return f
+	}
+	entry := func(key string, offer ...string) map[string]any {
+		e := map[string]any{"day": "2026-11-24", "hours": 1, "reason": "Work"}
+		if key != "" {
+			e["key"] = key
+		}
+		if len(offer) > 0 {
+			e["offer"] = offer
+		}
+		return e
+	}
+	for _, tc := range []struct {
+		name    string
+		off     bool
+		entries []map[string]any
+		want    string
+	}{
+		{"an epic the lookup found", false, []map[string]any{entry("WEB-1"), entry("WEB-9")},
+			"entries[1].key WEB-9 is an epic, and this project's Time settings keep time off epics; put the hours on a ticket under it, or leave out key and offer tickets under it."},
+		{"an epic the mirror holds", false, []map[string]any{entry("WEB-8")},
+			"entries[0].key WEB-8 is an epic, and this project's Time settings keep time off epics; put the hours on a ticket under it, or leave out key and offer tickets under it."},
+		{"a story", false, []map[string]any{entry("WEB-1")}, ""},
+		{"an offer of an epic", false, []map[string]any{entry("", "WEB-9", "WEB-1")}, ""},
+		{"a ticket of no known type", false, []map[string]any{entry("WEB-7")}, ""},
+		{"an epic with the rule off", true, []map[string]any{entry("WEB-9"), entry("WEB-8")}, ""},
+	} {
+		f := newTracker()
+		h := &fakeHost{}
+		if tc.off {
+			off := false
+			h.time.NeverEpics = &off
+		}
+		_, err := timeCall(t, timeServer(f, h), "time_draft", map[string]any{"entries": tc.entries})
+		switch {
+		case tc.want != "":
+			if code, message, _ := errorsx.PublicDetails(err); code != CodeInvalidRequest || message != tc.want || len(f.drafts) != 0 {
+				t.Errorf("%s: %v, drafts %v\nwant %s", tc.name, err, f.drafts, tc.want)
+			}
+		case err != nil || len(f.drafts) != 1:
+			t.Errorf("%s: %v, drafts %v; want it drafted", tc.name, err, f.drafts)
+		}
+		if lookups := slices.DeleteFunc(slices.Clone(f.asked), func(a string) bool { return !strings.HasPrefix(a, "lookup ") }); len(lookups) > 1 {
+			t.Errorf("%s asked %v; want at most the one lookup of its keys", tc.name, lookups)
+		}
+	}
+}
+
+// A key is written bare only when the one connection on is the key's own
+// site: a key of another site, or any key while several are on, carries
+// its site, so it opens that site's ticket again.
+func TestAKeyIsBareOnlyOnTheOneSiteOn(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		sources []trackerapp.TicketSource
+		want    string
+	}{
+		{"one source, the key's site", []trackerapp.TicketSource{timeJira}, "OPS-1"},
+		{"one source, another site", []trackerapp.TicketSource{timeJira2}, "example.atlassian.net/OPS-1"},
+		{"several sources", []trackerapp.TicketSource{timeJira, timeJira2}, "example.atlassian.net/OPS-1"},
+	} {
+		if got := qualifier(tc.sources, timeJira.Site)("OPS-1"); got != tc.want {
+			t.Errorf("%s: %q; want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// With the meetings ticket's site turned off and another site on that has
+// a ticket of the same key, time_read names the meetings ticket with its
+// site, and a draft of that key is refused, drafting nothing on the other
+// site.
+func TestASettingsTicketOfASiteTurnedOffIsNotDraftedOnAnother(t *testing.T) {
+	t.Parallel()
+	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira2}, time: map[string]trackerapp.WorklogDays{timeJira2.ID: {}},
+		lookup: map[string]map[string]string{timeJira2.ID: {"OPS-1": "20101"}}}
+	h := &fakeHost{time: trackerapp.TimeSettings{Meetings: timeTicket("OPS-1")}}
+	s := timeServer(f, h)
+	answer, err := timeCall(t, s, "time_read", map[string]any{"from": "2026-11-24", "to": "2026-11-24"})
+	if err != nil || !strings.HasSuffix(answer, `"meetings_ticket":"example.atlassian.net/OPS-1"}`) {
+		t.Fatalf("time_read = %s, %v", answer, err)
+	}
+	var read struct {
+		Meetings string `json:"meetings_ticket"`
+	}
+	if err := json.Unmarshal([]byte(answer), &read); err != nil {
+		t.Fatal(err)
+	}
+	_, err = timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{{"day": "2026-11-24", "key": read.Meetings, "hours": 1, "reason": "Standup"}}})
+	refused(t, err, CodeNotFound, "No connection on this computer reaches example.atlassian.net; the sites on are other.atlassian.net.")
+	if len(f.drafts) != 0 {
+		t.Fatalf("the meetings ticket was drafted on the other site: %v", f.drafts)
+	}
 }
