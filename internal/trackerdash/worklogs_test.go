@@ -179,8 +179,8 @@ func TestLoggedTimePlacedOffItsDayNeedsTheWholeWindow(t *testing.T) {
 }
 
 // A widget of logged time counted by sprint over a range with no sprint
-// (This sprint, none active) counts nothing and lists no day to read; one
-// that counts now on the same page lists the window's.
+// (This sprint, none active) counts nothing and lists no day to read, nor
+// does its drill; one that counts now on the same page lists the window's.
 func TestLoggedTimeOverARangeWithNoPeriodReadsNothing(t *testing.T) {
 	t.Parallel()
 	f := worklogBoard()
@@ -198,6 +198,9 @@ func TestLoggedTimeOverARangeWithNoPeriodReadsNothing(t *testing.T) {
 	}
 	if w := widgetOf(t, a, "all"); len(w.Unread) != 182 {
 		t.Errorf("the hours that count now list %d days; want the window's 182", len(w.Unread))
+	}
+	if d := mustDrill(t, b, DrillRequest{Request: Request{Dashboard: "mine", Range: RangeThisSprint, TimeZone: "UTC"}, Widget: "n"}); d.Value.UR > 0 {
+		t.Errorf("the number's drill over no sprint: %s", num(&d.Value))
 	}
 }
 
