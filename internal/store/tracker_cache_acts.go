@@ -77,11 +77,11 @@ type mirrorActRow struct {
 var (
 	// mirrorActsStateSQL reads, for each listed issue and source, whether
 	// the mirror keeps the issue, the read order of its receipt (0 for
-	// none), the card update and the worklogs' start it is for, whether a
-	// read failed since, and how many acts it holds.
+	// none), the card update and the worklogs' start it is for, why a read
+	// failed since ("" for none), and how many acts it holds.
 	mirrorActsStateSQL = `SELECT e.value ->> 'i', e.value ->> 's',
 	    iif(i.issue_id IS NULL, 0, ` + mirrorIssueKept("i.root_id", "i.issue_id") + `), coalesce(r.read_at, 0), coalesce(r.read_for, 0), coalesce(r.read_from, 0),
-	    coalesce(r.tried_at, 0) > 0,
+	    coalesce(r.tried_reason, ''),
 	    (SELECT count(*) FROM tracker_cache_issue_acts a WHERE a.root_id = CAST(?1 AS INTEGER) AND a.issue_id = e.value ->> 'i' AND a.source = e.value ->> 's')
 	  FROM json_each(?3) e
 	  LEFT JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = e.value ->> 'i'
@@ -232,9 +232,10 @@ func (s *Store) storedMirrorActs(rootID int64, keys []mirrorActsKeyRow) ([]int, 
 		err := scanMirrorRows(tx, mirrorActsStateSQL, []any{rootID, nil, listed}, func(r rowScanner) error {
 			var issue string
 			var source, n int
-			var kept, failed bool
+			var kept bool
 			var readAt, readFor, readFrom int64
-			if err := r.Scan(&issue, &source, &kept, &readAt, &readFor, &readFrom, &failed, &n); err != nil {
+			var reason string
+			if err := r.Scan(&issue, &source, &kept, &readAt, &readFor, &readFrom, &reason, &n); err != nil {
 				return err
 			}
 			out[at[issue+"\x00"+strconv.Itoa(source)]] = n
@@ -301,9 +302,9 @@ func checkMirrorIssueActs(issues []MirrorIssueActs, tried []MirrorActsAttempt) e
 // returns those issues (credited, sorted): a read that stores changes it
 // when it is the first, for another card update or worklogs' start, or
 // after a failed attempt, or when an act was added, changed or removed;
-// an attempt when it is the first to fail since the source's read
-// (mirrorActsCurrentSQL counts a source a read failed for since as not
-// read).
+// an attempt when it fails for another reason than the last since the
+// source's read, or is the first (mirrorActsCurrentSQL counts a source a
+// read failed for since as not read, and credit says why).
 func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTimes, keys []mirrorActsKeyRow, issues []MirrorIssueActs) (refused bool, credited []string, _ error) {
 	if len(keys) == 0 {
 		return false, nil, nil
@@ -329,18 +330,19 @@ func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTi
 	err = scanMirrorRows(tx, mirrorActsStateSQL, []any{rootID, nil, listed}, func(r rowScanner) error {
 		var issue string
 		var source, n int
-		var kept, failed bool
+		var kept bool
 		var storedAt, storedFor, storedFrom int64
-		if err := r.Scan(&issue, &source, &kept, &storedAt, &storedFor, &storedFrom, &failed, &n); err != nil {
+		var reason string
+		if err := r.Scan(&issue, &source, &kept, &storedAt, &storedFor, &storedFrom, &reason, &n); err != nil {
 			return err
 		}
 		i := index[issue+"\x00"+strconv.Itoa(source)]
 		admitted[i] = kept && storedAt < times.at && (!refused || source != MirrorActWorklog)
 		switch {
 		case !admitted[i]:
-		case i < len(issues) && (storedAt == 0 || failed || storedFor != keys[i].ReadFor || storedFrom != keys[i].From):
+		case i < len(issues) && (storedAt == 0 || reason != "" || storedFor != keys[i].ReadFor || storedFrom != keys[i].From):
 			moved[issue] = true
-		case i >= len(issues) && !failed:
+		case i >= len(issues) && reason != keys[i].Reason:
 			moved[issue] = true
 		}
 		return nil

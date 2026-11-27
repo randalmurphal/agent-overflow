@@ -41,7 +41,7 @@ package store
 // until a read for the new update (mirrorActsCurrentSQL), or, for a
 // member of a closed sprint (the pace's), a history final for it, whose
 // person is not known from then until the history is read again
-// (mirrorHistoryReadForCardSQL; that history write advances them again,
+// (mirrorHistoryReadForCard; that history write advances them again,
 // advanceMirrorPaceTx). A card write that moves neither out of date, the
 // steady state of a board read, runs one probe of the issue's receipts by
 // key.

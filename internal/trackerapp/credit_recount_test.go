@@ -2,9 +2,11 @@ package trackerapp
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
@@ -156,52 +158,69 @@ func TestATimeSourceChangeReadsTheBoardsAgain(t *testing.T) {
 // An edit of a finished ticket moves its card past its history, so who
 // had it when it finished is not known and its review is not counted;
 // the history read for the edit tells the open board its row, and the
-// review counts again with no other change.
+// review counts again with no other change. It does when the ticket's
+// detail was read first, too, which decides its status time for the edit
+// so the history read leaves that time as it was.
 func TestAHistoryReadForAnEditCountsTheTicketsCreditAgain(t *testing.T) {
-	m, _, _ := evidenceFixture(t, 1)
-	m.countCredit(t, m.conn.ID, true)
-	m.subscribeShown(t, m.project())
-	review := openTickets()
-	review.Metric.Title, review.Metric.SQL = "Review credit", `SELECT ticket, value, share FROM credit WHERE kind = 'review'`
-	review.Metric.Reduce, review.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
-	credit := func() string {
-		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), review, TileMarks{}, "thread-1", false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return numText(t, tried.Value.Value)
-	}
-	m.evidenceTick(t)
-	if got := credit(); got != `{"v":0}` {
-		t.Fatalf("with its history and evidence read, the review is %s; want counted", got)
-	}
-	edited := row("20001", 1_799_000_100_000, "00000")
-	edited.Card.Status, edited.Card.Sprints = statusDone.ID, []tracker.SprintID{"1"}
-	m.p.set(func(p *scripted) {
-		p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {
-			return tracker.RowPage{Rows: []tracker.Row{edited}, Next: cursorAfter("end")}, nil
-		}
-		// The evidence as the tracker answers it for the edited card.
-		read := p.evidence
-		p.evidence = func(q tracker.EvidenceQuery) (tracker.Evidence, error) {
-			ev, err := read(q)
-			for i := range ev.Read {
-				ev.Read[i].Updated = edited.Card.Updated
+	for _, opened := range []bool{false, true} {
+		t.Run(fmt.Sprintf("detail read first %v", opened), func(t *testing.T) {
+			m, _, _ := evidenceFixture(t, 1)
+			m.countCredit(t, m.conn.ID, true)
+			m.subscribeShown(t, m.project())
+			review := openTickets()
+			review.Metric.Title, review.Metric.SQL = "Review credit", `SELECT ticket, value, share FROM credit WHERE kind = 'review'`
+			review.Metric.Reduce, review.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
+			credit := func() string {
+				tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), review, TileMarks{}, "thread-1", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return numText(t, tried.Value.Value)
 			}
-			return ev, err
-		}
-	})
-	must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Delta: true}, Background))
-	m.evidenceTick(t)
-	if got := credit(); got != `{"nc":1}` {
-		t.Fatalf("after the edit, with its evidence read again and not its history, the review is %s; want not counted", got)
-	}
-	n := m.boardEventCount()
-	must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{History: true}, Background))
-	if got := m.rowsToldSince(n); !slices.Contains(got, "20001") {
-		t.Fatalf("the history read told the board %v; want ticket 20001's row", got)
-	}
-	if got := credit(); got != `{"v":0}` {
-		t.Fatalf("with its history read for the edit, the review is %s; want counted", got)
+			m.evidenceTick(t)
+			if got := credit(); got != `{"v":0}` {
+				t.Fatalf("with its history and evidence read, the review is %s; want counted", got)
+			}
+			edited := row("20001", 1_799_000_100_000, "00000")
+			edited.Card.Status, edited.Card.Sprints = statusDone.ID, []tracker.SprintID{"1"}
+			m.p.set(func(p *scripted) {
+				p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {
+					return tracker.RowPage{Rows: []tracker.Row{edited}, Next: cursorAfter("end")}, nil
+				}
+				// The evidence as the tracker answers it for the edited card.
+				read := p.evidence
+				p.evidence = func(q tracker.EvidenceQuery) (tracker.Evidence, error) {
+					ev, err := read(q)
+					for i := range ev.Read {
+						ev.Read[i].Updated = edited.Card.Updated
+					}
+					return ev, err
+				}
+				p.detail = func(tracker.IssueID) (tracker.Detail, error) {
+					d := detailOfCard(edited.Card)
+					d.HistoryTo = edited.Card.Updated.Add(time.Minute)
+					return d, nil
+				}
+			})
+			must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Delta: true}, Background))
+			m.evidenceTick(t)
+			if opened {
+				m.openDetail(t, "20001")
+				if r := m.recordOf(t, "20001"); !r.StatusFinal {
+					t.Fatal("the detail read did not decide the status time for the edit")
+				}
+			}
+			if got := credit(); got != `{"nc":1}` {
+				t.Fatalf("after the edit, with its evidence read again and not its history, the review is %s; want not counted", got)
+			}
+			n := m.boardEventCount()
+			must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{History: true}, Background))
+			if got := m.rowsToldSince(n); !slices.Contains(got, "20001") {
+				t.Fatalf("the history read told the board %v; want ticket 20001's row", got)
+			}
+			if got := credit(); got != `{"v":0}` {
+				t.Fatalf("with its history read for the edit, the review is %s; want counted", got)
+			}
+		})
 	}
 }

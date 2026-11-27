@@ -18,7 +18,7 @@ import (
 //     (mirrorExportStatusChangeSQL); on one that does not, a ticket done
 //     now and updated since the window, at its last move into done, read
 //     only from a history that covers the card's version
-//     (mirrorHistoryReadForCardSQL), else its resolution. The assignee
+//     (mirrorHistoryReadForCard), else its resolution. The assignee
 //     then is the last assignee change at or before it, else what the
 //     first after it is from, else the assignee now, read only from a
 //     history that covers the card's version and is complete from before
@@ -192,7 +192,7 @@ func mirrorCreditCountsInSQL(at string) string {
 // sprint is closed and its end (until for an open sprint and a week: acts
 // count up to it), the sprint's rule (NULL: the one in force at the
 // finish), the board's unit, the issue, whether its history covers its
-// card (mirrorHistoryReadForCardSQL) and from when (0: from its creation), its points, whether it counted done
+// card (mirrorHistoryReadForCard) and from when (0: from its creation), its points, whether it counted done
 // (NULL: not known), whether it is a support ticket (credited by its
 // time alone), and its receipts, c_ its comments' and w_ its worklogs'.
 const mirrorCreditMemberColumns = `sprint_id, closed, hi, rule, unit, root_id, issue_id, history_gen, covered, history_from, updated_at, resolved_at, assignee_id, points,
@@ -200,7 +200,7 @@ const mirrorCreditMemberColumns = `sprint_id, closed, hi, rule, unit, root_id, i
 
 // mirrorCreditIssueSQL are an issue i's columns of cr_m from its history
 // to its receipts.
-const mirrorCreditIssueSQL = `i.history_gen, ` + `(` + mirrorHistoryReadForCardSQL + `), i.history_from, i.updated_at, i.resolved_at, i.assignee_id`
+var mirrorCreditIssueSQL = `i.history_gen, ` + `(` + mirrorHistoryReadForCard("i") + `), i.history_from, i.updated_at, i.resolved_at, i.assignee_id`
 
 // mirrorCreditReceiptsSQL are an issue i's receipts as cr_m holds them.
 const mirrorCreditReceiptsSQL = `r1.read_at, r1.read_for, r1.tried_at, r1.tried_reason, r2.read_at, r2.read_for, r2.read_from, r2.tried_at, r2.tried_reason`

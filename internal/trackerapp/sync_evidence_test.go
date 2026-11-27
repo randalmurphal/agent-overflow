@@ -34,7 +34,15 @@ func evidenceFixture(t *testing.T, rows int, extra ...tracker.Row) (m *mirrorFix
 		p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {
 			return tracker.RowPage{Rows: page, Next: cursorAfter("end")}, nil
 		}
-		p.history = func(tracker.HistoryQuery) (tracker.History, error) { return tracker.History{}, nil }
+		// Each ticket's history is read, final and with no change: who had
+		// it is who has it.
+		p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
+			var h tracker.History
+			for _, id := range q.Issues {
+				h.Issues = append(h.Issues, tracker.IssueHistory{Issue: id, CompleteTo: time.UnixMilli(1_900_000_000_000)})
+			}
+			return h, nil
+		}
 	})
 	must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true, History: true}, Background))
 	var reads [][]tracker.EvidenceIssue
