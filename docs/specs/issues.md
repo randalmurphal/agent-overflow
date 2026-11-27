@@ -786,7 +786,7 @@ the worklog's description once posted.
   is unknown says so in the computer's words and reads the setup again.
   A setup that cannot be read is said with its file and Try again; one a
   newer version saved is said, with no change offered.
-- Fields, Starting work, Time and Agents are per project and behave as
+- Fields, Starting work, Points and credit, Time and Agents are per project and behave as
   Status groups does: each change saves at once, and a save that lost, a save
   whose outcome is unknown, a setup that cannot be read and a section a
   newer version saved are said the same way.
@@ -829,6 +829,27 @@ the worklog's description once posted.
   the project chooses. A setup that cannot be read, or an agents section a
   newer version saved, refuses every ticket change of the project's
   threads until it is fixed.
+- Points and credit has the Estimates group, which applies to the
+  project's Jira boards. What a ticket is worth is the boards' estimates
+  ("Story points" when every Jira board this computer has read estimates
+  in points, else "The board's estimates") or Count tickets: counting
+  tickets sums every total of the project's boards in tickets (the
+  Board's columns, the Backlog's sections, a sprint's completion, each
+  person's load, the pace sprint planning measures against, and the
+  dashboards), each open screen following the pick without a reload,
+  while cards, rows and the ticket keep showing and editing their
+  points. A board listed by two projects counts in each by that
+  project's pick. Usual pace is, for each Jira board that plans sprints,
+  the pace sprint planning measures against, in the unit picked, from
+  this computer's copy as it is when the page opens: "44 points a sprint,
+  from the last 5 sprints", a board not read yet as read when it is
+  opened, and a board that finished no sprint as having none. Planning
+  poker is on unless turned off; off, the project's tickets show no
+  poker and ask the site nothing about it, and on again show the votes
+  read anew. A project with only Linear boards says it has no points
+  settings, and one with no boards says to add one; what it chose is
+  kept for when it lists a Jira board. Not built: the Credit group
+  (review credit, support credit and which tickets are support).
 - Time names the ticket meetings go on, "Meetings that are not about one
   ticket", and the ticket time off goes on, each found by key or title on
   the connections of the project's Jira boards, shown with its title and

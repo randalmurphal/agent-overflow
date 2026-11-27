@@ -379,7 +379,11 @@ no step runs at root creation, restore or start.
   `never_epics`, true when absent and stored only when false; the
   section dropped when it sets nothing; it applies only while the
   project lists a Jira board, and `ProjectTimeSettings` answers the
-  built-in settings otherwise, with the file keeping the section). The writer (`validateSetup`)
+  built-in settings otherwise, with the file keeping the section) and
+  `estimates` (`count`, `tickets` to count tickets in place of the
+  boards' estimates, absent for the estimates; and `poker`, true when
+  absent and stored only when false; the section dropped when it sets
+  nothing; it applies only to the project's Jira boards). The writer (`validateSetup`)
   owns these defaults: a client sends the value it shows. Beside them,
   `dashboards` (by tracker site and board, the dashboards the project
   keeps) is written only by its own edits ([Own dashboards and
@@ -428,6 +432,23 @@ no step runs at root creation, restore or start.
   project's boards read again and the change is told, as for any change
   of what is held (`setupMoved`). A file edited by hand while the app
   runs is read by the next save or the next start.
+- **The unit a project counts a board in** is the board's estimate unit,
+  or none when the project counts tickets and the board is a Jira
+  board's (`StatusGroups.unit`, which carries the count with the site's
+  groups). The board view says it as `counts` beside the board's own
+  `estimate.unit`: every total, the pace and a person's load on the Board
+  and Backlog screens read `counts`, and a card's estimate reads
+  `estimate.unit`. The store's totals carry both rows and estimates, so a
+  change of the count reads the project's open boards again by the path
+  a change of its groups takes (`setupMoved`, `readBoardsAgain`) and
+  tells the dashboards changed, since a board's dashboards are laid out
+  in that unit (`Dashboards`). `ProjectTrackerPace` answers each Jira
+  board the project lists with its pace read from the mirror by the same
+  rule the section totals use (`GetMirrorBoardPace`), in that unit, with
+  no tracker request: one query of the board's last 5 closed sprints and
+  their members per board. Planning poker off is the ticket screen's
+  rule: it asks no poker support and shows no poker for a ticket of the
+  project, so the votes are not followed.
 - **Status groups apply to a board read** as a bound argument
   (`store.MirrorRegroup`), resolved from the board handle's project and
   its connection's site, so two projects that list one board each read it
