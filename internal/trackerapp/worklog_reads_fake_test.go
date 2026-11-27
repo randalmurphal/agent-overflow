@@ -368,3 +368,26 @@ func TestADashboardReadIsRefusedWhatItCannotRead(t *testing.T) {
 		t.Errorf("the refused reads stored %v", s.spansSince(0))
 	}
 }
+
+// What the reads tried goes with the time source: once Tempo becomes the
+// connection's, its days are all read again on their own, the ones whose
+// read from Jira failed included.
+func TestAnotherTimeSourceStartsTheDashboardReadsOver(t *testing.T) {
+	t.Parallel()
+	s, today := dashTime(t)
+	_, n := s.windowDays(today)
+	jira := trackerfake.Origin{Tracker: trackerfake.TrackerJira, Site: "example.atlassian.net"}
+	if err := s.e.AddFault(trackerfake.Fault{Origin: jira, Route: "POST rest/api/3/search/jql", Kind: trackerfake.FaultRefuse, Times: 1, Status: 400,
+		Body: json.RawMessage(`{"errorMessages":["refused"],"errors":{}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.dashRead(t, today, WorklogReadShown); got.Failure == nil {
+		t.Fatalf("the read answered %+v; want its failure", got)
+	}
+	s.addTempoOn(t)
+	mark := s.spanCount()
+	s.backfill(t, today, WorklogReadShown)
+	if spans := s.spansSince(mark); len(spans) != (n+worklogSpan-1)/worklogSpan || spans[0][len(spans[0])-10:] != today {
+		t.Fatalf("after Tempo was added the show read %v; want the whole window, the failed days first", spans)
+	}
+}
