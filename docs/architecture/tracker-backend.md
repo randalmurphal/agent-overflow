@@ -2322,7 +2322,8 @@ whether it is open and whether it counts, by the project's status
 groups), the statuses its columns, tickets and copied changes name,
 people (the assignees, and the people the changes name when those are
 copied), epics, sprints and their members, the tickets' changes, what
-each sprint finished and the tickets' labels. A ticket's type and
+each sprint finished, the tickets' labels, and two relations rebuilt from
+the stored history ([Sprint history](#sprint-history)). A ticket's type and
 priority names (`MirrorExportColumns`) and its labels come from its card
 blob, whose shape trackerapp passes (`MirrorCardShape`, from the json
 tags of `cardBlob`); the tickets fill decodes a name only when a count
@@ -2367,15 +2368,76 @@ source: it reports no read of a USING or NATURAL join's columns.
 Built-in metrics are planned once per dashboard kind, and a count asks
 for those of the widgets it counts and the tickets, statuses, people and
 epics its answer names. No built-in metric reads `changes`, so none
-copies them.
+copies them; the intervals read the stored history by key without
+copying it.
 `TestADashboardCountCopiesWhatItsQueryReads` in `internal/store` runs
 each kind of read on the copy it asks for and on a copy of everything.
+
+### Sprint history
+
+`status_intervals(ticket, status, from_at, to_at)` holds each ticket's
+status from `from_at` until `to_at` (NULL: still), and
+`sprint_intervals(sprint, ticket, points, from_at, to_at)` each stretch
+a ticket spent in one of the board's sprints at one estimate. The rules
+they keep are the comment at the top of
+`store/tracker_cache_export_intervals.go`; in short:
+
+- They reach back to the earliest instant a count can ask: 180 days ago,
+  or the start of a sprint the board keeps that began earlier. Nothing
+  before it has a row.
+- A status interval comes from consecutive status changes, and the status
+  now from `status_since`, the store's one rule for when it began. Where
+  no interval covers an instant, the status then is not known: before
+  the history begins, and after the latest stored change when the card
+  shows a newer status than the history has read, until the history is
+  read again.
+- A sprint stretch comes from the sprint and estimate changes read
+  together, split where the estimate changed. An open stretch holds only
+  while the ticket is in the sprint now. On Jira a closed sprint stays in
+  the ticket's sprint set, so its stretch stays open past completion; on
+  Linear a carried-over issue leaves the cycle, so its stretch ends at
+  the carry-over. Whether Linear records the move out of a cycle before
+  or after the cycle's `completedAt` was not checked against a real
+  workspace: if it lands before, a carried-over issue counts as removed.
+- A fill reads the history only of the tickets that can have changed in
+  the window: one updated since the earliest instant
+  (`idx_tracker_cache_issues_updated`, v175), and for the sprints one in
+  a board's sprint now. Every other ticket gets its status now alone.
+
+A metric that returns `until` reads them as states (below). The sprint
+board's Overview counts three widgets from them:
+
+- Burndown (`burndown`, a line by `day`) is each active-sprint stretch
+  while its ticket's status is open (not done, canceled or left out),
+  valued at the stretch's estimate. A stretch whose status is not known,
+  and a member whose history does not reach back to the sprint's start
+  (or to its creation, when it was made after the start), is not
+  counted.
+- Committed, added, removed and completed (`sprint_scope`, a table by
+  `sprint` in four series): committed is a stretch that holds at the
+  start, added a ticket's first entry after it when it was not
+  committed, removed its last exit before the end when no stretch holds
+  at the end, each at the stretch's estimate; completed is the pace's
+  rule (`sprint_finished`). A ticket added and then removed counts in
+  both, and once in each. A member whose history does not reach back to
+  the start (or its creation after it), and every member of a sprint
+  with no start date, is not counted in committed and added.
+- Stuck (`stuck`) is a state over `status_intervals`: a ticket in an
+  in-progress status from three days after it entered it until it
+  leaves. A stretch whose status is not known is not counted while it
+  lasts. Its value now and the tickets it does not count are those of
+  the query it replaced
+  (`TestStuckOverTheIntervalsCountsNowAsOverStatusSince` in
+  `internal/store`).
+
+Their costs at 2,000 and 20,000 issues are in
+[Tracker API measurements](../references/tracker-api-measurements.md#sprint-history).
 
 ### Metrics
 
 A metric is one SELECT over the export whose rows are contributions:
-a `ticket` and any of `value`, `bucket`, `series`, `person`, `epic`, `at`
-and `note` (`trackerdash/metric.go`). Each row is checked as it comes
+a `ticket` and any of `value`, `bucket`, `series`, `person`, `epic`, `at`,
+`until` and `note` (`trackerdash/metric.go`). Each row is checked as it comes
 in: its ticket is in the copy, its series is one the metric names, its
 value is finite and within ±1e12, and its `at` is an instant before the
 year 2286. The app does the rest: it places rows in the range's periods
@@ -2390,9 +2452,25 @@ ticket's creation to its last update: it belongs to each range that
 span meets, the range before included, is counted in none and in no
 period, and the range lists it in its numbers, their drills and a
 chart's not counted. A row not counted is listed as "Not counted: " and its note, so
-a note says only why. A metric with `at` or a sprint bucket counts the
+a note says only why. A metric with `until` is a state: a row holds from
+`at` (NULL: before anything) until `until` (NULL: still), and one whose
+`until` is before its `at` is refused. A state's number is what holds
+now, its previous value what held where the range begins, and its trend
+what held at each period's end; a state is never the average of
+periods' sums. Any other metric with `at` or a sprint bucket counts the
 range and is compared with the range before; any other counts now and
-has no change mark. The host binds `:now` and `:since` (where the
+has no change mark.
+
+The bucket `day` draws the working days of the board's active sprints,
+whatever the range: Start (the earliest start), then the end of each
+working day, in the request's time zone, through the later of the end
+and today. A weekend's rows fall in the next working day. Today's point
+is so far, at now; later days have no value; the last working day on or
+before the end is marked `last`, where a line's even pace reaches zero.
+Only a state or a metric with `at` fills it. With no active sprint, an active sprint with no start or end date,
+more than 64 working days, or a board that plans no sprints, the widget
+answers why in `Note` and its drill is refused with the same sentence;
+`RangeWords` names the sprint for How this is counted. The host binds `:now` and `:since` (where the
 range's periods, the previous range's included, begin), so a metric of
 the range reads only the rows it can place; a done ticket whose finish
 is not known is read when it changed since `:since`.

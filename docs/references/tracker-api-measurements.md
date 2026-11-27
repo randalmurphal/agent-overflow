@@ -854,7 +854,8 @@ encodes BLOBs by SQL type without the `iif`: it wrote `x'00ff'` as
 
 ### The built-in dashboard
 
-Measured on this branch with modernc.org/sqlite v1.63.0 under WSL2 on a
+Measured before the sprint history widgets, whose cost is in [Sprint
+history](#sprint-history), with modernc.org/sqlite v1.63.0 under WSL2 on a
 developer machine, each figure the median and spread of 5 runs. The
 board is the store's scale fixture: one board of n issues with 10
 changes each (20,000 at 2,000 issues), 100 sprints and 20 people
@@ -983,6 +984,82 @@ temporary files at 62.5 to 65.0 MB while it ran) left nothing once
 closed: 3.2 MB in use, 2 goroutines and 8 open files before it opened,
 8.7 MB and 3 goroutines with its four queries stopped, and 3.3 MB, 2
 goroutines and the same 8 files after it closed.
+
+### Sprint history
+
+The Overview of a sprint board copies `status_intervals` and
+`sprint_intervals` for Stuck, the burndown and the sprint table.
+Measured on the store's scale fixture (one board, 10 changes an issue,
+100 sprints) under WSL2 on a developer machine, modernc.org/sqlite
+v1.63.0, median and spread of 5 runs, in two cases:
+
+- **All changed:** every issue's 10 changes inside the 180-day window,
+  so every history is read. This is the upper bound.
+- **10% changed:** 10% of the issues updated inside the window, the
+  rest last changed before it. The share of a real board's issues
+  changed in 180 days was not measured; 10% is an assumption.
+
+The fills (`TestMirrorExportFillsAtScale`; VM steps do not vary between
+runs, times are the best of 5):
+
+| Fill | Rows | VM steps | Time |
+|---|---|---|---|
+| status_intervals, 2,000, 10% changed | 3,000 | 166,702 | 3.3 ms |
+| sprint_intervals, 2,000, 10% changed | 400 | 123,418 | 2.1 ms |
+| status_intervals, 2,000, all changed | 8,000 | 752,802 | 13.1 ms |
+| sprint_intervals, 2,000, all changed | 2,000 | 949,687 | 17.9 ms |
+| status_intervals, 20,000, 10% changed | 30,000 | 1,664,302 | 45.9 ms |
+| sprint_intervals, 20,000, 10% changed | 4,000 | 1,223,218 | 29.4 ms |
+| status_intervals, 20,000, all changed | 80,000 | 7,520,802 | 161 ms |
+| sprint_intervals, 20,000, all changed | 20,000 | 9,445,687 | 238 ms |
+
+When the same copy holds `changes`, each fill reads them from it instead
+of the file (at 20,000 with 10% changed: 1,424,298 steps and 39.1 ms,
+and 1,095,215 steps and 22.9 ms). The status interval now, from each
+issue's `status_since`, is 800,020 steps and about 20 ms of the status
+fill at 20,000. Reading it from the copied tickets instead would save
+about 5 to 10 ms there (measured at 2,000: 40,000 steps from the file
+against 12,000 from the copy, the insert about 40,000 either way), and
+needs a second fill that writes the interval now, so it is not done.
+
+An Overview's copy (`TestDashboardAtScale`), without the intervals, with
+the status intervals, and with both, as an Overview asks:
+
+| Case | Without | Status | Both |
+|---|---|---|---|
+| 2,000, 10% changed | 20.1 ms (19.9 to 21.7) | 25.1 ms (24.3 to 27.2) | 30.2 ms (27.6 to 42.3) |
+| 2,000, all changed | 29.0 ms (27.8 to 36.8) | 41.0 ms (40.1 to 61.8) | 65.0 ms (62.2 to 76.0) |
+| 20,000, 10% changed | 162 ms (151 to 163) | 211 ms (207 to 224) | 239 ms (232 to 244) |
+| 20,000, all changed | 283 ms (270 to 291) | 448 ms (438 to 460) | 673 ms (663 to 691) |
+
+The 20,000 with 10% changed copy grew by 48% in this run; three earlier
+runs gave 56%, 57% and 73%. On another run of the same session every
+time was about 1.5 times these, with the shares unchanged.
+
+A whole evaluation of the last 5 sprints, the branch before these
+widgets and this one run back to back (the earlier branch's fixture has
+every change inside the window, so it has no 10% case):
+
+| Case | Before | After | Answer as JSON, bytes | Allocated |
+|---|---|---|---|---|
+| 2,000, 10% changed | not measured | 42.6 ms (41.6 to 47.9) | 3,823 after | 1.7 MB after |
+| 2,000, all changed | 34.2 ms (32.9 to 38.8) | 111 ms (109 to 117) | 2,147 before, 2,935 after | 3.0 MB before, 22.0 MB after |
+| 20,000, 10% changed | not measured | 360 ms (351 to 384) | 3,847 after | 14.3 MB after |
+| 20,000, all changed | 339 ms (323 to 342) | 1,127 ms (1,113 to 1,141) | 2,149 before, 2,942 after | 32.1 MB before, 228.8 MB after |
+
+At 20,000 all changed the copy is 694 ms of it. Stuck and the burndown
+each take about 166 ms in SQLite (the slowest at most 185 ms against
+its 1 s deadline) and the sprint table 14 ms; the rest is the
+evaluation placing each state in every period it holds in, which copies
+a row per period (about 58 MB of an evaluation's allocations). A drill
+of the stuck tickets went from 170 ms to 538 ms in that case and takes
+257 ms at 20,000 with 10% changed.
+
+`idx_tracker_cache_issues_updated` (v175), which the fills seek issues
+updated in the window by, took 7.2, 6.4 and 6.6 ms to build on a mirror
+of 20,050 issues. A card write of 100 cards took 5.40, 5.24 and 6.00 ms
+with it and 5.64, 5.22 and 5.53 ms without it, no difference beyond the
+runs' spread.
 
 ## Planning poker add-on
 
