@@ -550,8 +550,9 @@ func TestMirrorExportReadsEachRowOnce(t *testing.T) {
 
 // TestMirrorExportFillsAtScale measures each fill of an export of one
 // board of each size AO_TRACKER_SCALE names (comma-separated, each at
-// least 100), parented as a scrum board's (benchParented): its VM steps
-// and the best of five runs' time. It checks how many tickets count under
+// least 100), parented as a scrum board's (benchParented), with real
+// times and every issue changed inside the window, or 10% of them: its VM
+// steps and the best of five runs' time. It checks how many tickets count under
 // an epic, each sub-task under its story's, and how many epics there are.
 // Skipped without AO_TRACKER_SCALE.
 func TestMirrorExportFillsAtScale(t *testing.T) {
@@ -564,20 +565,16 @@ func TestMirrorExportFillsAtScale(t *testing.T) {
 		if err != nil || n < 100 {
 			t.Fatalf("AO_TRACKER_SCALE=%q: each size is a whole number of at least 100", env)
 		}
-		t.Run(fmt.Sprint(n), func(t *testing.T) { exportFillsAtScale(t, n, 0) })
+		t.Run(fmt.Sprint(n, " all changed"), func(t *testing.T) { exportFillsAtScale(t, n, 100) })
 		t.Run(fmt.Sprint(n, " recent 10%"), func(t *testing.T) { exportFillsAtScale(t, n, 10) })
 	}
 }
 
-// exportFillsAtScale measures the fills of the scale fixture of n issues,
-// every change inside the window, or with recent above zero of the
-// fixture with real times, that percentage of them changed inside it.
+// exportFillsAtScale measures the fills of the scale fixture with real
+// times of n issues, recent percent of them changed inside the window.
 func exportFillsAtScale(t *testing.T, n, recent int) {
 	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: n, parents: true, recent: recent})
-	window := int64(0)
-	if recent > 0 {
-		window = BenchWindowForTest
-	}
+	window := BenchWindowForTest
 	ctx := context.Background()
 	// A ticket's epic is its parent when the fixture names the parent an
 	// epic, else its parent's epic: a sub-task counts under its story's.
@@ -654,6 +651,9 @@ func exportFillsAtScale(t *testing.T, n, recent int) {
 				}
 				intervals = exportRows(t, conn, `SELECT (SELECT count(*) FROM status_intervals) || ' status intervals, ' ||
 				  (SELECT count(*) FROM sprint_intervals) || ' sprint intervals'`)[0]
+				if strings.HasSuffix(intervals, ", 0 sprint intervals") {
+					t.Errorf("%d issues, %d%% recent: %s; the fixture's recent issues are in its sprints", n, recent, intervals)
+				}
 				return nil
 			}
 			for range 5 {

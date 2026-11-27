@@ -2411,30 +2411,58 @@ each kind of read on the copy it asks for and on a copy of everything.
 
 ### Sprint history
 
-`status_intervals(ticket, status, from_at, to_at)` holds each ticket's
-status from `from_at` until `to_at` (NULL: still), and
-`sprint_intervals(sprint, ticket, points, from_at, to_at)` each stretch
-a ticket spent in one of the board's sprints at one estimate. The rules
-they keep are the comment at the top of
-`store/tracker_cache_export_intervals.go`; in short:
+`status_intervals(ticket, status, from_at, to_at, began, open)` holds
+each ticket's status from `from_at` until `to_at` (NULL: still), with
+`began` the instant the status began when that is known (NULL: it began
+earlier, before the history does) and `open` whether the status counts as
+open by the same rule as `tickets.open`. `sprint_intervals(sprint,
+ticket, points, from_at, to_at)` holds each stretch a ticket spent in one
+of the board's sprints at one estimate. The rules they keep are the
+comment at the top of `store/tracker_cache_export_intervals.go`; in
+short:
 
 - They reach back to the earliest instant a count can ask: 180 days ago,
   or the start of a sprint the board keeps that began earlier. Nothing
   before it has a row.
-- A status interval comes from consecutive status changes, and the status
-  now from `status_since`, the store's one rule for when it began. Where
-  no interval covers an instant, the status then is not known: before
-  the history begins, and after the latest stored change when the card
-  shows a newer status than the history has read, until the history is
-  read again.
+- Every interval is evidence of the card's version, the one the board
+  shows. The history is read only up to the card's update time, so after
+  any order of card and history writes no closed interval reaches past
+  the open one (`TestTheIntervalsHoldWhatTheIssueHeldInAnyOrderOfReads`
+  runs generated orders).
+- A status interval comes from consecutive status changes, each closed no
+  later than the status now began, and the status now from
+  `status_since`, the store's one rule for when it began. When that is
+  not known but the history covers the card with no status change up to
+  it, the status now holds from the history's start with `began` NULL.
+  Where no interval covers an instant, the status then is not known:
+  before the history begins, and after the latest stored change when the
+  card shows a newer status than the history has read, until the history
+  is read again.
 - A sprint stretch comes from the sprint and estimate changes read
-  together, split where the estimate changed. An open stretch holds only
+  together, split where the estimate changed, and the stretch the card
+  holds now carries the card's sprints and estimate. A ticket whose card
+  changed since its history was read (`tickets.history_behind`) has no
+  sprint stretch until the history is read again, since its history says
+  nothing of the stretch since. An open stretch holds only
   while the ticket is in the sprint now. On Jira a closed sprint stays in
   the ticket's sprint set, so its stretch stays open past completion; on
   Linear a carried-over issue leaves the cycle, so its stretch ends at
   the carry-over. Whether Linear records the move out of a cycle before
   or after the cycle's `completedAt` was not checked against a real
   workspace: if it lands before, a carried-over issue counts as removed.
+- A ticket is behind until a final read of its history. A tick whose
+  delta stores the changed card plans its units before the delta runs, so
+  the history unit reads the issue at the board's next tick, up to 4
+  reads of 50 due issues a tick, the next tick running at once while more
+  are due. A read within the provider's settle margin of the change
+  (`HistorySettle`: 1 minute on Jira, 2 on Linear) is not final, so the
+  issue is read again at the first tick a settle margin after that
+  answer. With a tick every 10 s on Jira and every 45 s on Linear, that is
+  about 70 to 80 s after the card is stored on Jira and about 180 s on
+  Linear, longer when more than 200 issues are due ahead of it, and only
+  while a client shows the board.
+- `sprint_finished.done` is NULL for a closed sprint's member whose
+  status at the completion is not known.
 - A fill reads the history only of the tickets that can have changed in
   the window: one updated since the earliest instant
   (`idx_tracker_cache_issues_updated`, v175), and for the sprints one in
@@ -2443,26 +2471,34 @@ they keep are the comment at the top of
 A metric that returns `until` reads them as states (below). The sprint
 board's Overview counts three widgets from them:
 
-- Burndown (`burndown`, a line by `day`) is each active-sprint stretch
-  while its ticket's status is open (not done, canceled or left out),
-  valued at the stretch's estimate. A stretch whose status is not known,
-  and a member whose history does not reach back to the sprint's start
-  (or to its creation, when it was made after the start), is not
-  counted.
+- Burndown (`burndown`, a line by `day`, with an even pace) is each
+  active-sprint stretch while its ticket's status is open, valued at the
+  stretch's estimate. A stretch whose status is not known is not
+  counted, and neither is a ticket of the sprint (a member now or one
+  with a stretch in it) from the sprint's start, or its creation after
+  it, until its history begins, or the whole sprint while its history is
+  not read or is behind. A behind ticket says "its latest change is not
+  read yet", and one that left the sprint is missing from its past days
+  until its history is read again.
 - Committed, added, removed and completed (`sprint_scope`, a table by
-  `sprint` in four series): committed is a stretch that holds at the
-  start, added a ticket's first entry after it when it was not
-  committed, removed its last exit before the end when no stretch holds
-  at the end, each at the stretch's estimate; completed is the pace's
-  rule (`sprint_finished`). A ticket added and then removed counts in
-  both, and once in each. A member whose history does not reach back to
-  the start (or its creation after it), and every member of a sprint
-  with no start date, is not counted in committed and added.
+  `sprint` in four series, with no Total since a ticket can count in more
+  than one series): committed is a stretch that holds at the start,
+  added a ticket's first entry after it when it was not committed,
+  removed its last exit before the end when no stretch holds at the end,
+  each at the stretch's estimate; completed is the pace's rule
+  (`sprint_finished`). A ticket added and then removed counts in both,
+  and once in each. Each cell counts a ticket where its evidence for that
+  cell is: a ticket whose history does not reach back to the start (or
+  its creation after it), every ticket of a sprint with no start date,
+  and a behind ticket are not counted in committed and added; one whose
+  status at the end is not known is not counted in completed. A behind
+  ticket not in the sprint at its end is missing from every cell until
+  its history is read again.
 - Stuck (`stuck`) is a state over `status_intervals`: a ticket in an
-  in-progress status from three days after it entered it until it
-  leaves. A stretch whose status is not known is not counted while it
-  lasts. Its value now and the tickets it does not count are those of
-  the query it replaced
+  in-progress status from three days after the status began (`began`)
+  until it leaves. A stretch whose status is not known, or whose start is
+  not known, is not counted while it lasts. Its value now and the
+  tickets it does not count are those of the query it replaced
   (`TestStuckOverTheIntervalsCountsNowAsOverStatusSince` in
   `internal/store`).
 
@@ -2542,7 +2578,11 @@ statement.
   parameters, with LIKE and GLOB patterns of at most 256 bytes. It runs
   inside a wrapper that produces the whole result in SQLite's first
   step, under a 1 s deadline counted from before its prepare, at most
-  20,000 rows and 4 MiB of encoded rows. An evaluation has 4 s. A
+  20,000 rows and 4 MiB of encoded rows. A state's row counts toward the
+  rows only if it holds at an instant its widgets read (now, where the
+  range begins, or the end of a period they show), so a state's past
+  stays do not fill the limit; past it, the widget's sentence says which
+  of those instants the rows held at. An evaluation has 4 s. A
   count of a dashboard is two, one after the other: its own widgets, on
   a copy of what they read, with their titles, then the board's
   proposals, on a copy of their own made after the first is closed, so
@@ -2756,7 +2796,7 @@ tickets each number could not count, how many rows its query returned
 and the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 4,751 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 6,184 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a

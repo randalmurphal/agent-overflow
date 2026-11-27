@@ -128,7 +128,7 @@ var burndownMetric = Metric{
 	Title: "Burndown",
 	Words: []string{
 		"The estimate of the active sprint's tickets not yet done or canceled, at its start and at the end of each working day, each by its estimate then. The dashed line is an even pace to zero on its last day.",
-		"A ticket whose status, sprint or estimate then is not known is listed and not counted; so is one changed since its history was last read, until that is read again.",
+		"A ticket whose status, sprint or estimate then is not known is listed and not counted. Until a ticket's latest change is read, it is listed and not counted, and one that left the sprint is missing from its past days.",
 	},
 	// Each stretch in an active sprint (sprint_intervals) is remaining
 	// work while its ticket's status is open; while the status is not
@@ -175,7 +175,8 @@ var sprintScopeMetric = Metric{
 	Title: "Committed, added, removed and completed",
 	Words: []string{
 		"Each sprint's estimate in it at its start (committed), of the tickets that entered it after (added) or left it before its end (removed), each at that moment, and of those done at its end by the pace's rule (completed).",
-		"A ticket counts once in each. One whose history does not reach the sprint's start (made before it), or that changed since its history was last read, is listed and not counted in committed and added; one whose status at the end is not known, in completed.",
+		"A ticket counts once in each. One whose history does not reach the sprint's start (made before it) is listed and not counted in committed and added; one whose status at the end is not known, in completed.",
+		"Until a ticket's latest change is read, it is listed and not counted in committed and added if it is in the sprint at its end, and is missing from every cell otherwise.",
 	},
 	// A sprint's stretches (sprint_intervals) end at its end: its
 	// completion, or now for the active one. A ticket is committed when a

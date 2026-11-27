@@ -669,8 +669,14 @@ credit rules in How this is counted, or a number tile's limit.
 - The sprint table gives each sprint of the range its estimate committed
   at its start, added after it and removed before its end, each at its
   value then, and completed by the pace's rule. A ticket added and then
-  removed counts in both, and each ticket once per column. Each cell
-  opens its tickets.
+  removed counts in both, and each ticket once per column, so the table
+  has no Total. Each cell opens its tickets.
+- The burndown and the sprint table count a ticket from its history.
+  After any change to a ticket, until its history is read again (about a
+  minute on Jira and three on Linear while the board shows), it is
+  listed and not counted, saying "its latest change is not read yet",
+  and one that left the sprint is missing from the burndown's past days
+  and from the sprint table.
 - A dashboard is a twelve-column grid of widgets with a toolbar: dashboard
   picker, Team or Mine, the range, Ask your agent, and an edit mode that
   removes widgets.
