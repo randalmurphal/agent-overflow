@@ -710,6 +710,9 @@ export {
   // stores/trackerTimeWrites.svelte.ts).
   TrackerWorklogs,
   RefreshTrackerWorklogs,
+  // The reads of your logged time a dashboard's widgets need
+  // (stores/trackerDashboard.svelte.ts).
+  ReadTrackerWorklogDays,
   AddTrackerWorklog,
   EditTrackerWorklog,
   DeleteTrackerWorklog,

@@ -3,7 +3,7 @@
 // and the tone by the metric's good direction.
 
 import { describe, expect, it } from 'vitest';
-import { changeMark, drillCountWords, formatNum, GAP_TEXT, numValue, numWords, worklogReads } from './trackerDashboardModel';
+import { changeMark, drillCountWords, formatNum, GAP_TEXT, numValue, numWords } from './trackerDashboardModel';
 import { band, labelEvery, valueScale } from '../components/issues/charts/chartScale';
 
 describe('a number', () => {
@@ -34,15 +34,6 @@ describe('a number', () => {
     expect(numWords({ ur: 2 }, 'time', 'points')).toEqual({ amount: 'Not known', word: '', value: 'Not known', notCounted: '', notRead: '2 days not read' });
     expect(formatNum({ gap: true, ur: 2 }, 'time', 'points')).toBe(GAP_TEXT);
     expect(formatNum({ v: 0 }, 'time', 'points')).toBe('0m');
-  });
-});
-
-describe('the reads of your logged time', () => {
-  it('cover the days in reads of at most 31 days, from the first day each has not covered', () => {
-    expect(worklogReads([])).toEqual([]);
-    expect(worklogReads(['2026-01-01'])).toEqual([{ from: '2026-01-01', to: '2026-01-01' }]);
-    expect(worklogReads(['2026-01-01', '2026-01-31', '2026-02-01'])).toEqual([{ from: '2026-01-01', to: '2026-01-31' }, { from: '2026-02-01', to: '2026-02-01' }]);
-    expect(worklogReads(['2026-01-05', '2026-03-01'])).toEqual([{ from: '2026-01-05', to: '2026-01-05' }, { from: '2026-03-01', to: '2026-03-01' }]);
   });
 });
 

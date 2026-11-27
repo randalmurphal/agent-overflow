@@ -5,7 +5,6 @@
 // evaluation per answer.
 
 import { formatAmount, unitWord, type DashboardUnit } from '../utils/dashboardAmount';
-import { addDays } from './trackerTimeModel';
 
 /** One number of a dashboard (trackerdash.Num, which the bindings type
  * as any for its own JSON form): a value, none ({}), not known (no `v`
@@ -23,19 +22,6 @@ export interface Num {
  * read"; empty for none. */
 export function notReadWords(ur: number | null | undefined): string {
   return ur ? `${ur} ${ur === 1 ? 'day' : 'days'} not read` : '';
-}
-
-/** The reads (RefreshTrackerWorklogs, at most 31 days each) that cover
- * `days` (YYYY-MM-DD, sorted): each from the first day not yet covered to
- * the last of them within 31 days of it. 180 days are at most 6 reads. */
-export function worklogReads(days: readonly string[]): { from: string; to: string }[] {
-  const out: { from: string; to: string }[] = [];
-  for (const d of days) {
-    const last = out.at(-1);
-    if (last && d <= addDays(last.from, 30)) last.to = d;
-    else out.push({ from: d, to: d });
-  }
-  return out;
 }
 
 /** What the screen and the drill say while the board's first read has

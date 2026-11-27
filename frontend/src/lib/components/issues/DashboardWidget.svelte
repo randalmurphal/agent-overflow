@@ -250,9 +250,9 @@
         {/if}
       {/if}
 
-      {#if value && !value.error && !value.note && unread > 0 && logged?.failure && !logged.reading}
+      {#if value && !value.error && !value.note && unread > 0 && logged && !logged.reading}
         <p class="flex flex-wrap items-baseline gap-x-2 text-[0.6875rem] text-fg-muted" data-testid="dashboard-widget-unread">
-          <span>Not known: {notReadWords(unread)} of your logged time. {logged.failure}</span>
+          <span>Not known: {notReadWords(unread)} of your logged time.{logged.failure ? ` ${logged.failure}` : ''}</span>
           <button type="button" class="text-accent hover:underline" data-testid="dashboard-widget-unread-retry" onclick={() => logged?.retry()}>Read again</button>
         </p>
       {/if}

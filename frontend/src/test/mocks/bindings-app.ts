@@ -183,6 +183,9 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // person's time answers (trackerapp Service.Worklogs).
   TrackerWorklogs: async (_connection: string, _author: string, from: string, to: string) => ({ worklogs: [], unread: daysFromTo(from, to) }),
   RefreshTrackerWorklogs: async () => ({ worklogs: [] }),
+  // A dashboard's logged-time widgets read their days when they show
+  // (stores/trackerDashboard): nothing read, nothing more to read.
+  ReadTrackerWorklogDays: async () => ({}),
   // A thread's time draft card reads its call's entries when it shows.
   ThreadTimeEntries: async () => [],
   // A ticket's Work, read when its rail shows (stores/ticketWork): no pull
@@ -1230,6 +1233,7 @@ export const EditTrackerWorklog = dispatch('EditTrackerWorklog');
 export const DeleteTrackerWorklog = dispatch('DeleteTrackerWorklog');
 export const TrackerWorklogs = dispatch('TrackerWorklogs');
 export const RefreshTrackerWorklogs = dispatch('RefreshTrackerWorklogs');
+export const ReadTrackerWorklogDays = dispatch('ReadTrackerWorklogDays');
 export const ThreadTimeEntries = dispatch('ThreadTimeEntries');
 export const EditTrackerTimeEntry = dispatch('EditTrackerTimeEntry');
 export const RemoveTrackerTimeEntries = dispatch('RemoveTrackerTimeEntries');
