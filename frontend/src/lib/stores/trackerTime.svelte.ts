@@ -22,17 +22,19 @@
 //   not in full, not sent, lost) and a reconnect need a read that starts
 //   after it, so they queue one more refresh after the one out (one at
 //   most, which they all share);
-// - a stored read owed to a write that was made, a draft frame or a gap
-//   (`oweStoredRead`) runs now with no refresh out, else once after the
-//   last refresh out or queued ends, shared by everything that owed it
-//   meanwhile, so no refresh answers over it;
+// - every stored read is owed (`oweStoredRead`), to a showing, a write
+//   that was made, a draft frame or a gap: it runs now with no refresh
+//   out, else once after the last refresh out or queued ends, shared by
+//   everything that owed it meanwhile, so no refresh answers over it.
+//   Only `oweStoredRead` and the end of a refresh send one;
 // - a write that asked for a refresh learns how it ended (`WeekReread`);
 // - a write that was made while its days could not be read after it is a
 //   receipt on each held week showing them, until a refresh that started
 //   after it answers with no failure;
 // - a queued read starts only if its week still shows; a week that stopped
-//   showing is due when it shows again, and what owed its stored read
-//   settles with none sent.
+//   showing is due when it shows again. An owed stored read is a shown
+//   week's: hiding or releasing the week settles what waited on it with
+//   none sent and clears it, and the next showing owes its own.
 //
 // Nothing is read while the week is not shown (the pane hidden or covered,
 // the window hidden). When it shows (attached shown, or shown again), the
@@ -225,20 +227,20 @@ function startRefresh(week: Week): Promise<WeekReread> {
       week.refreshedAt = 0;
       again.settle({ kind: 'later' });
     }
+    // A week that stopped showing has none owed (hide).
     const owed = week.owed;
     week.owed = null;
-    if (owed && week.visible) void readStored(week).then(owed.settle);
-    else owed?.settle();
+    if (owed) void readStored(week).then(owed.settle);
     return ended;
   });
   week.refresh = run;
   return run;
 }
 
-/** The stored read a write, a frame or a gap owes the week: now with no
- * refresh out, else after the refreshes out and queued (startRefresh),
- * one for all that owe it then. Settles when it answered, or at once for
- * a week that does not show, whose showing reads it. */
+/** The stored read a showing, a write, a frame or a gap owes the week:
+ * now with no refresh out, else after the refreshes out and queued
+ * (startRefresh), one for all that owe it then. Settles when it answered,
+ * or at once for a week that does not show, whose showing reads it. */
 function oweStoredRead(week: Week): Promise<void> {
   if (!week.visible) return Promise.resolve();
   if (!week.refresh) return readStored(week);
@@ -266,15 +268,28 @@ function refreshAfter(week: Week): Promise<WeekReread> {
   return week.again.ended;
 }
 
-// The week shows now or stopped showing: on showing, its stored read, and
-// a refresh unless one ran in the last five minutes.
+// The week shows now or stopped showing.
 function settle(week: Week): void {
   const visible = visibleOf(week);
   if (visible === week.visible) return;
-  week.visible = visible;
-  if (!visible) return;
-  void readStored(week);
+  if (visible) show(week);
+  else hide(week);
+}
+
+// A showing: its stored read, and a refresh unless one ran in the last
+// five minutes.
+function show(week: Week): void {
+  week.visible = true;
+  void oweStoredRead(week);
   if (Date.now() - week.refreshedAt >= WEEK_REFRESH_AFTER_MS) void joinRefresh(week);
+}
+
+// What waited on the stored read settles with none sent; the next
+// showing owes its own.
+function hide(week: Week): void {
+  week.visible = false;
+  week.owed?.settle();
+  week.owed = null;
 }
 
 function newWeek(ref: TrackerWeekRef): Week {
@@ -320,8 +335,8 @@ export function attachTrackerWeek(ref: TrackerWeekRef, shown: boolean): TrackerW
   week.holders += 1;
   week.shown = shown;
   // An attach is a showing of its own: the week returned to reads again.
-  week.visible = false;
-  settle(week);
+  if (visibleOf(week)) show(week);
+  else hide(week);
   let released = false;
   return {
     key,

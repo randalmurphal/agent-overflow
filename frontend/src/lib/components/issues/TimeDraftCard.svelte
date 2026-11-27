@@ -166,7 +166,7 @@
   <!-- One form per opening: another entry opened from the keyboard mounts its own. -->
   {#key opened}
     <Popover anchor={opened.anchor} open={true} role="dialog" ariaLabel="Drafted time" onClose={() => { editing = null; }}>
-      <TimeDraftForm {ctx} entry={editingNow} onDone={() => { if (editing === opened) editing = null; }} />
+      <TimeDraftForm {ctx} entry={editingNow} onDone={() => { editing = null; }} />
     </Popover>
   {/key}
 {/if}

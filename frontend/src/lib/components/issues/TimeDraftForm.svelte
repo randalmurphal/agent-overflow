@@ -65,6 +65,17 @@
   let finding = $state(false);
   let findAnchor = $state<HTMLElement | undefined>();
 
+  // A write that finished closes the form only while it shows: once it
+  // went (closed, another entry opened, the board switched), what became
+  // of the write is the store's alone.
+  let shown = true;
+  $effect(() => () => {
+    shown = false;
+  });
+  function finished(): void {
+    if (shown) onDone();
+  }
+
   const target = $derived(entryTarget(entry.id));
   // The form holds the entry's target while it is open, so an outcome that
   // settles after the entry left the list still shows here.
@@ -111,7 +122,7 @@
     const done = await changeDraftEntry(ctx, seed.entry, out);
     if (done?.outcome.kind !== 'applied' || !done.value) return;
     saved(done.value);
-    onDone();
+    finished();
   }
 
   async function logNow(): Promise<void> {
@@ -119,13 +130,13 @@
     const out = change();
     if (out === undefined) return;
     const done = await logDraftEntryAlone(ctx, seed.entry, out, saved);
-    if (done?.outcome.kind === 'applied' && done.value && done.value.posted === done.value.of) onDone();
+    if (done?.outcome.kind === 'applied' && done.value && done.value.posted === done.value.of) finished();
   }
 
   async function remove(): Promise<void> {
     if (pending) return;
     const done = await removeDraftEntries(ctx, target, [seed.entry]);
-    if (done?.outcome.kind === 'applied' && done.outcome.note === null) onDone();
+    if (done?.outcome.kind === 'applied' && done.outcome.note === null) finished();
   }
 
   const inputClass = 'w-full rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60';

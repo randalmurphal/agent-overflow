@@ -139,9 +139,10 @@
 
   const readable = $derived(!offline && connectionKind !== 'linear' && connectionOn && !!author);
   const ctx: TimeWriteContext | null = $derived(author ? { backend, connection, author, computer: computerName } : null);
-  // The board the screen writes on. A form, a draft's popover or a menu
-  // is opened on one board: each is null again when it switches, and the
-  // body is keyed on it, so a confirmation inside a component ends too.
+  // The board the screen writes on. A form, a draft's popover, a menu and
+  // the note of where a write landed are of one board: each is null again
+  // when it switches, and the body is keyed on it, so a confirmation
+  // inside a component ends too.
   const board = $derived(`${backend}\n${connection}\n${author ?? ''}`);
 
   // The week shown, held while the screen shows it; a week moved away
@@ -203,9 +204,9 @@
     saveTimeLayout(next);
   }
 
-  // A write that put time on a day outside the week shown says so; the
-  // week does not move.
-  let savedNote = $state<string | null>(null);
+  // A write that put time on a day outside the week shown says so, from
+  // its form while that form shows (WorklogForm); the week does not move.
+  let savedNote = $derived.by((): string | null => (void board, null));
   function onSaved(day: string): void {
     savedNote = day < monday || day > addDays(monday, 6) ? `Logged on ${dayInFull(day)}.` : null;
   }
@@ -480,7 +481,7 @@
               candidates={tickets}
               waiting={unknownSettled ? UNKNOWN_SETTLED : undefined}
               {onSaved}
-              onDone={() => { if (form === open) form = null; }}
+              onDone={() => { form = null; }}
             />
           </Popover>
         {/key}
@@ -498,7 +499,7 @@
                 {/each}
               </div>
             {:else if draftEntry && draftEntry.state === 'drafted'}
-              <TimeDraftForm ctx={writeCtx} entry={draftEntry} onDone={() => { if (draft === d) draft = null; }} />
+              <TimeDraftForm ctx={writeCtx} entry={draftEntry} onDone={() => { draft = null; }} />
             {:else if draftEntry}
               <div class="w-[min(20rem,calc(100vw-2rem))] p-3">
                 <TimeDraftEntry ctx={writeCtx} entry={draftEntry} onEdit={() => {}} onLogByHand={(e) => { draft = null; logByHand(e, d.anchor); }} />

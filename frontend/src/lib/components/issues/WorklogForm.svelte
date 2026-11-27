@@ -146,8 +146,16 @@
     return { ...write, saveAnyway: again && !waiting ? async () => finish(await again(), sentDay) : null };
   });
 
+  // A write that finished acts on the screen (the day's note, the close)
+  // only while the form shows: once it went (closed, another entry
+  // opened, the board switched), what became of the write is the store's
+  // alone.
+  let shown = true;
+  $effect(() => () => {
+    shown = false;
+  });
   function finish(outcome: WriteOutcome | null, savedDay: string | null): void {
-    if (outcome?.kind !== 'applied') return;
+    if (!shown || outcome?.kind !== 'applied') return;
     if (savedDay) onSaved?.(savedDay);
     onDone();
   }
