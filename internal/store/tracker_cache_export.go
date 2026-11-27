@@ -49,7 +49,8 @@ import (
 
 // MirrorExportTables are the relations the export writes, the only tables
 // of the database it fills.
-var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epics", "sprints", "sprint_tickets", "changes", "sprint_finished", "labels"}
+var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epics", "sprints", "sprint_tickets", "changes", "sprint_finished", "labels",
+	"status_intervals", "sprint_intervals"}
 
 // mirrorExportCardColumns are the tickets' columns decoded from the card
 // blob, in the tickets fill's order: each one's name in the export
@@ -143,6 +144,12 @@ CREATE TABLE main.changes(ticket TEXT NOT NULL, kind TEXT NOT NULL, seq INTEGER 
 -- Each member of a closed or active sprint; done 1 when it counted done at the sprint's completion, or for an active sprint now.
 CREATE TABLE main.sprint_finished(sprint TEXT NOT NULL, ticket TEXT NOT NULL, done INTEGER NOT NULL, PRIMARY KEY (sprint, ticket)) WITHOUT ROWID;
 CREATE TABLE main.people(id TEXT PRIMARY KEY, name TEXT NOT NULL) WITHOUT ROWID;
+-- status_intervals: a ticket's status from from_at until to_at (NULL: now). At an instant no row covers, its status is not known.
+CREATE TABLE main.status_intervals(ticket TEXT NOT NULL, status TEXT NOT NULL, from_at INTEGER NOT NULL, to_at INTEGER,
+  PRIMARY KEY (ticket, from_at)) WITHOUT ROWID;
+-- sprint_intervals: a ticket in a sprint with one estimate (points) from from_at until to_at (NULL: now), known from tickets.history_from.
+CREATE TABLE main.sprint_intervals(sprint TEXT NOT NULL, ticket TEXT NOT NULL, points REAL, from_at INTEGER NOT NULL, to_at INTEGER,
+  PRIMARY KEY (sprint, ticket, from_at)) WITHOUT ROWID;
 `
 
 // mirrorExportSchemaName is the attached file's schema name.
@@ -209,9 +216,20 @@ func mirrorExportCardNames() string {
 // and people its changes name are the changes'), and the relations of the
 // copy it reads, which the export fills first. A fill whose select list
 // ends with mirrorExportCardColumns has the text after them in afterCard.
+//
+// A fill with with runs only when the export fills that relation too, and
+// one with without only when it does not; neither makes the export fill
+// it. They choose where a fill reads (the file or the copy) and skip rows
+// of a relation no count reads.
 type mirrorExportFill struct {
 	relation, name, sql, afterCard string
 	needs                          []string
+	with, without                  string
+}
+
+// runs is whether an export of relations runs f.
+func (f mirrorExportFill) runs(relations map[string]bool) bool {
+	return relations[f.relation] && (f.with == "" || relations[f.with]) && (f.without == "" || !relations[f.without])
 }
 
 // text is the fill's statement in an export of relations: sql, and for a
@@ -242,7 +260,7 @@ func (f mirrorExportFill) text(relations map[string]bool) string {
 // names the snapshot's tables by main and the file's unqualified: the
 // snapshot names none of the file's tables. An export runs those of the
 // relations asked for and the relations they need (mirrorExportRelations).
-var mirrorExportFills = []mirrorExportFill{
+var mirrorExportFills = append([]mirrorExportFill{
 	{relation: "board", name: "board", sql: `INSERT INTO main.board(name, plans_sprints, estimates)
 	  SELECT b.name, b.plans_sprints, CASE b.estimate_unit WHEN ` + strconv.Itoa(MirrorEstimatePoints) + ` THEN 'points' WHEN ` +
 		strconv.Itoa(MirrorEstimateTime) + ` THEN 'time' ELSE 'none' END
@@ -325,7 +343,7 @@ var mirrorExportFills = []mirrorExportFill{
 	    UNION SELECT from_value FROM main.changes WHERE kind = 'assignee' AND from_value IS NOT NULL
 	    UNION SELECT to_value FROM main.changes WHERE kind = 'assignee' AND to_value IS NOT NULL) x
 	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
-}
+}, mirrorExportIntervalFills()...)
 
 // mirrorExportAlways are the relations every export fills: what a range
 // is resolved against.
@@ -451,7 +469,7 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	}
 	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, card)
 	for _, fill := range mirrorExportFills {
-		if !relations[fill.relation] {
+		if !fill.runs(relations) {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, fill.text(relations), args...); err != nil {

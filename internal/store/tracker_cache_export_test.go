@@ -173,6 +173,62 @@ func TestMirrorExportHoldsTheBoardAlone(t *testing.T) {
 	}
 }
 
+// exportSets are two exports that between them run every fill: one of
+// every relation and column, and one of all but the changes, which reads
+// the history from the file where the first reads the copy's. Each is the
+// set of relations its export fills (mirrorExportRelations).
+func exportSets(t *testing.T) []map[string]bool {
+	t.Helper()
+	every := slices.Concat(MirrorExportTables, MirrorExportColumns)
+	var out []map[string]bool
+	for _, relations := range [][]string{every, slices.DeleteFunc(slices.Clone(every), func(r string) bool { return r == "changes" })} {
+		set, err := mirrorExportRelations(relations)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, set)
+	}
+	for _, f := range mirrorExportFills {
+		if !slices.ContainsFunc(out, f.runs) {
+			t.Fatalf("fill %s runs in neither export", f.name)
+		}
+	}
+	return out
+}
+
+// runFills runs the fills an export of set runs on conn, the file
+// attached, with its schema made, and calls measured with each fill's VM
+// steps and time.
+func runFills(ctx context.Context, conn *sql.Conn, set map[string]bool, args []driver.NamedValue, measured func(f mirrorExportFill, steps int, d time.Duration)) error {
+	return conn.Raw(func(dc any) error {
+		prep := dc.(driver.ConnPrepareContext)
+		for _, fill := range mirrorExportFills {
+			if !fill.runs(set) {
+				continue
+			}
+			stmt, err := prep.PrepareContext(ctx, fill.text(set))
+			if err != nil {
+				return fmt.Errorf("prepare %s: %w", fill.name, err)
+			}
+			start := time.Now()
+			if _, err := stmt.(driver.StmtExecContext).ExecContext(ctx, args); err != nil {
+				return errors.Join(fmt.Errorf("fill %s: %w", fill.name, err), stmt.Close())
+			}
+			d := time.Since(start)
+			tls, pstmt, err := sqliteStmtHandles(stmt)
+			if err != nil {
+				return errors.Join(err, stmt.Close())
+			}
+			steps := int(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0))
+			if err := stmt.Close(); err != nil {
+				return err
+			}
+			measured(fill, steps, d)
+		}
+		return nil
+	})
+}
+
 // everyExportColumn is an export's set of relations asking for every
 // column of MirrorExportColumns.
 func everyExportColumn() map[string]bool {
@@ -228,7 +284,9 @@ func TestMirrorExportSearchesByTheBoard(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, `ATTACH ? AS `+mirrorExportSchemaName, mirrorExportURI(s.path)); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := map[string]bool{"l": true, "x": true, "o": true}
+	// The copy's tables, and the subqueries and rows of the fills' own
+	// CTEs and json_each, which are not the file's.
+	snapshot := map[string]bool{"l": true, "x": true, "o": true, "c": true, "v": true, "s": true, "g": true, "e": true, "j": true, "p": true}
 	for _, table := range MirrorExportTables {
 		snapshot[table] = true
 	}
@@ -255,7 +313,8 @@ func TestMirrorExportSearchesByTheBoard(t *testing.T) {
 			if len(fields) < 2 || fields[0] != "SCAN" {
 				continue
 			}
-			if !snapshot[strings.TrimPrefix(fields[1], "main.")] && !strings.HasPrefix(fields[1], "json_each") && fields[1] != "CONSTANT" {
+			if !snapshot[strings.TrimPrefix(fields[1], "main.")] && !strings.HasPrefix(fields[1], "json_each") && fields[1] != "CONSTANT" &&
+				!strings.HasPrefix(fields[1], "(subquery-") {
 				t.Errorf("the export of %s scans %s:\n%s", fill.name, fields[1], strings.Join(plan, "\n"))
 			}
 		}
@@ -428,7 +487,8 @@ func TestMirrorExportDecodesTypesPrioritiesAndLabelsWhenAsked(t *testing.T) {
 
 // mirrorExportStepsPerRow is the most VM steps a fill may take per row of
 // its board on the sized fixture (100 sprints, benchChanges changes a
-// ticket), and a fill of the changes per row and change. Measured: the
+// ticket), and a fill that reads the history (the changes and the
+// intervals) per row and change. Measured: the
 // tickets fill, the largest, takes 289 a row; the membership fill took 731
 // a row when it probed once per sprint for each ticket, and takes 37 by
 // each ticket's key.
@@ -442,49 +502,37 @@ const mirrorExportStepsPerRow = 400
 func TestMirrorExportReadsEachRowOnce(t *testing.T) {
 	t.Parallel()
 	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: 400, parents: true})
-	conn := exportConn(t)
 	ctx := context.Background()
-	for _, q := range []string{MirrorExportSchema, `ATTACH '` + mirrorExportURI(s.path) + `' AS ` + mirrorExportSchemaName} {
-		if _, err := conn.ExecContext(ctx, q); err != nil {
+	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, CardShapeForTest))
+	rows := 400
+	steps := map[string]int{}
+	var fills []mirrorExportFill
+	for _, set := range exportSets(t) {
+		conn := exportConn(t)
+		for _, q := range []string{MirrorExportSchema, `ATTACH '` + mirrorExportURI(s.path) + `' AS ` + mirrorExportSchemaName} {
+			if _, err := conn.ExecContext(ctx, q); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := runFills(ctx, conn, set, args, func(f mirrorExportFill, n int, _ time.Duration) {
+			if _, seen := steps[f.name]; !seen {
+				fills = append(fills, f)
+			}
+			steps[f.name] = n
+		})
+		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, CardShapeForTest))
-	steps := map[string]int{}
-	err := conn.Raw(func(dc any) error {
-		prep := dc.(driver.ConnPrepareContext)
-		for _, fill := range mirrorExportFills {
-			stmt, err := prep.PrepareContext(ctx, fill.text(everyExportColumn()))
-			if err != nil {
-				return fmt.Errorf("prepare %s: %w", fill.name, err)
-			}
-			if _, err := stmt.(driver.StmtExecContext).ExecContext(ctx, args); err != nil {
-				return errors.Join(fmt.Errorf("fill %s: %w", fill.name, err), stmt.Close())
-			}
-			tls, pstmt, err := sqliteStmtHandles(stmt)
-			if err != nil {
-				return errors.Join(err, stmt.Close())
-			}
-			steps[fill.name] = int(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0))
-			if err := stmt.Close(); err != nil {
-				return err
-			}
+		if got := exportRows(t, conn, `SELECT count(*) FROM tickets`); got[0] != strconv.Itoa(rows) {
+			t.Fatalf("the board's copy holds %s tickets; want %d", got[0], rows)
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
-	rows := 400
-	if got := exportRows(t, conn, `SELECT count(*) FROM tickets`); got[0] != strconv.Itoa(rows) {
-		t.Fatalf("the board's copy holds %s tickets; want %d", got[0], rows)
-	}
-	for _, fill := range mirrorExportFills {
+	for _, fill := range fills {
 		bound := mirrorExportStepsPerRow
-		if fill.relation == "changes" {
+		if slices.Contains([]string{"changes", "status_intervals", "sprint_intervals"}, fill.relation) {
 			bound *= 1 + benchChanges
 		}
-		t.Logf("%-26s %8d steps, %5d a row", fill.name, steps[fill.name], steps[fill.name]/rows)
+		t.Logf("%-42s %8d steps, %5d a row", fill.name, steps[fill.name], steps[fill.name]/rows)
 		if steps[fill.name] > bound*rows {
 			t.Errorf("the export of %s took %d VM steps for %d board rows, %d a row; want at most %d a row",
 				fill.name, steps[fill.name], rows, steps[fill.name]/rows, bound)
@@ -534,75 +582,73 @@ func exportFillsAtScale(t *testing.T, n int) {
 	wantEpics := fmt.Sprintf("%d|%d", under, len(epics))
 	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, CardShapeForTest))
 	// Each fill with no column of MirrorExportColumns asked for, with one,
-	// and with every one, as a count whose query reads them asks.
+	// and with every one, as a count whose query reads them asks; each in
+	// an export of every relation and in one without the changes, whose
+	// intervals read the file's history (exportSets).
 	for _, asked := range []struct {
 		label   string
 		columns map[string]bool
 	}{{"no column", map[string]bool{}}, {"type", map[string]bool{"tickets.type": true}}, {"every column", everyExportColumn()}} {
-		steps, best := map[string]int{}, map[string]time.Duration{}
-		// sample fills one copy and checks it, closing it before the next.
-		sample := func() (err error) {
-			conn, closeConn, err := newExportConn()
-			if err != nil {
-				return err
-			}
-			defer func() { err = errors.Join(err, closeConn()) }()
-			for _, q := range []string{MirrorExportSchema, `ATTACH '` + mirrorExportURI(s.path) + `' AS ` + mirrorExportSchemaName} {
-				if _, err := conn.ExecContext(ctx, q); err != nil {
-					return err
+		for pass, set := range exportSets(t) {
+			for _, column := range MirrorExportColumns {
+				if !asked.columns[column] {
+					delete(set, column)
 				}
 			}
-			err = conn.Raw(func(dc any) error {
-				prep := dc.(driver.ConnPrepareContext)
-				for _, fill := range mirrorExportFills {
-					stmt, err := prep.PrepareContext(ctx, fill.text(asked.columns))
-					if err != nil {
-						return fmt.Errorf("prepare %s: %w", fill.name, err)
-					}
-					start := time.Now()
-					if _, err := stmt.(driver.StmtExecContext).ExecContext(ctx, args); err != nil {
-						return errors.Join(fmt.Errorf("fill %s: %w", fill.name, err), stmt.Close())
-					}
-					if d := time.Since(start); best[fill.name] == 0 || d < best[fill.name] {
-						best[fill.name] = d
-					}
-					tls, pstmt, err := sqliteStmtHandles(stmt)
-					if err != nil {
-						return errors.Join(err, stmt.Close())
-					}
-					steps[fill.name] = int(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0))
-					if err := stmt.Close(); err != nil {
+			steps, best := map[string]int{}, map[string]time.Duration{}
+			var fills []mirrorExportFill
+			var intervals string
+			// sample fills one copy and checks it, closing it before the next.
+			sample := func() (err error) {
+				conn, closeConn, err := newExportConn()
+				if err != nil {
+					return err
+				}
+				defer func() { err = errors.Join(err, closeConn()) }()
+				for _, q := range []string{MirrorExportSchema, `ATTACH '` + mirrorExportURI(s.path) + `' AS ` + mirrorExportSchemaName} {
+					if _, err := conn.ExecContext(ctx, q); err != nil {
 						return err
 					}
 				}
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-			count := func(column string) int {
-				if asked.columns[column] {
-					return n
+				err = runFills(ctx, conn, set, args, func(f mirrorExportFill, n int, d time.Duration) {
+					if _, seen := steps[f.name]; !seen {
+						fills = append(fills, f)
+					}
+					steps[f.name] = n
+					if best[f.name] == 0 || d < best[f.name] {
+						best[f.name] = d
+					}
+				})
+				if err != nil {
+					return err
 				}
-				return 0
+				count := func(column string) int {
+					if asked.columns[column] {
+						return n
+					}
+					return 0
+				}
+				got := exportRows(t, conn, `SELECT count(type) || '|' || count(priority) || '|' || (SELECT count(*) FROM labels) FROM tickets`)
+				if want := fmt.Sprintf("%d|%d|%d", count("tickets.type"), count("tickets.priority"), 2*n); got[0] != want {
+					t.Errorf("%d issues, %s asked: tickets with a type|with a priority|labels = %s; want %s", n, asked.label, got[0], want)
+				}
+				got = exportRows(t, conn, `SELECT (SELECT count(*) FROM tickets WHERE epic IS NOT NULL) || '|' || (SELECT count(*) FROM epics)`)
+				if got[0] != wantEpics {
+					t.Errorf("%d issues: tickets under an epic|epics = %s; want %s", n, got[0], wantEpics)
+				}
+				intervals = exportRows(t, conn, `SELECT (SELECT count(*) FROM status_intervals) || ' status intervals, ' ||
+				  (SELECT count(*) FROM sprint_intervals) || ' sprint intervals'`)[0]
+				return nil
 			}
-			got := exportRows(t, conn, `SELECT count(type) || '|' || count(priority) || '|' || (SELECT count(*) FROM labels) FROM tickets`)
-			if want := fmt.Sprintf("%d|%d|%d", count("tickets.type"), count("tickets.priority"), 2*n); got[0] != want {
-				t.Errorf("%d issues, %s asked: tickets with a type|with a priority|labels = %s; want %s", n, asked.label, got[0], want)
+			for range 5 {
+				if err := sample(); err != nil {
+					t.Fatal(err)
+				}
 			}
-			got = exportRows(t, conn, `SELECT (SELECT count(*) FROM tickets WHERE epic IS NOT NULL) || '|' || (SELECT count(*) FROM epics)`)
-			if got[0] != wantEpics {
-				t.Errorf("%d issues: tickets under an epic|epics = %s; want %s", n, got[0], wantEpics)
+			t.Logf("%d issues, %s, export %d: %s", n, asked.label, pass+1, intervals)
+			for _, fill := range fills {
+				t.Logf("%d issues, %-12s %-42s %10d steps, %5d a row, best %v", n, asked.label, fill.name, steps[fill.name], steps[fill.name]/n, best[fill.name].Round(time.Microsecond))
 			}
-			return nil
-		}
-		for range 5 {
-			if err := sample(); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for _, fill := range mirrorExportFills {
-			t.Logf("%d issues, %-12s %-26s %10d steps, %5d a row, best %v", n, asked.label, fill.name, steps[fill.name], steps[fill.name]/n, best[fill.name].Round(time.Microsecond))
 		}
 	}
 }

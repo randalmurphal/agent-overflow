@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -58,6 +59,34 @@ func dashboardAtScale(t *testing.T, n int) {
 		sorted := slices.Sorted(slices.Values(ds))
 		return fmt.Sprintf("%v (%v to %v)", sorted[len(sorted)/2].Round(time.Microsecond), sorted[0].Round(time.Microsecond), sorted[len(sorted)-1].Round(time.Microsecond))
 	}
+	// The Overview's copy alone, as its count asks for it and without the
+	// intervals, the copy before they existed: the relations of one
+	// count's fill, then 5 fills of each on a new database.
+	var asked []string
+	b.Fill = func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+		asked = slices.Clone(relations)
+		return s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, store.CardShapeForTest)
+	}
+	if _, err := e.Evaluate(ctx, b, trackerdash.Request{Dashboard: "overview_sprints", Range: trackerdash.RangeSprints5, TimeZone: "UTC"}); err != nil {
+		t.Fatal(err)
+	}
+	b.Fill = fill
+	withoutIntervals := slices.DeleteFunc(slices.Clone(asked), func(r string) bool { return strings.HasSuffix(r, "_intervals") })
+	for _, copied := range []struct {
+		label     string
+		relations []string
+	}{{"without the intervals", withoutIntervals}, {"with the status intervals", append(slices.Clone(withoutIntervals), "status_intervals")},
+		{"with both intervals", append(slices.Clone(withoutIntervals), "status_intervals", "sprint_intervals")}, {"as the Overview asks", asked}} {
+		var times []time.Duration
+		for range 5 {
+			d, err := timedExport(ctx, s, root, board, copied.relations)
+			if err != nil {
+				t.Fatal(err)
+			}
+			times = append(times, d)
+		}
+		t.Logf("%d issues, the Overview's copy %s (%s): %s", n, copied.label, strings.Join(copied.relations, ", "), spread(times))
+	}
 	for _, rng := range []string{trackerdash.RangeSprints5, trackerdash.RangeThisSprint} {
 		fills = nil
 		var times []time.Duration
@@ -107,6 +136,27 @@ func dashboardAtScale(t *testing.T, n int) {
 		t.Fatal(err)
 	}
 	t.Logf("%d issues, drill of the stuck tickets (%d rows, %d on the page): %s; answer %d bytes as JSON", n, drill.Count, len(drill.Rows), spread(times), len(body))
+}
+
+// timedExport is how long one export of relations of board takes, on a
+// new private in-memory database as an evaluation's.
+func timedExport(ctx context.Context, s *store.Store, root int64, board string, relations []string) (_ time.Duration, err error) {
+	db, err := sql.Open("sqlite", "file::memory:")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { err = errors.Join(err, db.Close()) }()
+	db.SetMaxOpenConns(1)
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { err = errors.Join(err, conn.Close()) }()
+	start := time.Now()
+	if _, ok, err := s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, store.CardShapeForTest); err != nil || !ok {
+		return 0, fmt.Errorf("export %v: %v, %w", relations, ok, err)
+	}
+	return time.Since(start), nil
 }
 
 // What a board's dashboard leaves in the Go process: heap in use,

@@ -24,7 +24,7 @@ const (
 
 // benchMirrorSize is a bench mirror's shape: how many boards, each with
 // how many issues of its own, and whether its issues have parents
-// (benchParented).
+// (benchParented) and a scrum board's sprint history (benchSprintHistory).
 type benchMirrorSize struct {
 	boards, issues int
 	parents        bool
@@ -125,6 +125,20 @@ func benchHistory(id string, at int64, n int) MirrorHistory {
 	return answeredHistory(h)
 }
 
+// benchSprintHistory is h with what a scrum board's issue i records after
+// its benchChanges: its move into its sprint and its first estimate, the
+// changes its sprint intervals are rebuilt from.
+func benchSprintHistory(h MirrorHistory, board, i int) MirrorHistory {
+	estimate := float64(i % 8)
+	at := h.Changes[len(h.Changes)-1].At
+	h.Changes = append(h.Changes,
+		MirrorChange{Kind: MirrorChangeSprint, At: at + 1, AuthorID: "acc-user1", FromSprints: []string{},
+			ToSprints: []string{strconv.Itoa(board*benchBoardSprints + i%benchBoardSprints)}},
+		MirrorChange{Kind: MirrorChangeEstimate, At: at + 2, AuthorID: "acc-user1", BoardID: benchBoardID(board), ToNumber: &estimate})
+	h.AnsweredAt = at + 2
+	return answeredHistory(h)
+}
+
 // buildBenchMirror writes a fixture of size through the store's own
 // writers.
 func buildBenchMirror(tb testing.TB, path string, size benchMirrorSize) error {
@@ -178,7 +192,11 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 		for first := 0; first < size.issues; first += mirrorHistoryBatch {
 			batch := make([]MirrorHistory, 0, mirrorHistoryBatch)
 			for i := first; i < min(first+mirrorHistoryBatch, size.issues); i++ {
-				batch = append(batch, benchHistory(benchIssueID(board, i), 100, benchChanges))
+				h := benchHistory(benchIssueID(board, i), 100, benchChanges)
+				if size.parents {
+					h = benchSprintHistory(h, board, i)
+				}
+				batch = append(batch, h)
 			}
 			if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch), MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
 				return err
