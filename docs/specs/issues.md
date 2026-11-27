@@ -22,6 +22,9 @@ tickets waiting for the person's approval unless the project turned that
 off. They read and draft the person's time, and ask to log the draft of
 named days, which is logged only once the person approves what the
 prompt shows ([Agent tools](../architecture/tracker-backend.md#agent-tools)).
+What they read beside the logged time is the [activity](#activity) each
+computer measured and the day's commits; reviews and calendar meetings
+are not read yet.
 
 ## Goal
 
@@ -723,6 +726,31 @@ counted, selecting rows in a ticket list, or a number tile's limit.
   other ticket found by key or title, or left out.
 - Time is logged by hand from a cell, a day or a ticket.
 - An entry on a support ticket shows what its hours are worth in points.
+
+### Activity
+
+- While a Jira connection is on, each computer records when the person
+  gave input to the app on its screens, and on which thread, and which
+  threads started a turn each day. A computer with no Jira connection on
+  records nothing.
+- Input is a key, a press, a scroll or a touch. A minute counts when
+  there was input in the 3 minutes before it. Moving the pointer is not
+  input.
+- `phone` time is time in the compact layout: the phone shell, or a
+  browser on a narrow touch screen.
+- A computer counts the screens attached to it, and only those of its
+  own person: its own window, a browser on it, and its own devices. A
+  screen attached only to another computer is not in its answer.
+- Reading a page in the desktop's browser pane counts only within 3
+  minutes of the last input to the app, since the page takes its own
+  input. The operating system's menus and dialogs do not count either.
+- A thread's minutes go to the ticket it is linked to now, so relinking
+  it moves its past minutes. Days are the computer's local dates. Linear
+  tickets get no minutes.
+- When the computer cannot write what it measured, an agent's read says
+  since when, and so does `GetActivityRecording` for the Time screen.
+- The measure is kept 92 days. Its mechanism, costs and limits are in
+  [Activity](../architecture/tracker-backend.md#activity).
 
 ### Setup
 

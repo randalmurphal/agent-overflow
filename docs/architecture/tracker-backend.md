@@ -2929,6 +2929,8 @@ worklogs and the Jira issues they name
 (`drafted`, by `agent` or `you`, in state drafted, sent or unknown) and
 its open questions. A connection whose read failed is named in `unread`
 with its sentence; the call fails only when every connection did.
+Each day also answers what this computer measured of it, and the answer
+says while that measure is incomplete ([Activity](#activity)).
 
 **`time_draft`** takes `entries` to draft or `post` to log the draft of
 days (below), and refuses a call with neither or both. `entries` are each a `day`, `hours` (whole minutes),
@@ -3080,6 +3082,93 @@ Tue Nov 24`, of the entries the prompt offered to log, and `; 1 may have
 been logged` for those whose answer was lost), naming the call, the
 connections and the days; a denied or unanswered post, or one refused on
 every connection before it sent, adds none.
+
+### Activity
+
+**What is recorded.** Each screen of the person reports its input to
+every computer it is attached to through `RecordActivity(focused, phone)`
+(`stores/activityRecorder.ts`): a key, a press, a wheel turn or a touch,
+seen by passive capture-phase listeners whose handler compares a
+timestamp; pointer movement is never listened to. A screen reports on its
+first input a minute after its last report, and at once when the thread
+it shows changes after input, so the press that opens a thread counts on
+it. `focused` is the focused pane's thread, none on the compact list;
+`phone` is the compact layout (a viewport at most 640 pixels wide with a
+coarse pointer: the phone shell, or a browser on a narrow touch screen).
+A computer records only its own person's screens (`ownScreen`): its own
+window, a local-channel client, or a member of its own devices; another
+person's paired browser is answered and records nothing. A computer that
+predates the method takes nothing (`stores/bindings.ts`). Each turn start
+is recorded from the emit funnel (`tapActivityTurns`).
+
+**The recorder** (`internal/activity`) keeps one open span per connection
+in memory. A report on the same thread and layout within 3 minutes of
+the last extends it; any other ends it at its last report plus 3
+minutes, or now when that is sooner, and opens the next. A span also ends
+with its connection (`conn.Bind`), at a flush that finds it idle, and at
+a day's length. Nothing is written per report or per turn start: one
+flush every 5 minutes writes, in one transaction, the spans that changed
+and the days of the threads that started a turn since
+(`store.SaveActivity`), and shutdown flushes once more before the store
+closes. Only while a Jira connection is on is anything written. A flush
+that fails keeps what it could not write, at most 1,000 closed spans and
+1,000 thread days, and the earliest time not written is the recorder's
+state (`GetActivityRecording`, `activity:recording`) until a flush writes
+again; a shutdown whose last write fails logs what was lost. Once a day
+the flush deletes spans and thread days older than 92 days, and nothing
+else. A restore keeps both tables ([schema](schema.md)).
+
+**What `time_read` adds.** A day with any measure answers `active`, its
+minutes with input, each instant counted once, on the span that started
+last where two screens overlap; `phone`, those in the compact layout,
+when there are any; `tickets`, each Jira ticket a focused thread is
+linked to with its `minutes`, and each that a thread with a turn that
+day is linked to without them; and `commits`, at most 30 a day by author
+time as `{at, subject}`, then `commits_more`. Minutes round to the
+nearest. At the top, `activity_gap` (`since 2026-11-25 14:05`) is there
+while the recorder cannot write, and `commits_unread` names each
+repository whose commits could not be read, with git's error. The
+commits are read when `time_read` runs: one `git log --branches
+--no-merges` per project of the range's threads, all at once, for the
+repository's `user.email`, filtered by author time so a commit rebased
+later counts on the day it was written (`git.Core.AuthoredCommits`). A
+repository with no `user.email` has none. The tool list and guide do not
+change.
+
+**Measured costs.** A turn start adds a map write under the recorder's
+lock, about 100 ns, to a turn insert of about 28 µs. A simulated working
+day (8.5 hours with lunch and a 6-minute break each hour, a thread
+switch every 12 minutes among 6 threads, 20 minutes on the phone and 15
+threads with turns) is 39 spans and 15 thread days: about 3.0 KB of
+pages for the spans and their index and 0.9 KB for the thread days, 356
+KB over the 92 days kept; a week's read of it takes under a millisecond
+before git. A 5-day week with 3 tickets with minutes, one touched, half
+an hour on the phone and 4 commits a day adds 2,205 bytes to the answer
+(241 to 2,446; `TestTimeReadsWeekOfActivityBytes`).
+
+**Limits.**
+- A thread's minutes go to the ticket it is linked to when `time_read`
+  runs, so relinking a thread moves its past minutes.
+- Days are this computer's local dates: a turn's when the flush wrote it,
+  a span's when it is read.
+- Linear tickets get no minutes; their threads count toward `active` only.
+- A computer counts only the screens attached to it. Time a screen
+  attached only to another computer spent on this computer's threads is
+  not in this computer's answer. A screen attached to several reports to
+  each, so each counts its active time, and only the computer that holds
+  the focused thread links it to a ticket.
+- Input the page does not receive is not counted:
+  - a page in the desktop's browser pane, a native view over the window
+    (WebView2, WKWebView or WebKitGTK), which takes its own keys, presses
+    and scrolls, so reading a page there counts only within 3 minutes of
+    the last input to the app. Its keys already pass through the app on
+    the engine's thread (`browser.Manager.keyChord`), which could report
+    them for the page's thread; presses and scrolls would need each
+    engine's own hook. Neither is built;
+  - the operating system's menus, file dialogs and notifications.
+  The app's terminal is in the page and counts. A connected browser and
+  the phone show no browser pane, and the phone shell in the background
+  takes no input, so they lose nothing.
 
 ## Tests
 
