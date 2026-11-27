@@ -468,6 +468,13 @@ func (s *Store) ForgeHistoryByKey(key string) ([]ForgeHistoryRow, error) {
 	return out, nil
 }
 
+// forgeHistoryKnownSQL answers which numbers of list ?3 source (?1, ?2)
+// stores, each by its key.
+const forgeHistoryKnownSQL = `SELECT p.number FROM forge_history_sources s
+CROSS JOIN json_each(?3) n
+CROSS JOIN forge_history_prs p ON p.source_id = s.id AND p.number = n.value
+WHERE s.repo_key = ?1 AND s.keep_head = ?2`
+
 // KnownForgeHistoryPRs reports which of numbers the source stores, kept
 // or not, so a reader fetches only the pull requests an event names that
 // it has never read.
@@ -476,10 +483,7 @@ func (s *Store) KnownForgeHistoryPRs(source ForgeHistoryRef, numbers []int64) (m
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.reader().Query(`SELECT p.number FROM forge_history_sources s
-		JOIN json_each(?3) n
-		JOIN forge_history_prs p ON p.source_id = s.id AND p.number = n.value
-		WHERE s.repo_key = ?1 AND s.keep_head = ?2`, source.RepoKey, source.KeepHead, listed)
+	rows, err := s.reader().Query(forgeHistoryKnownSQL, source.RepoKey, source.KeepHead, listed)
 	if err != nil {
 		return nil, fmt.Errorf("store: read the known pull requests of %s: %w", source.RepoKey, err)
 	}

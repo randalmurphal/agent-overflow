@@ -265,17 +265,17 @@ func TestForgeHistoryRecordsTheWalkAndTheFailure(t *testing.T) {
 	}
 }
 
-// Each statement of the writer reaches the stored rows by their keys
-// from its read's list, so a read costs its own rows however many the
-// source holds.
+// Each statement of the writer, and the reader's question of which pull
+// requests are known, reaches the stored rows by their keys from its
+// list, so a read costs its own rows however many the source holds.
 func TestForgeHistoryWriterPlans(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	for name, query := range map[string]string{
 		"pull requests": forgeHistoryPRsSQL, "clear keys": forgeHistoryClearKeysSQL, "keys": forgeHistoryKeysSQL,
-		"clear acts": forgeHistoryClearActsSQL, "acts": forgeHistoryActsSQL, "prune": forgeHistoryPruneSQL,
+		"clear acts": forgeHistoryClearActsSQL, "acts": forgeHistoryActsSQL, "prune": forgeHistoryPruneSQL, "known": forgeHistoryKnownSQL,
 	} {
-		plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+query, 1, "[]")
+		plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+query, 1, "[]", "[]")
 		t.Logf("%s:\n%s", name, plan)
 		// A walk of the source's rows: a scan, or a search by the source
 		// alone.
