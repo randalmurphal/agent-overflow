@@ -559,8 +559,8 @@ func TestAnEvaluationTellsTheReadsWhatItNeeds(t *testing.T) {
 // coverageBoard is a sprints board of the viewer's logged time, today
 // (25 November) not read, with six closed sprints: p1, p2 and p3 from 200
 // days ago to 160 days ago, around the copy's first day (28 May, 181 days
-// ago; p3 begins as it does, at its midnight), and r1, r2 and r3 from 60
-// days ago to 18 days ago; and active,
+// ago; p2 ends, and p3's period begins, at its midnight), and r1, r2 and
+// r3 from 60 days ago to 18 days ago; and active,
 // from 5 days ago to 9 days on. Its metrics count the logged time now
 // (now), by the period of each row's day (event), and as a state that
 // holds from its day on (state), and by the active sprint's days (days).
@@ -571,7 +571,7 @@ func coverageBoard() Board {
 	for i, s := range []struct {
 		id         string
 		start, end float64
-	}{{"p1", 200, 190}, {"p2", 190, 176}, {"p3", 181.5, 160}, {"r1", 60, 46}, {"r2", 46, 32}, {"r3", 32, 18}} {
+	}{{"p1", 200, 190}, {"p2", 190, 181.5}, {"p3", 181.5, 160}, {"r1", 60, 46}, {"r2", 46, 32}, {"r3", 32, 18}} {
 		f.sprint(s.id, s.id, "closed", ago(s.start), ago(s.end), i+1)
 	}
 	f.dated("active", "active", "active", ago(5), ago(-9), 0, 7)
@@ -670,8 +670,8 @@ func TestEachLoggedNumberIsKnownByWhatItsReductionTook(t *testing.T) {
 	a = mustEvaluate(t, evaluator(), b, r)
 	event = widgetOf(t, a, "event")
 	check("several periods from before the window: the number", num(event.Value), old)
-	// p3 begins at the first day's midnight: none of its rows is of a day
-	// before it.
+	// p3's period begins at the first day's midnight: none of its rows is
+	// of a day before it.
 	checkAll("an event period from before the window: the trend", trendOf(event), []string{old, old, unread, unread, unread, unread})
 	if list := widgetOf(t, a, "event_list"); list.Unread != nil || !list.Old {
 		t.Errorf("a list of event periods from before the window lists %v, old %v; want old and no day", list.Unread, list.Old)
@@ -682,10 +682,11 @@ func TestEachLoggedNumberIsKnownByWhatItsReductionTook(t *testing.T) {
 	state = widgetOf(t, a, "state")
 	check("a state now, the range from before the window: the number", num(state.Value), unread)
 	check("a state at a start before the window: the comparison", num(state.Previous), old)
-	checkAll("a state at a period's end, before the window and after: the trend", trendOf(state), []string{old, unread, unread, unread, unread, unread})
-	checkAll("a state at a period's end: the buckets", buckets(widgetOf(t, a, "state_bars")), []string{old, unread, unread, unread, unread, unread})
+	checkAll("a state at a period's end, before the window and after: the trend", trendOf(state), []string{old, old, unread, unread, unread, unread})
+	checkAll("a state at a period's end: the buckets", buckets(widgetOf(t, a, "state_bars")), []string{old, old, unread, unread, unread, unread})
 	check("a state at the end of p1, before the window: a bar's drill", drill(r, "state_bars", "sprint:p1"), old)
-	check("a state at the end of p2, in the window: a bar's drill", drill(r, "state_bars", "sprint:p2"), unread)
+	check("a state at the end of p2, the first day's midnight: a bar's drill", drill(r, "state_bars", "sprint:p2"), old)
+	check("a state at the end of p3, in the window: a bar's drill", drill(r, "state_bars", "sprint:p3"), unread)
 	check("a state now, the range from before the window: the drill", drill(r, "state", ""), unread)
 
 	// This sprint by its days: the days still to come take no row.
