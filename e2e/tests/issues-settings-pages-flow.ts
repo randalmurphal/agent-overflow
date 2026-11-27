@@ -39,6 +39,7 @@ import type { Locator, Page } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import { toolRow } from './ao-tool-rows-helpers.js';
+import { openBacklog } from './issues-backlog-flow.js';
 import { pairOwnDevice } from './headless-pairing-helpers.js';
 import {
   EFFORT,
@@ -420,10 +421,35 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
   test('the Points and credit page counts tickets on the Board and the Backlog without a reload, the cards keeping their points, and planning poker off leaves the tickets without it', async ({ harness, page }) => {
     test.setTimeout(180_000);
     const { pane, file } = await openBoard(harness, page, 'settings-points', compact, { ...SETUP, estimation: EFFORT, poker: {} });
-    const columnCounts = pane.getByTestId('issues-column-count');
-    await expect(columnCounts.first()).toContainText('pts', { timeout: 15_000 });
-    await expect(card(pane, PINNED_ID).getByTestId('issues-card-estimate')).toHaveText('3');
 
+    // Planning poker: on, the ticket has it; off, it has none; on again,
+    // back.
+    const pokerShown = async (shown: boolean) => {
+      await closeSettings(page, compact);
+      await openIssuesPane(page, compact);
+      const ticket = await openTicket(pane, PINNED_ID, compact);
+      await expect(ticket.getByTestId('ticket-activity')).toBeVisible({ timeout: 15_000 });
+      if (shown) await expect(ticket.getByTestId('ticket-poker-fold')).toBeVisible({ timeout: 15_000 });
+      else await expect(ticket.getByTestId('ticket-poker-section')).toHaveCount(0);
+      await closeTicket(pane, compact);
+    };
+    const ticket = await openTicket(pane, PINNED_ID, compact);
+    await expect(ticket.getByTestId('ticket-poker-fold')).toBeVisible({ timeout: 15_000 });
+    await closeTicket(pane, compact);
+    const off = await pointsPage(page, compact);
+    await press(rule(off, 'Planning poker'), compact);
+    await expect(rule(off, 'Planning poker')).toHaveAttribute('aria-checked', 'false', { timeout: 15_000 });
+    expect(await storedSetup(file)).toEqual({ estimates: { version: 1, poker: false } });
+    await pokerShown(false);
+    const on = await pointsPage(page, compact);
+    await press(rule(on, 'Planning poker'), compact);
+    await expect(rule(on, 'Planning poker')).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
+    await pokerShown(true);
+
+    // What a ticket is worth: the columns' counts and the sprint's numbers
+    // in tickets, the cards keeping their points, then in points again.
+    const columnCount = pane.locator('[data-testid="issues-column-count"], [data-testid="issues-column-tab"]').first();
+    await expect(columnCount).toContainText('pts', { timeout: 15_000 });
     const screen = await pointsPage(page, compact);
     const count = screen.getByTestId('tracker-points-count');
     await expect(count).toHaveValue('estimates', { timeout: 15_000 });
@@ -431,10 +457,9 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     await expect(screen.getByTestId('tracker-points-pace-line')).toHaveText('No sprint of WEB board has finished yet.');
     await count.selectOption('tickets');
     await expect.poll(() => storedSetup(file), { timeout: 15_000 }).toEqual({ estimates: { version: 1, count: 'tickets' } });
-
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
-    await expect(columnCounts.first()).not.toContainText('pts', { timeout: 15_000 });
+    await expect(columnCount).not.toContainText('pts', { timeout: 15_000 });
     await expect(card(pane, PINNED_ID).getByTestId('issues-card-estimate')).toHaveText('3');
     const backlog = await openBacklog(page, pane, compact);
     const sprint = backlog.locator('[data-testid="issues-backlog-section"][data-list="sprint:1"] [data-testid="issues-backlog-numbers"]');
@@ -447,24 +472,6 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
     await expect(sprint).toHaveText(/points done$/, { timeout: 15_000 });
-
-    // Planning poker: on, the ticket has it; off, it has none; on again,
-    // back.
-    const ticket = await openTicket(pane, PINNED_ID, compact);
-    await expect(ticket.getByTestId('ticket-poker-fold')).toBeVisible({ timeout: 15_000 });
-    const off = await pointsPage(page, compact);
-    await press(rule(off, 'Planning poker'), compact);
-    await expect(rule(off, 'Planning poker')).toHaveAttribute('aria-checked', 'false', { timeout: 15_000 });
-    expect(await storedSetup(file)).toEqual({ estimates: { version: 1, poker: false } });
-    await closeSettings(page, compact);
-    await openIssuesPane(page, compact);
-    await expect(ticket.getByTestId('ticket-poker-section')).toHaveCount(0, { timeout: 15_000 });
-    const on = await pointsPage(page, compact);
-    await press(rule(on, 'Planning poker'), compact);
-    await expect(rule(on, 'Planning poker')).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
-    await closeSettings(page, compact);
-    await openIssuesPane(page, compact);
-    await expect(ticket.getByTestId('ticket-poker-fold')).toBeVisible({ timeout: 15_000 });
   });
 
   test('a Linear-only project\'s Fields page says it has nothing to pin', async ({ harness, page }) => {
