@@ -695,14 +695,22 @@ the credit rules in How this is counted.
   board's tickets; How this is counted says so, since a ticket's Work
   lists the linked threads of every attached computer.
 - A query of logged time reads your own, the connection's account's, in
-  hours, and each row of it counts for you. Its numbers are known only
-  once every day of the last 182 up to today is read, since a row can
-  count in a period other than its own day's (a sprint's tickets, a total
-  so far). Until then the number, period, bar or cell reads "Not known"
-  and says how many days were not read ("Not known, 3 days not read"),
-  on the tile, a hover, and a drill's header, and a comparison it cannot
-  make says "Not compared: 3 days of the range before are not read." A
-  widget counted by sprint over a range with no sprint reads nothing.
+  hours, from the last 182 days up to today in the page's time zone, and
+  each row of it counts for you. A number, period, bar or cell that
+  counts it is known only once every one of those days is read, since a
+  row can count in a period other than its own day's (a sprint's
+  tickets, a total so far). Until then it reads "Not known" and says how
+  many days were not read ("Not known, 3 days not read"), on the tile, a
+  hover, and a drill's header, and a comparison it cannot make says "Not
+  compared: 3 days of the range before are not read." One that counts a
+  period that began before those days, or what held before them, reads
+  "Not known" for good and says it is older than the logged time kept,
+  with nothing to read; a comparison says "Not compared: the range
+  before is older than the logged time kept." A day still to come, and a
+  widget counted by sprint over a range with no sprint, read nothing. A
+  pinned list of it reads "Not known" on its chip while its days are not
+  all read, and filters the board by nothing then: the board shows every
+  ticket and says why.
 - When the board's computer counts such a widget, on the Dashboards
   screen, the board's summary row or an agent's widget, it reads the days
   not read from the tracker in one run, newest first, 31 days a tracker
@@ -719,8 +727,10 @@ the credit rules in How this is counted.
   beside its number or in place of one it cannot know, with Read again,
   and nothing more is read on its own until the person presses Read again
   or Refresh, which read all 182 days again (6 reads), or the account or
-  its time tracking changes. A day before those 182 is not read, so a
-  number that counts one stays "Not known"; How this is counted says so.
+  its time tracking changes. The board's Refresh reads them too while a
+  tile of the board's summary row needs them, and reads no logged time
+  otherwise. A failed Read again or Refresh says why on the computer it
+  asked, until another ask or the computer says it is reading.
   A page narrowed to another person says "Only your own logged time is
   read."; a Linear board says it has no time tracking, and a connection
   whose account is not verified says to check the connection.

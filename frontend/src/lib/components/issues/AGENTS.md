@@ -206,7 +206,9 @@ board methods, events and the patch read in
   in flight, the range and Team or
   Mine saved for the next screen, the person or epic narrowed to, the
   one drill open, and the person's Refresh and Read again of your
-  logged time (the board's computer reads it on its own from its
+  logged time (`refreshLogged`, which the board's Refresh calls through
+  the summary row while a tile counts it; the board's computer reads it
+  on its own from its
   evaluations, `trackerapp/worklog_reads.go`, and the answer says whether
   it reads and why it failed; `DashboardLoggedLine.svelte` says so on a
   widget and on the summary row's tile). It counts again on the board's changes

@@ -2746,9 +2746,12 @@ The rules are the comments at the top of
   tickets of one person, the connection's verified account (the viewer,
   `MirrorExport.Viewer`, read in the export's own snapshot), and
   `worklog_days(day)` the days of that person's the mirror read, whatever
-  was logged on them. Both start at one day, `MirrorExport.LoggedFrom`,
-  which trackerapp's `loggedFrom` gives the export: the day before the
-  history window's first in UTC, 182 days to today. A count that reads
+  was logged on them. Both hold the days from `MirrorLoggedDays.From`
+  through `.Through` and no other: trackerapp's `loggedFrom` gives the
+  first, the day before the history window's first in UTC, and the
+  evaluation gives the last, today in the request's time zone, through
+  `Board.Fill`. The export says the first (`MirrorExport.LoggedFrom`). A
+  count that reads
   `worklogs` also copies `worklog_days`. A metric of it counts in the unit
   `time`, seconds that the screen shows as hours.
 - `day_start(day)` is the instant a row of a day is placed at: the first
@@ -2765,15 +2768,18 @@ The rules are the comments at the top of
   drill refuses with the same sentence.
 - A day with no read is not zero hours, and a row of logged time can
   count in a period other than its day's (a sprint's tickets, a state that
-  holds from its day on). So a number a reduction took rows of logged
-  time for (`ranged.held`, `of`, `reduce`) is known only once every day
-  from `LoggedFrom` up to now is read: each number, period, bar or cell
-  and total, and drill value carries those days not read, with the days
-  of its periods before `LoggedFrom`, which the copy never holds, in
-  `Num.UR`, and is not known while it carries any. A reduction that took
-  no rows (a metric counted by period over a range with no period) marks
-  and lists nothing. A weekend's day is a day like any other; days after
-  now are not counted. The widget lists the window's days not read
+  holds from its day on). `ranged` hands out rows only with what they
+  reach (`taken.cover`), and one function, `evaluation.num`, turns a
+  reduction and its reach into every number: a widget's, a period's, a
+  bar's or a cell's, a total, the range before, a drill's, and a Try's. A
+  state at an instant before `LoggedFrom`'s first instant, or rows placed
+  in a period that begins before it, reach a day the copy never holds:
+  the number is never known (`Num.Old`), and the widget lists no day for
+  it. Any other rows of logged time are not known while a day of the
+  window up to now is not read (`Num.UR`, the count of those days). A
+  period still to come, or a range with no period, takes no row and is
+  not marked. A weekend's day is a day like any other. A widget one of
+  whose numbers needed the window lists its days not read
   (`WidgetValue.Unread`).
 - The evaluator makes no tracker request: an evaluation (or an agent's
   Try) in which a widget counted logged time calls `Board.Worklogs` once
@@ -2784,23 +2790,29 @@ The rules are the comments at the top of
   of the process, which `RefreshWorklogs` (the Time screen, the agents'
   time tools) takes too; and the state of its verified account's reads
   under its time source, replaced without the turn when either changes.
-  An evaluation queues the days it found not read, and the newest 31 days
+  The state is keyed by a generation that only moves forward: an
+  evaluation that carries an older one than the connection's changes
+  nothing. An evaluation queues the days it found not read, except the
+  days a run has handed out and not yet stored, and the newest 31 days
   once `worklogRereadEvery` (5 minutes) has passed since they were last
-  queued, but no day of the read in flight; one run reads what is queued,
-  newest first, 31 days a read, back to back, checking the account and
-  time source before each, and tells the connection's boards when it ends
-  (`BoardEvent.Logged`), on which the page counts again. A screen that
-  closes does not stop a run; turning the connection off, `Stop`, and a
-  change of account or source do. After a read failed nothing is queued
-  on its own until the person's Refresh or Read again
+  queued, handed out or not. One run reads what is queued, newest first,
+  31 days a read, back to back. It hands a span out and checks the run's
+  own account and time source on the connection's row before it reads,
+  and stops when either moved. It tells the connection's boards when it
+  ends (`BoardEvent.Logged`), on which the page counts again. Every span
+  handed out ends stored, recorded as failed, or forgotten with the
+  state: a screen that closes does not stop a run; turning the connection
+  off, `Stop`, and a change of account or source do, and clear what was
+  queued and handed out. After a read failed nothing is queued on its own
+  until the person's Refresh or Read again
   (`ReadTrackerWorklogDays(connection, timeZone)`), which queues every day
-  to today in that zone and returns. A first show of nothing read is one
-  run of 6 reads; a show with everything read is 1 read once 5 minutes
-  have passed, else none; a dashboard shown for an hour reads the newest
-  days 6 times while the board is idle (its 10-minute recount) and at
-  most 12 while it is busy, per connection. An evaluation that copied the
-  board just before a run stored its days queues them again, one extra
-  read.
+  to today in that zone and returns. The board's Refresh makes that call
+  only while a tile of the board's summary row counts logged time. A
+  first show of nothing read is one run of 6 reads; a show with
+  everything read is 1 read once 5 minutes have passed, else none; a
+  dashboard shown for an hour reads the newest days 6 times while the
+  board is idle (its 10-minute recount) and at most 12 while it is busy,
+  per connection.
 
 Their costs at 2,000 and 20,000 issues are in
 [Tracker API measurements](../references/tracker-api-measurements.md#thread-links-and-logged-time).
