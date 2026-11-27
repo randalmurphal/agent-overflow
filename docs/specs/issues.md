@@ -690,9 +690,13 @@ number tile's limit.
   bar or cell it falls in reads "Not known" and says how many days were
   not read ("Not known, 3 days not read"), on the tile, a hover, and a
   drill's header. While the widget shows, the page reads those days from
-  the tracker, at most 31 days a request and one request at a time (6
-  for a first show of 180 days, 1 for a later day), saying "Reading your
-  logged time…" meanwhile, and counts again. A day is not read again on
+  the tracker, of the range and of the range before a number compares
+  with, at most 31 days a request and one request at a time, saying
+  "Reading your logged time…" meanwhile, and counts again: at most 6
+  requests for a first show (1 for This sprint on two-week sprints, 5 for
+  Last 5 sprints, 6 for Last 10 sprints or Last 12 weeks) and 1 for a
+  later day. A day more than 180 days ago is not read, so a number that
+  counts one stays "Not known"; How this is counted says so. A day is not read again on
   its own: after a failed read the widget says how many days were not
   read and why, with Read again. A page narrowed to another person says
   "Only your own logged time is read."; a Linear board says it has no

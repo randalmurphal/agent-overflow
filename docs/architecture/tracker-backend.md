@@ -2540,14 +2540,22 @@ The rules are the comments at the top of
   bar's or cell's value and its total, and a drill's value that a day not
   read falls in are not known, carrying the days not read (`Num.UR`); a
   ranked bar counts the range's days. A weekend's day is a day like any
-  other; days after now are not counted. The widget lists the range's
-  days not read (`WidgetValue.Unread`), and the evaluator makes no
-  tracker request.
+  other; days after now are not counted. The widget lists the days not
+  read of the range, and of the range before when it shows a value of it
+  (a number's comparison), for the page to read (`WidgetValue.Unread`);
+  the evaluator makes no tracker request. It lists no day at or before
+  the copy's history window (`MirrorExport.Window`, 180 days), so a
+  period that holds one stays not known, as does a number that counts
+  now on a copy whose earliest kept sprint began before that window.
 - The Dashboards screen reads those days, while a widget that lists
   them is shown, through `RefreshTrackerWorklogs` on the board's
   computer: one read at a time, each of at most 31 consecutive days, then
-  it counts again. A first show of 180 days not read is 6 reads, and a
-  later day 1. A day asked for is not asked again without the person:
+  it counts again. A first show of nothing read takes at most 6 reads,
+  since the days lie in 180: This sprint with its sprint before is 1 read
+  on two-week sprints (2 on four-week ones), Last 5 sprints with the 5
+  before is 5 on two-week sprints, and Last 10 sprints, Last 12 weeks
+  (168 days with the 12 before) and a number that counts now are 6. A
+  later day is 1. A day asked for is not asked again without the person:
   after a failed read the widget says "Not known" with the days not read
   and the reason, and Read again asks for them. While a read runs the
   widget says it is reading. Another connection or account starts over,
