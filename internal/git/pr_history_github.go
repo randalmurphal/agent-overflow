@@ -1,52 +1,77 @@
 package git
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
-	"path"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"agent-overflow/internal/forgeapi"
 )
 
-// A GitHub repository's history is two streams: the pull request list by
-// update time, 50 a page, each with its first 50 reviews and conversation
-// comments and the rest read by follow-up pages; and the repository's
-// review comments (line comments and their replies) by update time, 100
-// a page, which name people who commented only on the code, inside an
-// approval or not.
+// A GitHub repository's history is one stream: the pull request list by
+// update time, 50 a page, each with its acts:
+//
+//   - its COMMENTED and CHANGES_REQUESTED reviews, newest first, each a
+//     comment;
+//   - its APPROVED reviews, oldest first, each an approval, and a comment
+//     too, at the same submit time, when it carries line comments (their
+//     totalCount);
+//   - its conversation comments, newest first.
+//
+// A dismissed review counts for nothing, a pending one is not submitted,
+// and an author that is not a User (a bot) or none (a deleted account)
+// is no one. A line comment outside an approval belongs to a COMMENTED
+// review of its writer (a reply is one of its own), so the reviews name
+// everyone who commented on the code; and a review or a reply moves the
+// pull request's updatedAt, so the list reads it again. GitHub documents
+// neither (forge-transport.md#pull-request-history).
+//
+// A pull request the list finds with the update time the store holds is
+// unchanged: its page's acts are added and it costs no follow-up page.
+// One that changed, or that the store does not hold, reads on whatever
+// its page could not hold: newest first down to a little before the read
+// that last saw it, or to the start; its approvals to their end. Those
+// follow-up pages are stretches in the walk (githubMoreWalk), read with
+// the read's requests and moved only as their pages are read.
 
-// githubHistoryPageSize is the pull requests a history page holds, and
-// githubHistoryNested the reviews and the conversation comments it reads
-// of each. A page costs 1 + 2 * 50 connection requests, one point
-// (GitHub's GraphQL rate limit divides by 100). Its answer is bounded by
-// githubHistoryMaxBody, the transport's ceiling: 8 MiB holds 50 pull
-// requests of 167 KB, 100 nested items of 1.6 KB each beside the pull
-// request's own fields. Each item carries a state or nothing, a time, a
-// login and a display name.
+// githubHistoryPageSize is the pull requests a history page holds. A page
+// costs 1 + 50 + 50 + 50 + 50 * 3 connection requests, 3 points (GitHub's
+// GraphQL rate limit divides by 100), and a follow-up page 1. Its answer
+// is bounded by githubHistoryMaxBody, the transport's ceiling: 8 MiB holds
+// 50 pull requests of 167 KB, 103 nested items of 1.6 KB each beside the
+// pull request's own fields. Each item carries a time, a login, a display
+// name and, for an approval, a count.
 const (
 	githubHistoryPageSize = 50
-	githubHistoryNested   = 50
 	githubHistoryMaxBody  = 8 << 20
 )
 
+// githubHistorySeenMargin is how far before the read that last saw a pull
+// request its newest-first follow-up reads, for a forge clock behind this
+// computer's.
+const githubHistorySeenMargin = 5 * time.Minute
+
 const githubHistoryActor = `author { __typename login ... on User { name } }`
 
-const githubHistoryReviews = `pageInfo { hasNextPage endCursor } nodes { state submittedAt ` + githubHistoryActor + ` }`
-
-const githubHistoryComments = `pageInfo { hasNextPage endCursor } nodes { createdAt ` + githubHistoryActor + ` }`
+const (
+	githubHistoryBack      = `pageInfo { hasPreviousPage startCursor }`
+	githubHistoryOn        = `pageInfo { hasNextPage endCursor }`
+	githubHistoryReviews   = `nodes { submittedAt ` + githubHistoryActor + ` }`
+	githubHistoryApprovals = `nodes { submittedAt ` + githubHistoryActor + ` comments(first: 1) { totalCount } }`
+	githubHistoryComments  = `nodes { createdAt ` + githubHistoryActor + ` }`
+)
 
 const githubHistoryPullFields = `number url title state isDraft headRefName headRepository { id } createdAt updatedAt mergedAt closedAt ` + githubHistoryActor
 
 // githubPullHistoryQuery is one page of a repository's pull requests,
-// most recently updated first, each with its first reviews and
-// conversation comments, beside the repository's node id and parent.
+// most recently updated first, each with its newest 50 commenting
+// reviews, its first 3 approvals and its newest 50 conversation
+// comments, beside the repository's node id and parent.
 var githubPullHistoryQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PullHistory($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
     id parent { owner { login } name }
@@ -54,22 +79,22 @@ var githubPullHistoryQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query P
       pageInfo { hasNextPage endCursor }
       nodes {
         `+githubHistoryPullFields+`
-        reviews(first: 50) { `+githubHistoryReviews+` }
-        comments(first: 50) { `+githubHistoryComments+` }
+        reviews(last: 50, states: [COMMENTED, CHANGES_REQUESTED]) { `+githubHistoryBack+` `+githubHistoryReviews+` }
+        approvals: reviews(first: 3, states: [APPROVED]) { `+githubHistoryOn+` `+githubHistoryApprovals+` }
+        comments(last: 50) { `+githubHistoryBack+` `+githubHistoryComments+` }
       }
     }
   }
 }`).WithMaxBody(githubHistoryMaxBody)
 
-// githubPullHistoryMoreQuery is one pull request's reviews and comments
-// from their cursors, 100 a page, and with wantPull its own fields: a
-// pull request a review comment names that the read has not read.
-var githubPullHistoryMoreQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PullHistoryMore($owner: String!, $name: String!, $number: Int!, $wantPull: Boolean!, $wantReviews: Boolean!, $reviewsAfter: String, $wantComments: Boolean!, $commentsAfter: String) {
+// githubPullHistoryMoreQuery is one follow-up page of a pull request's
+// acts, 100 of the kind its want variable names, from its cursor.
+var githubPullHistoryMoreQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PullHistoryMore($owner: String!, $name: String!, $number: Int!, $wantReviews: Boolean!, $reviewsBefore: String, $wantApprovals: Boolean!, $approvalsAfter: String, $wantComments: Boolean!, $commentsBefore: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      ... on PullRequest @include(if: $wantPull) { `+githubHistoryPullFields+` }
-      reviews(first: 100, after: $reviewsAfter) @include(if: $wantReviews) { `+githubHistoryReviews+` }
-      comments(first: 100, after: $commentsAfter) @include(if: $wantComments) { `+githubHistoryComments+` }
+      reviews(last: 100, before: $reviewsBefore, states: [COMMENTED, CHANGES_REQUESTED]) @include(if: $wantReviews) { `+githubHistoryBack+` `+githubHistoryReviews+` }
+      approvals: reviews(first: 100, after: $approvalsAfter, states: [APPROVED]) @include(if: $wantApprovals) { `+githubHistoryOn+` `+githubHistoryApprovals+` }
+      comments(last: 100, before: $commentsBefore) @include(if: $wantComments) { `+githubHistoryBack+` `+githubHistoryComments+` }
     }
   }
 }`).WithMaxBody(githubHistoryMaxBody)
@@ -80,13 +105,20 @@ type githubHistoryActorRaw struct {
 	Name     string `json:"name"`
 }
 
-type githubHistoryItemsRaw struct {
-	PageInfo githubPageInfo `json:"pageInfo"`
-	Nodes    []struct {
-		State       string                 `json:"state"`
+type githubHistoryActsRaw struct {
+	PageInfo struct {
+		HasNextPage     bool   `json:"hasNextPage"`
+		EndCursor       string `json:"endCursor"`
+		HasPreviousPage bool   `json:"hasPreviousPage"`
+		StartCursor     string `json:"startCursor"`
+	} `json:"pageInfo"`
+	Nodes []struct {
 		SubmittedAt string                 `json:"submittedAt"`
 		CreatedAt   string                 `json:"createdAt"`
 		Author      *githubHistoryActorRaw `json:"author"`
+		Comments    *struct {
+			TotalCount int `json:"totalCount"`
+		} `json:"comments"`
 	} `json:"nodes"`
 }
 
@@ -103,73 +135,38 @@ type githubHistoryPullRaw struct {
 	MergedAt       string                 `json:"mergedAt"`
 	ClosedAt       string                 `json:"closedAt"`
 	Author         *githubHistoryActorRaw `json:"author"`
-	Reviews        githubHistoryItemsRaw  `json:"reviews"`
-	Comments       githubHistoryItemsRaw  `json:"comments"`
+	Reviews        githubHistoryActsRaw   `json:"reviews"`
+	Approvals      githubHistoryActsRaw   `json:"approvals"`
+	Comments       githubHistoryActsRaw   `json:"comments"`
 }
 
-// githubReviewCommentRaw is a review comment of the repository's list
-// (GET repos/O/R/pulls/comments).
-type githubReviewCommentRaw struct {
-	ID   int64 `json:"id"`
-	User *struct {
-		Login string `json:"login"`
-		Type  string `json:"type"`
-	} `json:"user"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
-	PullRequestURL string `json:"pull_request_url"`
-}
-
-// githubReviewCommentsMaxBody bounds a page of 100 review comments, each
-// with its body and diff hunk; not measured. 8 MiB holds 100 of 84 KB.
-const githubReviewCommentsMaxBody = 8 << 20
-
-// githubCommentsLag is how far before the first read's time its review
-// comment stream starts reading new comments, so a forge clock behind
-// this computer's loses none.
-const githubCommentsLag = 5 * time.Minute
+// The kinds of a pull request's acts a follow-up page reads.
+const (
+	githubActsReviews   = "reviews"
+	githubActsApprovals = "approvals"
+	githubActsComments  = "comments"
+)
 
 // githubHistoryWalk is where a GitHub repository's history read stands:
-// its pull request list, the follow-up pages of pull requests whose
-// reviews or comments a read could not finish, and its review comments.
+// its pull request list and the stretches of acts still to read.
 type githubHistoryWalk struct {
-	List     listWalk           `json:"list"`
-	More     []githubMoreWalk   `json:"more,omitempty"`
-	Comments githubCommentsWalk `json:"comments"`
+	List listWalk         `json:"list"`
+	More []githubMoreWalk `json:"more,omitempty"`
 }
 
-// githubMoreWalk is a pull request's reviews and comments still to read,
-// from their cursors.
+// githubMoreWalk is a stretch of one pull request's acts still to read:
+// its reviews or conversation comments before Cursor, newest first, down
+// to Stop (Unix ms; 0 is to the start); its approvals after Cursor.
 type githubMoreWalk struct {
-	Number        int64  `json:"n"`
-	Reviews       bool   `json:"reviews,omitempty"`
-	ReviewsAfter  string `json:"reviewsAfter,omitempty"`
-	Comments      bool   `json:"comments,omitempty"`
-	CommentsAfter string `json:"commentsAfter,omitempty"`
+	Number int64  `json:"n"`
+	Kind   string `json:"kind"`
+	Cursor string `json:"cursor"`
+	Stop   int64  `json:"stop,omitempty"`
 }
 
-// githubCommentsWalk is where the review comment stream stands. The list
-// can only be read oldest update first, from a time (since), and its
-// pages never by number, so an edit or a deletion moves nothing past a
-// position. Top is the newest update read: each read reads on from it to
-// the present, and Behind is set while it has not reached the present,
-// when the stream has read nothing back to any time. The gap's walk reads
-// each band oldest first from its lower end: while a band is in progress
-// (Pages > 0), Lo is that end, At the newest update it read and Pages the
-// pages it took.
-type githubCommentsWalk struct {
-	Top    int64  `json:"top,omitempty"`
-	Behind bool   `json:"behind,omitempty"`
-	Gap    actGap `json:"gap"`
-	Lo     int64  `json:"lo,omitempty"`
-	At     int64  `json:"at,omitempty"`
-	Pages  int    `json:"pages,omitempty"`
-}
-
-// ReadPRHistory reads at most PRHistoryRequests requests: the list and
-// the review comments from the newest down to where the last read
-// reached, the follow-up pages the last read left, then the list's gap
-// and the review comments' gap with what is left.
+// ReadPRHistory reads at most PRHistoryRequests requests: the list from
+// the newest down to where the last read reached, then, half and half,
+// the follow-up pages and the list's gap.
 func (f *githubForge) ReadPRHistory(ctx context.Context, repo RepoReference, in PRHistoryInput) (PRHistory, error) {
 	owner, name, err := splitGitHubProject(repo.Project())
 	if err != nil {
@@ -185,46 +182,38 @@ func (f *githubForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 			return PRHistory{}, fmt.Errorf("GitHub history of %s: read the walk: %w", repo.Key(), err)
 		}
 	}
-	r := githubHistoryRead{ctx: ctx, client: client, owner: owner, name: name, repo: repo, known: in.Known,
-		budget: &historyBudget{left: PRHistoryRequests}, now: f.core.nowFn()}
+	r := githubHistoryRead{ctx: ctx, client: client, owner: owner, name: name, repo: repo, stored: in.Stored,
+		clock: f.core.nowFn, more: slices.Clone(w.More)}
+	b := &historyBudget{left: PRHistoryRequests}
 	floor := in.WindowStart.UnixMilli()
-	w.Comments.Gap.clip(floor)
 	err = func() error {
-		if err := w.List.head(r.budget, floor, r.page); err != nil {
+		if err := w.List.head(b, floor, r.page); err != nil {
 			return err
 		}
-		if err := r.commentsHead(&w.Comments, floor); err != nil {
+		if err := b.part(r.followLeft); err != nil {
 			return err
 		}
-		if err := r.followLeft(&w); err != nil {
+		if err := b.part(func(half *historyBudget) error { return w.List.walk(half, floor, r.page) }); err != nil {
 			return err
 		}
-		half := &historyBudget{left: (r.budget.left + 1) / 2}
-		spent := half.left
-		err := w.List.walk(half, floor, r.pager(half))
-		r.budget.left -= spent - half.left
-		if err != nil {
+		if err := r.followLeft(b); err != nil {
 			return err
 		}
-		if err := r.commentsGap(&w.Comments, max(w.List.reach(), floor)); err != nil {
-			return err
-		}
-		return w.List.walk(r.budget, floor, r.page)
+		return w.List.walk(b, floor, r.page)
 	}()
 	if errors.Is(err, errHistoryBudget) {
 		err = nil
 	}
 	w.More = r.more
-	nameActs(r.acts, r.prs.prs)
 	out := PRHistory{OwnHead: r.ownHead, Parent: r.parent, PRs: r.prs.prs, Acts: earliestActs(r.acts)}
 	walk, encodeErr := json.Marshal(w)
 	if encodeErr != nil {
 		return out, errors.Join(err, fmt.Errorf("encode the history walk: %w", encodeErr))
 	}
 	out.Walk = walk
-	out.Reach = fromUnixMilli(max(w.List.reach(), w.Comments.Gap.reach()))
-	out.NoReach = w.Comments.Behind
-	out.Owed = w.List.Gap || len(w.More) > 0 || w.Comments.Behind || w.Comments.Gap.Open
+	at, ok := w.List.reach()
+	setReach(&out, streamReach{at, ok})
+	out.Owed = w.List.Gap || len(w.More) > 0
 	return out, err
 }
 
@@ -234,73 +223,129 @@ type githubHistoryRead struct {
 	client      *forgeapi.Client
 	owner, name string
 	repo        RepoReference
-	known       func([]int64) (map[int64]bool, error)
-	budget      *historyBudget
-	now         time.Time
+	stored      func([]int64) (map[int64]StoredPR, error)
+	clock       func() time.Time
 	ownHead     string
 	parent      *RepoReference
 	prs         historyPRs
 	acts        []PRHistoryAct
-	// more are the follow-up pages this read leaves to the next.
+	// more are the stretches of acts left to read: the walk's at the
+	// start, each moved or removed as its pages are read, and those this
+	// read's pages add.
 	more []githubMoreWalk
 }
 
-// page is the list's pager on the read's own budget.
+// page is the list's pager: the page after cursor, keeping the pull
+// requests updated at or after cutoff with their acts, and adding the
+// stretches of acts a changed or new one leaves.
 func (r *githubHistoryRead) page(cursor string, cutoff int64) (listPage, error) {
-	return r.pager(r.budget)(cursor, cutoff)
-}
-
-// pager reads the page after cursor and keeps its pull requests updated at
-// or after cutoff, each with its acts read on with budget's requests: a
-// pull request the budget cannot finish leaves its follow-up pages to the
-// next read.
-func (r *githubHistoryRead) pager(budget *historyBudget) listPager {
-	return func(cursor string, cutoff int64) (listPage, error) {
-		var raw struct {
-			Repository *struct {
-				githubRepoParentRaw
-				PullRequests struct {
-					PageInfo githubPageInfo         `json:"pageInfo"`
-					Nodes    []githubHistoryPullRaw `json:"nodes"`
-				} `json:"pullRequests"`
-			} `json:"repository"`
-		}
-		vars := map[string]any{"owner": r.owner, "name": r.name, "after": nullable(cursor)}
-		if _, err := r.client.GraphQL(r.ctx, githubPullHistoryQuery, vars, &raw); err != nil {
-			return listPage{}, err
-		}
-		if raw.Repository == nil {
-			return listPage{}, fmt.Errorf("GitHub answered no repository %s", r.repo.Project())
-		}
-		r.ownHead = raw.Repository.ID
-		r.parent = nil
-		if p := raw.Repository.Parent; p != nil {
-			r.parent = &RepoReference{Forge: r.repo.Forge, Host: r.repo.Host, Namespace: p.Owner.Login, Repo: p.Name}
-		}
-		var page listPage
-		for _, node := range raw.Repository.PullRequests.Nodes {
-			pr, err := r.pull(node)
-			if err != nil {
-				return page, err
-			}
-			if pr.Updated.UnixMilli() < cutoff {
-				page.below = true
-				break
-			}
-			if err := r.readOn(&pr, budget, node.Reviews, node.Comments); err != nil {
-				return page, err
-			}
-			r.prs.keep(pr)
-			page.updated = append(page.updated, pr.Updated.UnixMilli())
-		}
-		info := raw.Repository.PullRequests.PageInfo
-		page.cursor, page.more = info.EndCursor, info.HasNextPage && info.EndCursor != ""
-		return page, nil
+	var raw struct {
+		Repository *struct {
+			githubRepoParentRaw
+			PullRequests struct {
+				PageInfo githubPageInfo         `json:"pageInfo"`
+				Nodes    []githubHistoryPullRaw `json:"nodes"`
+			} `json:"pullRequests"`
+		} `json:"repository"`
 	}
+	seen := r.clock()
+	vars := map[string]any{"owner": r.owner, "name": r.name, "after": nullable(cursor)}
+	if _, err := r.client.GraphQL(r.ctx, githubPullHistoryQuery, vars, &raw); err != nil {
+		return listPage{}, err
+	}
+	if raw.Repository == nil {
+		return listPage{}, fmt.Errorf("GitHub answered no repository %s", r.repo.Project())
+	}
+	r.ownHead = raw.Repository.ID
+	r.parent = nil
+	if p := raw.Repository.Parent; p != nil {
+		r.parent = &RepoReference{Forge: r.repo.Forge, Host: r.repo.Host, Namespace: p.Owner.Login, Repo: p.Name}
+	}
+	var page listPage
+	var prs []PRHistoryPR
+	var nodes []githubHistoryPullRaw
+	for _, node := range raw.Repository.PullRequests.Nodes {
+		pr, err := r.pull(node, seen)
+		if err != nil {
+			return page, err
+		}
+		if pr.Updated.UnixMilli() < cutoff {
+			page.below = true
+			break
+		}
+		prs, nodes = append(prs, pr), append(nodes, node)
+	}
+	numbers := make([]int64, 0, len(prs))
+	for _, pr := range prs {
+		numbers = append(numbers, pr.Number)
+	}
+	stored := map[int64]StoredPR{}
+	if len(numbers) > 0 {
+		var err error
+		if stored, err = r.stored(numbers); err != nil {
+			return page, err
+		}
+	}
+	for i, pr := range prs {
+		node := nodes[i]
+		r.prs.keep(pr)
+		page.updated = append(page.updated, pr.Updated.UnixMilli())
+		r.acts = append(r.acts, githubHistoryActs(pr.Number, githubActsReviews, node.Reviews)...)
+		r.acts = append(r.acts, githubHistoryActs(pr.Number, githubActsApprovals, node.Approvals)...)
+		r.acts = append(r.acts, githubHistoryActs(pr.Number, githubActsComments, node.Comments)...)
+		prior, known := stored[pr.Number]
+		if known && prior.Updated.Equal(pr.Updated) {
+			continue
+		}
+		stop := int64(0)
+		if known {
+			stop = prior.Seen.Add(-githubHistorySeenMargin).UnixMilli()
+		}
+		r.leave(pr.Number, githubActsReviews, node.Reviews, stop)
+		r.leave(pr.Number, githubActsApprovals, node.Approvals, 0)
+		r.leave(pr.Number, githubActsComments, node.Comments, stop)
+	}
+	info := raw.Repository.PullRequests.PageInfo
+	page.cursor, page.more = info.EndCursor, info.HasNextPage && info.EndCursor != ""
+	return page, nil
 }
 
-// pull is node as history keeps it, its acts not read yet.
-func (r *githubHistoryRead) pull(node githubHistoryPullRaw) (PRHistoryPR, error) {
+// leave adds the stretch of pull request number's acts of kind that page
+// left unread, if any: older ones down to stop, newer approvals. A
+// pull request already waiting for its approvals keeps its stretch,
+// which is further on.
+func (r *githubHistoryRead) leave(number int64, kind string, page githubHistoryActsRaw, stop int64) {
+	m, ok := githubHistoryLeft(number, kind, page, stop)
+	if !ok {
+		return
+	}
+	if kind == githubActsApprovals && slices.ContainsFunc(r.more, func(o githubMoreWalk) bool { return o.Number == number && o.Kind == kind }) {
+		return
+	}
+	r.more = append(r.more, m)
+}
+
+// githubHistoryLeft is the stretch of acts page leaves unread: of
+// approvals, the next page's; of reviews or comments, read newest first,
+// the older page's unless page reached stop.
+func githubHistoryLeft(number int64, kind string, page githubHistoryActsRaw, stop int64) (githubMoreWalk, bool) {
+	info := page.PageInfo
+	if kind == githubActsApprovals {
+		return githubMoreWalk{Number: number, Kind: kind, Cursor: info.EndCursor}, info.HasNextPage && info.EndCursor != ""
+	}
+	if !info.HasPreviousPage || info.StartCursor == "" || len(page.Nodes) == 0 {
+		return githubMoreWalk{}, false
+	}
+	oldest := page.Nodes[0]
+	at, err := time.Parse(time.RFC3339, cmp.Or(oldest.CreatedAt, oldest.SubmittedAt))
+	if err == nil && at.UnixMilli() <= stop {
+		return githubMoreWalk{}, false
+	}
+	return githubMoreWalk{Number: number, Kind: kind, Cursor: info.StartCursor, Stop: stop}, true
+}
+
+// pull is node as history keeps it, seen at seen.
+func (r *githubHistoryRead) pull(node githubHistoryPullRaw, seen time.Time) (PRHistoryPR, error) {
 	times := make([]time.Time, 4)
 	for i, raw := range []string{node.CreatedAt, node.UpdatedAt, node.MergedAt, node.ClosedAt} {
 		if raw == "" {
@@ -314,7 +359,7 @@ func (r *githubHistoryRead) pull(node githubHistoryPullRaw) (PRHistoryPR, error)
 	}
 	pr := PRHistoryPR{
 		Number: node.Number, URL: node.URL, Title: node.Title, HeadRef: node.HeadRefName,
-		State: githubHistoryState(node.State, node.IsDraft), Created: times[0], Updated: times[1], Merged: times[2], Closed: times[3],
+		State: githubHistoryState(node.State, node.IsDraft), Created: times[0], Updated: times[1], Merged: times[2], Closed: times[3], Seen: seen,
 	}
 	if node.HeadRepository != nil {
 		pr.HeadRepo = node.HeadRepository.ID
@@ -328,272 +373,85 @@ func (r *githubHistoryRead) pull(node githubHistoryPullRaw) (PRHistoryPR, error)
 	return pr, nil
 }
 
-// readOn gives pr the acts of its first reviews and comments and reads
-// the rest with budget's requests. Its acts are whole when it read them
-// all; otherwise the rest are left to the next read.
-func (r *githubHistoryRead) readOn(pr *PRHistoryPR, budget *historyBudget, reviews, comments githubHistoryItemsRaw) error {
-	r.dropMore(pr.Number)
-	acts := append(githubHistoryActs(pr.Number, reviews, true), githubHistoryActs(pr.Number, comments, false)...)
-	rest := githubMoreWalk{Number: pr.Number, Reviews: reviews.PageInfo.HasNextPage, ReviewsAfter: reviews.PageInfo.EndCursor,
-		Comments: comments.PageInfo.HasNextPage, CommentsAfter: comments.PageInfo.EndCursor}
-	more, err := r.follow(&rest, budget)
-	pr.Acts, pr.ActsWhole = earliestActs(append(acts, more...)), err == nil && !rest.Reviews && !rest.Comments
-	if errors.Is(err, errHistoryBudget) {
-		r.more = append(r.more, rest)
-		return nil
-	}
-	return err
-}
-
-// dropMore forgets the follow-up pages left for pull request n, which a
-// read of it from the start replaces.
-func (r *githubHistoryRead) dropMore(n int64) {
-	for i, m := range r.more {
-		if m.Number == n {
-			r.more = append(r.more[:i], r.more[i+1:]...)
-			return
+// followLeft reads the stretches of acts left, each to its end, as far as
+// b goes; each moves, or leaves, only as its pages are read. A stretch of
+// a pull request the store no longer holds, which the window has passed,
+// and that this read has not read, is dropped, as is one of a pull
+// request the forge no longer has.
+func (r *githubHistoryRead) followLeft(b *historyBudget) error {
+	var numbers []int64
+	for _, m := range r.more {
+		if _, read := r.prs.byNumber[m.Number]; !read && !slices.Contains(numbers, m.Number) {
+			numbers = append(numbers, m.Number)
 		}
 	}
-}
-
-// follow reads m's reviews and comments on from its cursors with
-// budget's requests, moving m to where it stopped, and answers their
-// acts; errHistoryBudget when the budget ran out first.
-func (r *githubHistoryRead) follow(m *githubMoreWalk, budget *historyBudget) ([]PRHistoryAct, error) {
-	var acts []PRHistoryAct
-	for m.Reviews || m.Comments {
-		if !budget.take() {
-			return acts, errHistoryBudget
-		}
-		got, err := r.moreQuery(m.Number, false, m.Reviews, m.ReviewsAfter, m.Comments, m.CommentsAfter)
+	if len(numbers) > 0 {
+		stored, err := r.stored(numbers)
 		if err != nil {
-			return acts, err
+			return err
 		}
-		if got == nil {
-			// The forge no longer has the pull request.
-			m.Reviews, m.Comments = false, false
-			return acts, nil
-		}
-		if m.Reviews && got.Reviews != nil {
-			acts = append(acts, githubHistoryActs(m.Number, *got.Reviews, true)...)
-			m.Reviews, m.ReviewsAfter = got.Reviews.PageInfo.HasNextPage, got.Reviews.PageInfo.EndCursor
-		} else {
-			m.Reviews = false
-		}
-		if m.Comments && got.Comments != nil {
-			acts = append(acts, githubHistoryActs(m.Number, *got.Comments, false)...)
-			m.Comments, m.CommentsAfter = got.Comments.PageInfo.HasNextPage, got.Comments.PageInfo.EndCursor
-		} else {
-			m.Comments = false
-		}
+		r.more = slices.DeleteFunc(r.more, func(m githubMoreWalk) bool {
+			_, read := r.prs.byNumber[m.Number]
+			_, held := stored[m.Number]
+			return !read && !held
+		})
 	}
-	return acts, nil
-}
-
-// githubHistoryMoreRaw is PullHistoryMore's pull request.
-type githubHistoryMoreRaw struct {
-	githubHistoryPullRaw
-	Reviews  *githubHistoryItemsRaw `json:"reviews"`
-	Comments *githubHistoryItemsRaw `json:"comments"`
-}
-
-// moreQuery asks PullHistoryMore for pull request number; nil when the
-// forge has no such pull request.
-func (r *githubHistoryRead) moreQuery(number int64, wantPull, wantReviews bool, reviewsAfter string, wantComments bool, commentsAfter string) (*githubHistoryMoreRaw, error) {
-	var raw struct {
-		Repository *struct {
-			PullRequest *githubHistoryMoreRaw `json:"pullRequest"`
-		} `json:"repository"`
-	}
-	vars := map[string]any{"owner": r.owner, "name": r.name, "number": number, "wantPull": wantPull,
-		"wantReviews": wantReviews, "reviewsAfter": nullable(reviewsAfter), "wantComments": wantComments, "commentsAfter": nullable(commentsAfter)}
-	if _, err := r.client.GraphQL(r.ctx, githubPullHistoryMoreQuery, vars, &raw); err != nil {
-		if graphQLNotFoundError(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if raw.Repository == nil {
-		return nil, fmt.Errorf("GitHub answered no repository %s", r.repo.Project())
-	}
-	return raw.Repository.PullRequest, nil
-}
-
-// followLeft reads the follow-up pages the last read left, as far as the
-// budget goes; their acts add to the stored ones. A pull request this
-// read reads from the start drops its own (dropMore). When the acts' pull
-// requests cannot be resolved, nothing the pages read counts and every
-// one is left as it was.
-func (r *githubHistoryRead) followLeft(w *githubHistoryWalk) error {
-	left := slices.DeleteFunc(slices.Clone(w.More), func(m githubMoreWalk) bool { _, read := r.prs.byNumber[m.Number]; return read })
-	work := slices.Clone(left)
-	var acts []PRHistoryAct
-	var stopped error
-	for i := range work {
-		got, err := r.follow(&work[i], r.budget)
-		acts = append(acts, got...)
-		if err != nil {
-			stopped = err
-			break
-		}
-	}
-	kept, err := resolveActs(acts, &r.prs, r.known, r.fetch)
-	if err != nil {
-		r.more = append(r.more, left...)
-		return err
-	}
-	r.acts = append(r.acts, kept...)
-	for _, m := range work {
-		if m.Reviews || m.Comments {
-			r.more = append(r.more, m)
-		}
-	}
-	return stopped
-}
-
-// fetch reads the pull requests numbers names with their first reviews
-// and comments, one request each; one the forge does not have is not
-// kept.
-func (r *githubHistoryRead) fetch(numbers []int64) error {
-	for _, n := range numbers {
-		if !r.budget.take() {
+	for len(r.more) > 0 {
+		if !b.take() {
 			return errHistoryBudget
 		}
-		got, err := r.moreQuery(n, true, true, "", true, "")
+		m := r.more[0]
+		page, found, err := r.morePage(m)
 		if err != nil {
 			return err
 		}
-		if got == nil {
+		r.more = r.more[1:]
+		if !found {
 			continue
 		}
-		pr, err := r.pull(got.githubHistoryPullRaw)
-		if err != nil {
-			return err
+		r.acts = append(r.acts, githubHistoryActs(m.Number, m.Kind, page)...)
+		if next, ok := githubHistoryLeft(m.Number, m.Kind, page, m.Stop); ok {
+			r.more = append([]githubMoreWalk{next}, r.more...)
 		}
-		var reviews, comments githubHistoryItemsRaw
-		if got.Reviews != nil {
-			reviews = *got.Reviews
-		}
-		if got.Comments != nil {
-			comments = *got.Comments
-		}
-		if err := r.readOn(&pr, r.budget, reviews, comments); err != nil {
-			return err
-		}
-		r.prs.keep(pr)
 	}
 	return nil
 }
 
-// commentsHead reads the review comments updated since the walk's Top
-// to the present, a page at a time from the newest update read, and the
-// first read opens the gap down to the window's start.
-func (r *githubHistoryRead) commentsHead(w *githubCommentsWalk, floor int64) error {
-	if w.Top == 0 && !w.Gap.Open {
-		top := r.now.Add(-githubCommentsLag).UnixMilli()
-		w.Gap.open(top, floor)
-		w.Top = top
-		return nil
+// morePage reads the follow-up page of stretch m; false when the forge no
+// longer has its pull request.
+func (r *githubHistoryRead) morePage(m githubMoreWalk) (githubHistoryActsRaw, bool, error) {
+	var raw struct {
+		Repository *struct {
+			PullRequest *struct {
+				Reviews   *githubHistoryActsRaw `json:"reviews"`
+				Approvals *githubHistoryActsRaw `json:"approvals"`
+				Comments  *githubHistoryActsRaw `json:"comments"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
 	}
-	for {
-		acts, newest, full, err := r.commentsPage(w.Top, 0)
-		if err != nil {
-			if errors.Is(err, errHistoryBudget) {
-				w.Behind = true
-			}
-			return err
+	vars := map[string]any{"owner": r.owner, "name": r.name, "number": m.Number,
+		"wantReviews": m.Kind == githubActsReviews, "reviewsBefore": nil,
+		"wantApprovals": m.Kind == githubActsApprovals, "approvalsAfter": nil,
+		"wantComments": m.Kind == githubActsComments, "commentsBefore": nil}
+	vars[map[string]string{githubActsReviews: "reviewsBefore", githubActsApprovals: "approvalsAfter", githubActsComments: "commentsBefore"}[m.Kind]] = m.Cursor
+	if _, err := r.client.GraphQL(r.ctx, githubPullHistoryMoreQuery, vars, &raw); err != nil {
+		if graphQLNotFoundError(err) {
+			return githubHistoryActsRaw{}, false, nil
 		}
-		r.acts = append(r.acts, acts...)
-		w.Top = max(w.Top, newest)
-		if !full {
-			w.Behind = false
-			return nil
-		}
+		return githubHistoryActsRaw{}, false, err
 	}
-}
-
-// commentsGap walks the review comments' gap back a band at a time, each
-// oldest first from its lower end, never past floor, the list's reach. A
-// band in progress keeps the lower end it began with: the next band's
-// would leave the comments between them unread.
-func (r *githubHistoryRead) commentsGap(w *githubCommentsWalk, floor int64) error {
-	for {
-		lo, hi, ok := w.Gap.band(floor)
-		if !ok {
-			return nil
-		}
-		if w.Pages > 0 {
-			lo = w.Lo
-		}
-		w.Lo = lo
-		at := max(w.At, lo)
-		for {
-			acts, newest, full, err := r.commentsPage(at, hi)
-			if err != nil {
-				return err
-			}
-			w.Pages++
-			r.acts = append(r.acts, acts...)
-			if newest > hi || !full {
-				break
-			}
-			at = max(at, newest)
-			w.At = at
-		}
-		w.Gap.walked(lo, w.Pages)
-		w.Lo, w.At, w.Pages = 0, 0, 0
+	if raw.Repository == nil {
+		return githubHistoryActsRaw{}, false, fmt.Errorf("GitHub answered no repository %s", r.repo.Project())
 	}
-}
-
-// commentsPage reads the page of review comments updated from a second
-// before since, oldest first: its acts, up to hi when it is not 0, each
-// with its pull request read or known (resolveActs), the newest update it
-// read and whether the page was full. More than a page's comments sharing
-// one second is a failure, since no request can move past them.
-func (r *githubHistoryRead) commentsPage(since, hi int64) ([]PRHistoryAct, int64, bool, error) {
-	if !r.budget.take() {
-		return nil, 0, false, errHistoryBudget
+	pull := raw.Repository.PullRequest
+	if pull == nil {
+		return githubHistoryActsRaw{}, false, nil
 	}
-	query := url.Values{"sort": {"updated"}, "direction": {"asc"}, "per_page": {strconv.Itoa(gitlabPageSize)},
-		"since": {fromUnixMilli(since - time.Second.Milliseconds()).Format(time.RFC3339)}}
-	var raw []githubReviewCommentRaw
-	if _, err := r.client.JSON(r.ctx, forgeapi.Request{Path: "repos/" + r.owner + "/" + r.name + "/pulls/comments", Query: query, MaxBodyBytes: githubReviewCommentsMaxBody}, &raw); err != nil {
-		return nil, 0, false, err
+	page := map[string]*githubHistoryActsRaw{githubActsReviews: pull.Reviews, githubActsApprovals: pull.Approvals, githubActsComments: pull.Comments}[m.Kind]
+	if page == nil {
+		return githubHistoryActsRaw{}, false, fmt.Errorf("GitHub answered no %s of %s#%d", m.Kind, r.repo.Project(), m.Number)
 	}
-	var acts []PRHistoryAct
-	newest := int64(0)
-	for _, c := range raw {
-		updated, err := time.Parse(time.RFC3339, c.UpdatedAt)
-		if err != nil {
-			return nil, 0, false, fmt.Errorf("GitHub review comment %d of %s: time %q: %w", c.ID, r.repo.Project(), c.UpdatedAt, err)
-		}
-		newest = max(newest, updated.UnixMilli())
-		if hi != 0 && updated.UnixMilli() > hi {
-			break
-		}
-		created, err := time.Parse(time.RFC3339, c.CreatedAt)
-		if err != nil {
-			return nil, 0, false, fmt.Errorf("GitHub review comment %d of %s: time %q: %w", c.ID, r.repo.Project(), c.CreatedAt, err)
-		}
-		number, err := strconv.ParseInt(path.Base(c.PullRequestURL), 10, 64)
-		if err != nil || !strings.Contains(c.PullRequestURL, "/pulls/") {
-			return nil, 0, false, fmt.Errorf("GitHub review comment %d of %s names pull request %q", c.ID, r.repo.Project(), c.PullRequestURL)
-		}
-		if c.User == nil || c.User.Type != "User" || c.User.Login == "" {
-			continue
-		}
-		acts = append(acts, PRHistoryAct{Number: number, Person: PRListAuthor{Login: c.User.Login}, At: created})
-	}
-	full := len(raw) == gitlabPageSize
-	if full && newest <= since {
-		return nil, 0, false, fmt.Errorf("GitHub history of %s: more than %d review comments share the update time %s, so the read cannot move past it",
-			r.repo.Key(), gitlabPageSize, fromUnixMilli(since).Format(time.RFC3339))
-	}
-	kept, err := resolveActs(acts, &r.prs, r.known, r.fetch)
-	if err != nil {
-		return nil, 0, false, err
-	}
-	return kept, newest, full, nil
+	return *page, true, nil
 }
 
 // nullable is s, or nil for an empty cursor.
@@ -604,35 +462,29 @@ func nullable(s string) any {
 	return s
 }
 
-// githubHistoryActs are a list's acts: a submitted review is an approval
-// when it approves and a comment when it comments or requests changes; a
-// pending review, a dismissed one, a bot's and a deleted account's are
-// none. A review's line comments are the review comment stream's.
-func githubHistoryActs(number int64, items githubHistoryItemsRaw, reviews bool) []PRHistoryAct {
+// githubHistoryActs are a page's acts of kind: a commenting review or a
+// conversation comment is a comment; an approval is an approval, and a
+// comment too when it carries line comments. An author that is not a
+// User, or none, is no one.
+func githubHistoryActs(number int64, kind string, page githubHistoryActsRaw) []PRHistoryAct {
 	var out []PRHistoryAct
-	for _, node := range items.Nodes {
-		at := node.CreatedAt
-		if reviews {
-			at = node.SubmittedAt
-		}
-		if node.Author == nil || node.Author.Typename != "User" || node.Author.Login == "" || at == "" {
+	for _, node := range page.Nodes {
+		if node.Author == nil || node.Author.Typename != "User" || node.Author.Login == "" {
 			continue
 		}
-		t, err := time.Parse(time.RFC3339, at)
+		t, err := time.Parse(time.RFC3339, cmp.Or(node.CreatedAt, node.SubmittedAt))
 		if err != nil {
 			continue
 		}
-		act := PRHistoryAct{Number: number, Person: PRListAuthor{Login: node.Author.Login, Name: node.Author.Name}, At: t}
-		if reviews {
-			switch node.State {
-			case "APPROVED":
-				act.Approved = true
-			case "COMMENTED", "CHANGES_REQUESTED":
-			default:
-				continue
-			}
+		person := PRListAuthor{Login: node.Author.Login, Name: node.Author.Name}
+		if kind != githubActsApprovals {
+			out = append(out, PRHistoryAct{Number: number, Person: person, At: t})
+			continue
 		}
-		out = append(out, act)
+		out = append(out, PRHistoryAct{Number: number, Approved: true, Person: person, At: t})
+		if node.Comments != nil && node.Comments.TotalCount > 0 {
+			out = append(out, PRHistoryAct{Number: number, Person: person, At: t})
+		}
 	}
 	return out
 }

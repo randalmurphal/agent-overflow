@@ -13,7 +13,9 @@ import (
 // AO_TRACKER_SCALE names, the forge history's writer on one source:
 // storing them a read of 500 at a time (GitHub's 10 pages of 50), each
 // with 2 keys, 2 approvals and 2 comments; a steady read of one pull
-// request beside them all; Work's read of a key; and the prune of them all once
+// request beside them all; the reader's lookup of a page's 50 stored
+// pull requests; Work's read of a key and 20 listed numbers; and the
+// prune of them all once
 // the window has passed them. Skipped without AO_TRACKER_SCALE.
 func TestForgeHistoryAtScale(t *testing.T) {
 	env := os.Getenv("AO_TRACKER_SCALE")
@@ -33,12 +35,14 @@ func TestForgeHistoryAtScale(t *testing.T) {
 			id := sourceID(t, s, testOrigin)
 			const window = int64(1_000_000)
 			pr := func(i int64, updated int64) ForgeHistoryPR {
-				p := testPR(i, fmt.Sprintf("WEB-%d Change %d", i, i), fmt.Sprintf("web-%d", i+1), updated, fmt.Sprintf("WEB-%d", i), fmt.Sprintf("WEB-%d", i+1))
-				p.ActsWhole = true
+				return testPR(i, fmt.Sprintf("WEB-%d Change %d", i, i), fmt.Sprintf("web-%d", i+1), updated, fmt.Sprintf("WEB-%d", i), fmt.Sprintf("WEB-%d", i+1))
+			}
+			acts := func(i int64, updated int64) []ForgeHistoryAct {
+				var out []ForgeHistoryAct
 				for k, login := range []string{"bob", "carol", "dave", "erin"} {
-					p.Acts = append(p.Acts, ForgeHistoryAct{Number: i, Kind: ForgeActApproved + k%2, Login: login, Name: login, At: updated - int64(k)})
+					out = append(out, ForgeHistoryAct{Number: i, Kind: ForgeActApproved + k%2, Login: login, Name: login, At: updated - int64(k)})
 				}
-				return p
+				return out
 			}
 			var slowest time.Duration
 			start := time.Now()
@@ -46,6 +50,7 @@ func TestForgeHistoryAtScale(t *testing.T) {
 				read := ForgeHistoryRead{SourceID: id, Source: testOrigin, ReadAt: 9_000_000, WindowStart: window, Walk: []byte(`{}`)}
 				for i := from; i < from+500 && i <= int64(n); i++ {
 					read.PRs = append(read.PRs, pr(i, window+i*10))
+					read.Acts = append(read.Acts, acts(i, window+i*10)...)
 				}
 				one := time.Now()
 				if err := s.ApplyForgeHistory(read); err != nil {
@@ -57,15 +62,29 @@ func TestForgeHistoryAtScale(t *testing.T) {
 
 			start = time.Now()
 			applyForge(t, s, ForgeHistoryRead{Source: testOrigin, ReadAt: 9_000_001, WindowStart: window, Walk: []byte(`{}`),
-				PRs: []ForgeHistoryPR{pr(int64(n/2), window+int64(n)*10+1)}})
+				PRs: []ForgeHistoryPR{pr(int64(n/2), window+int64(n)*10+1)}, Acts: acts(int64(n/2), window+int64(n)*10+1)})
 			t.Logf("%d pull requests: a steady read of one in %v", n, time.Since(start).Round(time.Microsecond))
 
-			start = time.Now()
-			work, err := s.ForgeHistoryForWork(fmt.Sprintf("WEB-%d", n/3), []string{testOrigin.RepoKey})
-			if err != nil || len(work.Rows) != 2 {
-				t.Fatalf("by key = %d rows, %v", len(work.Rows), err)
+			page := make([]int64, 0, 50)
+			for i := range int64(50) {
+				page = append(page, int64(n)-i)
 			}
-			t.Logf("%d pull requests: a key's read in %v", n, time.Since(start).Round(time.Microsecond))
+			start = time.Now()
+			if stored, err := s.StoredForgeHistoryPRs(id, page); err != nil || len(stored) != 50 {
+				t.Fatalf("stored = %d, %v", len(stored), err)
+			}
+			t.Logf("%d pull requests: a page's lookup of 50 in %v", n, time.Since(start).Round(time.Microsecond))
+
+			var numbers []ForgeHistoryNumber
+			for i := range int64(20) {
+				numbers = append(numbers, ForgeHistoryNumber{RepoKey: testOrigin.RepoKey, Number: int64(n)/5 + i})
+			}
+			start = time.Now()
+			work, err := s.ForgeHistoryForWork(fmt.Sprintf("WEB-%d", n/3), []string{testOrigin.RepoKey}, numbers)
+			if err != nil || len(work.Rows) != 22 {
+				t.Fatalf("by key and number = %d rows, %v", len(work.Rows), err)
+			}
+			t.Logf("%d pull requests: a key's read with 20 numbers in %v", n, time.Since(start).Round(time.Microsecond))
 
 			start = time.Now()
 			applyForge(t, s, ForgeHistoryRead{Source: testOrigin, ReadAt: 9_000_002, WindowStart: window + int64(n)*10 + 2, Walk: []byte(`{}`)})

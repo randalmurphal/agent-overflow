@@ -9,8 +9,8 @@ package store
 //     was removed cannot land in one made again. It holds the reader's
 //     walk (walk, JSON only the reader reads), how far back every update
 //     is read (reach, the forge's Unix ms; 0 is back to the window's
-//     start; NULL until a read lands, and while a stream read oldest first
-//     has not reached the present), whether the walk has work left that
+//     start; NULL until every stream of the walk has proved one), whether
+//     the walk has work left that
 //     the next round reads at once (owed), the repository's own head
 //     identity in the forge's terms (own_head), the parent the forge names
 //     when it is a fork (its repository key and path), the last read's
@@ -20,14 +20,12 @@ package store
 //   - forge_history_prs: one row per pull request updated inside the
 //     window, whatever its head: its number, address, title, source branch
 //     and head repository, state, author and times, and the wall time the
-//     forge was last asked for it (seen_at). A read that finds a pull
-//     request unchanged does not fetch it, so its seen_at stays the time
-//     of the read that last did: Work compares it with other records' own
-//     observation times, and the source's read_at would claim an
-//     observation nobody made.
+//     request that last read it started (seen_at): Work compares it with
+//     other records' own observation times, and the source's read_at would
+//     claim an observation nobody made.
 //   - forge_history_acts: one row per pull request, kind (1 approved, 2
 //     commented) and login, with the person's name (empty when no read
-//     has named them) and the earliest time.
+//     has named them) and the earliest time. A read only adds acts.
 //   - forge_history_keys: the ticket keys each pull request names, by its
 //     title and source branch (trackerapp.TicketKeys).
 //

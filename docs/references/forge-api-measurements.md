@@ -225,17 +225,15 @@ against a live forge.
   of a day whole up to 100 pages and fails past them.
 - A note on a merge request is an event whose target is a `Note`, a
   `DiffNote` (a comment on the code) or a `DiscussionNote` (a reply);
-  both are kinds of `Note`, and GitLab's event entity
-  (`lib/api/entities/event.rb`) answers an event whose target is a note
-  with its `note` (`noteable_type`, `noteable_iid`, `system`), so the
-  `commented` feed holds all three.
-- GitHub's REST documentation of the review comments of a repository
-  (`GET /repos/{owner}/{repo}/pulls/comments`) sorts by `created` or
-  `updated` with `direction`, keeps the comments updated at or after
-  `since` (an ISO 8601 time), and pages by `page` and `per_page` (at most
-  100). Each comment has `user` (with `type`, `Bot` for an app),
-  `created_at`, `updated_at` and `pull_request_url`. The reader always
-  asks for page 1 with `since` moved on.
+  both are kinds of `Note` (`app/models/discussion_note.rb`), and
+  GitLab's event entity (`lib/api/entities/event.rb`) answers an event
+  whose target is a note with its `note` (`noteable_type`,
+  `noteable_iid`, `system`), so by the source the `commented` feed holds
+  all three. GitLab's discussions documentation
+  (`docs.gitlab.com/api/discussions/`, its note types) says a
+  `DiscussionNote` is not available through the events API; the reader
+  follows the source, and the viewer's feed measured above carried
+  `DiscussionNote` targets.
 - GitLab's merge requests API documentation: `updated_after` and
   `updated_before` return merge requests updated on or after, and on or
   before, the given time; `order_by=updated_at` with `sort`; a filter by
@@ -245,11 +243,19 @@ against a live forge.
   100; a query's cost is the requests it needs (each connection and each
   nested connection by its `first`) divided by 100, rounded, at least 1;
   5,000 points an hour for a user; a query that runs past 10 seconds is
-  stopped. `PullHistory` (50 pull requests, 50 reviews and 50 comments
-  each) is 101 requests, 1 point a page.
+  stopped. `PullHistory` (50 pull requests, each with 50 reviews, 3
+  approvals with their comment counts and 50 comments) is 1 + 50 + 50 +
+  50 + 150 = 301 requests, 3 points a page; `PullHistoryMore` is at most
+  103 requests, 1 point.
+- GitHub's GraphQL schema (`internal/git/forgeschema/github.graphql`)
+  leaves `PullRequestReviewComment.pullRequestReview` nullable and
+  documents neither that every line comment belongs to a review by its
+  writer nor that a review or a reply moves the pull request's
+  `updatedAt`; the reader relies on both
+  ([forge transport](../architecture/forge-transport.md#pull-request-history)).
 - A `PullHistory` page's size was not measured; its body bound is 8 MiB
   (`WithMaxBody`), as the GitLab merge request list's is: 50 pull
-  requests with 100 nested items each fit it at up to 1.6 KB an item.
+  requests with 103 nested items each fit it at up to 1.6 KB an item.
   A project events page uses `gitlabEventsMaxBody` (4 MiB), sized from
   the user events pages measured below.
 

@@ -54,7 +54,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "PullsByKey", required: []string{"owner", "name", "title", "head", "key", "wantTitle", "wantHead", "wantBranches"}, optional: []string{"titleAfter", "headAfter", "branchesAfter"}, run: ghPullsByKey},
 	{kind: "query", name: "PRsByHead", required: []string{"owner", "name", "head", "states"}, optional: []string{"after"}, run: ghPRsByHead},
 	{kind: "query", name: "PullHistory", required: []string{"owner", "name"}, optional: []string{"after"}, run: ghPullHistory},
-	{kind: "query", name: "PullHistoryMore", required: []string{"owner", "name", "number", "wantPull", "wantReviews", "wantComments"}, optional: []string{"reviewsAfter", "commentsAfter"}, run: ghPullHistoryMore},
+	{kind: "query", name: "PullHistoryMore", required: []string{"owner", "name", "number", "wantReviews", "wantApprovals", "wantComments"}, optional: []string{"reviewsBefore", "approvalsAfter", "commentsBefore"}, run: ghPullHistoryMore},
 	{kind: "query", name: "MergedPRs", required: []string{"owner", "name", "first"}, optional: []string{"after"}, run: ghMergedPRs},
 	{kind: "query", name: "PRStates", required: []string{"ids"}, run: ghPRStates},
 	{kind: "query", name: "PRMergeTarget", required: []string{"owner", "name", "number"}, run: ghPRMergeTarget},
@@ -223,6 +223,15 @@ func (v graphQLVars) cursor(name string) (int, error) {
 		return 0, fmt.Errorf("cursor %q is not one the fake handed out", s)
 	}
 	return offset, nil
+}
+
+// before reads a backward connection's before cursor: the offset it
+// names, or n, past the newest of n nodes, when it is absent.
+func (v graphQLVars) before(name string, n int) (int, error) {
+	if v[name] == nil {
+		return n, nil
+	}
+	return v.cursor(name)
 }
 
 // pullVars reads the owner, name and number variables.

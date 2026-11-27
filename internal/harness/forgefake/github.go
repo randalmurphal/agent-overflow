@@ -339,16 +339,17 @@ func ghPullReview(e *Engine, c *call, m []string) response {
 	case state != "APPROVED" && strings.TrimSpace(in.Body) == "" && len(in.Comments) == 0:
 		return ghUnprocessable("Body is required for this review event")
 	}
+	review := Review{ID: e.ids.next(), Author: e.viewer, State: state, Body: in.Body, SubmittedAt: githubNow(), CommitSHA: commit}
 	threads := make([]Thread, 0, len(in.Comments))
 	for _, comment := range in.Comments {
 		thread, reason := comment.thread(e)
 		if reason != "" {
 			return ghUnprocessable(reason)
 		}
+		thread.Comments[0].Review = review.ID
 		threads = append(threads, thread)
 	}
 	p.Threads = append(p.Threads, threads...)
-	review := Review{ID: e.ids.next(), Author: e.viewer, State: state, Body: in.Body, SubmittedAt: githubNow(), CommitSHA: commit}
 	p.Reviews = append(p.Reviews, review)
 	// A review answers the reviewer's request.
 	p.Reviewers = slices.DeleteFunc(p.Reviewers, func(login string) bool { return strings.EqualFold(login, review.Author) })

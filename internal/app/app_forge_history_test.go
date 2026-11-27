@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -70,7 +71,7 @@ func sourceKeys(sources []store.ForgeHistorySource) []string {
 // sources of origins and their parents, as "repo:number state".
 func (f workSearchFixture) historyRows(t *testing.T, key string, origins ...string) []string {
 	t.Helper()
-	work, err := f.a.store.ForgeHistoryForWork(key, origins)
+	work, err := f.a.store.ForgeHistoryForWork(key, origins, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +570,7 @@ func TestTicketWorkListsOnlyItsRepositoriesHistory(t *testing.T) {
 	now := time.Now()
 	if err := f.a.store.ApplyForgeHistory(store.ForgeHistoryRead{SourceID: src.ID, Source: other, OwnHead: "R_other", ReadAt: now.UnixMilli(),
 		WindowStart: forgeHistoryWindowStart(now).UnixMilli(), PRs: []store.ForgeHistoryPR{{Number: 9, URL: "https://github.com/other/web/pull/9",
-			Title: "WEB-1 Elsewhere", HeadRef: "elsewhere", State: "merged", CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli(), Keys: []string{"WEB-1"}}}}); err != nil {
+			Title: "WEB-1 Elsewhere", HeadRef: "elsewhere", State: "merged", CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli(), SeenAt: now.UnixMilli(), Keys: []string{"WEB-1"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	work, err := f.a.GetTicketWork(f.ctx, f.conn.ID, "10101")
@@ -589,15 +590,15 @@ func TestTicketWorkShowsEachPullRequestAsSeenLast(t *testing.T) {
 	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{
 		historyPull(1, "WEB-1 Fix the login", "fix-login", "open", 2), historyPull(2, "WEB-1 Cache", "cache", "open", 2),
 	}}}})
-	f.at(-30 * time.Minute)
 	if err := f.a.readForgeHistory(f.ctx); err != nil {
 		t.Fatal(err)
 	}
+	// A list read that started a minute after the history's.
 	storePRList(t, f.a, f.project, workSearchRepo, []gitops.PRListRow{
 		prListRow(workSearchRepo, 1, func(r *gitops.PRListRow) {
 			r.Title, r.HeadRefName, r.Draft = "WEB-1 Fix the login again", "fix-login", true
 		}),
-	}, time.Minute)
+	}, -time.Minute)
 	f.linkThread(t, "t1", f.project, f.dir)
 	if _, err := f.a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{ThreadID: "t1", Forge: "github", Host: "github.com",
 		Project: "example/web", Number: 2, URL: "https://github.com/example/web/pull/2", Branch: "cache", WorktreePath: f.dir, SeenOpenAt: 1}); err != nil {
@@ -675,42 +676,114 @@ func TestTicketWorkFoldsABranchOnlyIntoItsOwnHead(t *testing.T) {
 	}
 }
 
-// While the review comments changed since the last read are more than a
-// read holds, a ticket is not covered: Work searches for it.
-func TestSearchTicketWorkSearchesWhileReviewCommentsAreUnread(t *testing.T) {
+// Work lists a pull request when its newest record names the key: one
+// the history read retitled away after the stored list read it is not
+// Work's, nor one a list read that started after the history's retitled
+// away, and one a linked thread records is Work's whatever it names. (A
+// negative age is a list read that started after the history read.)
+func TestTicketWorkListsAPullRequestByItsNewestRecord(t *testing.T) {
 	t.Parallel()
-	pulls := []forgefake.Pull{historyPull(1, "WEB-1 Fix the login", "fix-login", "merged", 2)}
-	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}}
-	f := newWorkSearchFixture(t, fixture)
-	if err := f.a.readForgeHistory(f.ctx); err != nil {
+	for _, c := range []struct {
+		name          string
+		history, list string
+		listAgo       time.Duration
+		linked        bool
+		want          []string
+	}{
+		{"the history retitled it", "WEB-2 Fix the login", "WEB-1 Fix the login", 30 * time.Minute, false, nil},
+		{"the list retitled it", "WEB-1 Fix the login", "WEB-2 Fix the login", -time.Minute, false, nil},
+		{"the list names it again", "WEB-2 Fix the login", "WEB-1 Fix the login", -time.Minute, false, []string{"github:example/web:1 open"}},
+		{"a thread records it", "WEB-2 Fix the login", "WEB-1 Fix the login", 30 * time.Minute, true, []string{"github:example/web:1 open"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{
+				historyPull(1, c.history, "fix-login", "open", 2)}}}})
+			if err := f.a.readForgeHistory(f.ctx); err != nil {
+				t.Fatal(err)
+			}
+			storePRList(t, f.a, f.project, workSearchRepo, []gitops.PRListRow{
+				prListRow(workSearchRepo, 1, func(r *gitops.PRListRow) { r.Title, r.HeadRefName = c.list, "fix-login" }),
+			}, c.listAgo)
+			if c.linked {
+				f.linkThread(t, "t1", f.project, f.dir)
+				if _, err := f.a.store.RecordOpenThreadPullRequest(store.ThreadPullRequest{ThreadID: "t1", Forge: "github", Host: "github.com",
+					Project: "example/web", Number: 1, URL: "https://github.com/example/web/pull/1", Branch: "fix-login", WorktreePath: f.dir, SeenOpenAt: 1}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			work, err := f.a.GetTicketWork(f.ctx, f.conn.ID, "10101")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := workPulls(work); !slices.Equal(got, c.want) {
+				t.Fatalf("WEB-1's Work = %v; want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// A fork's parent is read for it, but not the parent's own parent.
+func TestForgeHistoryReadsAForksParentButNotItsGrandparent(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/web"},
+		{Forge: "github", Project: "corp/grand"},
+		{Forge: "github", Project: "bob/parent", Parent: "corp/grand"},
+		{Forge: "github", Project: "alice/fork", Parent: "bob/parent"},
+	}})
+	f.listWorkBoard(t, forgeProjectRepo(t, f.a, "https://github.com/alice/fork.git"))
+	for range 3 {
+		if err := f.a.readForgeHistory(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := sourceKeys(f.sources(t)); !slices.Equal(got, []string{"github:alice/fork", "github:bob/parent", "github:example/web"}) {
+		t.Fatalf("sources = %v; want the fork's parent and no grandparent", got)
+	}
+}
+
+// A round's read that waited for its source's lock reads nothing once no
+// client is connected. It counts goroutines across the process to see the
+// wait, so it runs alone.
+func TestARoundChecksForAClientAfterItsWait(t *testing.T) {
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}}})
+	if _, _, err := f.a.syncForgeHistorySources(f.ctx); err != nil {
 		t.Fatal(err)
 	}
-	line := 1
-	thread := forgefake.Thread{Path: "a.go", Line: &line}
-	for i := range 3100 {
-		thread.Comments = append(thread.Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x",
-			CreatedAt: time.Now().UTC().Add(time.Duration(i) * time.Second).Format(time.RFC3339)})
-	}
-	fixture.Repos[0].Pulls[0].Threads = []forgefake.Thread{thread}
-	if _, err := f.engine.Seed(fixture); err != nil {
+	id := f.sources(t)[0].ID
+	if err := f.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql PullHistory", Status: 502, Times: 1, Hold: true,
+		Body: json.RawMessage(`{"message":"held"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	f.at(16 * time.Minute)
-	if err := f.a.readForgeHistory(f.ctx); err != nil {
+	first := make(chan error, 1)
+	go func() { first <- f.a.readForgeHistorySource(f.ctx, id, forgeHistoryStale) }()
+	f.waitForHistoryOp(t, "gh graphql PullHistory", 1)
+	round := make(chan error, 1)
+	go func() { round <- f.a.readForgeHistory(f.ctx) }()
+	waitFor(t, "the round's wait for the source's lock", func() bool { return goroutinesIn("lockForgeHistorySource", "[select") > 0 })
+	f.events.Close()
+	if err := f.engine.ReleaseRefusal(forgefake.Release{Route: "gh graphql PullHistory"}); err != nil {
 		t.Fatal(err)
 	}
-	if src := f.sources(t)[0]; src.HasReach || !src.Owed {
-		t.Fatalf("after a read of 3,100 new review comments: %+v", src)
-	}
-	_, from := f.historyOps(0)
-	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
-	if err != nil {
+	<-first
+	if err := <-round; err != nil {
 		t.Fatal(err)
 	}
-	if ops, _ := f.historyOps(from); ops["gh graphql PullsByKey"] != 1 || ops["gh graphql PullHistory"] != 0 {
-		t.Fatalf("SearchTicketWork asked %v; want the key search and no history read", ops)
+	if ops, _ := f.historyOps(0); ops["gh graphql PullHistory"] != 1 {
+		t.Fatalf("a round that waited past the last client asked %v", ops)
 	}
-	if got := workPulls(work); !slices.Equal(got, []string{"github:example/web:1 merged"}) {
-		t.Errorf("pull requests = %v", got)
+}
+
+// goroutinesIn counts the goroutines in state whose stack passes through
+// fn.
+func goroutinesIn(fn, state string) int {
+	buf := make([]byte, 1<<22)
+	n := 0
+	for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+		if strings.Contains(g, state) && strings.Contains(g, fn) {
+			n++
+		}
 	}
+	return n
 }

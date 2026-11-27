@@ -46,13 +46,16 @@ type ticketHeadLookup struct {
 //     hold a branch's pull requests (a fork's parent too), and what Work
 //     lists proves nothing, since a branch can have several.
 //
-// A found row or branch counts only when it names the key
-// (namesTicketKey), since the forge's search is looser than the key rule.
+// A found row or branch adds a pull request only when it names the key
+// (namesTicketKey), since the forge's search is looser than the key rule;
+// a found row of one listed is observed whatever it names, at the time
+// it landed, after every stored observation Work read. The stored open rows of the pull requests found are
+// observed too (observeListedRows).
 // A repository's failure is its one ForgeProblem, beside the rows its
 // search and lookups read before they failed; a failed search gets no
 // lookups. A project whose origin
 // names no forge repository is not searched.
-func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead, origins []ForgeProject) {
+func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead, origins []ForgeProject) error {
 	var repos []*ticketSearchRepo
 	byKey := map[string]*ticketSearchRepo{}
 	for _, origin := range origins {
@@ -134,19 +137,21 @@ func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead, origi
 			Reserve: fail.reserve, ResumeAt: fail.resumeAt,
 		})
 	}
+	return read.observeListedRows()
 }
 
-// addFound lists a pull request the forge's search found for the key, of
-// projectID, observed now, and reports whether it names the key.
+// addFound observes a pull request the forge's search found, of
+// projectID, now (observeFound), and reports whether it names the key.
 func (r *ticketWorkRead) addFound(found gitops.PRFound, projectID string) bool {
 	return r.observeFound(found, projectID, time.Now().UnixMilli(), "")
 }
 
-// observeFound lists found, observed at at (wall Unix ms), with its head
-// repository when it is known, under projectID (observe), when it names
-// the key, and reports whether it does.
+// observeFound observes found, observed at at (wall Unix ms), with its
+// head repository when it is known, under projectID (observe), when it
+// names the key or is listed, and reports whether it names the key.
 func (r *ticketWorkRead) observeFound(found gitops.PRFound, projectID string, at int64, headRepo string) bool {
-	if !namesTicketKey(found.Title, found.HeadRefName, r.work.Key) {
+	names := namesTicketKey(found.Title, found.HeadRefName, r.work.Key)
+	if !names && !r.listed(found.Ref.Identity()) {
 		return false
 	}
 	row := TicketPullRequest{
@@ -160,7 +165,7 @@ func (r *ticketWorkRead) observeFound(found gitops.PRFound, projectID string, at
 		}
 		r.prHeads[row.Ref.Identity()] = headRepo
 	}
-	return true
+	return names
 }
 
 // ticketPRState is a found pull request's state as Work names it.

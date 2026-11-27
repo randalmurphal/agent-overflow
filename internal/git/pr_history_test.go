@@ -1,9 +1,13 @@
 package git
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,11 +43,11 @@ func historyNumbers(h PRHistory) []int64 {
 }
 
 // historyTestForge is a test forge whose clock is historyNow, with the
-// pull requests its reads answered, as the app's store holds them
-// (PRHistoryInput.Known).
+// pull requests its reads answered as the app's store holds them
+// (PRHistoryInput.Stored), by repository key and number.
 type historyTestForge struct {
 	*factsForge
-	stored map[string]bool
+	stored map[string]StoredPR
 	// window is the reads' window start, historyNow's when zero.
 	window time.Time
 }
@@ -52,7 +56,7 @@ func historyForge(t *testing.T, fixture forgefake.Fixture) *historyTestForge {
 	t.Helper()
 	f := newFactsForge(t, fixture)
 	f.core.nowFn = func() time.Time { return historyNow }
-	return &historyTestForge{factsForge: f, stored: map[string]bool{}}
+	return &historyTestForge{factsForge: f, stored: map[string]StoredPR{}}
 }
 
 func readHistory(t *testing.T, f *historyTestForge, repo RepoReference, walk []byte) PRHistory {
@@ -64,29 +68,88 @@ func readHistory(t *testing.T, f *historyTestForge, repo RepoReference, walk []b
 	return h
 }
 
+// historyMaxRequests is the most requests one read of repo's forge may
+// make.
+func historyMaxRequests(repo RepoReference) int {
+	if repo.Forge == "gitlab" {
+		return gitlabHistoryMaxRequests
+	}
+	return PRHistoryRequests
+}
+
+// githubHistoryMaxPoints is the most GraphQL points one GitHub read
+// spends: PRHistoryRequests list pages (TestGitHubHistoryPointsOfOneRead).
+const githubHistoryMaxPoints = 90
+
+// githubHistoryPoints is the GraphQL points of a GitHub read's requests.
+func githubHistoryPoints(cost map[string]int) int {
+	return cost["PullHistory"]*graphQLPoints(githubPullHistoryQuery.Text()) + cost["PullHistoryMore"]*graphQLPoints(githubPullHistoryMoreQuery.Text())
+}
+
+// graphQLPoints is a GitHub GraphQL document's rate limit cost as GitHub
+// documents it: each connection costs one request per node of the
+// connections around it, at their first or last bounds; the sum over
+// 100, rounded, is the points, at least 1. A part a directive may skip
+// counts.
+func graphQLPoints(text string) int {
+	bound := regexp.MustCompile(`\b(?:first|last):\s*(\d+)`)
+	nodes := []int{1}
+	requests, next := 0, 1
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '(':
+			end := i + strings.IndexByte(text[i:], ')')
+			if m := bound.FindStringSubmatch(text[i:end]); m != nil {
+				n, _ := strconv.Atoi(m[1])
+				requests += nodes[len(nodes)-1]
+				next = n
+			}
+			i = end
+		case '{':
+			nodes = append(nodes, nodes[len(nodes)-1]*next)
+			next = 1
+		case '}':
+			nodes = nodes[:len(nodes)-1]
+		}
+	}
+	return max(1, int(math.Round(float64(requests)/100)))
+}
+
 // readHistoryErr reads repo's history on from walk, at most
-// PRHistoryRequests requests, and stores the pull requests it answered,
-// a failed read's included.
+// historyMaxRequests requests and, on GitHub, githubHistoryMaxPoints
+// points, and stores the pull requests it answered, a failed read's
+// included.
 func readHistoryErr(t *testing.T, f *historyTestForge, repo RepoReference, walk []byte) (PRHistory, error) {
 	t.Helper()
-	known := func(numbers []int64) (map[int64]bool, error) {
-		out := map[int64]bool{}
+	key := func(n int64) string { return fmt.Sprintf("%s#%d", repo.Key(), n) }
+	stored := func(numbers []int64) (map[int64]StoredPR, error) {
+		out := map[int64]StoredPR{}
 		for _, n := range numbers {
-			out[n] = f.stored[fmt.Sprintf("%s#%d", repo.Key(), n)]
+			if pr, ok := f.stored[key(n)]; ok {
+				out[n] = pr
+			}
 		}
 		return out, nil
 	}
-	before := f.served()
+	before := f.snapshot()
 	window := f.window
 	if window.IsZero() {
 		window = historyNow.AddDate(0, 0, -180)
 	}
-	h, err := f.core.ReadPRHistory(t.Context(), repo, PRHistoryInput{Walk: walk, WindowStart: window, Known: known})
-	if n := f.served() - before; n > PRHistoryRequests {
-		t.Fatalf("one read made %d requests, past %d", n, PRHistoryRequests)
+	h, err := f.core.ReadPRHistory(t.Context(), repo, PRHistoryInput{Walk: walk, WindowStart: window, Stored: stored})
+	cost := f.since(before)
+	n := 0
+	for _, c := range cost {
+		n += c
+	}
+	if n > historyMaxRequests(repo) {
+		t.Fatalf("one read made %d requests, past %d", n, historyMaxRequests(repo))
+	}
+	if p := githubHistoryPoints(cost); repo.Forge == "github" && p > githubHistoryMaxPoints {
+		t.Fatalf("one read spent %d points, past %d", p, githubHistoryMaxPoints)
 	}
 	for _, pr := range h.PRs {
-		f.stored[fmt.Sprintf("%s#%d", repo.Key(), pr.Number)] = true
+		f.stored[key(pr.Number)] = StoredPR{Updated: pr.Updated, Seen: pr.Seen}
 	}
 	return h, err
 }
@@ -141,11 +204,6 @@ func readAll(t *testing.T, f *historyTestForge, repo RepoReference, walk []byte,
 func actsOf(reads ...PRHistory) []string {
 	var out []string
 	for _, h := range reads {
-		for _, pr := range h.PRs {
-			for _, a := range pr.Acts {
-				out = append(out, fmt.Sprintf("%d %v %s %s", a.Number, a.Approved, a.Person.Login, a.Person.Name))
-			}
-		}
 		for _, a := range h.Acts {
 			out = append(out, fmt.Sprintf("%d %v %s %s", a.Number, a.Approved, a.Person.Login, a.Person.Name))
 		}
@@ -156,12 +214,21 @@ func actsOf(reads ...PRHistory) []string {
 
 var githubHistoryRepo = RepoReference{Forge: "github", Host: "github.com", Namespace: "example", Repo: "web"}
 
+// A history page costs GitHub 3 points and a follow-up page 1, so one
+// read of at most PRHistoryRequests requests spends at most 90.
+func TestGitHubHistoryPointsOfOneRead(t *testing.T) {
+	t.Parallel()
+	page, more := graphQLPoints(githubPullHistoryQuery.Text()), graphQLPoints(githubPullHistoryMoreQuery.Text())
+	if page != 3 || more != 1 || PRHistoryRequests*max(page, more) != githubHistoryMaxPoints {
+		t.Fatalf("a page costs %d points and a follow-up %d; one read at most %d, want %d", page, more, PRHistoryRequests*max(page, more), githubHistoryMaxPoints)
+	}
+}
+
 // GitHub's first walk reads the list back from the newest pull request,
-// 50 a page, and the review comments back in bands, each read at most
-// PRHistoryRequests requests and leaving the rest owed, its reach the
-// oldest update it read; a steady read is a page of each stream. Each pull
-// request comes with who approved and commented, a bot and a pending or
-// dismissed review left out.
+// 50 a page, each read at most PRHistoryRequests requests and leaving the
+// rest owed, its reach the oldest update it read; a steady read is one
+// page. Each pull request comes with who approved and commented, a bot
+// and a pending or dismissed review left out.
 func TestGitHubHistoryWalksBackInBoundedReads(t *testing.T) {
 	t.Parallel()
 	pulls := historyPulls(2000)
@@ -170,29 +237,28 @@ func TestGitHubHistoryWalksBackInBoundedReads(t *testing.T) {
 		{Author: "user3", AuthorName: "User 3", State: "CHANGES_REQUESTED", SubmittedAt: historyAt(1)},
 		{Author: "ci", State: "COMMENTED", SubmittedAt: historyAt(1)},
 		{Author: "user4", AuthorName: "User 4", State: "DISMISSED", SubmittedAt: historyAt(1)},
+		{Author: "user7", AuthorName: "User 7", State: "PENDING", SubmittedAt: historyAt(1)},
 	}
 	pulls[len(pulls)-1].Comments = []forgefake.Comment{{Author: "user5", AuthorName: "User 5", Body: "ok", CreatedAt: historyAt(1)}}
 	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}}
 	f := historyForge(t, fixture)
 
-	// The first read: 15 pages of the list, down to pull request 750; the
-	// review comments back to there in 3 bands (7, 14 and the rest of 28
-	// days); 12 more pages of the list. The reach is the review comments',
-	// which reached least.
+	// The first read: 30 pages of the list, down to pull request 1,500.
 	first := readHistory(t, f, githubHistoryRepo, nil)
-	if !first.Owed || first.NoReach || len(historyNumbers(first)) != 1350 {
-		t.Fatalf("first read: owed %v, no reach %v, %d pull requests", first.Owed, first.NoReach, len(historyNumbers(first)))
+	if !first.Owed || !first.HasReach || len(historyNumbers(first)) != 1500 {
+		t.Fatalf("first read: owed %v, reach %v, %d pull requests", first.Owed, first.HasReach, len(historyNumbers(first)))
 	}
-	if want := historyNow.Add(-750 * time.Hour); !first.Reach.Equal(want) {
-		t.Fatalf("reach = %v, want the review comments' walk's, %v", first.Reach, want)
+	if want := historyNow.Add(-1500 * time.Hour); !first.Reach.Equal(want) {
+		t.Fatalf("reach = %v, want the oldest update read, %v", first.Reach, want)
 	}
 	newest := first.PRs[0]
-	if newest.Number != 1 || newest.State != "open" || newest.Author.Login != "user1" || !newest.ActsWhole || newest.HeadRepo == "" || newest.HeadRepo != first.OwnHead {
+	if newest.Number != 1 || newest.State != "open" || newest.Author.Login != "user1" || newest.HeadRepo == "" || newest.HeadRepo != first.OwnHead || !newest.Seen.Equal(historyNow) {
 		t.Fatalf("pull request 1 = %+v (own head %q)", newest, first.OwnHead)
 	}
-	if got := actsOf(PRHistory{PRs: first.PRs[:1]}); !slices.Equal(got, []string{"1 false user3 User 3", "1 false user5 User 5", "1 true user2 User 2"}) {
+	if got := actsOf(first); !slices.Equal(got, []string{"1 false user3 User 3", "1 false user5 User 5", "1 true user2 User 2"}) {
 		t.Fatalf("acts = %v", got)
 	}
+	walked := f.snapshot()
 	rest, walk := readAll(t, f, githubHistoryRepo, first.Walk, 5)
 	last := rest[len(rest)-1]
 	read := map[int64]bool{}
@@ -201,13 +267,14 @@ func TestGitHubHistoryWalksBackInBoundedReads(t *testing.T) {
 			read[n] = true
 		}
 	}
-	if len(read) != 2000 || !last.Reach.IsZero() || last.Owed {
-		t.Fatalf("after %d more reads: %d pull requests, reach %v, owed %v", len(rest), len(read), last.Reach, last.Owed)
+	if len(read) != 2000 || !last.HasReach || !last.Reach.IsZero() || last.Owed {
+		t.Fatalf("after %d more reads: %d pull requests, reach %v %v, owed %v", len(rest), len(read), last.HasReach, last.Reach, last.Owed)
 	}
-	t.Logf("first walk of 2,000 pull requests and no review comment: %d reads, %v", 1+len(rest), f.snapshot())
+	whole := f.snapshot()
+	t.Logf("first walk of 2,000 pull requests: %d reads, %v, %d points; the first read %d points",
+		1+len(rest), whole, githubHistoryPoints(whole), githubHistoryPoints(walked))
 
-	// A steady read: a page of each stream, which finds pull request 300
-	// updated since.
+	// A steady read: one page, which finds pull request 300 updated since.
 	pulls[len(pulls)-300].UpdatedAt = historyNow.Add(time.Minute).Format(time.RFC3339)
 	pulls[len(pulls)-300].Title = "WEB-300 Renamed"
 	if _, err := f.engine.Seed(fixture); err != nil {
@@ -216,15 +283,47 @@ func TestGitHubHistoryWalksBackInBoundedReads(t *testing.T) {
 	before := f.snapshot()
 	steady := readHistory(t, f, githubHistoryRepo, walk)
 	cost := f.since(before)
-	t.Logf("steady read: %v", cost)
-	if !maps.Equal(cost, map[string]int{"PullHistory": 1, "REST comments": 1}) || steady.Owed || steady.PRs[0].Number != 300 || steady.PRs[0].Title != "WEB-300 Renamed" {
+	t.Logf("steady read: %v, %d points", cost, githubHistoryPoints(cost))
+	if !maps.Equal(cost, map[string]int{"PullHistory": 1}) || steady.Owed || steady.PRs[0].Number != 300 || steady.PRs[0].Title != "WEB-300 Renamed" {
 		t.Fatalf("steady read: %v, owed %v, first %+v", cost, steady.Owed, steady.PRs[0])
 	}
 }
 
-// A pull request with more reviews or comments than a page holds reads
-// the rest, so its acts are whole.
-func TestGitHubHistoryReadsEveryReview(t *testing.T) {
+// GitHub documents neither behavior the history relies on for comments on
+// the code, so each is pinned here as the fake models it
+// (forge-transport.md#pull-request-history): a line comment outside an
+// approval, a reply included, arrives as its own COMMENTED review by its
+// writer, which is a comment by them; an approval whose line comments
+// count above zero is an approval and a comment, both at its submit time.
+// An approval with none is no comment.
+func TestGitHubHistoryReadsCommentsOnTheCodeFromTheReviews(t *testing.T) {
+	t.Parallel()
+	pulls := historyPulls(1)
+	line := 3
+	pulls[0].Reviews = []forgefake.Review{
+		{ID: 7001, Author: "alice", AuthorName: "Alice", State: "APPROVED", SubmittedAt: historyAt(3)},
+		{ID: 7002, Author: "bob", AuthorName: "Bob", State: "COMMENTED", SubmittedAt: historyAt(2)},
+		{ID: 7003, Author: "carol", AuthorName: "Carol", State: "APPROVED", SubmittedAt: historyAt(1)},
+	}
+	pulls[0].Threads = []forgefake.Thread{{Path: "a.go", Line: &line, Comments: []forgefake.Comment{
+		{Author: "alice", AuthorName: "Alice", Body: "nit", CreatedAt: historyAt(3), Review: 7001},
+		{Author: "bob", AuthorName: "Bob", Body: "agreed", CreatedAt: historyAt(2), Review: 7002},
+	}}}
+	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}})
+	h := readHistory(t, f, githubHistoryRepo, nil)
+	var got []string
+	for _, a := range h.Acts {
+		got = append(got, fmt.Sprintf("%v %s %s", a.Approved, a.Person.Login, a.At.Format(time.RFC3339)))
+	}
+	slices.Sort(got)
+	want := []string{"false alice " + historyAt(3), "false bob " + historyAt(2), "true alice " + historyAt(3), "true carol " + historyAt(1)}
+	if !slices.Equal(got, want) {
+		t.Fatalf("acts = %q; want %q", got, want)
+	}
+}
+
+// A pull request with more approvals than a page holds reads the rest.
+func TestGitHubHistoryReadsEveryApproval(t *testing.T) {
 	t.Parallel()
 	pulls := historyPulls(1)
 	for i := range 130 {
@@ -232,8 +331,8 @@ func TestGitHubHistoryReadsEveryReview(t *testing.T) {
 	}
 	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}})
 	h := readHistory(t, f, githubHistoryRepo, nil)
-	if len(h.PRs) != 1 || len(h.PRs[0].Acts) != 130 || !h.PRs[0].ActsWhole || f.seen["PullHistoryMore"] != 1 {
-		t.Fatalf("acts %d, whole %v, follow-ups %d", len(h.PRs[0].Acts), h.PRs[0].ActsWhole, f.seen["PullHistoryMore"])
+	if len(h.Acts) != 130 || h.Owed || f.seen["PullHistoryMore"] != 2 {
+		t.Fatalf("acts %d, owed %v, follow-ups %d", len(h.Acts), h.Owed, f.seen["PullHistoryMore"])
 	}
 }
 
@@ -256,18 +355,10 @@ func TestGitHubHistoryFollowsUpWithinTheBudgetAndFinishesLater(t *testing.T) {
 	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}})
 	reads, _ := readAll(t, f, githubHistoryRepo, nil, 10)
 	if !reads[0].Owed {
-		t.Fatal("the first read finished 99 follow-up pages")
+		t.Fatal("the first read finished 59 follow-up pages")
 	}
 	commenters := map[int64]map[string]bool{}
 	for _, h := range reads {
-		for _, pr := range h.PRs {
-			for _, a := range pr.Acts {
-				if commenters[a.Number] == nil {
-					commenters[a.Number] = map[string]bool{}
-				}
-				commenters[a.Number][a.Person.Login] = true
-			}
-		}
 		for _, a := range h.Acts {
 			if commenters[a.Number] == nil {
 				commenters[a.Number] = map[string]bool{}
@@ -287,6 +378,42 @@ func TestGitHubHistoryFollowsUpWithinTheBudgetAndFinishesLater(t *testing.T) {
 	t.Logf("%d reads: %v", len(reads), f.snapshot())
 }
 
+// A read that fails keeps the follow-ups the walk it began from left: they
+// leave only as their pages are read.
+func TestGitHubHistoryAFailedReadKeepsTheFollowUps(t *testing.T) {
+	t.Parallel()
+	pulls := historyPulls(50)
+	for p := range pulls {
+		for i := range 51 {
+			pulls[p].Comments = append(pulls[p].Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x", CreatedAt: historyAt(1)})
+		}
+	}
+	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}})
+	first := readHistory(t, f, githubHistoryRepo, nil)
+	pending := githubFollowUps(t, first.Walk)
+	if len(pending) == 0 {
+		t.Fatal("the first read left no follow-up")
+	}
+	f.failAt["PullHistory"] = f.seen["PullHistory"] + 1
+	second, err := readHistoryErr(t, f, githubHistoryRepo, first.Walk)
+	if err == nil {
+		t.Fatal("the read did not fail")
+	}
+	if got := githubFollowUps(t, second.Walk); !slices.Equal(got, pending) {
+		t.Fatalf("the first read left %d follow-ups; the failed read's walk keeps %d", len(pending), len(got))
+	}
+}
+
+// githubFollowUps are the stretches of acts walk leaves to read.
+func githubFollowUps(t *testing.T, walk []byte) []githubMoreWalk {
+	t.Helper()
+	var w githubHistoryWalk
+	if err := json.Unmarshal(walk, &w); err != nil {
+		t.Fatal(err)
+	}
+	return w.More
+}
+
 // A pull request the list finds unchanged since the last read costs no
 // follow-up page, however many comments it has.
 func TestGitHubHistoryDoesNotFollowUpAnUnchangedPullRequest(t *testing.T) {
@@ -304,121 +431,137 @@ func TestGitHubHistoryDoesNotFollowUpAnUnchangedPullRequest(t *testing.T) {
 	}
 }
 
-// A person who commented on the code counts as commenting, a reply and a
-// comment inside an approval included, named by their review or comment
-// on the read's pull requests when the comment list names only the login;
-// a bot's comment counts for nothing. A comment on a pull request the
-// read has not read fetches that pull request.
-func TestGitHubHistoryReadsLineComments(t *testing.T) {
+// A pull request that changed reads its comments back only to a little
+// before the read that last saw it: an old long pull request with one new
+// comment costs one page.
+func TestGitHubHistoryReadsAChangedPullRequestBackToItsLastRead(t *testing.T) {
 	t.Parallel()
-	pulls := historyPulls(2)
-	line := 3
-	pulls[1].Reviews = []forgefake.Review{{Author: "user2", AuthorName: "User 2", State: "APPROVED", SubmittedAt: historyAt(1)}}
-	pulls[1].Threads = []forgefake.Thread{{Path: "a.go", Line: &line, Comments: []forgefake.Comment{
-		{Author: "user2", AuthorName: "User 2", Body: "nit", CreatedAt: historyAt(1)},
-		{Author: "user3", AuthorName: "User 3", Body: "agreed", CreatedAt: historyAt(1)},
-		{Author: "linter", Body: "bot", CreatedAt: historyAt(1)},
-	}}}
-	old := forgefake.Pull{Number: 70, Title: "Old", HeadRef: "old", Author: "user1", AuthorName: "User 1", CreatedAt: historyAt(24 * 300), UpdatedAt: historyAt(24 * 200),
-		Threads: []forgefake.Thread{{Path: "b.go", Line: &line, Comments: []forgefake.Comment{{Author: "user6", AuthorName: "User 6", Body: "late", CreatedAt: historyAt(2)}}}}}
-	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: append([]forgefake.Pull{old}, pulls...)}}})
-	reads, _ := readAll(t, f, githubHistoryRepo, nil, 3)
-	got := actsOf(reads...)
-	for _, want := range []string{"1 true user2 User 2", "1 false user2 User 2", "1 false user3 ", "70 false user6 "} {
-		if !slices.Contains(got, want) {
-			t.Fatalf("acts = %q; want %q among them", got, want)
-		}
+	pulls := historyPulls(1)
+	for i := range 200 {
+		pulls[0].Comments = append(pulls[0].Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x", CreatedAt: historyAt(3)})
 	}
-	if slices.ContainsFunc(got, func(s string) bool { return strings.Contains(s, "linter") }) {
-		t.Fatalf("a bot's comment counted: %v", got)
+	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}}
+	f := historyForge(t, fixture)
+	_, walk := readAll(t, f, githubHistoryRepo, nil, 2)
+	f.core.nowFn = func() time.Time { return historyNow.Add(15 * time.Minute) }
+	newAt := historyNow.Add(time.Minute).Format(time.RFC3339)
+	fixture.Repos[0].Pulls[0].Comments = append(fixture.Repos[0].Pulls[0].Comments, forgefake.Comment{Author: "late", AuthorName: "L", Body: "x", CreatedAt: newAt})
+	fixture.Repos[0].Pulls[0].UpdatedAt = newAt
+	if _, err := f.engine.Seed(fixture); err != nil {
+		t.Fatal(err)
 	}
-	fetched := false
-	for _, h := range reads {
-		fetched = fetched || slices.Contains(historyNumbers(h), 70)
-	}
-	if !fetched {
-		t.Fatal("the comment's pull request 70 was not fetched")
+	before := f.snapshot()
+	h := readHistory(t, f, githubHistoryRepo, walk)
+	if cost := f.since(before); !maps.Equal(cost, map[string]int{"PullHistory": 1}) || !slices.Contains(actsOf(h), "1 false late L") || h.Owed {
+		t.Fatalf("a read of one new comment: %v, acts %v, owed %v", cost, actsOf(h), h.Owed)
 	}
 }
 
-// While the review comments changed since the last read are more than a
-// read holds, the stream has read nothing back to any time: the read says
-// so (NoReach) and owes the rest, which the next read reads.
-func TestGitHubHistoryClaimsNoReachUntilTheCommentsReachThePresent(t *testing.T) {
+// The newest pull request, with 3,100 comments and a new one on every
+// read, is read whole: each read's page of it adds the newest stretch,
+// and the stretch older reads left goes on.
+func TestGitHubHistoryReadsALongPullRequestThatChangesOnEveryRead(t *testing.T) {
 	t.Parallel()
 	pulls := historyPulls(1)
-	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}}
-	f := historyForge(t, fixture)
-	_, walk := readAll(t, f, githubHistoryRepo, nil, 3)
-	line := 1
-	thread := forgefake.Thread{Path: "a.go", Line: &line}
 	for i := range 3100 {
-		thread.Comments = append(thread.Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x",
-			CreatedAt: historyNow.Add(time.Duration(i) * time.Second).Format(time.RFC3339)})
+		pulls[0].Comments = append(pulls[0].Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x", CreatedAt: historyAt(2)})
 	}
-	fixture.Repos[0].Pulls[0].Threads = []forgefake.Thread{thread}
-	if _, err := f.engine.Seed(fixture); err != nil {
-		t.Fatal(err)
-	}
-	busy := readHistory(t, f, githubHistoryRepo, walk)
-	if !busy.NoReach || !busy.Owed {
-		t.Fatalf("a read of 3,100 new review comments: no reach %v, owed %v", busy.NoReach, busy.Owed)
-	}
-	next := readHistory(t, f, githubHistoryRepo, busy.Walk)
-	if next.NoReach || next.Owed || len(actsOf(busy, next)) != 3100 {
-		t.Fatalf("the read after: no reach %v, owed %v, %d acts", next.NoReach, next.Owed, len(actsOf(busy, next)))
-	}
-}
-
-// The review comments' walk back reaches a time only once it has read
-// every comment updated since: a band the read could not finish holds
-// the reach at its top, and the next read finishes it from where it
-// stopped.
-func TestGitHubHistoryCommentWalkHoldsItsReachUntilABandIsRead(t *testing.T) {
-	t.Parallel()
-	pulls := historyPulls(1)
-	line := 1
-	thread := forgefake.Thread{Path: "a.go", Line: &line}
-	for i := range 3000 {
-		thread.Comments = append(thread.Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x",
-			CreatedAt: historyNow.AddDate(0, 0, -60).Add(time.Duration(i) * time.Second).Format(time.RFC3339)})
-	}
-	pulls[0].Threads = []forgefake.Thread{thread}
-	pulls[0].UpdatedAt = historyAt(1)
-	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}})
-	first := readHistory(t, f, githubHistoryRepo, nil)
-	// Bands of 7, 14 and 28 days down to 49 days back, then 56 days
-	// whose 3,000 comments the read cannot finish.
-	top := historyNow.Add(-githubCommentsLag).AddDate(0, 0, -49)
-	if !first.Owed || first.NoReach || !first.Reach.Equal(top) {
-		t.Fatalf("first read: owed %v, no reach %v, reach %v; want %v", first.Owed, first.NoReach, first.Reach, top)
-	}
-	reads, _ := readAll(t, f, githubHistoryRepo, first.Walk, 5)
-	if last := reads[len(reads)-1]; !last.Reach.IsZero() || len(actsOf(append(reads, first)...)) != 3000 {
-		t.Fatalf("after %d reads: reach %v, %d acts", len(reads), last.Reach, len(actsOf(append(reads, first)...)))
-	}
-}
-
-// More review comments sharing one update second than a page holds stop
-// the read with a failure that says so, rather than reads that never
-// move.
-func TestGitHubHistoryRefusesAPageOfCommentsOfOneSecond(t *testing.T) {
-	t.Parallel()
-	pulls := historyPulls(1)
 	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}}
 	f := historyForge(t, fixture)
-	_, walk := readAll(t, f, githubHistoryRepo, nil, 3)
-	line := 1
-	thread := forgefake.Thread{Path: "a.go", Line: &line}
-	for i := range 101 {
-		thread.Comments = append(thread.Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x", CreatedAt: historyNow.Format(time.RFC3339)})
+	var walk []byte
+	var reads []PRHistory
+	for i := range 4 {
+		now := historyNow.Add(time.Duration(i) * 15 * time.Minute)
+		f.core.nowFn = func() time.Time { return now }
+		at := now.Add(-time.Minute).Format(time.RFC3339)
+		fixture.Repos[0].Pulls[0].Comments = append(fixture.Repos[0].Pulls[0].Comments, forgefake.Comment{Author: fmt.Sprintf("new%d", i), AuthorName: "N", Body: "x", CreatedAt: at})
+		fixture.Repos[0].Pulls[0].UpdatedAt = at
+		if _, err := f.engine.Seed(fixture); err != nil {
+			t.Fatal(err)
+		}
+		h := readHistory(t, f, githubHistoryRepo, walk)
+		reads, walk = append(reads, h), h.Walk
 	}
-	fixture.Repos[0].Pulls[0].Threads = []forgefake.Thread{thread}
+	if got := len(actsOf(reads...)); got != 3104 || reads[3].Owed {
+		t.Fatalf("after 4 reads: %d commenters of 3,104, owed %v", got, reads[3].Owed)
+	}
+}
+
+// A follow-up of a pull request the store no longer holds, which the read
+// has not read, is dropped: its acts would name a pull request the store
+// cannot keep them on.
+func TestGitHubHistoryDropsTheFollowUpOfAPullRequestTheStoreLeft(t *testing.T) {
+	t.Parallel()
+	pulls := append(historyPulls(1), forgefake.Pull{Number: 77, Title: "Old", HeadRef: "old", Author: "user1", AuthorName: "User 1",
+		CreatedAt: historyAt(24 * 300), UpdatedAt: historyAt(24 * 200)})
+	for i := range 60 {
+		pulls[1].Comments = append(pulls[1].Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x", CreatedAt: historyAt(24 * 200)})
+	}
+	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}})
+	_, walk := readAll(t, f, githubHistoryRepo, nil, 2)
+	var w githubHistoryWalk
+	if err := json.Unmarshal(walk, &w); err != nil {
+		t.Fatal(err)
+	}
+	w.More = []githubMoreWalk{{Number: 77, Kind: githubActsComments, Cursor: "cursor:10"}}
+	walk, err := json.Marshal(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := f.snapshot()
+	h := readHistory(t, f, githubHistoryRepo, walk)
+	if cost := f.since(before); cost["PullHistoryMore"] != 0 || len(h.Acts) != 0 || len(githubFollowUps(t, h.Walk)) != 0 || h.Owed {
+		t.Fatalf("a follow-up of pull request 77, which the store left: %v, acts %v, walk %s", cost, actsOf(h), h.Walk)
+	}
+}
+
+// A pull request already waiting for its approvals, which changed, keeps
+// one follow-up of them: the one further on.
+func TestGitHubHistoryKeepsOneApprovalsFollowUpPerPullRequest(t *testing.T) {
+	t.Parallel()
+	pulls := historyPulls(1)
+	for i := range 10 {
+		pulls[0].Reviews = append(pulls[0].Reviews, forgefake.Review{Author: fmt.Sprintf("u%d", i), AuthorName: "U", State: "APPROVED", SubmittedAt: historyAt(1)})
+	}
+	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}}
+	f := historyForge(t, fixture)
+	_, walk := readAll(t, f, githubHistoryRepo, nil, 2)
+	var w githubHistoryWalk
+	if err := json.Unmarshal(walk, &w); err != nil {
+		t.Fatal(err)
+	}
+	w.More = []githubMoreWalk{{Number: 1, Kind: githubActsApprovals, Cursor: "cursor:3"}}
+	walk, err := json.Marshal(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.Repos[0].Pulls[0].UpdatedAt = historyNow.Add(time.Minute).Format(time.RFC3339)
 	if _, err := f.engine.Seed(fixture); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readHistoryErr(t, f, githubHistoryRepo, walk); err == nil || !strings.Contains(err.Error(), "share the update time") {
-		t.Fatalf("err = %v", err)
+	before := f.snapshot()
+	readHistory(t, f, githubHistoryRepo, walk)
+	if cost := f.since(before); cost["PullHistoryMore"] != 1 {
+		t.Fatalf("a changed pull request waiting for its approvals: %v; want one follow-up", cost)
+	}
+}
+
+// A read claims a reach only back to what it read: a first read reads its
+// newest pull request's acts of a minute ago, and one that fails before
+// its first page claims none.
+func TestGitHubHistoryClaimsAReachOnlyForWhatItRead(t *testing.T) {
+	t.Parallel()
+	pulls := historyPulls(1)
+	pulls[0].Reviews = []forgefake.Review{{Author: "late", AuthorName: "L", State: "COMMENTED", SubmittedAt: historyNow.Add(-time.Minute).Format(time.RFC3339)}}
+	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}})
+	f.failAt["PullHistory"] = 1
+	failed, err := readHistoryErr(t, f, githubHistoryRepo, nil)
+	if err == nil || failed.HasReach || !failed.Owed {
+		t.Fatalf("a first read that failed: err %v, reach %v, owed %v", err, failed.HasReach, failed.Owed)
+	}
+	h := readHistory(t, f, githubHistoryRepo, failed.Walk)
+	if !h.HasReach || !h.Reach.IsZero() || !slices.Contains(actsOf(h), "1 false late L") {
+		t.Fatalf("the first read that landed: reach %v %v, acts %v", h.HasReach, h.Reach, actsOf(h))
 	}
 }
 
@@ -460,8 +603,8 @@ func newerPulls(first, n int) []forgefake.Pull {
 }
 
 // A GitHub read that finds more changed since the last read than it can
-// read leaves the rest as the gap; the next read reads on and none of
-// the changes is missed.
+// read leaves the rest as the gap, and its reach stays above it; the next
+// read reads on and none of the changes is missed.
 func TestGitHubHistoryLeavesWhatChangedPastOneReadAsTheGap(t *testing.T) {
 	t.Parallel()
 	pulls := historyPulls(100)
@@ -472,11 +615,9 @@ func TestGitHubHistoryLeavesWhatChangedPastOneReadAsTheGap(t *testing.T) {
 	if _, err := f.engine.Seed(fixture); err != nil {
 		t.Fatal(err)
 	}
-	// The list's 40 new pages take the read's requests, so it reads no
-	// review comment and claims no reach.
 	busy := readHistory(t, f, githubHistoryRepo, walk)
-	if !busy.Owed || !busy.NoReach {
-		t.Fatalf("a read of 2,000 changes: owed %v, no reach %v", busy.Owed, busy.NoReach)
+	if !busy.Owed || !busy.HasReach || !busy.Reach.After(historyNow) {
+		t.Fatalf("a read of 2,000 changes: owed %v, reach %v %v", busy.Owed, busy.HasReach, busy.Reach)
 	}
 	reads, _ := readAll(t, f, githubHistoryRepo, busy.Walk, 5)
 	read := map[int64]bool{}
@@ -521,8 +662,8 @@ func TestGitLabHistoryReadsTheListAndTheEvents(t *testing.T) {
 	f := historyForge(t, fixture)
 
 	first := readHistory(t, f, gitlabHistoryRepo, nil)
-	if got := historyNumbers(first); !slices.Equal(got, []int64{1, 2, 3, 50}) || first.Owed || !first.Reach.IsZero() {
-		t.Fatalf("first read: %v, owed %v, reach %v", got, first.Owed, first.Reach)
+	if got := historyNumbers(first); !slices.Equal(got, []int64{1, 2, 3, 50}) || first.Owed || !first.HasReach || !first.Reach.IsZero() {
+		t.Fatalf("first read: %v, owed %v, reach %v %v", got, first.Owed, first.HasReach, first.Reach)
 	}
 	if got := actsOf(PRHistory{Acts: first.Acts}); !slices.Equal(got, []string{"1 false user3 User 3", "1 false user5 User 5", "1 false user6 User 6", "1 true user2 User 2", "50 true user2 User 2"}) {
 		t.Fatalf("acts = %v", got)
@@ -606,8 +747,8 @@ func TestGitLabHistoryReadsOnFromTheNewestWhileItWalksBack(t *testing.T) {
 	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "gitlab", Project: "grp/web", Pulls: pulls}}}
 	f := historyForge(t, fixture)
 	first := readHistory(t, f, gitlabHistoryRepo, nil)
-	if !first.Owed || first.Reach.IsZero() {
-		t.Fatalf("first read: owed %v, reach %v", first.Owed, first.Reach)
+	if !first.Owed || first.HasReach && first.Reach.IsZero() {
+		t.Fatalf("first read: owed %v, reach %v %v", first.Owed, first.HasReach, first.Reach)
 	}
 	fixture.Repos[0].Pulls = append(slices.Clone(pulls), newerPulls(5000, 1)...)
 	if _, err := f.engine.Seed(fixture); err != nil {
@@ -691,70 +832,63 @@ func TestGitLabHistoryWalksEventsOutOfTimeOrder(t *testing.T) {
 	}
 }
 
-// A band of review comments a read could not finish is finished from
-// where it stopped, down to the lower end it started with, though the
-// list's walk has moved past it meanwhile: no comment below where the
-// band stopped is skipped.
-func TestGitHubHistoryFinishesACommentBandWhereItBegan(t *testing.T) {
+// A steady read reads every event whose id is past the highest the last
+// read read: a current comment beneath 100 newer ids imported with times
+// hours back is read.
+func TestGitLabHistorySteadyReadReadsEveryNewEventID(t *testing.T) {
 	t.Parallel()
-	pulls := historyPulls(2000)
-	line := 1
-	busy := forgefake.Thread{Path: "a.go", Line: &line}
-	for i := range 1500 {
-		busy.Comments = append(busy.Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x",
-			CreatedAt: historyNow.Add(-600 * time.Hour).Add(time.Duration(i) * time.Second).Format(time.RFC3339)})
+	pulls := historyPulls(1)
+	fixture := forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "gitlab", Project: "grp/web", Pulls: pulls}}}
+	f := historyForge(t, fixture)
+	_, walk := readAll(t, f, gitlabHistoryRepo, nil, 4)
+	f.core.nowFn = func() time.Time { return historyNow.Add(15 * time.Minute) }
+	pulls[0].Comments = append(pulls[0].Comments, forgefake.Comment{ID: 5000, Author: "current", AuthorName: "C", Body: "x", CreatedAt: historyNow.Add(time.Minute).Format(time.RFC3339)})
+	for i := range 100 {
+		pulls[0].Comments = append(pulls[0].Comments, forgefake.Comment{ID: int64(6000 + i), Author: fmt.Sprintf("imp%d", i), AuthorName: "I", Body: "x",
+			CreatedAt: historyNow.Add(-4 * time.Hour).Format(time.RFC3339)})
 	}
-	pulls[len(pulls)-600].Threads = []forgefake.Thread{busy}
-	pulls[len(pulls)-900].Threads = []forgefake.Thread{{Path: "b.go", Line: &line, Comments: []forgefake.Comment{
-		{Author: "early", AuthorName: "E", Body: "x", CreatedAt: historyNow.Add(-900 * time.Hour).Format(time.RFC3339)}}}}
-	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}})
-	reads, _ := readAll(t, f, githubHistoryRepo, nil, 8)
-	if got := actsOf(reads...); !slices.Contains(got, "900 false early ") || len(got) != 1501 {
-		t.Fatalf("after %d reads, %d acts; want 1,501 with early's on pull request 900", len(reads), len(got))
+	fixture.Repos[0].Pulls = pulls
+	if _, err := f.engine.Seed(fixture); err != nil {
+		t.Fatal(err)
+	}
+	h := readHistory(t, f, gitlabHistoryRepo, walk)
+	if !slices.Contains(actsOf(h), "1 false current C") || len(actsOf(h)) != 101 {
+		t.Fatalf("the steady read: %d acts, current's among them %v, owed %v", len(actsOf(h)), slices.Contains(actsOf(h), "1 false current C"), h.Owed)
 	}
 }
 
-// The first walk of a repository of 10,000 review comments over the
-// window and 2,000 pull requests, each read at most PRHistoryRequests
-// requests: the reads it takes, and the read by which a ticket created a
-// week, a month and 90 days back is covered. (At 100,000 comments, 30 s
-// of the fake's time: 39 reads, a week covered after the 4th, a month
-// after the 8th, 90 days after the 21st.)
-func TestGitHubHistoryWalksTenThousandReviewComments(t *testing.T) {
+// No GitLab read passes gitlabHistoryMaxRequests, a band of one day
+// included, however busy the days are (readHistoryErr), and the walk
+// reads every commenter.
+func TestGitLabHistoryBandsKeepTheBudget(t *testing.T) {
 	t.Parallel()
-	pulls := historyPulls(2000)
-	line := 1
-	window := 180 * day
-	for p := range 100 {
-		thread := forgefake.Thread{Path: "a.go", Line: &line}
-		for i := range 100 {
-			at := historyNow.Add(-githubCommentsLag - window + time.Duration(p*100+i)*(window/10_000))
-			thread.Comments = append(thread.Comments, forgefake.Comment{Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x", CreatedAt: at.Format(time.RFC3339)})
-		}
-		pulls[p].Threads = []forgefake.Thread{thread}
-	}
-	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web", Pulls: pulls}}})
-	covered := map[int]int{}
-	var walk []byte
-	reads := 0
-	for reads < 100 {
-		h := readHistory(t, f, githubHistoryRepo, walk)
-		reads++
-		walk = h.Walk
-		for _, days := range []int{7, 30, 90} {
-			created := historyNow.AddDate(0, 0, -days)
-			if covered[days] == 0 && !h.NoReach && !h.Reach.After(created) {
-				covered[days] = reads
-			}
-		}
-		if !h.Owed {
-			break
+	pulls := historyPulls(1)
+	for d := range 12 {
+		for i := range 750 {
+			pulls[0].Comments = append(pulls[0].Comments, forgefake.Comment{ID: int64(10_000 + d*1000 + i), Author: fmt.Sprintf("u%d", i), AuthorName: "U", Body: "x",
+				CreatedAt: historyNow.Add(-time.Duration(d)*24*time.Hour - time.Duration(i)*time.Minute).Format(time.RFC3339)})
 		}
 	}
-	t.Logf("%d reads (%v); a ticket created 7 days back is covered after read %d, 30 days after read %d, 90 days after read %d",
-		reads, f.snapshot(), covered[7], covered[30], covered[90])
-	if covered[90] == 0 || reads == 100 {
-		t.Fatalf("the walk did not finish in %d reads", reads)
+	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "gitlab", Project: "grp/web", Pulls: pulls}}})
+	reads, _ := readAll(t, f, gitlabHistoryRepo, nil, 20)
+	if got := len(actsOf(reads...)); got != 750 {
+		t.Fatalf("after %d reads: %d commenters of 750", len(reads), got)
+	}
+	t.Logf("first walk of 9,000 comment events over 12 days: %d reads, %v", len(reads), f.snapshot())
+}
+
+// A GitLab read claims a reach only once every stream has one: a first
+// read whose comment events failed claims none.
+func TestGitLabHistoryClaimsNoReachUntilEveryStreamHasOne(t *testing.T) {
+	t.Parallel()
+	f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "gitlab", Project: "grp/web", Pulls: historyPulls(3)}}})
+	f.failAt["REST events"] = 2
+	h, err := readHistoryErr(t, f, gitlabHistoryRepo, nil)
+	if err == nil || h.HasReach {
+		t.Fatalf("a first read whose comment events failed: err %v, reach %v", err, h.HasReach)
+	}
+	if h = readHistory(t, f, gitlabHistoryRepo, h.Walk); !h.HasReach {
+		t.Fatal("the read after claims no reach")
 	}
 }
 
@@ -777,6 +911,36 @@ func TestHistoryWalkBackEndsAtAMovingWindowStart(t *testing.T) {
 			t.Logf("first walk of 3,000 pull requests: %d reads, %v", reads, f.snapshot())
 			if owed {
 				t.Fatalf("still owed after 8 reads: %s", walk)
+			}
+		})
+	}
+}
+
+// Each pull request carries the start of the request that read it, on
+// both forges: with a clock that moves on a minute with each list
+// request, a first page's pull requests carry the time before it.
+func TestHistoryStampsEachPullRequestAtItsRequestsStart(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		repo RepoReference
+		list string
+	}{{githubHistoryRepo, "PullHistory"}, {gitlabHistoryRepo, "REST merge_requests"}} {
+		t.Run(c.repo.Forge, func(t *testing.T) {
+			t.Parallel()
+			f := historyForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: c.repo.Forge, Project: c.repo.Project(), Pulls: historyPulls(3)}}})
+			f.core.nowFn = func() time.Time {
+				f.mu.Lock()
+				defer f.mu.Unlock()
+				return historyNow.Add(time.Duration(f.seen[c.list]) * time.Minute)
+			}
+			h := readHistory(t, f, c.repo, nil)
+			if len(h.PRs) != 3 || f.seen[c.list] != 1 {
+				t.Fatalf("%d pull requests in %d list requests", len(h.PRs), f.seen[c.list])
+			}
+			for _, pr := range h.PRs {
+				if !pr.Seen.Equal(historyNow) {
+					t.Fatalf("pull request %d seen at %v; want its request's start, %v", pr.Number, pr.Seen, historyNow)
+				}
 			}
 		})
 	}

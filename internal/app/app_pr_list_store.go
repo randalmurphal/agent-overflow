@@ -23,7 +23,7 @@ import (
 // that lost the copy never replaces a newer read or undoes a prune.
 
 // storedPRLists reads every stored list, by repository key, with when
-// each read landed. A row that does not decode is skipped and logged: it
+// each read's request started. A row that does not decode is skipped and logged: it
 // is a cache the next read replaces.
 func (a *App) storedPRLists() (map[string]ProjectPRList, map[string]time.Time, error) {
 	records, err := a.store.ListPRListProjects()
@@ -227,7 +227,7 @@ func (a *App) prefetchPRList(ctx context.Context) (int, error) {
 	results := make(chan prListRepoRead, len(order))
 	round := gitops.WithPRListRound(ctx)
 	go runBounded(len(order), prListReadConcurrency, func(i int) {
-		read := prListRepoRead{key: order[i], repo: repos[order[i]]}
+		read := prListRepoRead{key: order[i], repo: repos[order[i]], started: time.Now()}
 		read.rows, read.err = a.listProjectPRs(round, read.repo)
 		results <- read
 	})
@@ -248,14 +248,13 @@ func (a *App) prefetchPRList(ctx context.Context) (int, error) {
 			detail = fail.wire
 			log.Printf("pr list: prefetch detail of %s failed (id: %s): %v", read.key, fail.correlationID, read.err)
 		}
-		now := time.Now()
 		project := names[read.key]
-		encoded, err := json.Marshal(prListReadOf(project.ProjectID, project.Name, read.repo, read.rows, a.prRowTickets(read.key, project.ProjectID, read.rows), now, detail))
+		encoded, err := json.Marshal(prListReadOf(project.ProjectID, project.Name, read.repo, read.rows, a.prRowTickets(read.key, project.ProjectID, read.rows), read.started, detail))
 		if err != nil {
 			log.Printf("pr list: encode the prefetch of %s: %v", read.key, err)
 			continue
 		}
-		if a.storePRListRead(writer, store.PRListProject{RepoKey: read.key, ProjectJSON: encoded, ReadAt: now.UnixMilli()}) {
+		if a.storePRListRead(writer, store.PRListProject{RepoKey: read.key, ProjectJSON: encoded, ReadAt: read.started.UnixMilli()}) {
 			stored++
 		}
 	}

@@ -28,8 +28,11 @@ import (
 // capped at 10,000 (GitLab's MAX_COUNT_LIMIT), and filtered by whole
 // days (after: created after the end of the day; before: created before
 // its start, in the server's time zone). So a feed is never walked by a
-// stored page number: each read reads a stretch of days whole, and a
-// deletion or a late event moves nothing past a stored position.
+// stored page number: reading on reads newest first, page numbers within
+// the read only, down past both the highest event id the last read read
+// and an hour before its start; walking back reads a stretch of days
+// whole. A deletion or a late event moves nothing past a stored
+// position.
 
 // gitlabHistoryWalk is where a GitLab project's history read stands.
 type gitlabHistoryWalk struct {
@@ -39,14 +42,29 @@ type gitlabHistoryWalk struct {
 }
 
 // gitlabFeedWalk is an events feed's part. Top is this computer's time
-// at the start of the last read that read the feed to its newest event:
-// each read reads the feed newest first down to gitlabEventsLate before
-// it, which covers an event whose row committed after a later one's and
-// a forge clock behind this computer's. Gap is what is not read yet,
-// walked back in bands of days, each read whole.
+// at the start of the last read that read the feed to its newest event,
+// and TopID the highest event id read then: each read reads the feed
+// newest first until it has passed both, the id in the order the feed
+// gives (an imported event's id is newer than its time) and
+// gitlabEventsLate before Top for an event whose row committed after a
+// later one's and a forge clock behind this computer's. Gap is what is
+// not read yet, walked back in bands of days, each read whole.
 type gitlabFeedWalk struct {
-	Top int64  `json:"top,omitempty"`
-	Gap actGap `json:"gap"`
+	Top   int64  `json:"top,omitempty"`
+	TopID int64  `json:"topId,omitempty"`
+	Gap   actGap `json:"gap"`
+}
+
+// reach is the time back to which the feed has read every event: the top
+// of its gap, 0 when it has none; false before its first read.
+func (w gitlabFeedWalk) reach() streamReach {
+	switch {
+	case w.Top == 0:
+		return streamReach{}
+	case w.Gap.Open:
+		return streamReach{w.Gap.Hi, true}
+	}
+	return streamReach{0, true}
 }
 
 // gitlabEventsLate is how far a feed's read on from its newest events
@@ -57,6 +75,13 @@ const gitlabEventsLate = time.Hour
 // 10,000 events a feed answers no next page though more follow, so a
 // band that reaches it is too wide to read.
 const gitlabEventsMaxPages = 100
+
+// gitlabHistoryMaxRequests is the most requests one GitLab read makes:
+// it starts work within PRHistoryRequests, and a band of one day, the
+// least a feed can filter, started with the last of them, finishes past
+// it: up to gitlabEventsMaxPages pages and a fetch of the merge requests
+// their events name, 100 a request.
+const gitlabHistoryMaxRequests = PRHistoryRequests + gitlabEventsMaxPages - 1 + gitlabEventsMaxPages
 
 type gitlabHistoryMRRaw struct {
 	IID             int64           `json:"iid"`
@@ -87,10 +112,11 @@ type gitlabHistoryEventRaw struct {
 	} `json:"note"`
 }
 
-// ReadPRHistory reads at most PRHistoryRequests requests, the project's
-// own read among them: the list and each feed from the newest down to
-// where the last read reached, then the list's gap and each feed's gap
-// with what is left. A feed's gap never walks below the list's reach.
+// ReadPRHistory starts work within PRHistoryRequests requests, the
+// project's own read among them: the list and each feed from the newest
+// down to where the last read reached, then the list's gap and each
+// feed's gap with what is left. A feed's gap never walks below the
+// list's reach.
 func (f *gitlabForge) ReadPRHistory(ctx context.Context, repo RepoReference, in PRHistoryInput) (PRHistory, error) {
 	client, err := f.core.gitlabAPI(repo.Host)
 	if err != nil {
@@ -108,7 +134,7 @@ func (f *gitlabForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 	if err != nil {
 		return PRHistory{}, err
 	}
-	r := gitlabHistoryRead{ctx: ctx, client: client, repo: repo, known: in.Known, budget: b, now: f.core.nowFn()}
+	r := gitlabHistoryRead{ctx: ctx, client: client, repo: repo, stored: in.Stored, budget: b, clock: f.core.nowFn, now: f.core.nowFn()}
 	out := PRHistory{OwnHead: strconv.FormatInt(settings.ID, 10)}
 	if p := settings.ForkedFrom; p != nil && p.PathWithNamespace != "" {
 		namespace, name, err := SplitProjectForForge(repo.Forge, p.PathWithNamespace)
@@ -134,15 +160,12 @@ func (f *gitlabForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 				return err
 			}
 		}
-		half := &historyBudget{left: (b.left + 1) / 2}
-		spent := half.left
-		err := w.List.walk(half, floor, r.listPage)
-		b.left -= spent - half.left
-		if err != nil {
+		if err := b.part(func(half *historyBudget) error { return w.List.walk(half, floor, r.listPage) }); err != nil {
 			return err
 		}
 		for _, feed := range feeds {
-			if err := r.feedGap(feed.action, feed.walk, max(w.List.reach(), floor)); err != nil {
+			reach, _ := w.List.reach()
+			if err := r.feedGap(feed.action, feed.walk, max(reach, floor)); err != nil {
 				return err
 			}
 		}
@@ -151,14 +174,14 @@ func (f *gitlabForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 	if errors.Is(err, errHistoryBudget) {
 		err = nil
 	}
-	nameActs(r.acts, r.prs.prs)
 	out.PRs, out.Acts = r.prs.prs, earliestActs(r.acts)
 	walk, encodeErr := json.Marshal(w)
 	if encodeErr != nil {
 		return out, errors.Join(err, fmt.Errorf("encode the history walk: %w", encodeErr))
 	}
 	out.Walk = walk
-	out.Reach = fromUnixMilli(max(w.List.reach(), w.Approved.Gap.reach(), w.Commented.Gap.reach()))
+	listAt, listOK := w.List.reach()
+	setReach(&out, streamReach{listAt, listOK}, w.Approved.reach(), w.Commented.reach())
 	out.Owed = w.List.Gap || w.Approved.Gap.Open || w.Commented.Gap.Open
 	return out, err
 }
@@ -168,11 +191,14 @@ type gitlabHistoryRead struct {
 	ctx    context.Context
 	client *forgeapi.Client
 	repo   RepoReference
-	known  func([]int64) (map[int64]bool, error)
+	stored func([]int64) (map[int64]StoredPR, error)
 	budget *historyBudget
-	now    time.Time
-	prs    historyPRs
-	acts   []PRHistoryAct
+	// clock is this computer's time, read at each request's start; now
+	// is the read's start.
+	clock func() time.Time
+	now   time.Time
+	prs   historyPRs
+	acts  []PRHistoryAct
 }
 
 // listPage is the list's pager: the merge requests updated at or after
@@ -210,13 +236,14 @@ func (r *gitlabHistoryRead) listPage(cursor string, cutoff int64) (listPage, err
 func (r *gitlabHistoryRead) mergeRequests(query url.Values) ([]PRHistoryPR, error) {
 	query.Set("state", "all")
 	query.Set("per_page", strconv.Itoa(gitlabPageSize))
+	seen := r.clock()
 	var raw []gitlabHistoryMRRaw
 	if _, err := r.client.JSON(r.ctx, forgeapi.Request{Path: gitlabProjectPath(r.repo.Project()) + "/merge_requests", Query: query, MaxBodyBytes: gitlabMRListMaxBody}, &raw); err != nil {
 		return nil, err
 	}
 	out := make([]PRHistoryPR, 0, len(raw))
 	for _, mr := range raw {
-		pr, err := r.mergeRequest(mr)
+		pr, err := r.mergeRequest(mr, seen)
 		if err != nil {
 			return out, err
 		}
@@ -226,8 +253,8 @@ func (r *gitlabHistoryRead) mergeRequests(query url.Values) ([]PRHistoryPR, erro
 	return out, nil
 }
 
-// mergeRequest is mr as history keeps it.
-func (r *gitlabHistoryRead) mergeRequest(mr gitlabHistoryMRRaw) (PRHistoryPR, error) {
+// mergeRequest is mr as history keeps it, seen at seen.
+func (r *gitlabHistoryRead) mergeRequest(mr gitlabHistoryMRRaw, seen time.Time) (PRHistoryPR, error) {
 	times := make([]time.Time, 4)
 	for i, raw := range []string{mr.CreatedAt, mr.UpdatedAt, mr.MergedAt, mr.ClosedAt} {
 		if raw == "" {
@@ -256,28 +283,43 @@ func (r *gitlabHistoryRead) mergeRequest(mr gitlabHistoryMRRaw) (PRHistoryPR, er
 	return PRHistoryPR{
 		Number: mr.IID, URL: mr.WebURL, Title: mr.Title, HeadRef: mr.SourceBranch, HeadRepo: strconv.FormatInt(mr.SourceProjectID, 10),
 		State: state, Author: PRListAuthor{Login: mr.Author.Username, Name: mr.Author.Name},
-		Created: times[0], Updated: times[1], Merged: times[2], Closed: times[3],
+		Created: times[0], Updated: times[1], Merged: times[2], Closed: times[3], Seen: seen,
 	}, nil
 }
 
-// feedHead reads a feed newest first down to gitlabEventsLate before its
-// Top, a page at a time, each page's acts counting once their merge
-// requests resolve; what the budget leaves unread joins the gap. The
-// first read opens the gap down to the window's start.
+// feedHead reads a feed newest first, a page at a time, each page's acts
+// counting once their merge requests resolve, until a page has passed
+// both the highest event id the last read read and gitlabEventsLate
+// before its start, or the feed ends; what the budget leaves unread joins
+// the gap. The first read reads the feed's newest page, for its highest
+// id, and opens the gap below it down to the window's start.
 func (r *gitlabHistoryRead) feedHead(action string, w *gitlabFeedWalk, floor int64) error {
 	start := r.now.UnixMilli()
 	if w.Top == 0 {
+		if !r.budget.take() {
+			return errHistoryBudget
+		}
+		events, _, err := r.eventsPage(action, url.Values{"sort": {"desc"}, "page": {"1"}})
+		if err != nil {
+			return err
+		}
+		kept, err := resolveActs(eventActs(events), &r.prs, r.stored, r.fetch)
+		if err != nil {
+			return err
+		}
+		r.acts = append(r.acts, kept...)
 		w.Gap.open(start, floor)
-		w.Top = start
+		w.Top, w.TopID = start, max(w.TopID, highestEvent(events))
 		return nil
 	}
 	stop := w.Top - gitlabEventsLate.Milliseconds()
-	// oldest is the oldest event of the pages that counted.
-	oldest := int64(0)
+	// oldest is the oldest event, and highest the highest id, of the pages
+	// that counted.
+	oldest, highest := int64(0), w.TopID
 	leave := func(err error) error {
 		if errors.Is(err, errHistoryBudget) && oldest > 0 {
 			w.Gap.open(oldest+gitlabEventsLate.Milliseconds(), stop)
-			w.Top = start
+			w.Top, w.TopID = start, highest
 		}
 		return err
 	}
@@ -291,25 +333,21 @@ func (r *gitlabHistoryRead) feedHead(action string, w *gitlabFeedWalk, floor int
 		if err != nil {
 			return err
 		}
-		older, pageOldest := true, int64(0)
-		var acts []PRHistoryAct
+		older, passed := true, false
 		for _, ev := range events {
-			at := ev.at.UnixMilli()
-			older = older && at < stop
-			pageOldest = minNonZero(pageOldest, at)
-			acts = append(acts, ev.act)
+			older = older && ev.at.UnixMilli() < stop
+			passed = passed || ev.id <= w.TopID
+			oldest = minNonZero(oldest, ev.at.UnixMilli())
 		}
-		kept, err := resolveActs(acts, &r.prs, r.known, r.fetch)
+		kept, err := resolveActs(eventActs(events), &r.prs, r.stored, r.fetch)
 		if err != nil {
 			return leave(err)
 		}
 		r.acts = append(r.acts, kept...)
-		if pageOldest > 0 {
-			oldest = minNonZero(oldest, pageOldest)
-		}
+		highest = max(highest, highestEvent(events))
 		switch {
-		case next == 0 || len(events) > 0 && older:
-			w.Top = start
+		case next == 0 || len(events) > 0 && older && passed:
+			w.Top, w.TopID = start, highest
 			return nil
 		case page == gitlabEventsMaxPages:
 			return fmt.Errorf("GitLab history of %s: more than %d %s events since %s, past what GitLab counts",
@@ -318,45 +356,66 @@ func (r *gitlabHistoryRead) feedHead(action string, w *gitlabFeedWalk, floor int
 	}
 }
 
+// eventActs are events' acts.
+func eventActs(events []gitlabHistoryEvent) []PRHistoryAct {
+	acts := make([]PRHistoryAct, 0, len(events))
+	for _, ev := range events {
+		acts = append(acts, ev.act)
+	}
+	return acts
+}
+
+// highestEvent is the highest id of events, 0 for none.
+func highestEvent(events []gitlabHistoryEvent) int64 {
+	highest := int64(0)
+	for _, ev := range events {
+		highest = max(highest, ev.id)
+	}
+	return highest
+}
+
 // feedGap walks a feed's gap back a band of days at a time, each read
 // whole: its acts count, and the gap moves past it, only once every page
-// is read and every merge request its acts name is read or known. A band
-// the budget cannot finish is read again, half as wide, by the next read;
-// a band of one day is read whole whatever it costs, up to what GitLab
-// counts. The gap never walks below floor, the list's reach.
+// is read and every merge request its acts name is read or stored. A band
+// starts only while the budget has a request left. One the budget cannot
+// finish is read again, half as wide, by the next read; a band of one
+// day, the least a feed can filter, finishes past the budget, up to what
+// GitLab counts (gitlabHistoryMaxRequests). The gap never walks below
+// floor, the list's reach.
 func (r *gitlabHistoryRead) feedGap(action string, w *gitlabFeedWalk, floor int64) error {
 	for {
 		lo, hi, ok := w.Gap.band(floor)
 		if !ok {
 			return nil
 		}
-		take := r.budget.take
+		if !r.budget.take() {
+			return errHistoryBudget
+		}
+		next := r.budget.take
 		if w.Gap.Width <= 1 {
-			take = func() bool { r.budget.left--; return true }
+			next = r.budget.spend
 		}
 		query := url.Values{"sort": {"desc"}, "after": {gitlabEventsAfter(lo)}, "before": {gitlabEventsBefore(hi)}}
-		var acts []PRHistoryAct
+		var events []gitlabHistoryEvent
 		pages := 0
-		for next := 1; next != 0; pages++ {
+		for page := 1; page != 0; pages++ {
 			if pages == gitlabEventsMaxPages {
 				return fmt.Errorf("GitLab history of %s: more than %d %s events in the days around %s, past what GitLab counts",
 					r.repo.Key(), gitlabEventsMaxPages*gitlabPageSize, action, fromUnixMilli(hi).Format(time.DateOnly))
 			}
-			if !take() {
+			if pages > 0 && !next() {
 				w.Gap.narrow()
 				return errHistoryBudget
 			}
-			query.Set("page", strconv.Itoa(next))
-			events, n, err := r.eventsPage(action, query)
+			query.Set("page", strconv.Itoa(page))
+			got, n, err := r.eventsPage(action, query)
 			if err != nil {
 				return err
 			}
-			for _, ev := range events {
-				acts = append(acts, ev.act)
-			}
-			next = n
+			events = append(events, got...)
+			page = n
 		}
-		kept, err := resolveActs(acts, &r.prs, r.known, func(numbers []int64) error { return r.fetchWith(numbers, take) })
+		kept, err := resolveActs(eventActs(events), &r.prs, r.stored, func(numbers []int64) error { return r.fetchWith(numbers, next) })
 		if err != nil {
 			if errors.Is(err, errHistoryBudget) {
 				w.Gap.narrow()
@@ -386,6 +445,7 @@ func gitlabEventsBefore(t int64) string {
 // gitlabHistoryEvent is an event that is an approval of or a comment on a
 // merge request.
 type gitlabHistoryEvent struct {
+	id  int64
 	at  time.Time
 	act PRHistoryAct
 }
@@ -428,7 +488,7 @@ func (r *gitlabHistoryRead) eventsPage(action string, query url.Values) ([]gitla
 		if ev.Author.Username == "" {
 			continue
 		}
-		out = append(out, gitlabHistoryEvent{at: at, act: PRHistoryAct{
+		out = append(out, gitlabHistoryEvent{id: ev.ID, at: at, act: PRHistoryAct{
 			Number: number, Approved: action == "approved", Person: PRListAuthor{Login: ev.Author.Username, Name: ev.Author.Name}, At: at,
 		}})
 	}

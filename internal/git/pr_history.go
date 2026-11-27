@@ -1,6 +1,7 @@
 package git
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -13,20 +14,26 @@ import (
 // kept current. The reader owns its walk, which the caller stores
 // whole and hands back to the next read.
 //
-// Each forge reads two kinds of stream. A list of pull requests by update
-// time (listWalk) reads from the newest down to the newest it read last
-// time, and the rest joins one gap it walks on newest first. An act
-// stream (GitLab's events feeds, GitHub's review comments) reads its new
-// acts the same way and walks its gap back in bands of whole days
-// (actGap), never past where the list reached, so the pull requests its
-// acts name are mostly read already. A stream's reach is the top of its
-// gap, the time back to which it has read everything; the repository's
-// is the stream that reached least.
+// A list of pull requests by update time (listWalk) reads from the newest
+// down to the newest it read last time, and the rest joins one gap it
+// walks on newest first. GitHub reads each pull request's acts with it;
+// GitLab reads its acts from two events feeds, each an act stream that
+// reads its new acts from the newest and walks its gap back in bands of
+// whole days (actGap), never past where the list reached, so the pull
+// requests its acts name are mostly read already. A stream's reach is
+// the time back to which it has proved it read everything; the
+// repository has one only when every stream has, the least of them.
+//
+// Acts are add-only: a read adds approvals and comments, each person's
+// earliest of each kind, and never removes one, so a withdrawn approval
+// or a deleted comment stays. The walk moves only with what a read
+// returns, which the caller stores in one write.
 
-// PRHistoryRequests bounds the requests one read makes, nested and
-// follow-up pages included, except that a GitLab feed's band of one day
-// is read whole (gitlabEventsMaxPages). A read that stops at the bound
-// leaves the rest in its walk (PRHistory.Owed).
+// PRHistoryRequests is the requests one read may start work with, nested
+// and follow-up pages included: a unit of work starts only while one is
+// left, and only a started minimum unit, a GitLab feed's band of one day,
+// may finish past it (gitlabHistoryMaxRequests). A read that stops at the
+// bound leaves the rest in its walk (PRHistory.Owed).
 const PRHistoryRequests = 30
 
 // PRHistoryInput is what a read starts from.
@@ -35,10 +42,17 @@ type PRHistoryInput struct {
 	Walk []byte
 	// WindowStart is the oldest update the history keeps.
 	WindowStart time.Time
-	// Known reports which of numbers the caller's store holds of this
-	// repository, so an act that names a pull request neither it nor the
-	// read holds fetches that pull request.
-	Known func(numbers []int64) (map[int64]bool, error)
+	// Stored answers which of numbers the caller's store holds of this
+	// repository, with what it holds of each: a GitHub pull request whose
+	// update time is unchanged costs no follow-up page, and a GitLab act
+	// that names one neither it nor the read holds fetches it.
+	Stored func(numbers []int64) (map[int64]StoredPR, error)
+}
+
+// StoredPR is what the caller's store holds of a pull request: its update
+// time and when a read last saw it (PRHistoryPR.Seen).
+type StoredPR struct {
+	Updated, Seen time.Time
 }
 
 // PRHistory is what a read found.
@@ -51,35 +65,31 @@ type PRHistory struct {
 	// it is none.
 	Parent *RepoReference
 	PRs    []PRHistoryPR
-	// Acts are an act stream's approvals and comments, to add to the
-	// stored ones. Each names a pull request in PRs or one Known holds:
-	// a stream moves past an act only once its pull request is.
+	// Acts are the approvals and comments the read found, each person's
+	// earliest of each kind, to add to the stored ones. Each names a pull
+	// request in PRs or one the store holds.
 	Acts []PRHistoryAct
 	// Walk is the read's walk; nil when the read moved nothing.
 	Walk []byte
-	// Reach is the forge time back to which every update is read; zero
-	// is back to the window's start. NoReach is a read whose stream read
-	// oldest first (GitHub's review comments) has not reached the
-	// present, so its reach holds for nothing.
-	Reach   time.Time
-	NoReach bool
-	// Owed reports that the walk has work left: a gap, follow-up pages,
-	// or a stream that has not reached the present.
+	// Reach is the forge time back to which every stream has read every
+	// update, when HasReach; the zero time is back to the window's start.
+	// A repository has no reach until every stream has proved one.
+	Reach    time.Time
+	HasReach bool
+	// Owed reports that the walk has work left: a gap or follow-up pages.
 	Owed bool
 }
 
 // PRHistoryPR is one pull request. State is open, draft, merged or
 // closed. HeadRepo is its head repository's identity (PRHistory.OwnHead
-// of that repository), empty when the forge no longer has it.
+// of that repository), empty when the forge no longer has it. Seen is
+// this computer's time when the request that read it started.
 type PRHistoryPR struct {
 	Number                               int64
 	URL, Title, HeadRef, HeadRepo, State string
 	Author                               PRListAuthor
 	Created, Updated, Merged, Closed     time.Time
-	// Acts are its approvals and comments, each person's earliest of each
-	// kind; ActsWhole when they are all it has.
-	Acts      []PRHistoryAct
-	ActsWhole bool
+	Seen                                 time.Time
 }
 
 // PRHistoryAct is one person's approval or comment on pull request
@@ -108,13 +118,31 @@ func (nullForge) ReadPRHistory(context.Context, RepoReference, PRHistoryInput) (
 // historyBudget is the requests a read has left.
 type historyBudget struct{ left int }
 
-// take spends one request; false when none is left.
+// take spends one request to start or go on with a unit of work; false
+// when none is left.
 func (b *historyBudget) take() bool {
 	if b.left <= 0 {
 		return false
 	}
 	b.left--
 	return true
+}
+
+// spend spends one request of a minimum unit already started, which
+// finishes past the budget.
+func (b *historyBudget) spend() bool {
+	b.left--
+	return true
+}
+
+// part runs fn with half the requests b has left, rounded up, and
+// charges b what fn spent.
+func (b *historyBudget) part(fn func(*historyBudget) error) error {
+	half := &historyBudget{left: (b.left + 1) / 2}
+	given := half.left
+	err := fn(half)
+	b.left -= given - half.left
+	return err
 }
 
 // errHistoryBudget stops a part of a read that ran out of requests; the
@@ -210,12 +238,13 @@ func (w *listWalk) walk(b *historyBudget, floor int64, page listPager) error {
 }
 
 // reach is the time back to which the list has read every update: the
-// top of its gap, 0 when it has none.
-func (w listWalk) reach() int64 {
+// top of its gap, 0 when it has none; false until a page of the walk has
+// landed.
+func (w listWalk) reach() (int64, bool) {
 	if w.Gap {
-		return w.GapHi
+		return w.GapHi, w.GapHi > 0
 	}
-	return 0
+	return 0, w.Top > 0
 }
 
 // actGap is the part of an act stream not read yet: everything from Hi
@@ -246,7 +275,7 @@ func (g *actGap) open(hi, lo int64) {
 	if g.Open {
 		lo = g.Lo
 	}
-	*g = actGap{Open: true, Hi: hi, Lo: lo, Width: cmpOr(g.Width, actBandFirstDays)}
+	*g = actGap{Open: true, Hi: hi, Lo: lo, Width: cmp.Or(g.Width, actBandFirstDays)}
 }
 
 // clip drops what of the gap fell out of the window, whose start moves
@@ -296,20 +325,24 @@ func (g *actGap) narrow() bool {
 	return true
 }
 
-// reach is the time back to which the stream has read every act: the
-// top of its gap, 0 when it has none.
-func (g actGap) reach() int64 {
-	if g.Open {
-		return g.Hi
-	}
-	return 0
+// streamReach is one stream's reach: the time (Unix ms) back to which it
+// has read everything, 0 for the window's start, when ok.
+type streamReach struct {
+	at int64
+	ok bool
 }
 
-func cmpOr(a, b int) int {
-	if a != 0 {
-		return a
+// setReach gives out the repository's reach of its streams': the one
+// that reached least, and none unless every stream has one.
+func setReach(out *PRHistory, streams ...streamReach) {
+	at := int64(0)
+	for _, s := range streams {
+		if !s.ok {
+			return
+		}
+		at = max(at, s.at)
 	}
-	return b
+	out.Reach, out.HasReach = fromUnixMilli(at), true
 }
 
 // historyPRs are the pull requests one read found, each once at its
@@ -340,7 +373,7 @@ func (h *historyPRs) keep(pr PRHistoryPR) {
 // (fetch keeps what it finds in h), and drops the acts of a pull request
 // the forge does not return, which it no longer has. A fetch that fails
 // answers its error, and the caller moves past none of acts.
-func resolveActs(acts []PRHistoryAct, h *historyPRs, known func([]int64) (map[int64]bool, error), fetch func(numbers []int64) error) ([]PRHistoryAct, error) {
+func resolveActs(acts []PRHistoryAct, h *historyPRs, stored func([]int64) (map[int64]StoredPR, error), fetch func(numbers []int64) error) ([]PRHistoryAct, error) {
 	var named []int64
 	for _, a := range acts {
 		if _, ok := h.byNumber[a.Number]; !ok && !slices.Contains(named, a.Number) {
@@ -350,11 +383,12 @@ func resolveActs(acts []PRHistoryAct, h *historyPRs, known func([]int64) (map[in
 	if len(named) == 0 {
 		return acts, nil
 	}
-	held, err := known(named)
+	have, err := stored(named)
 	if err != nil {
 		return nil, err
 	}
-	named = slices.DeleteFunc(named, func(n int64) bool { return held[n] })
+	held := func(n int64) bool { _, ok := have[n]; return ok }
+	named = slices.DeleteFunc(named, held)
 	if len(named) > 0 {
 		if err := fetch(named); err != nil {
 			return nil, err
@@ -362,33 +396,8 @@ func resolveActs(acts []PRHistoryAct, h *historyPRs, known func([]int64) (map[in
 	}
 	return slices.DeleteFunc(slices.Clone(acts), func(a PRHistoryAct) bool {
 		_, read := h.byNumber[a.Number]
-		return !read && !held[a.Number]
+		return !read && !held(a.Number)
 	}), nil
-}
-
-// nameActs fills the name of each act whose forge named only the login
-// from another act or pull request of the read by the same login.
-func nameActs(acts []PRHistoryAct, prs []PRHistoryPR) {
-	names := map[string]string{}
-	note := func(p PRListAuthor) {
-		if p.Name != "" && p.Login != "" {
-			names[p.Login] = p.Name
-		}
-	}
-	for _, pr := range prs {
-		note(pr.Author)
-		for _, a := range pr.Acts {
-			note(a.Person)
-		}
-	}
-	for _, a := range acts {
-		note(a.Person)
-	}
-	for i := range acts {
-		if acts[i].Person.Name == "" {
-			acts[i].Person.Name = names[acts[i].Person.Login]
-		}
-	}
 }
 
 // earliestActs keeps each person's earliest act of each kind.

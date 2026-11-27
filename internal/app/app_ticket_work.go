@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/forgeapi"
@@ -170,7 +171,9 @@ func (a *App) SearchTicketWork(ctx context.Context, connectionID, issueID string
 	if err != nil {
 		return TicketWork{}, err
 	}
-	a.searchTicketForge(ctx, &read, search)
+	if err := a.searchTicketForge(ctx, &read, search); err != nil {
+		return TicketWork{}, err
+	}
 	return a.answerTicketWork(ctx, &read)
 }
 
@@ -190,6 +193,11 @@ type ticketWorkRead struct {
 	// observed is when each listed pull request's row was observed (wall
 	// Unix ms), by identity (observe).
 	observed map[string]int64
+	// recorded are the identities of the pull requests a linked thread
+	// records, which Work lists whatever they name (member).
+	recorded map[string]bool
+	// lists are the stored Pull requests lists.
+	lists ticketPRLists
 	// prHeads are the head repositories of the listed pull requests whose
 	// head is known (the stored history's), by identity, and ownHeads the
 	// head identity of each project's origin, by project, in the same
@@ -204,11 +212,14 @@ type ticketWorkRead struct {
 }
 
 // observe is the one rule for combining two records of a pull request:
-// row, observed at at (wall Unix ms), and the one listed. A merge is never
-// undone, since a merged pull request cannot reopen; otherwise the later
-// observation wins. The winner keeps what only the other has: the stored
-// list's CI, a title and author a linked thread's record lacks, and the
-// project the row was first listed under.
+// row, observed at at (wall Unix ms, the start of the request that asked
+// the forge), and the one listed. A merge is never undone, since a merged
+// pull request cannot reopen; otherwise the later observation wins. The
+// winner keeps what only the other has: the stored list's CI, a title and
+// author a linked thread's record lacks, and the project the row was
+// first listed under. A pull request is listed once one of its records
+// names the key, and every record of it is observed, whatever it names;
+// whether Work shows it is decided once all are in (member).
 func (r *ticketWorkRead) observe(row TicketPullRequest, at int64) {
 	if r.observed == nil {
 		r.observed = map[string]int64{}
@@ -234,6 +245,18 @@ func (r *ticketWorkRead) observe(row TicketPullRequest, at int64) {
 	winner.Branch = cmp.Or(winner.Branch, other.Branch)
 	winner.ProjectID = cmp.Or(listed.ProjectID, row.ProjectID)
 	r.work.PullRequests[i] = winner
+}
+
+// listed reports whether the pull request of identity id is listed.
+func (r *ticketWorkRead) listed(id string) bool {
+	_, ok := r.observed[id]
+	return ok
+}
+
+// member is the rule for whether Work shows a listed pull request: its
+// newest observation names the key, or a linked thread records it.
+func (r *ticketWorkRead) member(pr TicketPullRequest) bool {
+	return r.recorded[pr.Ref.Identity()] || namesTicketKey(pr.Title, pr.Branch, r.work.Key)
 }
 
 // ownHead records projectID's origin's head identity.
@@ -272,8 +295,7 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 			ForgeProblems: []TicketForgeProblem{}, SearchFull: []gitops.RepoReference{}},
 	}
 
-	open, err := a.storedTicketPullRequests(key)
-	if err != nil {
+	if read.lists, err = a.readTicketPRLists(); err != nil {
 		return ticketWorkRead{}, err
 	}
 	recorded, err := a.store.ListTicketThreadPullRequests(store.TicketRef{Kind: conn.Kind, Site: conn.Site, IssueID: issueID})
@@ -286,9 +308,10 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 	if err != nil {
 		return ticketWorkRead{}, err
 	}
-	for _, pr := range open {
-		read.observe(pr.TicketPullRequest, pr.readAt)
+	if err := read.observeKeyRows(); err != nil {
+		return ticketWorkRead{}, err
 	}
+	read.recorded = map[string]bool{}
 	for _, pr := range recorded {
 		row, ok := recordedTicketPullRequest(pr)
 		if !ok {
@@ -297,7 +320,11 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 		if at := slices.IndexFunc(linked, func(t store.Thread) bool { return t.ID == pr.ThreadID }); at >= 0 {
 			row.ProjectID = linked[at].ProjectID
 		}
+		read.recorded[row.Ref.Identity()] = true
 		read.observe(row, max(pr.SeenOpenAt, pr.MergedAt, pr.HandledAt))
+	}
+	if err := read.observeListedRows(); err != nil {
+		return ticketWorkRead{}, err
 	}
 
 	choices, err := svc.BoardChoices()
@@ -364,8 +391,9 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 	return read, nil
 }
 
-// answerTicketWork is the Work answer: the pull requests listed, each
-// with the project that can show it (reviewProjects), and the branches
+// answerTicketWork is the Work answer: the pull requests listed that are
+// members (ticketWorkRead.member), each with the project that can show it
+// (reviewProjects), and the branches
 // that are no listed pull request's head. A branch of project P is a pull
 // request's head when their names match and the pull request's head
 // repository is P's origin: compared by forge, host and head identity
@@ -375,6 +403,7 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 // the parent. The project a row was listed under takes no part: it is
 // where the list was read, not where the head is.
 func (a *App) answerTicketWork(ctx context.Context, read *ticketWorkRead) (TicketWork, error) {
+	read.work.PullRequests = slices.DeleteFunc(read.work.PullRequests, func(pr TicketPullRequest) bool { return !read.member(pr) })
 	if err := a.reviewProjects(ctx, read); err != nil {
 		return TicketWork{}, err
 	}
@@ -516,52 +545,104 @@ type storedPRList struct {
 	} `json:"rows"`
 }
 
-// storedTicketPullRequest is a row of a stored Pull requests list, with
-// the time its read landed (Unix ms).
-type storedTicketPullRequest struct {
-	TicketPullRequest
-	readAt int64
+// ticketPRLists are the stored Pull requests lists (store.PRListProject),
+// by repository key in order, each decoded at most once.
+type ticketPRLists struct {
+	keys    []string
+	records map[string]store.PRListProject
+	decoded map[string]*storedPRList
 }
 
-// storedTicketPullRequests lists the stored open pull requests whose title
-// or head branch names key. A repository's read is decoded only when its
-// bytes hold the key in any case, so a ticket's open costs one scan of the
-// stored lists and a decode of the repositories that name it.
-func (a *App) storedTicketPullRequests(key string) ([]storedTicketPullRequest, error) {
+// readTicketPRLists reads the stored Pull requests lists.
+func (a *App) readTicketPRLists() (ticketPRLists, error) {
 	records, err := a.store.ListPRListProjects()
 	if err != nil {
-		return nil, fmt.Errorf("read the stored pull requests: %w", err)
+		return ticketPRLists{}, fmt.Errorf("read the stored pull requests: %w", err)
 	}
 	keys := make([]string, 0, len(records))
 	for repoKey := range records {
 		keys = append(keys, repoKey)
 	}
 	slices.Sort(keys)
-	var out []storedTicketPullRequest
-	for _, repoKey := range keys {
-		blob := records[repoKey].ProjectJSON
-		if !containsASCIIFold(blob, key) {
+	return ticketPRLists{keys: keys, records: records, decoded: map[string]*storedPRList{}}, nil
+}
+
+// list is repoKey's stored list, decoded.
+func (l ticketPRLists) list(repoKey string) (*storedPRList, error) {
+	if list := l.decoded[repoKey]; list != nil {
+		return list, nil
+	}
+	list := &storedPRList{}
+	if err := json.Unmarshal(l.records[repoKey].ProjectJSON, list); err != nil {
+		return nil, fmt.Errorf("read the stored pull requests of %s: %w", repoKey, err)
+	}
+	l.decoded[repoKey] = list
+	return list, nil
+}
+
+// observeKeyRows observes the stored open pull requests whose title or
+// head branch names the key, each under the project its list was read
+// for, at the start of its list's read. A list is decoded only when its
+// bytes hold the key in any case, so a ticket's open costs one scan of
+// the stored lists and a decode of the repositories that name it.
+func (r *ticketWorkRead) observeKeyRows() error {
+	for _, repoKey := range r.lists.keys {
+		if !containsASCIIFold(r.lists.records[repoKey].ProjectJSON, r.work.Key) {
 			continue
 		}
-		var list storedPRList
-		if err := json.Unmarshal(blob, &list); err != nil {
-			return nil, fmt.Errorf("read the stored pull requests of %s: %w", repoKey, err)
-		}
-		for _, row := range list.Rows {
-			if !namesTicketKey(row.Title, row.HeadRefName, key) {
-				continue
-			}
-			state := TicketPROpen
-			if row.Draft {
-				state = TicketPRDraft
-			}
-			out = append(out, storedTicketPullRequest{TicketPullRequest: TicketPullRequest{
-				Ref: row.Ref, URL: row.URL, Title: row.Title, Author: cmp.Or(row.Author.Name, row.Author.Login), State: state,
-				CI: row.CI, Branch: row.HeadRefName, ProjectID: list.ProjectID,
-			}, readAt: records[repoKey].ReadAt})
+		if err := r.observeListRows(repoKey, func(row *TicketPullRequest) bool {
+			return namesTicketKey(row.Title, row.Branch, r.work.Key)
+		}); err != nil {
+			return err
 		}
 	}
-	return out, nil
+	return nil
+}
+
+// observeListedRows observes the stored open rows of the pull requests
+// listed, whatever they name, so a list that read one retitled away from
+// the key after another record of it counts. A row observed this way
+// keeps the project the pull request was listed under.
+func (r *ticketWorkRead) observeListedRows() error {
+	repos := map[string]bool{}
+	for _, pr := range r.work.PullRequests {
+		repos[strings.ToLower(pr.Ref.Repository().Key())] = true
+	}
+	for _, repoKey := range r.lists.keys {
+		if !repos[strings.ToLower(repoKey)] {
+			continue
+		}
+		if err := r.observeListRows(repoKey, func(row *TicketPullRequest) bool {
+			row.ProjectID = ""
+			return r.listed(row.Ref.Identity())
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// observeListRows observes the rows of repoKey's stored list that take
+// takes, as it leaves them, at the start of the list's read.
+func (r *ticketWorkRead) observeListRows(repoKey string, take func(*TicketPullRequest) bool) error {
+	list, err := r.lists.list(repoKey)
+	if err != nil {
+		return err
+	}
+	for _, s := range list.Rows {
+		state := TicketPROpen
+		if s.Draft {
+			state = TicketPRDraft
+		}
+		row := TicketPullRequest{
+			Ref: s.Ref, URL: s.URL, Title: s.Title, Author: cmp.Or(s.Author.Name, s.Author.Login), State: state,
+			CI: s.CI, Branch: s.HeadRefName, ProjectID: list.ProjectID,
+		}
+		if take(&row) {
+			r.observe(row, r.lists.records[repoKey].ReadAt)
+		}
+	}
+	return nil
 }
 
 // recordedTicketPullRequest is a linked thread's pull request as Work

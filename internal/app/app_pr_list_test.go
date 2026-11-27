@@ -1111,3 +1111,66 @@ func TestPRListUnchangedTickRefreshesStoredReadAtWithoutPublishing(t *testing.T)
 		t.Fatalf("stored ReadAt did not advance on unchanged refresh: before=%d after=%d", beforeReadAt, afterReadAt)
 	}
 }
+
+// A stored list read carries the start of its request, the time its rows
+// were observed at, on the boot prefetch and on a pump's tick, whether
+// the tick changed the rows or only refreshed the time.
+func TestPRListStoresEachReadAtItsRequestsStart(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	var mu sync.Mutex
+	var started []time.Time
+	fake.set(func(f *prListFake) {
+		f.projects = f.projects[:1]
+		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)}
+		f.listGate = func(context.Context, gitops.RepoReference) {
+			mu.Lock()
+			started = append(started, time.Now())
+			mu.Unlock()
+			// The read takes time, so its landing comes after its start.
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+	readAt := func() int64 {
+		t.Helper()
+		records, err := app.store.ListPRListProjects()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return records[prListRepoA.Key()].ReadAt
+	}
+	if _, err := app.prefetchPRList(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	entered := started[0]
+	mu.Unlock()
+	if got := readAt(); got > entered.UnixMilli() {
+		t.Fatalf("the prefetch stored read_at %d, after its request started at %d", got, entered.UnixMilli())
+	}
+
+	// A tick whose rows are unchanged refreshes the time; then one whose
+	// rows changed stores them.
+	for i, change := range []bool{false, true} {
+		if change {
+			fake.set(func(f *prListFake) { f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 2, nil)} })
+		}
+		before := readAt()
+		sub, err := app.SubscribePRList(connCtx(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "the tick's stored read", func() bool { return readAt() != before })
+		if err := app.UnsubscribePRList(context.Background(), sub.ID); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		entered := started[i+1]
+		mu.Unlock()
+		if got := readAt(); got > entered.UnixMilli() {
+			t.Fatalf("tick %d stored read_at %d, after its request started at %d", i, got, entered.UnixMilli())
+		}
+	}
+}

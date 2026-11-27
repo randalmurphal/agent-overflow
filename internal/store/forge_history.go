@@ -54,8 +54,7 @@ type ForgeHistorySource struct {
 	Walk []byte
 	// Reach is the forge time (Unix ms) back to which every update is
 	// read, 0 back to the window's start; HasReach is false until a read
-	// lands, and while a stream read oldest first has not reached the
-	// present (ForgeHistoryRead.NoReach).
+	// proves one for every stream of the walk.
 	Reach    int64
 	HasReach bool
 	// Owed reports that the walk has work left, which the next round
@@ -84,31 +83,29 @@ func (s ForgeHistorySource) Covers(created, windowStart int64) bool {
 }
 
 // ForgeHistoryPR is a pull request as a read returns it. Times are Unix
-// ms, 0 for one that has not happened. Keys are the ticket keys its title
-// and source branch name (trackerapp.TicketKeys). With ActsWhole its Acts
-// are all it has and replace what is stored; without, Acts are added to
-// them.
+// ms, 0 for one that has not happened. SeenAt is this computer's time when
+// the request that read it started. Keys are the ticket keys its title
+// and source branch name (trackerapp.TicketKeys).
 type ForgeHistoryPR struct {
-	Number     int64             `json:"n"`
-	URL        string            `json:"url"`
-	Title      string            `json:"title"`
-	HeadRef    string            `json:"headRef"`
-	HeadRepo   string            `json:"headRepo"`
-	State      string            `json:"state"`
-	Author     string            `json:"author"`
-	AuthorName string            `json:"authorName"`
-	CreatedAt  int64             `json:"created"`
-	UpdatedAt  int64             `json:"updated"`
-	MergedAt   int64             `json:"merged"`
-	ClosedAt   int64             `json:"closed"`
-	Keys       []string          `json:"-"`
-	Acts       []ForgeHistoryAct `json:"-"`
-	ActsWhole  bool              `json:"-"`
+	Number     int64    `json:"n"`
+	URL        string   `json:"url"`
+	Title      string   `json:"title"`
+	HeadRef    string   `json:"headRef"`
+	HeadRepo   string   `json:"headRepo"`
+	State      string   `json:"state"`
+	Author     string   `json:"author"`
+	AuthorName string   `json:"authorName"`
+	CreatedAt  int64    `json:"created"`
+	UpdatedAt  int64    `json:"updated"`
+	MergedAt   int64    `json:"merged"`
+	ClosedAt   int64    `json:"closed"`
+	SeenAt     int64    `json:"seen"`
+	Keys       []string `json:"-"`
 }
 
 // ForgeHistoryAct is one person's approval or comment on a pull request,
-// at its earliest time (Unix ms). Name is empty when the read did not
-// name the person; a stored name is then kept.
+// at its earliest time (Unix ms). Acts are add-only: a stored act keeps
+// the earliest time of any read, and its name when a read names nobody.
 type ForgeHistoryAct struct {
 	Number int64  `json:"n"`
 	Kind   int    `json:"kind"`
@@ -127,20 +124,18 @@ type ForgeHistoryRead struct {
 	OwnHead string
 	Parent  ForgeHistoryRef
 	PRs     []ForgeHistoryPR
-	// Acts are acts of pull requests stored or in PRs, added to theirs
-	// (an events feed's, a comment list's). One whose pull request
-	// neither holds fails the write: the reader resolves every act's pull
-	// request before it moves past the act.
+	// Acts are acts of pull requests stored or in PRs, added to theirs.
+	// One whose pull request neither holds fails the write: the reader
+	// resolves every act's pull request before it moves past the act.
 	Acts []ForgeHistoryAct
-	// Walk, Reach, NoReach and Owed replace the stored ones when Walk is
-	// set: a read that read nothing leaves them. NoReach is a read whose
-	// reach holds for nothing (ForgeHistorySource.HasReach).
-	Walk    []byte
-	Reach   int64
-	NoReach bool
-	Owed    bool
-	// ReadAt is the read's wall time (Unix ms), each pull request's
-	// seen_at.
+	// Walk, Reach, HasReach and Owed replace the stored ones when Walk is
+	// set: a read that read nothing leaves them. Without HasReach the
+	// source has no reach (ForgeHistorySource.HasReach).
+	Walk     []byte
+	Reach    int64
+	HasReach bool
+	Owed     bool
+	// ReadAt is the read's wall time (Unix ms).
 	ReadAt int64
 	// FailureKind, Failure and FailureDetail are the read's failure
 	// (ForgeHistorySource); empty clears the stored one.
@@ -191,7 +186,7 @@ func (r ForgeHistoryRead) check() error {
 	}
 	for _, pr := range r.PRs {
 		switch {
-		case pr.Number <= 0 || pr.UpdatedAt <= 0 || pr.CreatedAt < 0 || pr.MergedAt < 0 || pr.ClosedAt < 0:
+		case pr.Number <= 0 || pr.UpdatedAt <= 0 || pr.SeenAt <= 0 || pr.CreatedAt < 0 || pr.MergedAt < 0 || pr.ClosedAt < 0:
 			return fmt.Errorf("store: forge history read of %s has pull request %d with invalid times", r.Source.RepoKey, pr.Number)
 		case !slices.Contains(forgeHistoryStates, pr.State):
 			return fmt.Errorf("store: forge history read of %s has pull request %d in state %q", r.Source.RepoKey, pr.Number, pr.State)
@@ -203,18 +198,10 @@ func (r ForgeHistoryRead) check() error {
 				return fmt.Errorf("store: forge history read of %s has pull request %d naming key %q", r.Source.RepoKey, pr.Number, key)
 			}
 		}
-		if err := checkForgeActs(r.Source.RepoKey, pr.Acts, pr.Number); err != nil {
-			return err
-		}
 	}
-	return checkForgeActs(r.Source.RepoKey, r.Acts, 0)
-}
-
-// checkForgeActs checks acts, each of pull request number unless it is 0.
-func checkForgeActs(repoKey string, acts []ForgeHistoryAct, number int64) error {
-	for _, a := range acts {
-		if a.Number <= 0 || number != 0 && a.Number != number || a.Kind != ForgeActApproved && a.Kind != ForgeActCommented || a.Login == "" || a.At <= 0 {
-			return fmt.Errorf("store: forge history read of %s has an invalid act %+v", repoKey, a)
+	for _, a := range r.Acts {
+		if a.Number <= 0 || a.Kind != ForgeActApproved && a.Kind != ForgeActCommented || a.Login == "" || a.At <= 0 {
+			return fmt.Errorf("store: forge history read of %s has an invalid act %+v", r.Source.RepoKey, a)
 		}
 	}
 	return nil
@@ -322,13 +309,10 @@ func (s *Store) GetForgeHistorySource(id int64) (ForgeHistorySource, bool, error
 
 // ApplyForgeHistory applies one read of a source in one transaction, and
 // only while the source it began from is stored: its pull requests
-// replace the stored ones of their numbers, with their keys and seen_at
-// the read's time; each one's acts replace or add to its stored ones; the
-// read's acts add to the stored pull requests'; the source's state and
-// failure are recorded; and every pull request with no update and no act
-// since the window's start is pruned. A re-read pull request with
-// ActsWhole keeps only the acts it carries, so a withdrawn approval or a
-// deleted comment leaves.
+// replace the stored ones of their numbers, with their keys and seen_at;
+// its acts add to the stored ones, never removing one (ForgeHistoryAct);
+// the source's state and failure are recorded; and every pull request
+// with no update and no act since the window's start is pruned.
 func (s *Store) ApplyForgeHistory(read ForgeHistoryRead) (err error) {
 	if err := read.check(); err != nil {
 		return err
@@ -342,26 +326,16 @@ func (s *Store) ApplyForgeHistory(read ForgeHistoryRead) (err error) {
 		Number int64  `json:"n"`
 	}
 	var keys []keyRow
-	var whole []int64
-	acts := slices.Clone(read.Acts)
 	for _, pr := range read.PRs {
 		for _, key := range pr.Keys {
 			keys = append(keys, keyRow{key, pr.Number})
 		}
-		if pr.ActsWhole {
-			whole = append(whole, pr.Number)
-		}
-		acts = append(acts, pr.Acts...)
 	}
 	keysJSON, err := jsonArray(keys)
 	if err != nil {
 		return err
 	}
-	wholeJSON, err := jsonArray(whole)
-	if err != nil {
-		return err
-	}
-	actsJSON, err := jsonArray(acts)
+	actsJSON, err := jsonArray(read.Acts)
 	if err != nil {
 		return err
 	}
@@ -384,10 +358,9 @@ func (s *Store) ApplyForgeHistory(read ForgeHistoryRead) (err error) {
 		sql  string
 		args []any
 	}{
-		{"store pull requests", forgeHistoryPRsSQL, []any{id, prs, read.ReadAt}},
+		{"store pull requests", forgeHistoryPRsSQL, []any{id, prs}},
 		{"clear keys", forgeHistoryClearKeysSQL, []any{id, prs}},
 		{"store keys", forgeHistoryKeysSQL, []any{id, keysJSON}},
-		{"clear acts", forgeHistoryClearActsSQL, []any{id, wholeJSON}},
 	}
 	for _, step := range steps {
 		if _, err := tx.Exec(step.sql, step.args...); err != nil {
@@ -421,7 +394,7 @@ func (s *Store) ApplyForgeHistory(read ForgeHistoryRead) (err error) {
 		}
 	}
 	if read.Walk != nil {
-		reach := sql.NullInt64{Int64: read.Reach, Valid: !read.NoReach}
+		reach := sql.NullInt64{Int64: read.Reach, Valid: read.HasReach}
 		if _, err := tx.Exec(`UPDATE forge_history_sources SET walk = ?2, reach = ?3, owed = ?4 WHERE id = ?1`,
 			id, string(read.Walk), reach, read.Owed); err != nil {
 			return fmt.Errorf("%s: record the walk: %w", action, err)
@@ -441,13 +414,12 @@ func (s *Store) ApplyForgeHistory(read ForgeHistoryRead) (err error) {
 	return nil
 }
 
-// forgeHistoryPRsSQL stores a read's pull requests (?2) of source ?1,
-// seen at ?3.
+// forgeHistoryPRsSQL stores a read's pull requests (?2) of source ?1.
 const forgeHistoryPRsSQL = `INSERT INTO forge_history_prs(source_id, number, url, title, head_ref, head_repo, state, author, author_name,
 	created_at, updated_at, merged_at, closed_at, seen_at)
 SELECT ?1, p.value ->> 'n', p.value ->> 'url', p.value ->> 'title', p.value ->> 'headRef', p.value ->> 'headRepo',
 	p.value ->> 'state', p.value ->> 'author', p.value ->> 'authorName',
-	p.value ->> 'created', p.value ->> 'updated', p.value ->> 'merged', p.value ->> 'closed', ?3
+	p.value ->> 'created', p.value ->> 'updated', p.value ->> 'merged', p.value ->> 'closed', p.value ->> 'seen'
 FROM json_each(?2) p WHERE true
 ON CONFLICT(source_id, number) DO UPDATE SET url = excluded.url, title = excluded.title, head_ref = excluded.head_ref,
 	head_repo = excluded.head_repo, state = excluded.state, author = excluded.author, author_name = excluded.author_name,
@@ -463,7 +435,6 @@ const (
 	forgeHistoryClearKeysSQL = `DELETE FROM forge_history_keys WHERE source_id = CAST(?1 AS INTEGER) AND number IN (SELECT p.value ->> 'n' FROM json_each(?2) p)`
 	forgeHistoryKeysSQL      = `INSERT INTO forge_history_keys(key, source_id, number)
 SELECT DISTINCT k.value ->> 'k', ?1, k.value ->> 'n' FROM json_each(?2) k`
-	forgeHistoryClearActsSQL = `DELETE FROM forge_history_acts WHERE source_id = CAST(?1 AS INTEGER) AND number IN (SELECT value FROM json_each(?2))`
 	forgeHistoryOrphanActSQL = `SELECT a.value ->> 'n' FROM json_each(?2) a WHERE NOT EXISTS (
 	SELECT 1 FROM forge_history_prs p WHERE p.source_id = CAST(?1 AS INTEGER) AND p.number = a.value ->> 'n') LIMIT 1`
 	forgeHistoryActsSQL = `INSERT INTO forge_history_acts(source_id, number, kind, login, name, at)
@@ -484,8 +455,8 @@ type ForgeHistoryRow struct {
 
 // ForgeHistoryWork is what the stored history holds for a ticket of
 // Work's origins, read in one snapshot: Sources are the origins' sources
-// and their parents', Rows the pull requests that name the key and are
-// Work's (ForgeHistoryForWork).
+// and their parents', Rows the pull requests of them that are Work's and
+// name the key or are ones Work asked for by number (ForgeHistoryForWork).
 type ForgeHistoryWork struct {
 	Sources []ForgeHistorySource
 	Rows    []ForgeHistoryRow
@@ -498,27 +469,41 @@ const forgeHistoryWorkSourcesSQL = `SELECT ` + forgeHistorySourceColumns + ` FRO
 	UNION SELECT o.parent_key FROM json_each(?1) w CROSS JOIN forge_history_sources o ON o.repo_key = w.value WHERE o.parent_key <> '')
 ORDER BY repo_key`
 
-// forgeHistoryWorkRowsSQL reads the pull requests that name key ?1 of
-// the sources of origins ?2, and those of an origin's parent whose head
-// is that origin.
+// forgeHistoryWorkRowsSQL reads the pull requests that name key ?1, or
+// that list ?3 names by repository and number, of the sources of origins
+// ?2, and those of an origin's parent whose head is that origin.
 const forgeHistoryWorkRowsSQL = `WITH o AS MATERIALIZED (
-	SELECT s.id, s.own_head, s.parent_key FROM json_each(?2) w CROSS JOIN forge_history_sources s ON s.repo_key = w.value)
+	SELECT s.id, s.own_head, s.parent_key FROM json_each(?2) w CROSS JOIN forge_history_sources s ON s.repo_key = w.value),
+c AS MATERIALIZED (
+	SELECT k.source_id, k.number FROM forge_history_keys k WHERE k.key = ?1
+	UNION SELECT s.id, x.value ->> 'n' FROM json_each(?3) x CROSS JOIN forge_history_sources s ON s.repo_key = x.value ->> 'r')
 SELECT p.source_id, p.seen_at, p.number, p.url, p.title, p.head_ref, p.head_repo, p.state, p.author, p.author_name,
 	p.created_at, p.updated_at, p.merged_at, p.closed_at
-FROM forge_history_keys k CROSS JOIN forge_history_prs p ON p.source_id = k.source_id AND p.number = k.number
-WHERE k.key = ?1 AND (k.source_id IN (SELECT id FROM o) OR EXISTS (
+FROM c CROSS JOIN forge_history_prs p ON p.source_id = c.source_id AND p.number = c.number
+WHERE c.source_id IN (SELECT id FROM o) OR EXISTS (
 	SELECT 1 FROM o CROSS JOIN forge_history_sources par ON par.repo_key = o.parent_key
-	WHERE o.own_head <> '' AND par.id = k.source_id AND p.head_repo = o.own_head))
+	WHERE o.own_head <> '' AND par.id = c.source_id AND p.head_repo = o.own_head)
 ORDER BY p.source_id, p.number`
+
+// ForgeHistoryNumber names a pull request of a repository (its key,
+// git.RepoReference.Identity).
+type ForgeHistoryNumber struct {
+	RepoKey string `json:"r"`
+	Number  int64  `json:"n"`
+}
 
 // ForgeHistoryForWork reads, in one snapshot, the sources of origins
 // (repository keys) and of the parents they name, and the pull requests
-// that name key and are Work's: every one of an origin's source, and one
-// of an origin's parent whose head is that origin (its source's own
-// head). A pull request of another repository, or of a parent with
-// another head, is never Work's.
-func (s *Store) ForgeHistoryForWork(key string, origins []string) (ForgeHistoryWork, error) {
+// of them that are Work's and name key or are named by numbers: every
+// one of an origin's source, and one of an origin's parent whose head is
+// that origin (its source's own head). A pull request of another
+// repository, or of a parent with another head, is never Work's.
+func (s *Store) ForgeHistoryForWork(key string, origins []string, numbers []ForgeHistoryNumber) (ForgeHistoryWork, error) {
 	listed, err := jsonArray(origins)
+	if err != nil {
+		return ForgeHistoryWork{}, err
+	}
+	named, err := jsonArray(numbers)
 	if err != nil {
 		return ForgeHistoryWork{}, err
 	}
@@ -531,7 +516,7 @@ func (s *Store) ForgeHistoryForWork(key string, origins []string) (ForgeHistoryW
 		if out.Sources, err = scanForgeHistorySources(rows, "read the sources of "+key); err != nil {
 			return out, err
 		}
-		err = scanMirrorRows(q, forgeHistoryWorkRowsSQL, []any{strings.ToUpper(key), listed}, func(row rowScanner) error {
+		err = scanMirrorRows(q, forgeHistoryWorkRowsSQL, []any{strings.ToUpper(key), listed, named}, func(row rowScanner) error {
 			var r ForgeHistoryRow
 			if err := row.Scan(&r.SourceID, &r.SeenAt, &r.Number, &r.URL, &r.Title, &r.HeadRef, &r.HeadRepo, &r.State, &r.Author, &r.AuthorName,
 				&r.CreatedAt, &r.UpdatedAt, &r.MergedAt, &r.ClosedAt); err != nil {
@@ -544,30 +529,52 @@ func (s *Store) ForgeHistoryForWork(key string, origins []string) (ForgeHistoryW
 	})
 }
 
-// forgeHistoryKnownSQL answers which numbers of list ?2 source ?1 stores,
-// each by its key.
-const forgeHistoryKnownSQL = `SELECT p.number FROM json_each(?2) n
+// ForgeHistorySourcesForWork reads the sources of origins (repository
+// keys) and of the parents they name, as ForgeHistoryForWork does,
+// without their rows.
+func (s *Store) ForgeHistorySourcesForWork(origins []string) ([]ForgeHistorySource, error) {
+	listed, err := jsonArray(origins)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.reader().Query(forgeHistoryWorkSourcesSQL, listed)
+	if err != nil {
+		return nil, fmt.Errorf("store: read the forge history sources of %d origins: %w", len(origins), err)
+	}
+	return scanForgeHistorySources(rows, "read the forge history sources of Work's origins")
+}
+
+// StoredForgeHistoryPR is what a source stores of a pull request: its
+// update time and the time a read last saw it (Unix ms).
+type StoredForgeHistoryPR struct {
+	UpdatedAt, SeenAt int64
+}
+
+// forgeHistoryStoredSQL answers the numbers of list ?2 source ?1 stores,
+// each by its key, with their update and seen times.
+const forgeHistoryStoredSQL = `SELECT p.number, p.updated_at, p.seen_at FROM json_each(?2) n
 CROSS JOIN forge_history_prs p ON p.source_id = CAST(?1 AS INTEGER) AND p.number = n.value`
 
-// KnownForgeHistoryPRs reports which of numbers source id stores, so a
-// reader fetches only the pull requests an act names that it has never
-// read.
-func (s *Store) KnownForgeHistoryPRs(id int64, numbers []int64) (map[int64]bool, error) {
+// StoredForgeHistoryPRs answers which of numbers source id stores, with
+// what it stores of each, so a reader reads again only what changed and
+// fetches only the pull requests an act names that it has never read.
+func (s *Store) StoredForgeHistoryPRs(id int64, numbers []int64) (map[int64]StoredForgeHistoryPR, error) {
 	listed, err := jsonArray(numbers)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.reader().Query(forgeHistoryKnownSQL, id, listed)
+	rows, err := s.reader().Query(forgeHistoryStoredSQL, id, listed)
 	if err != nil {
-		return nil, fmt.Errorf("store: read the known pull requests of source %d: %w", id, err)
+		return nil, fmt.Errorf("store: read the stored pull requests of source %d: %w", id, err)
 	}
-	out := map[int64]bool{}
+	out := map[int64]StoredForgeHistoryPR{}
 	for rows.Next() {
 		var n int64
-		if err := rows.Scan(&n); err != nil {
+		var pr StoredForgeHistoryPR
+		if err := rows.Scan(&n, &pr.UpdatedAt, &pr.SeenAt); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
-		out[n] = true
+		out[n] = pr
 	}
 	return out, errors.Join(rows.Err(), rows.Close())
 }

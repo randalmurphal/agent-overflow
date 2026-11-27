@@ -547,9 +547,11 @@ repository whose last history read failed says so in Work in the Pull
 requests page's words, beside the rows its history holds, and is not
 searched; a search that fails is said the same way. A pull request from
 the history or the search shows its state and author and no CI. A
-repository's first full read runs 10 pages a read: on GitHub 500 pull
-requests every 15 minutes, so 30,000 take 15 hours, and older tickets
-are searched until it reaches them.
+repository's first full read runs at most 30 forge requests a read, and
+the next background round, 5 minutes later, reads on while it owes more:
+on GitHub a read covers up to 1,500 pull requests without long
+discussions, so 30,000 take about 20 reads (about 100 minutes), and
+older tickets are searched until it reaches them.
 
 The search finds a pull request in any state by its title, and by a
 branch name that holds the key: a branch the searched repository still has, a branch

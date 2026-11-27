@@ -47,7 +47,8 @@ type PRListSnapshot struct {
 // caller-safe sentence and ErrorKind, Reserve and ResumeAt its kind fields
 // (PRUpdatedEvent's), ErrorDetails the correlation id and raw error behind
 // it for "Details", and the other projects are unaffected. ReadAt (RFC
-// 3339) is when the rows' read landed, "" before any did. DetailError is
+// 3339) is when the request of the rows' read started, "" before a read
+// landed. DetailError is
 // the caller-safe sentence of a detail request that failed while the
 // list read: the rows list and the fields it fills read as unknown.
 type ProjectPRList struct {

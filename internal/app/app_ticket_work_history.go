@@ -12,11 +12,12 @@ import (
 )
 
 // A ticket's Work from the stored forge pull request history
-// (app_forge_history.go): the pull requests that name its key in the
-// repositories Work's projects clone, and in their parents with those
-// repositories as their head (store.ForgeHistoryForWork), and for each of
-// Work's origins whether that history answers for the ticket or the forge
-// is searched by the key (SearchTicketWork).
+// (app_forge_history.go): the pull requests that name its key, or that
+// Work already lists, in the repositories Work's projects clone, and in
+// their parents with those repositories as their head
+// (store.ForgeHistoryForWork), and for each of Work's origins whether
+// that history answers for the ticket or the forge is searched by the key
+// (SearchTicketWork).
 
 // ticketHistory is what the stored history holds for a ticket's Work.
 type ticketHistory struct {
@@ -24,16 +25,26 @@ type ticketHistory struct {
 	byKey map[string]store.ForgeHistorySource
 }
 
-// readTicketHistory reads the stored history of read's ticket for its
-// origins.
-func (a *App) readTicketHistory(read *ticketWorkRead) (ticketHistory, error) {
+// historyOrigins are the repository keys of read's origins git could
+// read.
+func historyOrigins(read *ticketWorkRead) []string {
 	var keys []string
 	for _, origin := range read.origins {
 		if origin.Error == "" && !slices.Contains(keys, origin.Repo.Identity()) {
 			keys = append(keys, origin.Repo.Identity())
 		}
 	}
-	work, err := a.store.ForgeHistoryForWork(read.work.Key, keys)
+	return keys
+}
+
+// readTicketHistory reads the stored history of read's ticket for its
+// origins: the pull requests that name the key, and those read lists.
+func (a *App) readTicketHistory(read *ticketWorkRead) (ticketHistory, error) {
+	numbers := make([]store.ForgeHistoryNumber, 0, len(read.work.PullRequests))
+	for _, pr := range read.work.PullRequests {
+		numbers = append(numbers, store.ForgeHistoryNumber{RepoKey: pr.Ref.Repository().Identity(), Number: int64(pr.Ref.Number)})
+	}
+	work, err := a.store.ForgeHistoryForWork(read.work.Key, historyOrigins(read), numbers)
 	if err != nil {
 		return ticketHistory{}, err
 	}
@@ -71,13 +82,13 @@ func (h ticketHistory) sources(origin ForgeProject) (have []store.ForgeHistorySo
 // returned is the store's. A read ctx ended stores nothing and is no
 // error: the stored history answers.
 func (a *App) catchUpTicketHistory(ctx context.Context, read *ticketWorkRead) error {
-	h, err := a.readTicketHistory(read)
+	sources, err := a.store.ForgeHistorySourcesForWork(historyOrigins(read))
 	if err != nil {
 		return err
 	}
-	errs := make([]error, len(h.Sources))
-	runBounded(len(h.Sources), prListReadConcurrency, func(i int) {
-		errs[i] = a.readForgeHistorySource(ctx, h.Sources[i].ID, forgeHistoryStale)
+	errs := make([]error, len(sources))
+	runBounded(len(sources), prListReadConcurrency, func(i int) {
+		errs[i] = a.readForgeHistorySource(ctx, sources[i].ID, forgeHistoryStale)
 	})
 	if ctx.Err() != nil {
 		return nil
@@ -85,11 +96,13 @@ func (a *App) catchUpTicketHistory(ctx context.Context, read *ticketWorkRead) er
 	return errors.Join(errs...)
 }
 
-// addTicketHistory lists in read the stored history's pull requests of
-// the ticket (store.ForgeHistoryForWork), each under the first of Work's
+// addTicketHistory observes in read the stored history's pull requests
+// that name the ticket's key or that read lists
+// (store.ForgeHistoryForWork), and then the stored open rows of those it
+// lists (observeListedRows). Each is observed under the first of Work's
 // projects whose origin is its repository, or whose origin heads it in a
-// parent, at the time the forge was last asked for it
-// (ticketWorkRead.observe), with its head repository, and records each
+// parent, at the start of the request that last read it
+// (ticketWorkRead.observe), with its head repository. It records each
 // origin's own head (answerTicketWork folds a branch by them). It answers
 // the origins whose history cannot answer for the ticket, for the
 // forge's search, with the origins git could not read, whose search says
@@ -177,7 +190,7 @@ func (a *App) addTicketHistory(read *ticketWorkRead) ([]ForgeProject, error) {
 		read.observeFound(gitops.PRFound{Ref: ref, URL: row.URL, Title: row.Title, State: state, Draft: row.State == TicketPRDraft,
 			Author: gitops.PRListAuthor{Login: row.Author, Name: row.AuthorName}, HeadRefName: row.HeadRef}, projectID, row.SeenAt, row.HeadRepo)
 	}
-	return search, nil
+	return search, read.observeListedRows()
 }
 
 // ticketHistoryProblem is source s's failed read as Work shows it, under
