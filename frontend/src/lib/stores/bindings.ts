@@ -640,6 +640,9 @@ export {
   // TrackerDashboards is below.
   EvaluateTrackerDashboard,
   TrackerDashboardDrill,
+  KeepTrackerWidget,
+  DismissTrackerWidget,
+  RemoveTrackerWidget,
   // A ticket's subscription, its writes and the reads its pickers make
   // (stores/trackerTicket.svelte.ts, stores/trackerTicketWrites.svelte.ts).
   SubscribeTrackerTicket,
@@ -949,6 +952,7 @@ import {
   SendMessageWithOptions as SendMessageWithOptionsRaw,
   StartTerminal as StartTerminalRaw,
   StartTicketThread as StartTicketThreadRaw,
+  StartTrackerDashboardThread as StartTrackerDashboardThreadRaw,
   UpdateNewThreadDefaults as UpdateNewThreadDefaultsRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import {
@@ -1015,6 +1019,12 @@ export function StartTicketThread(
   req: { connectionId: string; issueId: string; origin: 'ask' | 'start_work'; branch?: string },
 ): Promise<Thread> {
   return StartTicketThreadRaw(projectId, new StartTicketThreadRequestClass(req)) as unknown as Promise<Thread>;
+}
+
+/** The thread of a board's Ask your agent (stores/trackerDashboard.svelte.ts):
+ * its row, as CreateThread answers one. */
+export function StartTrackerDashboardThread(subscriptionId: string): Promise<Thread> {
+  return StartTrackerDashboardThreadRaw(subscriptionId) as unknown as Promise<Thread>;
 }
 
 export function MoveDraftToThread(threadId: string, destinationThreadId: string, snapshot: DraftSnapshot) {
@@ -1393,8 +1403,7 @@ import {
   TrackerDashboards as TrackerDashboardsRaw,
   SearchTicketWork as SearchTicketWorkRaw,
 } from '../../../bindings/agent-overflow/app.js';
-import type { DashboardView as TrackerDashboardRow } from '../../../bindings/agent-overflow/internal/trackerdash/models.js';
-import type { TrackerConnection as TrackerConnectionRow, TicketWork as TicketWorkAnswer } from '../../../bindings/agent-overflow/internal/app/models.js';
+import type { TrackerConnection as TrackerConnectionRow, TicketWork as TicketWorkAnswer, TrackerDashboardsView } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { BoardChoice as TrackerBoardChoiceRow } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
 export { ArchiveThreadResult, DeleteDependents, DeleteThreadResult };
@@ -1606,9 +1615,9 @@ export function TrackerConnections(): Promise<TrackerConnectionRow[] | null> {
   return orOlder(() => TrackerConnectionsRaw(), () => null);
 }
 
-/** The dashboards a subscribed board offers; null on a computer whose
- * release has no dashboards. */
-export function TrackerDashboards(subscriptionId: string): Promise<TrackerDashboardRow[] | null> {
+/** What a subscribed board's Dashboards screen lays out; null on a
+ * computer whose release has no dashboards. */
+export function TrackerDashboards(subscriptionId: string): Promise<TrackerDashboardsView | null> {
   return orOlder(() => TrackerDashboardsRaw(subscriptionId), () => null);
 }
 

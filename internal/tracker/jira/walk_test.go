@@ -533,7 +533,7 @@ var (
 	pagesToTheCaller = []string{"Search", "ListIssues", "Comments", "LatestComments", "SearchUsers", "AssignableUsers"}
 	// oneRequest reads answer from one request (or a cache).
 	oneRequest = []string{
-		"AttachmentMediaID", "Attachments", "Board", "BoardConfig", "Comment", "CountIssues", "CountListIssues",
+		"AttachmentMediaID", "Attachments", "Board", "BoardConfig", "Comment", "CountIssues", "CountListIssues", "DevPullRequests", "DevSummary",
 		"DownloadAttachment", "EditMeta", "Fields", "FieldsNaming", "GetIssue", "IssueLinkTypes", "MatchJQL", "Me", "Myself", "Project",
 		"PokerVoter", "ProjectStatuses", "RemoteLinks", "Statuses", "Transitions", "User", "Watchers", "Worklog",
 	}

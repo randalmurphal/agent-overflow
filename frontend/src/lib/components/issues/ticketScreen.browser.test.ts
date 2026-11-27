@@ -10,6 +10,9 @@
 // of the project, a refused or failed pin said naming it and the project
 // with what is stored shown, a pin this ticket lacks unpinned from behind
 // the rail's control, no field pin on Linear, and none with no project.
+// And Work on a narrow ticket reads the ticket's pull requests only when
+// Details opens, not for the wide layout the screen has before it is
+// measured.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
@@ -79,7 +82,7 @@ function mountWith(width: number, opts: { detail: DetailView | null; asked?: boo
       focusAsked: false, onFocusTaken: () => {},
       get startWorkAsked() { return held.get('asked') as boolean; },
       onStartWorkEnded: () => { held.set('asked', false); },
-      onBack: () => {}, onClose: () => {}, onOpenIssue: () => {},
+      onBack: () => {}, onClose: () => {}, onOpenIssue: () => {}, onOpenPullRequest: () => {},
     },
   });
   mounted.push({ app, host });
@@ -162,6 +165,22 @@ describe('a Start work asked for', () => {
     await waitFor(() => rail()?.querySelector('[data-testid="ticket-work-start"]') != null, 'Work in Details');
     await waitFor(() => !(rail()!.querySelector<HTMLButtonElement>('[data-testid="ticket-work-start"]')!.disabled), 'Start work ready');
     expect(form()).toBeNull();
+  });
+});
+
+describe('Work on a narrow ticket', () => {
+  it('reads nothing while Details is closed, and once when it opens', async () => {
+    let stored = 0;
+    let searched = 0;
+    setBindingMock('GetTicketWork', async () => { stored++; return { key: 'WEB-1', pullRequests: [], branches: [], problems: [] }; });
+    setBindingMock('SearchTicketWork', async () => { searched++; return { key: 'WEB-1', pullRequests: [], branches: [], problems: [] }; });
+    const ticket = mountWith(360, { detail: DETAIL, project: null, key: 'narrow-work' });
+    await waitFor(() => ticket.host.querySelector('[data-testid="ticket-details"]') !== null, 'the narrow ticket');
+    expect([stored, searched]).toEqual([0, 0]);
+    ticket.host.querySelector<HTMLElement>('[data-testid="ticket-details"]')!.click();
+    await waitFor(() => ticket.host.querySelector('[data-testid="ticket-rail"] [data-testid="ticket-work"]') !== null, 'Work in Details');
+    await waitFor(() => searched > 0, 'the search');
+    expect([stored, searched]).toEqual([1, 1]);
   });
 });
 

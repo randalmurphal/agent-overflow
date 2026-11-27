@@ -36,6 +36,7 @@ export {
     FieldValueView,
     FieldView,
     IssueTypeView,
+    KeepTarget,
     KeyMatchView,
     LinkRequest,
     LinkTypeView,

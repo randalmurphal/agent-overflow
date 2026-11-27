@@ -84,7 +84,13 @@ board methods, events and the patch read in
   named one, an opener of the ticket already shown included, else the
   Issues pane's board's; Ask and Start work use it) and Back trail, for
   the Issues pane and a ticket pane alike; `TicketHost.svelte` mounts
-  what a trail shows.
+  what a trail shows. The trail also holds the pull request a Work row
+  shows in the ticket's place (`TicketTrail.pullRequest`, kept in the
+  trail's state, a ticket pane's record included, and ended by any other
+  open, Back or Close); `TicketHost` draws its bar and lays
+  `TicketReview.svelte`, loaded on the first such open, over the ticket,
+  which stays mounted, hidden and inert, and votes hidden. The review is the Pull requests page's pinned one,
+  held under the host's layout pane, which disposes it when it goes.
 - `stores/ticketPanes.svelte.ts` (in the startup graph) owns ticket panes:
   which ticket each shows, the Ctrl or Cmd rule for opening one
   (`opensTicketPane`), the move's hold on the subscription until the
@@ -182,8 +188,9 @@ board methods, events and the patch read in
   target's latest, and the Status and Assignee fields say what became of
   it.
 - `stores/trackerDashboard.svelte.ts` holds the Dashboards screen's
-  state, one per screen: the board's dashboards, the one answer the
-  screen draws and the one evaluation in flight, the range and Team or
+  state, one per screen: the board's dashboards and proposals as its
+  list gives them, the one answer the screen draws and the one evaluation
+  in flight, the range and Team or
   Mine saved for the next screen, the person or epic narrowed to, and the
   one drill open. It counts again on the board's changes
   (`TrackerBoardState.changes`), at most once every 5 s, and every 10

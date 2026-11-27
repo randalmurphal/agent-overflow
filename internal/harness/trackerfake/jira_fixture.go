@@ -254,6 +254,9 @@ type JiraIssue struct {
 	Attachments       []JiraAttachment           `json:"attachments,omitempty"`
 	RemoteLinks       []JiraRemoteLink           `json:"remoteLinks,omitempty"`
 	Watchers          []string                   `json:"watchers,omitempty"`
+	// PullRequests are the pull requests forge integrations link to the
+	// issue, which the development panel answers (jira_devstatus.go).
+	PullRequests []JiraPullRequest `json:"pullRequests,omitempty"`
 	// Changelog is the issue's history, oldest first; every write that
 	// changes a field adds an entry.
 	Changelog []JiraChange `json:"changelog,omitempty"`
@@ -301,6 +304,22 @@ type JiraAttachment struct {
 	Author   string    `json:"author,omitempty"`
 	Created  time.Time `json:"created,omitzero"`
 	MediaID  string    `json:"mediaId,omitempty"`
+}
+
+// JiraPullRequest is a pull request an integration links to an issue in
+// the development panel. InstanceType is the integration's (measured:
+// "oAuth-gitlab-jira-connect-gitlab.com" for the GitLab.com app); ID,
+// Name, URL, Status, Author and Branch are the answer's id, name, url,
+// status, author.name and source.branch (measured statuses: OPEN, MERGED,
+// DECLINED).
+type JiraPullRequest struct {
+	InstanceType string `json:"instanceType"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	URL          string `json:"url"`
+	Status       string `json:"status"`
+	Author       string `json:"author,omitempty"`
+	Branch       string `json:"branch,omitempty"`
 }
 
 // JiraRemoteLink is a link from an issue to a page outside Jira.

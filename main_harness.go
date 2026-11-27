@@ -321,6 +321,7 @@ var harnessTimers = []harnessTimer{
 	{name: "wake-retry", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ThreadWakeRetryBase }, max: appservice.MaxThreadWakeRetryBase},
 	{name: "agent-settled-window", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentSettledWindow }},
 	{name: "tracker-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.TrackerPollInterval }},
+	{name: "tracker-approval-wait", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.TrackerApprovalWait }},
 	// Page timers: how long a computer stays unreachable before the screen
 	// says so, and how long a settled Agents row stays.
 	{name: "unreachable-settle", max: pageTimerMax, unit: time.Millisecond},
@@ -424,7 +425,7 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"TrackerConnections", "AddTrackerConnection", "RenameTrackerConnection", "SetTrackerConnectionEnabled",
 		"SetTrackerConnectionTokenExpiry", "RemoveTrackerConnection", "VerifyTrackerConnection",
 		"EditTrackerKeyFile", "OpenTrackerTokenPage", "TrackerProjects", "TrackerBoards",
-		"ProjectTrackerBoards", "SetProjectTrackerBoards", "TrackerBoardChoices", "ProjectTrackerSetup", "ProjectTrackerStatuses", "ProjectTrackerSiteFields", "SetProjectTrackerSetup",
+		"ProjectTrackerBoards", "SetProjectTrackerBoards", "TrackerBoardChoices", "ProjectTrackerSetup", "ProjectTrackerStatuses", "SetProjectTrackerSetup",
 		"SubscribeTrackerBoard", "TrackerBoard", "TrackerSectionRows", "TrackerBoardPatch",
 		"SetTrackerSubscriptionVisible", "RefreshTrackerSubscription", "ReleaseTrackerSubscription",
 		"SubscribeTrackerTicket", "TrackerTicket", "TrackerComments", "TrackerAssignableUsers", "TrackerChoices",
@@ -435,8 +436,10 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"MintTrackerAttachmentUploadTicket", "MintTrackerAttachmentDownloadTicket",
 		"SaveTrackerAttachment", "TrackerLinkTypes", "LinkTrackerIssues", "UnlinkTrackerIssues", "TrackerPokerSupport",
 		"FollowTrackerPoker", "TrackerPoker", "VoteTrackerPoker", "RevealTrackerPoker", "ClearTrackerPokerVotes",
-		"SetThreadTicket", "ClearThreadTicket", "ThreadsForTicket", "GetTicketWork", "SearchTicketWork", "StartTicketThread",
-		"TrackerDashboards", "EvaluateTrackerDashboard", "TrackerDashboardDrill",
+		"SetThreadTicket", "ClearThreadTicket", "ThreadsForTicket", "GetTicketWork", "StartTicketThread",
+		"TrackerDashboards", "EvaluateTrackerDashboard", "TrackerDashboardDrill", "StartTrackerDashboardThread",
+		"KeepTrackerWidget", "DismissTrackerWidget", "RemoveTrackerWidget",
+		"ProjectTrackerSiteFields", "SearchTicketWork",
 	} {
 		absent[name] = true
 	}

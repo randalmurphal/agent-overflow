@@ -48,42 +48,42 @@ import (
 // of the database it fills.
 var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epics", "sprints", "sprint_tickets", "changes", "sprint_finished"}
 
-// MirrorExportSchema is the export's relations. Times are milliseconds;
-// a time the mirror does not hold is NULL. tickets.history_from is when
-// the ticket's changes are complete from, NULL while its history is not
-// read. started_known is 1 when its history shows when it started: the
-// status it had when its history begins (what its first status change
-// left, else its status now) was in neither an in-progress nor a done
-// group, so a move into progress is in the history (mirrorExportStartKnownSQL).
-// started_at is then its first change into an in-progress status, and
-// NULL otherwise. done_at, for a ticket whose status counts as done, is
-// its last change into a done status, NULL when its changes hold none.
-// Groups are the regrouping's over the root's catalog. tickets.open is 1
-// for a ticket the board's sections count as not done (mirrorRegroupedNotDone:
-// not done, canceled or left out, an unclassified status open), and
-// tickets.counts 0 for one whose status the regrouping leaves out of
-// counts (mirrorLeftOut). sprint_finished holds each member of a closed
-// sprint, done when its status at the sprint's completion counted as done
-// (the pace's rule), and each member of an active sprint, done when its
-// status counts as done now. A status group is named as the project setup
-// names it (mirrorRegroupedGroupNameSQL), NULL for a status the mirror does
-// not know. A ticket's epic is its parent when the parent's name
-// (tracker_cache_parents) is an epic's, type level 1, else its parent's
-// parent when the mirror keeps the parent and that name is an epic's; an
-// epic's key and title are its name's.
+// MirrorExportSchema is the export's relations, whose comments say what
+// each column holds; an agent writing a widget reads them as written
+// (trackerdash.Rules). How the fill derives them: started_known is
+// mirrorExportStartKnownSQL, the status a ticket's history begins with
+// being what its first status change left, else its status now; open is
+// mirrorRegroupedNotDone (an unclassified status open) and counts 0 is
+// mirrorLeftOut; a status group is named by mirrorRegroupedGroupNameSQL
+// over the root's catalog; a closed sprint's done is the pace's rule
+// (mirrorStatusAtCompletionSQL); a ticket's epic is found through
+// tracker_cache_parents, its parent's parent read only when the mirror
+// keeps the parent.
 const MirrorExportSchema = `
+-- Times are milliseconds since 1970 UTC; a time the app does not hold is NULL.
+-- estimates: points, time (seconds) or none.
 CREATE TABLE main.board(name TEXT NOT NULL, plans_sprints INTEGER NOT NULL, estimates TEXT NOT NULL);
+-- status_group: backlog, todo, in_progress, done, canceled or left_out, as the project groups statuses; NULL when not known.
 CREATE TABLE main.statuses(id TEXT PRIMARY KEY, name TEXT NOT NULL, status_group TEXT) WITHOUT ROWID;
+-- type_level: 1 an epic, 0 a story, task or bug, -1 a subtask. assignee: a people.id. epic: an epics.id.
+-- points: the board's estimate, in board.estimates. history_from: changes are complete from then; NULL while not read.
+-- started_known 1: the history shows when it started, started_at its first move into in_progress.
+-- done_at: its last move into done, for a ticket done now. open 1: the board counts it not done.
+-- counts 0: its status is left out of counts.
 CREATE TABLE main.tickets(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL, type_level INTEGER NOT NULL,
   status TEXT, status_group TEXT, assignee TEXT, parent TEXT, epic TEXT, created_at INTEGER, updated_at INTEGER, resolved_at INTEGER,
   status_since INTEGER, points REAL, history_from INTEGER, started_known INTEGER NOT NULL, started_at INTEGER, done_at INTEGER,
   open INTEGER NOT NULL, counts INTEGER NOT NULL) WITHOUT ROWID;
 CREATE TABLE main.epics(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL) WITHOUT ROWID;
+-- state: future, active or closed. position: the board's order.
 CREATE TABLE main.sprints(id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, start_at INTEGER, end_at INTEGER,
   completed_at INTEGER, position INTEGER NOT NULL) WITHOUT ROWID;
 CREATE TABLE main.sprint_tickets(sprint TEXT NOT NULL, ticket TEXT NOT NULL, PRIMARY KEY (sprint, ticket)) WITHOUT ROWID;
+-- kind: status (from_value and to_value are statuses.id), assignee (people.id), sprint (each the ticket's whole set of
+-- sprints.id as a JSON array, such as ["14","15"]) or estimate (from_number and to_number). author: a people.id.
 CREATE TABLE main.changes(ticket TEXT NOT NULL, kind TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, author TEXT,
   from_value TEXT, to_value TEXT, from_number REAL, to_number REAL, PRIMARY KEY (ticket, kind, seq)) WITHOUT ROWID;
+-- Each member of a closed or active sprint; done 1 when it counted done at the sprint's completion, or for an active sprint now.
 CREATE TABLE main.sprint_finished(sprint TEXT NOT NULL, ticket TEXT NOT NULL, done INTEGER NOT NULL, PRIMARY KEY (sprint, ticket)) WITHOUT ROWID;
 CREATE TABLE main.people(id TEXT PRIMARY KEY, name TEXT NOT NULL) WITHOUT ROWID;
 `

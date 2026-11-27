@@ -186,7 +186,7 @@ func TestWritesAreAdmittedAfterTheApproval(t *testing.T) {
 	w := newWriteFixture(t)
 	w.h.approve = func(Approval) error { w.h.readOnly = true; return nil }
 	_, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "comment": "Done."})
-	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.")
+	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.")
 	if len(w.f.writes) != 0 {
 		t.Fatalf("an approval admitted writes on a read-only thread: %q", w.f.writes)
 	}
@@ -198,10 +198,10 @@ func TestACreateIsAdmittedWhenItIsSent(t *testing.T) {
 	t.Parallel()
 	w := newWriteFixture(t)
 	w.f.types = []trackerapp.IssueTypeView{{ID: "10002", Name: "Task"}}
-	w.h.createBoards["WEB"] = []CreateBoard{{Connection: "conn-jira", Board: "1", Thread: true}}
+	w.h.createBoards["WEB"] = []ListedBoard{{Connection: "conn-jira", Board: "1", Thread: true}}
 	w.h.readingProject = func() { w.h.readOnly = true }
 	_, err := w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New"})
-	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.")
+	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.")
 	if len(w.f.writes) != 0 {
 		t.Fatalf("a create was sent on a read-only thread: %q", w.f.writes)
 	}
@@ -235,7 +235,7 @@ func TestACreatePicksTheThreadsReadBoard(t *testing.T) {
 	w.f.write = func(string, any) (trackerapp.WriteView, error) {
 		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Issue: "10042", Step: "create", State: "applied"}}, Created: "10042", CreatedKey: "WEB-42"}, nil
 	}
-	w.h.createBoards["WEB"] = []CreateBoard{{Connection: "conn-jira", Board: "9", Thread: true}, {Connection: "conn-jira", Board: "1"}, {Connection: "conn-jira-2", Board: "2", Thread: true}}
+	w.h.createBoards["WEB"] = []ListedBoard{{Connection: "conn-jira", Board: "9", Thread: true}, {Connection: "conn-jira", Board: "1"}, {Connection: "conn-jira-2", Board: "2", Thread: true}}
 	if _, err := w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New"}); err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestACreatePicksTheThreadsReadBoard(t *testing.T) {
 		t.Fatalf("writes %q, want the thread's read board 2", w.f.writes)
 	}
 	w.f.writes = nil
-	w.h.createBoards["WEB"] = []CreateBoard{{Connection: "conn-jira", Board: "9", Thread: true}, {Connection: "conn-jira", Board: "1"}}
+	w.h.createBoards["WEB"] = []ListedBoard{{Connection: "conn-jira", Board: "9", Thread: true}, {Connection: "conn-jira", Board: "1"}}
 	if _, err := w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New"}); err != nil {
 		t.Fatal(err)
 	}

@@ -128,6 +128,12 @@ this is its shape.
   before the read that gives the card's update time has returned, so
   content newer than that time costs one more read later and never
   passes for current.
+- Development: the pull requests a tracker's forge integrations link to an
+  issue (`PullRequests`), from Jira's undocumented development data, each
+  integration read on its own: the rows read come back beside
+  `errors.Join` of each failed read. A Jira site whose summary says it
+  keeps no such data fails wrapping `tracker.ErrNoDevelopmentData`;
+  Linear fails as unsupported before any request.
 - Finding: issues by key, and a page of cards matching text.
 - Writes: create, edit fields, move to a status (with the fields the move
   takes), set an estimate on a board, rank between neighbors, move to a
@@ -372,7 +378,10 @@ no step runs at root creation, restore or start.
   ID, so a client saves what a finder answers with no read; and
   `never_epics`, true when absent and stored only when false; the
   section dropped when it sets nothing). The writer (`validateSetup`)
-  owns these defaults: a client sends the value it shows. A section this build does not know, or one
+  owns these defaults: a client sends the value it shows. Beside them,
+  `dashboards` (by tracker site and board, the dashboards the project
+  keeps) is written only by its own edits ([Own dashboards and
+  proposals](#own-dashboards-and-proposals)); a replace keeps it. A section this build does not know, or one
   at a newer version, is kept byte for byte by a replace and named in the
   read's `newer`; a replace that sets it is refused.
 - **A site** is named as its connection names it, by the rules a
@@ -2119,18 +2128,51 @@ delete is refused and the links the delete read are the ones it ends.
   hold it; the merged and closed pull requests its linked threads were
   last seen with; and the branches that name the key in the projects
   listing the connection's boards, the pull requests' projects and the
-  linked threads' projects, a branch a listed pull request names folded
-  into it. A stored list's project that was removed since (the list
-  stays until the Pull requests page's next read prunes it) keeps its
-  rows and has no branches read. A repository whose
-  branches cannot be read is a problem beside the rest. At 2,000 stored
-  rows over 10 repositories and a 500-branch project it costs 18 ms and
-  4 MB an open, 23 ms and 5 MB when every list names the key
-  (`TestTicketWorkCostAtRealSize`); a 200-row landing's tickets cost
-  0.5 ms. It sends no forge or tracker request.
+  linked threads' projects. A row names the project it was listed
+  under: the stored list's, the linked thread's, or the one whose branch
+  the forge's lookup found it by. A branch of project P folds into a
+  listed pull request whose head it is: their names match, and the pull
+  request is of P's origin's repository or the search's lookup by the
+  branch's name in P's checkout found it (a fork's branch heads a pull
+  request of its parent). The project a row was listed under takes no
+  part, and one ticket's branches can share a name across repositories.
+  So in this answer a fork's branch stands beside the parent's pull
+  request it heads until `SearchTicketWork`'s answer folds it. A stored
+  list's project that was removed since (the list stays until the Pull
+  requests page's next read prunes it) keeps its rows, which name no
+  project, and has no branches read. Each pull request names the project
+  that can show it in the app (`ReviewProjectID`, `reviewProjects`): a
+  project of the computer's, archived or not, whose origin is the pull
+  request's repository, since a review fetches the pull request's refs
+  from origin (`git.Core.EnsurePRObjects`), so a fork's checkout cannot
+  show its parent's pull request; none when no project can, and the row
+  opens on the forge. The row's own project comes first, then the
+  projects Work covers, whose origins the read has; the computer's other
+  projects' origins are read, in name order, only for a row those leave
+  without one, until every such row's repository has a clone. Each of
+  the two methods walks on its own, so a ticket's open walks them up to
+  twice. An origin read is cached for five minutes once it has
+  succeeded, so a walk that starts after another's read finished reads
+  again only the origins that failed; the two requests of one open
+  start together, so their walks can overlap and each read an origin
+  neither has cached. A read
+  is up to two git processes (`rev-parse --git-common-dir`, then
+  `remote get-url origin`). With 10 other projects, a ticket with no
+  rows and one whose rows the covered projects clone read none of their
+  origins over a ticket's open, and a row none of them clones reads
+  each project named before its clone once and none after it
+  (`TestTicketWorkReadsOtherProjectsOriginsOnlyForARowNoWorkProjectClones`).
+  A repository whose branches cannot be read is a problem beside the
+  rest. At 2,000 stored rows over 10 repositories, a 500-branch project
+  and 30 other projects it costs about 30 ms and 4 MB an open, 32 ms and
+  4 MB with the other projects' origins not cached, and 50 ms and 5 MB
+  when every list names the key (`TestTicketWorkCostAtRealSize`); a
+  200-row landing's tickets cost 0.7 ms. It sends no forge or tracker
+  request.
 - **`SearchTicketWork`** (home route, the same scopes, budget 2m15s from
   entry: every forge request runs within it, and no project's local read
-  starts after it) is
+  starts after it, so a row whose project would be found among the other
+  projects after the budget opens on the forge) is
   `GetTicketWork`'s answer with the forge searched by the key
   ([Ticket Work search](forge-transport.md#ticket-work-search)): once per
   distinct repository the projects above clone, then a lookup by name, in
@@ -2144,11 +2186,35 @@ delete is refused and the links the delete read are the ones it ends.
   read, which runs only while the Pull requests page is open or at
   boot). A repository's failure is a `TicketForgeProblem` carrying the
   fields a Pull requests page project carries for a failed read
-  (`newRepoForgeFailure`), beside the rows its search read, and a search that stopped at its page bound is
+  (`newRepoForgeFailure`), beside the rows its search and lookups read
+  before they failed (a GitHub answer keeps the searches no error of it
+  names), and a search that stopped at its page bound is
   named in `SearchFull`. The client calls both methods at once and shows
   the stored answer until the search's lands (`stores/ticketWork.svelte.ts`);
   a stored answer or failure after it is not shown; nothing is stored.
-  It repeats `GetTicketWork`'s local read, the 18 ms above.
+  It repeats `GetTicketWork`'s local read, the 18 ms above. Beside the
+  forge's search it reads the pull requests the tracker's forge
+  integrations link to the ticket (`trackerapp.Service.IssuePullRequests`,
+  the provider's `PullRequests`: on Jira the development data's summary,
+  then one detail per integration whose count is above zero, at once; on
+  Linear nothing, with no request), waits for it at most
+  `ticketDevelopmentWait` (10 s, an interactive call's gate wait; the
+  transport may still retry within it), and lists them after the forge's rows
+  (`ticketWorkRead.addDevelopment`): a pull request listed already stays
+  as listed, except one only a linked thread's record gave, which takes
+  the tracker's title, author and state; the tracker's link is the
+  evidence, so the key rule does not apply; a link whose URL is no pull
+  request `gitops.ParsePRURL` can address is counted in
+  `DevelopmentUnlisted`; a status not measured is shown as the tracker's
+  word. The service returns each failed read as a
+  `trackerapp.DevelopmentFailure` beside the rows the others answered;
+  `DevelopmentProblem` says each with its endpoint and integration and,
+  for a refused credential or a rate limit that endpoint answered, the
+  HTTP status; when the wait passed, it says that, beside each read that
+  failed otherwise. A site that keeps no data says
+  nothing and its cause is logged. No failure settles the connection's
+  problem, since the endpoints are undocumented
+  ([measured](../references/tracker-api-measurements.md#development-data)).
 - **`StartTicketThread`** (project route, `threads:operate`, plus
   `tracker:read`, and `git:operate` for Start work) makes the thread of
   an Ask or a Start work in one rollback: the thread titled with the key
@@ -2197,8 +2263,51 @@ closes a database of its own.
 | Which rows a board's export holds, the regrouping, the pace's done-at-completion rule | `store` (`tracker_cache_export.go`; the pace's fragment is shared with `tracker_cache_pace.go`) |
 | The sandbox, the metric contract and its validator, the reductions, ranges, narrowing, drills and the built-in dashboard | `trackerdash` (its package comment is the sandbox's contract) |
 | The board, its status groups and the viewer of an evaluation | `trackerapp` |
+| The dashboards a project keeps (the setup file's `dashboards` section) and the widgets agents proposed | `trackerapp` (`dashboard_setup.go`, `dashboards.go`) |
 | Bound methods, scopes and the older-computer surface | `app` (`app_tracker_dashboards.go`) |
-| The answer on screen, when it is counted again, the range, Team or Mine and the drill | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine and the drill | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+
+### Own dashboards and proposals
+
+A board lists its built-in dashboard first, then the dashboards its
+project keeps, in the order they were made. A kept dashboard is a title
+and its widgets; each widget carries its own metric (no metric is shared
+between widgets), checked when it is counted, so a widget whose metric no
+longer validates shows its failure and the rest of the file stays
+readable. They live in the project's setup file, section `dashboards`, by
+tracker site and board ([Project setup](#project-setup)). The section is
+not part of `Setup`: a save of the setup screen keeps it as held, so a
+paired computer on an older release cannot delete it, and only its own
+edits write it, under the setup's lock, reading the file again first. A
+Keep that would take the file past its 256 KiB bound is refused, saying
+to remove a widget.
+
+A proposal is a widget an agent showed on a board (`dashboard_widget`
+with `show`, [Agent tools](#dashboards-by-agents)). It is held in memory
+by project and board, at most 5, and is gone when the app stops. The
+list of a board (`TrackerDashboards`) answers its dashboards, its
+proposals with their threads, and why Ask your agent cannot start a
+thread there, counting nothing and taking no counting slot, so the
+screen lays out every widget and control (Keep, Dismiss, Edit, Remove)
+from it whatever a count does; values come from an answer of the
+dashboard shown, by widget ID. Every evaluation of any of the board's
+dashboards counts the proposals after it, and the screen shows them
+above the grid with Keep and Dismiss.
+Keep moves a proposal onto a kept dashboard or a new one, Dismiss drops
+it; nothing joins a dashboard without Keep, and the built-in dashboard
+never takes a widget. Edit mode on a kept dashboard removes widgets, and
+the dashboard goes with its last one. Keep, Dismiss and Remove
+(`KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`)
+need `tracker:operate`, run on the board's computer and are not
+caller-bound. A Keep finds the proposal, writes the setup file and drops
+the proposal under the proposals' lock, and every reader of both (the
+list, a count, a drill) reads them under that lock too, so it sees the
+widget proposed or kept and never both or neither, and a failed write
+leaves it proposed.
+Each change, from any client, emits the payload-less
+`tracker:dashboards_updated` once, on which an open screen of that
+computer lists the board's dashboards and counts again; a hidden screen
+lists them when it shows.
 
 ### The export
 
@@ -2284,8 +2393,18 @@ statement.
   parameters, with LIKE and GLOB patterns of at most 256 bytes. It runs
   inside a wrapper that produces the whole result in SQLite's first
   step, under a 1 s deadline counted from before its prepare, at most
-  20,000 rows and 4 MiB of encoded rows. An evaluation has 4 s. Two run
-  at once on a computer; a third waits up to 2 s and is refused as busy.
+  20,000 rows and 4 MiB of encoded rows. An evaluation has 4 s. A
+  count of a dashboard is two, one after the other: its own widgets, on
+  a copy of what they read, with their titles, then the board's
+  proposals, on a copy of their own made after the first is closed, so
+  what the proposals read or take never reaches the dashboard's numbers.
+  A failure of the proposals' evaluation (its copy, its deadline, a busy
+  computer) is each proposal's sentence, and a proposal its deadline
+  stops, or leaves no time for, fails in its own place, saying so; a
+  proposal's rows are let go once its value is drawn. Two evaluations
+  run at once on a computer; a third waits up to 2 s and is refused as
+  busy. A count with proposals takes at most 12 s (two waits and two
+  evaluations) against its method's 45 s.
 - The app's functions (`days`, `working_days`, `day` and the wrapper's
   `bounded_rows`) are registered once per time zone a count names, on a
   driver of that zone the process keeps (`trackerdash/funcs.go`): one
@@ -2303,12 +2422,12 @@ are in [Tracker API measurements](../references/tracker-api-measurements.md#the-
 
 ## Agent tools
 
-Status: built: `ticket_find`, `ticket_read`, `ticket_create` and
-`ticket_update` on the `ao-tracker-tools` server, with the read-only
-refusal, the approval and the timeline row ([Writes by
+Status: built: `ticket_find`, `ticket_read`, `ticket_create`,
+`ticket_update` and `dashboard_widget` on the `ao-tracker-tools` server,
+with the read-only refusal, the approval and the timeline row ([Writes by
 agents](#writes-by-agents)); `time_read` and `time_draft`, with logged
-time and the draft ([Time](#time)). An agent's post of drafted time is
-not built.
+time and the draft, and the post of drafted time once the person
+approves it ([Time](#time)).
 
 **Who has them.** A session gets the server when its thread belongs to a
 project, its provider is Claude or Codex, and the computer has a Jira or
@@ -2475,6 +2594,46 @@ server is for.
 Ticket text in a tool result is data: results are JSON, and the server's
 guide says so once.
 
+### Dashboards by agents
+
+`dashboard_widget` counts a widget on a board of the thread's project
+(`board`, by name, ID or site/ID; the project's one board when it lists
+one; a name or ID that more than one board answers to is refused naming
+each by its site/ID) as the board's dashboards count it, over the
+board's default range, and answers its numbers in their unit (`unit`:
+tickets, points, seconds for a time board's estimates, or days), the
+tickets each number could not count, how many rows its query returned
+and the first 5.
+With `show` the widget is then proposed on the board ([Own dashboards
+and proposals](#own-dashboards-and-proposals)). Called with no `widget`
+it answers the rules (`trackerdash.Rules`, 4,316 bytes): the widget's
+fields, the query's contract and the export's relations with what each
+column holds, so only a thread that writes a widget reads them. A query
+runs under the same sandbox and bounds as a built-in metric, and a
+refusal is `dashboard_widget_refused` with the sentence the widget would
+show. Proposing changes nothing until the person keeps it, so it needs no
+approval and a read-only thread may propose. A board listed through two
+connections of its site is two accounts' copies of it, and is refused
+naming the connections by the labels the person gave them. Ask your agent
+on the Dashboards screen (`StartTrackerDashboardThread`, which needs
+`threads:operate` and `tracker:read`) makes a new thread on the board's
+computer, in the checkout of the project the board's subscription was
+made for, with an unsent draft naming the board by its name and
+site/ID, on a provider whose agents get the tracker tools
+(`SupportsTrackerMCP`) and that the computer offers: the one a new thread
+starts on when it has them, else Claude, else Codex
+(`app.trackerToolsProvider`). A draft that cannot be saved takes the
+thread back. With neither offered, the list says why, and Ask is
+disabled with that sentence; the screen lists again when the computer's
+settings change.
+
+The tool is listed in every session that has the tracker tools. Listing
+it only in a thread Ask your agent started would need a mark on the
+thread kept across restarts, and would leave a person asking in any other
+thread without it. Its definition adds 304 bytes: with the time tools
+([Time](#time)), the tool list and guide of a session with a Jira
+connection are 3,307 bytes, and of one with Linear alone 2,350.
+
 ### Writes by agents
 
 `ticket_update` changes the tickets `keys` names (at most 20, or the
@@ -2565,20 +2724,30 @@ tickets that went unasked and finds asking turned on by then is refused
 with nothing sent (`tracker_rules_changed`), telling the agent to make
 the call again. The app raises a prompt of kind `tracker-write` in the thread
 (`provider.EventApprovalRequest` through triage, decisions accept and
-decline only) showing each ticket's changes and the comment. The prompt
+decline only), headed by the action (`Change 3 tickets`; the
+`Approval`'s `Title`, with `Tool` the prompt's tool name), showing each
+ticket's changes and the comment. The prompt
 carries each value of `set` whole, and a change line that shows a value
 in part names it, so the panel's Show all opens the whole value with
 nothing fetched. A call whose `set` and comment together pass 256 KiB is
 refused before any prompt, telling the model to make the change in
 smaller calls. The person's answer reaches the call by the kind of the
 prompt triage holds open (`triage.PromptClaim.Kind`), not by its request
-ID, and the waiter is keyed by thread and request ID. Triage never
+ID, and the waiter is keyed by thread and request ID. An approval counts
+only with `ApprovalResponse.Shown`, which the screen's tracker write list
+(`TrackerWriteChanges.svelte`) sets once it has drawn every ticket,
+change and note of that prompt occurrence. An approval without it comes
+from a screen that drew none of them (a paired v0.0.19 one, a build from
+before the list, or input the list could not draw): it is refused saying
+to answer on a screen with the current version or to update, and the
+prompt stays open. A decline settles from any screen. Triage never
 routes it to a spawner (`triage.promptRoutable`), so a worker's tracker
 write is the person's, which the worker's composer shows on every screen
 and its spawner's Agents row reaches like any prompt routed to nobody
 ([ruling 19](../specs/standing-agents.md)). The call's waiter settles
-once, by the first of the answer (`RespondToApproval`), 15 minutes, and
-the call's end; an answer that loses is refused as already handled, and a
+once, by the first of the answer (`RespondToApproval`), 15 minutes
+(`IsolationConfig.TrackerApprovalWait` in a harness boot), and the
+call's end; an answer that loses is refused as already handled, and a
 wait that ends first withdraws the prompt from every screen. A prompt
 triage does not keep, because the session no longer holds the thread,
 ends the call at once. Nothing is persisted: an app that stops ends the
@@ -2756,10 +2925,11 @@ issue, key, title and applied steps; each key opens the ticket.
 
 **Who has them.** A session is given `time_read` and `time_draft` when a
 Jira connection is on as it starts (`trackerMCPAccess.Time`); a session
-with only Linear gets the four ticket tools, and a call of a time tool
-from it is refused as no such tool. Their two definitions are 268 and
-611 bytes, 881 of the tool list with the commas that join them
-(`TestTheTimeToolsAreGivenWithAJiraConnection`). The time
+with only Linear gets the ticket tools and `dashboard_widget`, and a call
+of a time tool from it is refused as no such tool. Their two definitions are 268 and
+687 bytes, 957 of the tool list with the commas that join them
+(`TestTheTimeToolsAreGivenWithAJiraConnection`); the whole list is 3,135
+bytes and the guide 172 (`TestTrackerMCPToolListAndGuideStayWithinTheirBound`). The time
 is the connection's verified account's: a connection with no verified
 account, or whose key file holds another token than the one verified, is
 refused saying to check it, since a post logs time as the token's owner.
@@ -2775,7 +2945,8 @@ worklogs and the Jira issues they name
 its open questions. A connection whose read failed is named in `unread`
 with its sentence; the call fails only when every connection did.
 
-**`time_draft`** takes `entries`, each a `day`, `hours` (whole minutes),
+**`time_draft`** takes `entries` to draft or `post` to log the draft of
+days (below), and refuses a call with neither or both. `entries` are each a `day`, `hours` (whole minutes),
 a `reason`, which becomes the worklog's description, and a `key`, or no
 key for a question, whose reason says what the time was and whose
 `offer` names up to 5 keys. A call holds 1 to 250 entries over at most
@@ -2797,7 +2968,57 @@ logged, the keys skipped, the hours already logged as this computer last
 read them, and that nothing is logged until the user approves it; with
 more than one connection on, the site is named once and the keys are
 bare;
-`time_read` shows the entries whole. No tool reaches a posting path.
+`time_read` shows the entries whole.
+
+**`time_draft` with `post`** names up to 7 days (YYYY-MM-DD) and drafts
+nothing (`trackertools/time_post.go`). It reads `Host.WritePolicy` at
+admission, then the entries not yet logged on exactly those days of each
+verified Jira connection, with no tracker request
+(`trackerapp.Service.OpenTimeEntries`, the day index, at most 251 rows):
+every entry, whichever thread or person drafted it, as a day's approval
+names them. A connection never verified holds no draft and is not read;
+one whose read is refused is named in `unread` and on the prompt, and the
+others go on. When no connection that was read holds an entry, the
+refusal names each connection that could not be read, by account where
+two share a site, and why, with their code when they share one
+(`tracker_call_failed` when not). Days
+with no entry not yet logged are refused, as are more than 250 entries,
+256 KiB of approval, or more entries than one answer names. When no entry
+is one the post would send, the answer gives each entry's reason and
+nothing is asked. Otherwise it always asks the person, through the
+tracker write's prompt (above), titled `Log time for Tue Nov 24`: each
+entry under its ticket's key as its day, time and whole reason, an entry
+that will not be sent saying why in the words the answer uses
+(`trackerapp.NotSentWhy`: it may already be logged, it is being posted,
+its ticket is not picked), and each question as a note
+(`trackerapp.EntryLine`). A key carries its site when more than one
+connection is on, as every answer writes it. When two Jira connections
+share the site, each ticket, answer line, `unread` and `warnings` entry
+also carries `account`: the name the person gave the connection in the
+Issues settings, or its account email when they gave none, and both
+(`Work · user@example.com`) for every connection of the site when two
+would share one name (`trackertools.postAccount`). Once approved it reads the policy again, then
+posts on each connection exactly the entries shown, at the revisions
+shown, through `PostTrackerTimeEntries` on the server's context, so a
+post is a day's approval with its rules: an entry the person edited or
+removed while the prompt was open is not posted, and one drafted
+meanwhile is not sent. The answer names every entry as the prompt showed
+it (day, key, hours): `logged`, and `not_logged` and `may_be_logged`
+grouped by why, from each entry's outcome (`PostTimeView.Outcomes`,
+which only the agent's post reads: posted, not_posted or uncertain; an
+entry not sent takes `trackerapp.NotSentOutcome`); the reasons and
+warnings share what the entries leave of the answer's budget, which the
+admission reserves for every entry under a reason of its own and a
+warning per connection. A connection whose post was refused before it
+sent lists its entries as not sent with the refusal; when no
+connection's post sent anything, that answer is the call's, and nothing
+goes on the timeline. `warnings` names, per connection, the days whose
+read-back failed (`trackerapp.ReadBackSentence`) and a post that sent
+and could not store its outcomes (`trackerapp.ErrPostUnrecorded`), with
+the store's error, which the person may need to fix; those entries read
+as may already be logged after the app restarts. An error after the
+outcomes were stored (the read of the entries after them) changes
+nothing the answer says and is only logged.
 
 **The draft.** There is no draft object: the entries of a connection's
 author by day (`tracker_time_entries`, [schema](schema.md)), each naming
@@ -2849,9 +3070,12 @@ it, and says that the time may already be logged, to look at the day's
 logged time, and to remove the entry if the time is there or to log the
 time by hand and then remove it; the day's other entries post. The answer is built after the post from the entries
 as they are then, names every entry, says in one sentence each one not
-posted, with the tracker's refusal, and names the days whose worklogs
+posted, with the tracker's refusal, gives each named entry's outcome
+(`Outcomes`), and names the days whose worklogs
 could not be read back after the post, which show the posted time after
-their next read. One day's approval of three entries is 3 POSTs and 2
+their next read. A post that fails after it sent (its settle's store
+write, the service's stop) answers the outcomes it knows with the error.
+One day's approval of three entries is 3 POSTs and 2
 reads on Jira's own worklogs (the day before the post, for time logged
 since, and after it); on Tempo it is 3 POSTs, 2 reads of the worklogs and
 2 of the Jira issues they name, the timesheet approvals and, once per
@@ -2865,7 +3089,12 @@ tests).
 notification row of kind `time_draft` (`Drafted time for Tue Nov 24`),
 naming the call, the connection and the days, and never rewrites it; a
 thread reads the call's entries as they are now through
-`ThreadTimeEntries`.
+`ThreadTimeEntries`. A post that ran adds one row of kind `time_post`,
+written once with the count it ended with (`Logged 2 of 3 entries for
+Tue Nov 24`, of the entries the prompt offered to log, and `; 1 may have
+been logged` for those whose answer was lost), naming the call, the
+connections and the days; a denied or unanswered post, or one refused on
+every connection before it sent, adds none.
 
 ## Tests
 
@@ -2933,10 +3162,13 @@ Issues > Status groups, the ticket's pins and the Start work defaults,
 with the wrappers of `ProjectTrackerSetup`, `SetProjectTrackerSetup`,
 `ProjectTrackerStatuses` and `tracker:setup_updated`
 (`stores/trackerSetup.svelte.ts`, the one holder of a project's setup
-and statuses in a window), and a board's built-in dashboard on the
-Dashboards screen ([Dashboards](#dashboards)), with the wrappers of
-`TrackerDashboards`, `EvaluateTrackerDashboard` and
-`TrackerDashboardDrill` (`stores/trackerDashboard.svelte.ts`).
+and statuses in a window), and a board's dashboards on the Dashboards
+screen ([Dashboards](#dashboards)): the built-in, the ones its project
+keeps and the widgets agents propose, with the wrappers of
+`TrackerDashboards`, `EvaluateTrackerDashboard`, `TrackerDashboardDrill`,
+`KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`,
+`StartTrackerDashboardThread` and `tracker:dashboards_updated`
+(`stores/trackerDashboard.svelte.ts`).
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker
@@ -2948,7 +3180,5 @@ Not built, owed by the app layer:
   that edit them. A query that
   needs part of the setup takes it as a bound argument, as the status
   groups are; nothing of the file is copied into the mirror.
-- An agent's post of drafted time after the person approves it in the
-  thread ([Time](#time)).
 - The Time screen's drafted entries and the `time_draft` row's card.
 - Searching the forge by key for a pull request outside the stored list.

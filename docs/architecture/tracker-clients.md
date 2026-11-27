@@ -392,6 +392,19 @@ problem on that record, which stays usable.
   a remaining estimate set alone is a change), delete, with the
   remaining-estimate adjustments each write allows, and the updated and
   deleted feeds for sync.
+- **Development data.** The development panel's summary of an issue
+  (`DevSummary`: pull request counts by instance type) and one instance
+  type's pull requests (`DevPullRequests`), each one request, by the
+  issue's number. Every failure is a `DevCallError` naming the endpoint
+  and the instance type. The endpoints are undocumented: a summary that
+  answers 404 or has no pull request part is a `DevAbsentError` (what a
+  site with no forge integration answers is unmeasured), an answer
+  otherwise outside the measured shape a `DevShapeError`, and one whose
+  `errors` or `configErrors` name something a `DevStatusError`
+  counting each list, with none of their text: what an integration writes
+  there is unmeasured, and no sentence or log carries it.
+  A pull request with no URL or status is returned as given
+  ([measured](../references/tracker-api-measurements.md#development-data)).
 - **People.** Who the token belongs to, a user by account ID, a user found
   by account ID, exact name or email (active and not an app; a name that
   cannot be proven unique within Jira's search window is an error), and

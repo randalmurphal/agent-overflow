@@ -50,6 +50,7 @@ type Store interface {
 	ReplaceAgentTimeDays(connection, author string, entries []store.TimeEntry, now int64) (store.TimeDraftWrite, error)
 	TimeEntriesByID(connection string, ids []int64) ([]store.TimeEntry, error)
 	ThreadTimeEntries(thread string) ([]store.TimeEntry, error)
+	OpenTimeEntries(connection, author string, days []string) ([]store.TimeEntry, error)
 	EditTimeEntry(connection, author string, ref store.TimeEntryRef, ch store.TimeEntryChange, now int64) (store.TimeEntryEdited, bool, error)
 	RemoveTimeEntries(connection, author string, refs []store.TimeEntryRef) ([]store.TimeEntry, error)
 	MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now int64) ([]store.TimeEntry, error)
@@ -76,6 +77,10 @@ type Deps struct {
 	// SetupChanged is told after every change of a project's tracker
 	// setup as it is stored (setup.go). It must not block.
 	SetupChanged func()
+	// DashboardsChanged is told after every change of a board's
+	// dashboards: one its project keeps, or a widget proposed on it
+	// (dashboards.go). It must not block.
+	DashboardsChanged func()
 	// Origin says where a connection's client connects.
 	Origin Origin
 	// Version is the app version the clients send in their User-Agent.
@@ -165,6 +170,14 @@ type Service struct {
 	// never with another of the service's locks.
 	setupMu sync.Mutex
 	setups  map[string]*heldSetup
+
+	// propMu guards proposals, the widgets agents proposed on each
+	// project's boards (dashboards.go). A Keep holds it across its write
+	// of the setup file, so propMu is taken before setupMu and never
+	// while holding setupMu or any other of the service's locks.
+	propMu            sync.Mutex
+	proposals         map[proposalKey][]heldProposal
+	dashboardsChanged func()
 
 	// opMu serializes every change to a connection, from its first store
 	// read to its last write. It is never held across a tracker call.
@@ -264,6 +277,8 @@ func New(deps Deps) (*Service, error) {
 		return nil, errors.New("trackerapp: Deps needs CredentialsDir and ConfigDir")
 	case deps.SetupChanged == nil:
 		return nil, errors.New("trackerapp: Deps.SetupChanged is required")
+	case deps.DashboardsChanged == nil:
+		return nil, errors.New("trackerapp: Deps.DashboardsChanged is required")
 	case deps.Version == "":
 		return nil, errors.New("trackerapp: Deps.Version is required for the clients' User-Agent")
 	}
@@ -275,7 +290,7 @@ func New(deps Deps) (*Service, error) {
 	halting, endHalt := context.WithCancel(deps.Life)
 	s := &Service{
 		store: deps.Store, changed: deps.Changed, credentialsDir: deps.CredentialsDir, configDir: deps.ConfigDir,
-		setupChanged: deps.SetupChanged, setups: map[string]*heldSetup{},
+		setupChanged: deps.SetupChanged, setups: map[string]*heldSetup{}, dashboardsChanged: deps.DashboardsChanged,
 		origin: deps.Origin, version: deps.Version, now: deps.Now, life: deps.Life, halting: halting, endHalt: endHalt,
 		steady: func() time.Time { return wall.Add(time.Since(mono)) }, steadyFrom: wall.UnixMilli(),
 		clients: map[string]*clients{}, problems: map[string]Problem{},

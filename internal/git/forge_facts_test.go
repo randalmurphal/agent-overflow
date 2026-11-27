@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"reflect"
 	"slices"
 	"strings"
@@ -36,6 +37,8 @@ type factsForge struct {
 	arrived chan string
 	// seen counts GraphQL requests by operation, and failAt answers the
 	// one of an operation at that count with a GraphQL error and no data.
+	// A REST request counts under "REST " and its path's last segment
+	// ("REST merge_requests"), and failAt answers it with a 403.
 	seen, failAt map[string]int
 }
 
@@ -49,6 +52,17 @@ func newFactsForge(t testing.TB, fixture forgefake.Fixture) *factsForge {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		forge := map[string]string{"/github/graphql": "github", "/gitlab/api/graphql": "gitlab"}[r.URL.Path]
 		if forge == "" {
+			f.mu.Lock()
+			key := "REST " + path.Base(r.URL.Path)
+			f.seen[key]++
+			fail := f.failAt[key] == f.seen[key]
+			f.mu.Unlock()
+			if fail {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"message":"403 Forbidden"}`))
+				return
+			}
 			engine.ServeHTTP(w, r)
 			return
 		}

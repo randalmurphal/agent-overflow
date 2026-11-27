@@ -11,8 +11,9 @@
 // the metric again and answers the cell's number with its rows), and How
 // this is counted is rendered from the metric's definition.
 //
-// The evaluation is a sandbox for SQL an agent may write (the authoring
-// change; today's metrics are the app's, Builtins). What must hold:
+// The evaluation is a sandbox for SQL an agent writes: the metrics of the
+// widgets a project keeps and its agents propose (Own, Try) run in it as
+// the app's own (Builtins) do. What must hold:
 //
 //   - The connection's only database is the board's export. It is a new
 //     private in-memory database on this package's own driver, filled by

@@ -900,7 +900,7 @@ func (pc *planCall) planEstimate(p *planned, given string, v setValue, on estima
 // approvalOf is the approval of plans, the call id's, with set's values
 // and the comment whole.
 func approvalOf(id string, plans []*planned, set []namedValue, comment string) Approval {
-	a := Approval{ID: id, Comment: comment}
+	a := Approval{ID: id, Title: fmt.Sprintf("Change %d tickets", len(plans)), Tool: "ticket_update", Comment: comment}
 	for _, nv := range set {
 		a.Values = append(a.Values, ApprovalValue{Name: nv.name, Value: nv.value.whole()})
 	}

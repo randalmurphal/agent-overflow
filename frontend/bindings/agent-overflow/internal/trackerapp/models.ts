@@ -1565,6 +1565,30 @@ export class IssueTypeView {
 }
 
 /**
+ * KeepTarget is where Keep puts a proposed widget: at the end of the
+ * project's dashboard Dashboard, or of a new dashboard titled Title; one
+ * of the two.
+ */
+export class KeepTarget {
+    "dashboard"?: string;
+    "title"?: string;
+
+    /** Creates a new KeepTarget instance. */
+    constructor($$source: Partial<KeepTarget> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new KeepTarget instance from a string or object.
+     */
+    static createFrom($$source: any = {}): KeepTarget {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new KeepTarget($$parsedSource as Partial<KeepTarget>);
+    }
+}
+
+/**
  * KeyMatchView is a key and the issue it names; Card.Key differs from Key
  * when the issue had that key before it moved.
  */
@@ -2243,8 +2267,10 @@ export class PostTimeRequest {
 
 /**
  * PostTimeView is what a post did: each entry named as it is now, how
- * many it posted of those it could, and the sentence that says it. Stale
- * is the read-back of the posted days that failed, as a write's
+ * many it posted of those it could, the sentence that says it, and the
+ * outcome of each entry the request named, in its order, for the agent's
+ * post (no screen reads it, so it is not on the wire). Stale is the
+ * read-back of the posted days that failed, as a write's
  * (WriteView.Stale): those days do not show the posted time until their
  * next read.
  */

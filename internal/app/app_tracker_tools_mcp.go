@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/threadmcp"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerapp"
+	"agent-overflow/internal/trackerdash"
 	"agent-overflow/internal/trackertools"
 )
 
@@ -282,6 +283,26 @@ func (t trackerToolsAdapter) DraftTime(connection string, in trackerapp.TimeDraf
 	return out, trackerError(err)
 }
 
+// OpenTimeEntries reads the store, with no tracker call; a refusal is
+// worded as DraftTime's.
+func (t trackerToolsAdapter) OpenTimeEntries(connection string, days []string) ([]trackerapp.TimeEntryView, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.OpenTimeEntries(connection, days)
+	if errors.Is(err, trackerapp.ErrInvalidRequest) {
+		return out, errorsx.Public(trackertools.CodeInvalidRequest, refusedInput(err), err)
+	}
+	return out, trackerError(err)
+}
+
+// PostTime is the person's approval of a post, bounded and worded as the
+// Time screen's (PostTrackerTimeEntries).
+func (t trackerToolsAdapter) PostTime(ctx context.Context, connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
+	return t.a.PostTrackerTimeEntries(ctx, connection, in)
+}
+
 func (t trackerToolsAdapter) CreateFields(ctx context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error) {
 	return t.a.TrackerCreateFields(ctx, connection, project, issueType)
 }
@@ -311,6 +332,18 @@ func (t trackerToolsAdapter) MoveToSprint(ctx context.Context, connection string
 
 func (t trackerToolsAdapter) AddComment(ctx context.Context, connection string, in trackerapp.CommentRequest) (trackerapp.WriteView, error) {
 	return t.a.AddTrackerComment(ctx, connection, in)
+}
+
+// TryWidget counts an agent's widget as the dashboards count, under the
+// evaluator's own deadline, and answers its refusal as the dashboard
+// methods do (dashboardError).
+func (t trackerToolsAdapter) TryWidget(ctx context.Context, project, connection, board string, w trackerapp.KeptWidget, thread string, show bool) (trackerdash.Tried, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return trackerdash.Tried{}, err
+	}
+	out, err := svc.TryWidget(ctx, project, trackerapp.Scope{Connection: connection, Board: tracker.BoardID(board)}, w, thread, show)
+	return out, dashboardError(err)
 }
 
 // EndWrites runs a call's refresh within a write's budget

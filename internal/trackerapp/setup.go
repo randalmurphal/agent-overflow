@@ -38,7 +38,11 @@ import (
 //     tracker tools (AgentRules);
 //   - time: the Jira tickets meeting and time-off hours go on, and
 //     whether an agent's time draft may put hours on an epic
-//     (TimeSettings).
+//     (TimeSettings);
+//   - dashboards: by tracker site and board, the dashboards the project
+//     keeps (BoardDashboards). It is not part of Setup: a replace keeps
+//     it as held, and only its own edits write it (dashboard_setup.go), so
+//     a screen that saves the setup it read never carries it.
 //
 // A section this build does not know, or one at a version newer than it
 // reads, is kept byte for byte and written back unchanged by a replace,
@@ -79,6 +83,7 @@ const (
 	sectionStartWork    = "start_work"
 	sectionAgents       = "agents"
 	sectionTime         = "time"
+	sectionDashboards   = "dashboards"
 	setupSectionVersion = 1
 )
 
@@ -128,9 +133,11 @@ func (e *SetupWriteError) Is(target error) bool { return target == ErrSetupWrite
 
 func (e *SetupWriteError) Unwrap() error { return e.Err }
 
-// SetupError is a setup that does not validate, with why.
+// SetupError is a setup that does not validate, with why; Full when
+// what does not fit is the file's bound (setupMaxBytes).
 type SetupError struct {
 	Reason string
+	Full   bool
 }
 
 func (e *SetupError) Error() string { return ErrInvalidSetup.Error() + ": " + e.Reason }
@@ -341,6 +348,8 @@ type heldSetup struct {
 	// raw is every section the file holds that this build does not read,
 	// by name, as its bytes.
 	raw map[string]json.RawMessage
+	// dashboards is the dashboards section, which a replace keeps.
+	dashboards []BoardDashboards
 	// groups is each site's status groups.
 	groups map[siteKey]StatusGroups
 }
@@ -424,6 +433,29 @@ func (s *Service) SetProjectSetup(projectID, revision string, setup Setup) (Setu
 // file, or its write may or may not have happened, so the next use reads
 // the file.
 func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSave, before, after *heldSetup, err error) {
+	moved := false
+	before, after, err = s.rewriteSetup(slug, func(stored *heldSetup) (Setup, []BoardDashboards, bool) {
+		moved = stored.view.Revision != revision
+		return setup, stored.dashboards, !moved
+	})
+	switch {
+	case err != nil:
+		return SetupSave{}, before, after, err
+	case moved:
+		return SetupSave{Refused: setupChangedSentence, Stored: after.view}, before, after, nil
+	}
+	return SetupSave{Saved: true, Stored: after.view}, before, after, nil
+}
+
+// rewriteSetup reads slug's file again under setupMu and writes what
+// change makes of what it holds: the setup and the dashboards, both
+// valid, or nothing when change answers false. It returns the held setup
+// before and after, each nil when none is held. After is what the write
+// last saw of the file, which the service holds when it returns, whatever
+// it returns: the file it read, or the setup it wrote; nil when it could
+// not read the file, or its write may or may not have happened, so the
+// next use reads the file.
+func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setup, []BoardDashboards, bool)) (before, after *heldSetup, err error) {
 	s.setupMu.Lock()
 	defer s.setupMu.Unlock()
 	before = s.setups[slug]
@@ -436,18 +468,19 @@ func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSa
 	}()
 	path := s.setupPath(slug)
 	if after, err = readSetupFile(path); err != nil {
-		return SetupSave{}, before, nil, err
+		return before, nil, err
 	}
-	if after.view.Revision != revision {
-		return SetupSave{Refused: setupChangedSentence, Stored: after.view}, before, after, nil
+	setup, dashboards, write := change(after)
+	if !write {
+		return before, after, nil
 	}
-	data, err := encodeSetup(setup, after.raw, after.view.Newer)
+	data, err := encodeSetup(setup, dashboards, after.raw, after.view.Newer)
 	if err != nil {
-		return SetupSave{}, before, after, err
+		return before, after, err
 	}
-	written, err := heldOf(setup, after.raw, after.view.Newer, setupRevision(data))
+	written, err := heldOf(setup, dashboards, after.raw, after.view.Newer, setupRevision(data))
 	if err != nil {
-		return SetupSave{}, before, after, err
+		return before, after, err
 	}
 	if data == nil {
 		err = atomicfile.Remove(path)
@@ -455,9 +488,9 @@ func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSa
 		err = atomicfile.Write(path, data)
 	}
 	if err != nil {
-		return SetupSave{}, before, nil, &SetupWriteError{Path: path, Err: err}
+		return before, nil, &SetupWriteError{Path: path, Err: err}
 	}
-	return SetupSave{Saved: true, Stored: written.view}, before, written, nil
+	return before, written, nil
 }
 
 // setupMoved tells what a change of slug's held setup from before to
@@ -548,7 +581,7 @@ func (s *Service) setupPath(slug string) string {
 func readSetupFile(path string) (*heldSetup, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return heldOf(Setup{}, nil, nil, "")
+		return heldOf(Setup{}, nil, nil, nil, "")
 	}
 	if err != nil {
 		return nil, &SetupFileError{Path: path, Reason: err.Error()}
@@ -614,6 +647,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 		return nil, errors.New("it is not a JSON object of sections")
 	}
 	var setup Setup
+	var dashboards []BoardDashboards
 	var raw map[string]json.RawMessage
 	var newer []string
 	keep := func(name string, section json.RawMessage) {
@@ -624,7 +658,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(sections)) {
 		section := sections[name]
-		if !slices.Contains([]string{sectionStatusGroups, sectionTicketPins, sectionStartWork, sectionAgents, sectionTime}, name) {
+		if !slices.Contains([]string{sectionStatusGroups, sectionTicketPins, sectionStartWork, sectionAgents, sectionTime, sectionDashboards}, name) {
 			keep(name, section)
 			continue
 		}
@@ -661,6 +695,11 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 			var s timeV1
 			err = decodeStrict(section, &s)
 			setup.Time = &TimeSettings{Meetings: s.Meetings, TimeOff: s.TimeOff, NeverEpics: s.NeverEpics}
+		case sectionDashboards:
+			var s dashboardsV1
+			if err = decodeStrict(section, &s); err == nil {
+				dashboards, err = validateDashboards(s.Boards)
+			}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("section %s: %w", name, err)
@@ -674,7 +713,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 		}
 		return nil, err
 	}
-	return heldOf(valid, raw, newer, setupRevision(data))
+	return heldOf(valid, dashboards, raw, newer, setupRevision(data))
 }
 
 // decodeStrict decodes data into v, refusing a field v does not have.
@@ -684,13 +723,13 @@ func decodeStrict(data []byte, v any) error {
 	return dec.Decode(v)
 }
 
-// encodeSetup is the file of setup and the sections raw keeps: a JSON
-// object of the sections in name order, each kept section as its bytes;
-// nil when it holds no section, which is no file. A section of setup that
-// would replace one a newer version saved (newer, SetupView.Newer) is
-// ErrSetupNewer: this is the one place a section is written, so every
+// encodeSetup is the file of setup, the dashboards and the sections raw
+// keeps: a JSON object of the sections in name order, each kept section
+// as its bytes; nil when it holds no section, which is no file. A section
+// that would replace one a newer version saved (newer, SetupView.Newer)
+// is ErrSetupNewer: this is the one place a section is written, so every
 // section, one added later included, keeps that rule.
-func encodeSetup(setup Setup, raw map[string]json.RawMessage, newer []string) ([]byte, error) {
+func encodeSetup(setup Setup, dashboards []BoardDashboards, raw map[string]json.RawMessage, newer []string) ([]byte, error) {
 	sections := map[string]json.RawMessage{}
 	for name, section := range raw {
 		sections[name] = section
@@ -731,6 +770,11 @@ func encodeSetup(setup Setup, raw map[string]json.RawMessage, newer []string) ([
 			return nil, err
 		}
 	}
+	if len(dashboards) > 0 {
+		if err := add(sectionDashboards, dashboardsV1{Version: setupSectionVersion, Boards: dashboards}); err != nil {
+			return nil, err
+		}
+	}
 	if len(sections) == 0 {
 		return nil, nil
 	}
@@ -751,7 +795,7 @@ func encodeSetup(setup Setup, raw map[string]json.RawMessage, newer []string) ([
 	}
 	out.WriteString("\n}\n")
 	if out.Len() > setupMaxBytes {
-		return nil, invalidSetup("the setup is over %d KiB", setupMaxBytes>>10)
+		return nil, &SetupError{Reason: fmt.Sprintf("the setup is over %d KiB", setupMaxBytes>>10), Full: true}
 	}
 	return out.Bytes(), nil
 }
@@ -766,12 +810,13 @@ func setupRevision(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// heldOf is a valid setup as the service holds it, with the sections raw
-// keeps (named by newer) and the revision of its file.
-func heldOf(setup Setup, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
+// heldOf is a valid setup and valid dashboards as the service holds
+// them, with the sections raw keeps (named by newer) and the revision of
+// its file.
+func heldOf(setup Setup, dashboards []BoardDashboards, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
 	held := &heldSetup{
 		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins), StartWork: slicesx.OrEmpty(setup.StartWork), Agents: setup.Agents, Time: setup.Time}, Newer: newer},
-		raw:  raw, groups: map[siteKey]StatusGroups{},
+		raw:  raw, dashboards: dashboards, groups: map[siteKey]StatusGroups{},
 	}
 	for _, site := range setup.StatusGroups {
 		groups := make(map[string]int, len(site.Statuses))

@@ -228,3 +228,81 @@ func TestKeySearchKeepsWhatItReadBeforeAFailure(t *testing.T) {
 		t.Errorf("gitlab: rows %v, %v; want 1 beside the branch search's failure", foundNumbers(got.Rows), err)
 	}
 }
+
+// A GitHub answer whose error names one of its searches keeps the others
+// of the same answer: the title search answered, the branch read was
+// refused.
+func TestKeySearchKeepsTheSearchesBesideAFieldError(t *testing.T) {
+	t.Parallel()
+	f := newFactsForge(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}}})
+	empty := `{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}`
+	body := `{"data":{"byTitle":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"url":"https://github.com/example/web/pull/1","number":1,` +
+		`"title":"WEB-1 Fix the login","state":"OPEN","isDraft":false,"headRefName":"fix-login","author":{"login":"user1","name":"User 1"}}]},` +
+		`"byHead":` + empty + `,"repository":null},` +
+		`"errors":[{"type":"FORBIDDEN","path":["repository"],"message":"Resource not accessible by personal access token"}]}`
+	if err := f.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql PullsByKey", Status: 200, Body: []byte(body)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.core.SearchPRsByKey(t.Context(), RepoReference{Forge: "github", Host: "github.com", Namespace: "example", Repo: "web"}, "WEB-1")
+	if err == nil || !slices.Equal(foundNumbers(got.Rows), []int{1}) {
+		t.Errorf("rows %v, %v; want 1 beside the branch read's refusal", foundNumbers(got.Rows), err)
+	}
+}
+
+// A lookup by branch whose parent's read fails answers the origin's pull
+// requests beside the error, on both forges.
+// A lookup whose second page fails answers the first page's pull requests
+// beside the failure, on both forges.
+func TestPRsByHeadKeepsThePagesBeforeAFailedPage(t *testing.T) {
+	t.Parallel()
+	pulls := make([]forgefake.Pull, 101)
+	for i := range pulls {
+		pulls[i] = forgefake.Pull{Number: i + 1, Title: fmt.Sprintf("Try %d", i+1), HeadRef: "WEB-1", State: "merged"}
+	}
+	f := newFactsForge(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "alice/web", Pulls: pulls},
+		{Forge: "gitlab", Project: "alice/web", Pulls: pulls},
+	}})
+	github, gitlab := t.TempDir(), t.TempDir()
+	seedForgeCacheGitHubOrigin(t, f.core, github, "https://github.com/alice/web.git")
+	if forge := f.core.recordOrigin(gitlab, originIdentity{url: "https://gitlab.com/alice/web.git", known: true}, f.core.nowFn()); forge != "gitlab" {
+		t.Fatalf("seeded GitLab origin classified as %q", forge)
+	}
+	f.mu.Lock()
+	f.failAt["PRsByHead"] = 2
+	f.failAt["REST merge_requests"] = 2
+	f.mu.Unlock()
+	for forge, cwd := range map[string]string{"github": github, "gitlab": gitlab} {
+		got, err := f.core.ListPRsByHead(t.Context(), cwd, "WEB-1")
+		if err == nil || len(got) != 100 {
+			t.Errorf("%s: ListPRsByHead = %d pull requests, %v; want the first page's 100 beside the second's failure", forge, len(got), err)
+		}
+	}
+}
+
+func TestPRsByHeadKeepsTheOriginsBesideTheParentsFailure(t *testing.T) {
+	t.Parallel()
+	f := newFactsForge(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "team/up", Pulls: []forgefake.Pull{{Number: 2, Title: "Fix it", HeadRef: "WEB-1", HeadRepo: "alice/up"}}},
+		{Forge: "github", Project: "alice/up", Parent: "team/up", Pulls: []forgefake.Pull{{Number: 1, Title: "Try it", HeadRef: "WEB-1", State: "closed"}}},
+		{Forge: "gitlab", Project: "grp/up", Pulls: []forgefake.Pull{{Number: 2, Title: "Fix it", HeadRef: "WEB-1", HeadRepo: "alice/up"}}},
+		{Forge: "gitlab", Project: "alice/up", Parent: "grp/up", Pulls: []forgefake.Pull{{Number: 1, Title: "Try it", HeadRef: "WEB-1", State: "merged"}}},
+	}})
+	github, gitlab := t.TempDir(), t.TempDir()
+	seedForgeCacheGitHubOrigin(t, f.core, github, "https://github.com/alice/up.git")
+	if forge := f.core.recordOrigin(gitlab, originIdentity{url: "https://gitlab.com/alice/up.git", known: true}, f.core.nowFn()); forge != "gitlab" {
+		t.Fatalf("seeded GitLab origin classified as %q", forge)
+	}
+	f.mu.Lock()
+	f.failAt["PRsByHead"] = 2
+	f.mu.Unlock()
+	if err := f.engine.SetRefusal(forgefake.Refusal{Route: "glab repository identity", Status: 403, Body: []byte(`{"message":"403 Forbidden"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	for forge, cwd := range map[string]string{"github": github, "gitlab": gitlab} {
+		got, err := f.core.ListPRsByHead(t.Context(), cwd, "WEB-1")
+		if err == nil || len(got) != 1 || got[0].Ref.Namespace != "alice" || got[0].Ref.Number != 1 {
+			t.Errorf("%s: ListPRsByHead = %+v, %v; want alice/up's 1 beside the parent's failure", forge, got, err)
+		}
+	}
+}

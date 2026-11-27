@@ -48,7 +48,7 @@ func TestTrackerWritesFollowTheProjectsAgentsSettings(t *testing.T) {
 	off := false
 	f.saveAgentRules(t, f.project, trackerapp.AgentRules{ChangeTickets: &off})
 	_, endpoint := trackerWriteThread(t, f, provider.RuntimeAuto)
-	const sentence = "[tracker_changes_off] This project's Agents settings do not let its threads change tickets, so nothing was sent; ask the user to turn on Change tickets in Settings > Issues > Agents if this change is wanted."
+	const sentence = "[tracker_changes_off] This project's Agents settings do not let its threads change tickets or log time, so nothing was sent; ask the user to turn on Change tickets in Settings > Issues > Agents if this change is wanted."
 	text, isError := trackerMCPStreamedCall(t, f.a, endpoint, "ticket_update", map[string]any{"keys": []string{"WEB-1"}, "comment": "Checked."})
 	if !isError || text != sentence {
 		t.Fatalf("ticket_update with changes off = %s (error %v)", text, isError)

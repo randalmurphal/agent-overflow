@@ -7,7 +7,7 @@
   import ToolApprovalPanel from './approval/ToolApprovalPanel.svelte';
   import PermissionPanel from './approval/PermissionPanel.svelte';
   import McpElicitationPanel from './approval/McpElicitationPanel.svelte';
-  import TrackerWriteChanges from './approval/TrackerWriteChanges.svelte';
+  import TrackerWriteChanges, { drawnKey } from './approval/TrackerWriteChanges.svelte';
 
   interface Props {
     approval: ApprovalRequest;
@@ -27,8 +27,15 @@
 
   let { approval, count, onResolve, onError, access = 'granted' }: Props = $props();
   let responding = $state(false);
+  // The prompt whose tracker write changes the list drew, if any.
+  let drawn = $state('');
 
-  const summary = $derived(approval.description || approval.title || approval.toolName || 'Approval required');
+  // A tracker write names its action in its title ("Log time for Tue Nov
+  // 24"), which heads the prompt; the list below it is the rest. Any other
+  // approval is headed by its tool and summed up by its description.
+  const trackerWrite = $derived(approval.kind === 'tracker-write');
+  const heading = $derived(trackerWrite ? approval.title || approval.toolName : approval.toolName || approval.title);
+  const summary = $derived(trackerWrite ? approval.description : approval.description || approval.title || approval.toolName || 'Approval required');
 
   async function resolve(response: ApprovalResponse): Promise<void> {
     if (responding || access !== 'granted') return;
@@ -36,6 +43,8 @@
     // The answer is for the prompt shown here, not whichever is open under
     // its request id when it lands.
     response.occurrence = approval.occurrence;
+    // Only a tracker write whose changes this screen drew can be approved.
+    if (trackerWrite && drawn === drawnKey(approval)) response.shown = true;
     try {
       await onResolve(response);
     } catch (err) {
@@ -64,8 +73,10 @@
           </span>
         {/if}
       </div>
-      <p class="mt-1 truncate text-sm font-semibold text-fg">{approval.toolName || approval.title}</p>
-      <p class="mt-0.5 line-clamp-2 text-xs text-fg-muted">{summary}</p>
+      <p class="mt-1 truncate text-sm font-semibold text-fg" data-testid="composer-pending-approval-heading">{heading}</p>
+      {#if summary}
+        <p class="mt-0.5 line-clamp-2 text-xs text-fg-muted">{summary}</p>
+      {/if}
     </div>
   </div>
 
@@ -75,7 +86,7 @@
     <McpElicitationPanel {approval} onResolve={resolve} onError={onError} responding={responding} {access} />
   {:else}
     {#if approval.kind === 'tracker-write'}
-      <TrackerWriteChanges {approval} />
+      <TrackerWriteChanges {approval} bind:drawn />
     {/if}
     <ToolApprovalPanel {approval} onResolve={resolve} {responding} {access} />
   {/if}

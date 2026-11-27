@@ -61,7 +61,7 @@ func newWriteFixture(t *testing.T) *writeFixture {
 		f.details[src.ID+"/"+issue] = writableDetail(key, issue)
 		f.cards[src.ID+"/"+issue] = trackerapp.CardView{ID: issue, Key: key, Updated: 2_000}
 	}
-	h := &fakeHost{createBoards: map[string][]CreateBoard{"WEB": {{Connection: src.ID, Board: "1", Thread: true}}}}
+	h := &fakeHost{createBoards: map[string][]ListedBoard{"WEB": {{Connection: src.ID, Board: "1", Thread: true}}}}
 	srv := New(f, h)
 	srv.newID = func() string { return "call-1" }
 	return &writeFixture{f: f, h: h, srv: srv}
@@ -586,9 +586,9 @@ func TestUpdateFromAReadOnlyThread(t *testing.T) {
 	w := newWriteFixture(t)
 	w.h.readOnly = true
 	_, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "comment": "Hi."})
-	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.")
+	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.")
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New"})
-	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.")
+	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.")
 	if len(w.f.asked)+len(w.f.writes) != 0 {
 		t.Fatalf("a read-only call asked %q, wrote %q", w.f.asked, w.f.writes)
 	}
@@ -680,7 +680,7 @@ func TestCreate(t *testing.T) {
 
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "OPS", "title": "Elsewhere"})
 	refused(t, err, CodeNotFound, "No board of project OPS is on this computer; ask the user to add one in Settings, Issues.")
-	w.h.createBoards["APP"] = []CreateBoard{{Connection: "conn-jira", Board: "9"}}
+	w.h.createBoards["APP"] = []ListedBoard{{Connection: "conn-jira", Board: "9"}}
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "app", "title": "Unread"})
 	refused(t, err, CodeNotFound, "Project APP's board on example.atlassian.net has not been read on this computer yet; ask the user to open it in Issues, then call again.")
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Typo", "type": "Bugg"})
@@ -761,7 +761,7 @@ func TestCreateTargets(t *testing.T) {
 	linear.Kind = "linear"
 	w.f.sources = []trackerapp.TicketSource{linear}
 	w.f.boards["conn-linear/team"] = trackerapp.BoardSummary{Name: "Web", Project: "team-id"}
-	w.h.createBoards["WEB"] = append(w.h.createBoards["WEB"], CreateBoard{Connection: "conn-linear", Board: "team", Thread: true})
+	w.h.createBoards["WEB"] = append(w.h.createBoards["WEB"], ListedBoard{Connection: "conn-linear", Board: "team", Thread: true})
 	_, err := w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New", "type": "Bug"})
 	refused(t, err, CodeInvalidRequest, "Linear has no issue types; leave out type.")
 	jira := jiraSource

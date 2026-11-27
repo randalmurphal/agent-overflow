@@ -340,7 +340,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     const refused = await trackerAnswer(harness, path);
     expect(refused).toEqual({
       isError: true,
-      text: "[tracker_changes_off] This project's Agents settings do not let its threads change tickets, so nothing was sent; ask the user to turn on Change tickets in Settings > Issues > Agents if this change is wanted.",
+      text: "[tracker_changes_off] This project's Agents settings do not let its threads change tickets or log time, so nothing was sent; ask the user to turn on Change tickets in Settings > Issues > Agents if this change is wanted.",
     });
     expect(await trackerRequests(harness, COMMENT_ROUTE)).toHaveLength(0);
 

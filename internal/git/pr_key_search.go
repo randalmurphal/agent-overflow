@@ -74,7 +74,8 @@ func (c *Core) SearchPRsByKey(ctx context.Context, repo RepoReference, key strin
 
 // ListPRsByHead returns the pull requests in any state whose head is the
 // given branch of cwd's origin repository itself, and of its parent when
-// the origin is a fork, as ListOpenPRs reads the open ones.
+// the origin is a fork, as ListOpenPRs reads the open ones. A read that
+// fails answers what it read before beside its error.
 func (c *Core) ListPRsByHead(ctx context.Context, cwd, head string) ([]PRFound, error) {
 	return c.forgeFor(cwd).ListPRsByHead(ctx, cwd, head)
 }
@@ -152,7 +153,8 @@ func (p *githubKeySearchPart) next(info githubPageInfo) {
 // and its branches by name, a page of each a request, while any has a
 // page left, up to keySearchMaxPages requests. A pull request both find
 // is a row of each; the caller lists a pull request once. A request that
-// fails ends the search with the pages read before it.
+// fails ends the search with the pages read before it, and the searches
+// of its own answer that no error names.
 func (f *githubForge) SearchPRsByKey(ctx context.Context, repo RepoReference, key string) (PRKeySearch, error) {
 	owner, name, err := splitGitHubProject(repo.Project())
 	if err != nil {
@@ -181,14 +183,22 @@ func (f *githubForge) SearchPRsByKey(ctx context.Context, repo RepoReference, ke
 				} `json:"refs"`
 			} `json:"repository"`
 		}
-		if _, err := client.GraphQL(ctx, githubPullsByKeyQuery, vars, &raw); err != nil {
-			return out, err
+		// An answer whose problems each name the search they failed keeps
+		// the searches no problem names.
+		_, err := client.GraphQL(ctx, githubPullsByKeyQuery, vars, &raw)
+		failed := map[string][]forgeapi.GraphQLProblem{}
+		if err != nil {
+			var ok bool
+			if failed, ok = graphQLProblemsByAlias(err); !ok {
+				return out, err
+			}
 		}
 		for _, part := range []struct {
+			alias  string
 			read   *githubKeySearchPart
 			answer *githubFoundSearchRaw
-		}{{&title, raw.ByTitle}, {&head, raw.ByHead}} {
-			if !part.read.want {
+		}{{"byTitle", &title, raw.ByTitle}, {"byHead", &head, raw.ByHead}} {
+			if !part.read.want || failed[part.alias] != nil {
 				continue
 			}
 			if part.answer == nil {
@@ -207,7 +217,7 @@ func (f *githubForge) SearchPRsByKey(ctx context.Context, repo RepoReference, ke
 				out.Rows = append(out.Rows, row)
 			}
 		}
-		if branches.want {
+		if branches.want && failed["repository"] == nil {
 			if raw.Repository == nil {
 				return out, fmt.Errorf("GitHub answered no repository %s on %s", repo.Project(), repo.Host)
 			}
@@ -215,6 +225,9 @@ func (f *githubForge) SearchPRsByKey(ctx context.Context, repo RepoReference, ke
 			for _, node := range raw.Repository.Refs.Nodes {
 				out.Branches = append(out.Branches, node.Name)
 			}
+		}
+		if err != nil {
+			return out, err
 		}
 		if !title.want && !head.want && !branches.want {
 			break

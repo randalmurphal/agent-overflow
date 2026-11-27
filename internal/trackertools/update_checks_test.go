@@ -142,7 +142,7 @@ func TestALinearCreateSetsItsProject(t *testing.T) {
 	linear.Kind = "linear"
 	w.f.sources = []trackerapp.TicketSource{linear}
 	w.f.boards["conn-linear/team"] = trackerapp.BoardSummary{Name: "Web", Project: "team-id"}
-	w.h.createBoards["WEB"] = []CreateBoard{{Connection: "conn-linear", Board: "team"}}
+	w.h.createBoards["WEB"] = []ListedBoard{{Connection: "conn-linear", Board: "team"}}
 	w.f.fields = []trackerapp.FieldView{{ID: "project", Name: "Project", Kind: "option", Editable: true}}
 	w.f.write = func(name string, _ any) (trackerapp.WriteView, error) {
 		return trackerapp.WriteView{Parts: []trackerapp.PartView{{Issue: "lin-1", Step: name, State: "applied"}}, Created: "lin-1", CreatedKey: "WEB-7"}, nil

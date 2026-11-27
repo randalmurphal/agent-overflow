@@ -226,7 +226,11 @@ type ApprovalResponse struct {
 	// the same request id. Zero, from a client that predates it, answers
 	// the prompt open under the request id.
 	Occurrence PromptOccurrence `json:"occurrence,omitempty"`
-	Decision   string           `json:"decision"` // Codex-native: "accept", "acceptForSession", "decline", "cancel"
+	// Shown is set only by the component that drew a tracker write's
+	// changes, from having drawn them for this prompt; the app approves a
+	// tracker write only with it (a deny needs nothing).
+	Shown    bool   `json:"shown,omitempty"`
+	Decision string `json:"decision"` // Codex-native: "accept", "acceptForSession", "decline", "cancel"
 	// DecisionValue carries a provider-native structured decision. It is
 	// mutually exclusive with Decision and currently used by Codex policy
 	// amendment choices.

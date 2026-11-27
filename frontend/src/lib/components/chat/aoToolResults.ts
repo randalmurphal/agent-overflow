@@ -15,6 +15,7 @@
 
 import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
 import { formatDurationMs, formatTimeOfDay, formatCalendarDate } from '../../utils/format';
+import { formatAmount, unitWord, type DashboardUnit } from '../../utils/dashboardAmount';
 import {
   FACT_MAX,
   INSTRUCTIONS_FACT_MAX,
@@ -1191,6 +1192,48 @@ export function trackerResultView(data: string): AoResultView | null {
 }
 
 /**
+ * Reads dashboard_widget's reply: the rules (a JSON string), or a widget's
+ * count on its board, with its first rows and, once shown, where the
+ * person finds it.
+ */
+export function dashboardWidgetResultView(data: string): AoResultView | null {
+  const parsed = parseFirstJson(data);
+  const view = emptyView();
+  if (typeof parsed === 'string') {
+    view.outcome = 'the widget rules';
+    return view;
+  }
+  const reply = obj(parsed);
+  if (!reply) return null;
+  const value = num(reply, 'value');
+  const rows = num(reply, 'rows') ?? 0;
+  view.outcome = join(value !== null ? widgetAmount(value, str(reply, 'unit')) : '', plural(rows, 'row'), str(reply, 'board') ? `on ${str(reply, 'board')}` : '');
+  view.note = join(str(reply, 'shown'), str(reply, 'partial'));
+  fact(view.facts, 'range', str(reply, 'range'));
+  fact(view.facts, 'counts', str(reply, 'counts'));
+  for (const row of list(reply.first_rows)) {
+    const key = str(row, 'key');
+    const amount = num(row, 'value');
+    view.lines.push({ key, title: join(key, str(row, 'title')), detail: join(amount !== null ? widgetAmount(amount, str(reply, 'unit')) : '', str(row, 'period'), row.counted === false ? 'not counted' : ''), text: str(row, 'note'), link: null });
+  }
+  return view;
+}
+
+/** The dashboard's unit and board estimate for each unit the tool's
+ * answer names its numbers in. */
+const WIDGET_UNITS: Record<string, [DashboardUnit, string]> = {
+  tickets: ['tickets', 'none'], points: ['estimate', 'points'], seconds: ['estimate', 'time'], days: ['days', 'none'],
+};
+
+/** A widget's number as the dashboard draws it: "1.5h", "8 points". */
+function widgetAmount(value: number, unit: string): string {
+  const u = WIDGET_UNITS[unit];
+  if (!u) return `${value}`;
+  const word = unitWord(value, u[0], u[1]);
+  return `${formatAmount(value, u[0], u[1])}${word ? ` ${word}` : ''}`;
+}
+
+/**
  * Reads a tracker tools write's reply: a create's key, or what became of
  * each ticket of an update, with the sentence of a step refused or whose
  * outcome is unknown. A ticket counts as changed when this call applied a
@@ -1253,6 +1296,7 @@ export function aoResultView(
     case REMOTE_TOOLS_SERVER:
       return remoteResultView(data) ? null : remoteOtherView(tool, data, names);
     case TRACKER_TOOLS_SERVER:
+      if (tool === 'dashboard_widget') return dashboardWidgetResultView(data);
       return tool === 'ticket_create' || tool === 'ticket_update' ? trackerWriteResultView(tool, data) : trackerResultView(data);
     default:
       return null;
