@@ -14,8 +14,8 @@ import (
 
 // mirrorPatchRowsSQL reads the rows of board ?2 of root ?1 among the
 // issues of the JSON list ?3, each probed by key, with ?5 a section's
-// sprint or column, ?6 the board's estimate reset and ?7 the regrouping
-// (MirrorSection.statement), projecting what a section page shows of a
+// sprint or column, ?6 the board's estimate reset, ?7 the regrouping and
+// ?8 the support rule (MirrorSection.statement), projecting what a section page shows of a
 // row; a section's rule follows. The rows come in
 // list order; the caller sorts them, at most mirrorMaxLookup, rather than
 // sort in a temporary b-tree.

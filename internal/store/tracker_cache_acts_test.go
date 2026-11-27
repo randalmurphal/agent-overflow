@@ -486,6 +486,51 @@ func TestMirrorActsDueOfSupportTickets(t *testing.T) {
 	check(0, 30, "10003:cw,10002:w,10001:w")
 }
 
+// Two projects listing one board are each asked their need, and a ticket
+// is listed once with the widest: by project A's rule (a label) a support
+// ticket's worklogs from the window, by project B's (a type) another's;
+// a ticket A counts as support and B as a member of a closed sprint in the
+// window is read whole with its comments, at the sprint's place. A row
+// neither rule names, or with an estimate, is not a support ticket.
+func TestMirrorActsDueTakeTheWidestNeedAcrossProjects(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	labeled := func(r MirrorRow) MirrorRow { r.Card.Labels = []string{"support"}; return r }
+	typed := func(r MirrorRow) MirrorRow { r.Card.TypeID = "10004"; return r }
+	points := 3.0
+	estimated := typed(webRow("10005", 1200, "e"))
+	estimated.Estimate = &points
+	closed := labeled(webRow("10003", 1200, "c", "20"))
+	closed.Card.StatusID = "10001"
+	mustWriteRowPage(t, s, root, webPage("10", labeled(webRow("10001", 1200, "a")), typed(webRow("10002", 1200, "b")), closed,
+		webRow("10004", 1200, "d"), estimated), []byte("c1"))
+	mustReplaceHistory(t, s, root, MirrorHistory{IssueID: "10003", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 900, From: "1", To: "10001"}}},
+		MirrorWrite{Changed: true})
+	rule := func(rule MirrorSupportRule) MirrorActsBoard {
+		regroup, err := MirrorRegroup{}.WithSupport(rule)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return MirrorActsBoard{BoardID: "10", Regroup: regroup}
+	}
+	a, b := rule(MirrorSupportRule{Labels: []string{"support"}}), rule(MirrorSupportRule{Types: []string{"10004"}})
+	for _, c := range []struct {
+		from   int64
+		boards []MirrorActsBoard
+		want   string
+	}{
+		{900, []MirrorActsBoard{a}, "10003:cw,10001:w@900"},
+		{900, []MirrorActsBoard{b}, "10003:cw,10002:w@900"},
+		{900, []MirrorActsBoard{a, b}, "10003:cw,10001:w@900,10002:w@900"},
+		{960, []MirrorActsBoard{a, b}, "10001:w@960,10003:w@960,10002:w@960"},
+	} {
+		if got, _ := actsDue(t, s, root, c.from, 20, c.boards...); got != c.want {
+			t.Fatalf("due (from %d, %d projects) = %q; want %q", c.from, len(c.boards), got, c.want)
+		}
+	}
+}
+
 // A listing holds at most a page, and says when more are due.
 func TestMirrorActsDueArePaged(t *testing.T) {
 	t.Parallel()

@@ -245,6 +245,17 @@ func (a *App) TrackerIssueTypes(ctx context.Context, connectionID, project strin
 	})
 }
 
+// TrackerProjectIssueTypes lists the issue types a project has, which a
+// user who can see it reads whatever it may create.
+//
+//ao:scope tracker:read
+//ao:route home
+func (a *App) TrackerProjectIssueTypes(ctx context.Context, connectionID, project string) ([]trackerapp.IssueTypeView, error) {
+	return trackerFormRead(a, ctx, "TrackerProjectIssueTypes", "Listing the project's issue types", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.IssueTypeView, error) {
+		return svc.ProjectIssueTypes(ctx, connectionID, project)
+	})
+}
+
 // TrackerCreateFields lists the fields a create of issueType in project
 // takes.
 //

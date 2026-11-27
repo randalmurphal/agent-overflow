@@ -368,6 +368,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3259060803: 'project', // ProjectTrackerSetup
 	1545287804: 'project', // ProjectTrackerSiteFields
 	315742236: 'project', // ProjectTrackerStatuses
+	2932635909: 'project', // ProjectTrackerSupport
 	4079123887: 'thread', // PromoteScratchThread
 	1393518281: 'thread', // ProviderTerminalAttach
 	2584141779: 'thread', // ProviderTerminalDetach
@@ -572,6 +573,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3632796459: 'home', // TrackerMoves
 	3990595752: 'home', // TrackerPoker
 	4253452655: 'home', // TrackerPokerSupport
+	2496760576: 'home', // TrackerProjectIssueTypes
 	2816087609: 'home', // TrackerProjects
 	1584024747: 'home', // TrackerSearch
 	4150293291: 'home', // TrackerSectionRows

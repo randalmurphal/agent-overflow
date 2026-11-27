@@ -23,6 +23,17 @@
   // An entry's hours open its form (TimeDraftForm); an entry of unknown
   // outcome offers the log form filled from it, and once that time was
   // logged the entry is removed.
+  //
+  // An entry on a support ticket of the board shows what its hours are
+  // worth in points (or tickets), as is a support ticket's week in By
+  // ticket: which of the week's tickets are support, and the hours a
+  // point, are the board's computer's answer (ProjectTrackerSupport, held
+  // in stores/trackerSetup.svelte.ts), read for the project, connection,
+  // board and week's tickets shown, again when the project's setup
+  // changes, on Refresh, and on the board's changes (`boardChanges`, at
+  // most one read every SUPPORT_CHANGE_INTERVAL_MS), since the mirror's
+  // estimates, labels, types and rows decide which tickets are support. A
+  // read that failed says why above the week, with Try again.
   import { untrack } from 'svelte';
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -48,6 +59,10 @@
   import { saveTimeLayout, savedTimeLayout, type TimeLayout } from '../../stores/issuesPane.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { attachTrackerWeek, refreshTrackerWeek, setTrackerWeekShown, type TrackerWeekAttachment } from '../../stores/trackerTime.svelte';
+  import { acquireTrackerSupport, refreshTrackerSupport, SUPPORT_CHANGE_INTERVAL_MS, trackerSupportOf } from '../../stores/trackerSetup.svelte';
+  import { createRefreshScheduler } from '../../utils/refreshScheduler';
+  import { userFacingError } from '../../utils/userFacingError';
+  import { supportWorth } from './boardFormat';
   import {
     addDays,
     dayInFull,
@@ -68,7 +83,14 @@
 
   interface Props {
     backend: string;
+    /** The project the pane shows the board of, whose credit rules the
+     * support line follows. */
+    project: string;
     connection: string;
+    board: string;
+    /** How many times the board's mirror changed (TrackerBoardState.changes)
+     * while the pane holds it. */
+    boardChanges: number;
     /** The connection's kind: "jira" or "linear". */
     connectionKind: string;
     /** The connection is on and the board is followed. */
@@ -95,7 +117,10 @@
 
   let {
     backend,
+    project,
     connection,
+    board: boardID,
+    boardChanges,
     connectionKind,
     connectionOn,
     author,
@@ -170,9 +195,59 @@
   const questions = $derived(shape ? weekQuestions(shape) : []);
   $effect(() => { refreshing = weekState?.refreshing ?? false; });
 
-  /** Refresh: reads the week from the tracker now. */
+  // The week's logged tickets, in one order, and which are support.
+  const weekIssues = $derived.by(() => {
+    const issues = new Set<string>();
+    for (const d of shape?.days ?? []) for (const e of d.entries) issues.add(e.issue);
+    return [...issues].sort();
+  });
+  const weekIssuesKey = $derived(weekIssues.join('\n'));
+  // The one support read the screen holds: of the project, connection,
+  // board and tickets shown, a change of any of them a new read.
+  const supportReadKey = $derived(weekIssuesKey && [project, connection, boardID, weekIssuesKey].join('\u0000'));
+  const supportRead = $derived.by(() => {
+    if (!supportReadKey) return null;
+    return untrack(() => ({ project, connection, board: boardID, issues: weekIssues }));
+  });
+  $effect(() => {
+    const r = supportRead;
+    if (!r) return;
+    return untrack(() => acquireTrackerSupport(r.project, r.connection, r.board, r.issues));
+  });
+  const supportState = $derived(supportRead ? trackerSupportOf(supportRead.project, supportRead.connection, supportRead.board, supportRead.issues) : null);
+  const support = $derived(supportState?.support ?? null);
+  const worth = (issue: string, seconds: number) => supportWorth(support, issue, seconds);
+
+  function readSupportAgain(): Promise<void> {
+    const r = untrack(() => supportRead);
+    return r ? refreshTrackerSupport(r.project, r.connection, r.board, r.issues) : Promise.resolve();
+  }
+  // The board changed: read the support tickets again, at most once every
+  // SUPPORT_CHANGE_INTERVAL_MS. Another board's count starts again.
+  const supportReads = createRefreshScheduler({
+    name: 'trackerSupport',
+    delayMs: 500,
+    maxWaitMs: SUPPORT_CHANGE_INTERVAL_MS,
+    minIntervalMs: SUPPORT_CHANGE_INTERVAL_MS,
+    run: readSupportAgain,
+  });
+  $effect(() => () => supportReads.dispose());
+  let seenChanges: { readonly of: string; readonly n: number } | null = null;
+  $effect(() => {
+    const of = `${backend}\n${connection}\n${boardID}`;
+    const n = boardChanges;
+    untrack(() => {
+      if (seenChanges?.of !== of) supportReads.reset();
+      else if (seenChanges.n !== n) supportReads.request();
+    });
+    seenChanges = { of, n };
+  });
+
+  /** Refresh: reads the week from the tracker now, and which of its
+   * tickets are support. */
   export function refresh(): void {
     if (week) void refreshTrackerWeek(week.key);
+    void readSupportAgain();
   }
 
   // Captured once per error, so Details and copy describe the one shown.
@@ -400,6 +475,12 @@
       {#if weekState?.failure}
         <p class="border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="time-refresh-failure">{weekState.failure.message} The week is shown as this computer last read it.</p>
       {/if}
+      {#if supportState?.error}
+        <div class="flex items-center gap-2 border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="time-support-failure">
+          <span class="min-w-0 flex-1">Which tickets are support could not be read, so no entry shows what it is worth: {userFacingError(supportState.error)}</span>
+          <button type="button" class="shrink-0 text-accent hover:underline" data-testid="time-support-retry" onclick={() => void readSupportAgain()}>Try again</button>
+        </div>
+      {/if}
       {#each weekState?.receipts ?? [] as r (r.id)}
         <div class="flex items-center gap-2 border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="time-receipt">
           <span class="min-w-0 flex-1">{r.sentence}</span>
@@ -437,6 +518,7 @@
           <TimeByDay
             ctx={writeCtx}
             {shape}
+            {worth}
             {today}
             onlyDay={compact ? shownDay : null}
             {openIssue}
@@ -452,6 +534,7 @@
         {:else}
           <TimeByTicket
             {shape}
+            {worth}
             {tickets}
             {today}
             {compact}

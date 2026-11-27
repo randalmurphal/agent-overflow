@@ -111,6 +111,10 @@ type Provider interface {
 	// IssueTypes are the types an issue can be created with in project;
 	// none without Capabilities.IssueTypes.
 	IssueTypes(ctx context.Context, project ProjectID) ([]IssueType, error)
+	// ProjectIssueTypes are the issue types project has, which a user
+	// who can see the project reads whatever it may create; none without
+	// Capabilities.IssueTypes.
+	ProjectIssueTypes(ctx context.Context, project ProjectID) ([]IssueType, error)
 	// Boards are project's boards.
 	Boards(ctx context.Context, project ProjectID) ([]Board, error)
 	// Structure is board's structure, read from the tracker, with its

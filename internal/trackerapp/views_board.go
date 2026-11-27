@@ -433,7 +433,7 @@ func sectionOf(section Section, page store.MirrorSectionPage, groups string) (Se
 			out.Stale = append(out.Stale, m.Card.IssueID)
 		}
 		cards[i] = shownCard{card: row.Card, since: m.Card.StatusSince}
-		out.Rows[i] = RowView{Order: string(row.Order), Estimate: row.Estimate}
+		out.Rows[i] = RowView{Order: string(row.Order), Estimate: row.Estimate, Support: m.Support}
 	}
 	if page.More {
 		out.Next = &SectionCursor{Order: page.Next.OrderKey, Issue: page.Next.IssueID, Lifetime: page.Next.Lifetime, Revision: page.Next.Revision,

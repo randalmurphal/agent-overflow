@@ -30,6 +30,9 @@ func (fakeProvider) Boards(context.Context, ProjectID) ([]Board, error) { return
 func (fakeProvider) IssueTypes(context.Context, ProjectID) ([]IssueType, error) {
 	return nil, nil
 }
+func (fakeProvider) ProjectIssueTypes(context.Context, ProjectID) ([]IssueType, error) {
+	return nil, nil
+}
 func (fakeProvider) Structure(context.Context, BoardID, time.Time) (Structure, error) {
 	return Structure{}, nil
 }

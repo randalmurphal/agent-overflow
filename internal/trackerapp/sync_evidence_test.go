@@ -16,8 +16,9 @@ import (
 // evidenceFixture is a mirror fixture whose board holds rows, each in the
 // active sprint and done, read by a delta, and whose tracker reads
 // comments and worklogs of each ticket asked: one comment by User 2 and
-// one hour logged by User 1. asked collects the tickets of each read.
-func evidenceFixture(t *testing.T, rows int) (m *mirrorFixture, cs *countingStore, asked func() [][]tracker.EvidenceIssue) {
+// one hour logged by User 1, and rows extra. asked collects the tickets of
+// each read.
+func evidenceFixture(t *testing.T, rows int, extra ...tracker.Row) (m *mirrorFixture, cs *countingStore, asked func() [][]tracker.EvidenceIssue) {
 	t.Helper()
 	m = newMirrorFixture(t)
 	var page []tracker.Row
@@ -26,6 +27,7 @@ func evidenceFixture(t *testing.T, rows int) (m *mirrorFixture, cs *countingStor
 		r.Card.Status, r.Card.Sprints = statusDone.ID, []tracker.SprintID{"1"}
 		page = append(page, r)
 	}
+	page = append(page, extra...)
 	m.p.set(func(p *scripted) {
 		p.caps = tracker.Capabilities{Evidence: true}
 		p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {
@@ -59,10 +61,12 @@ func evidenceFixture(t *testing.T, rows int) (m *mirrorFixture, cs *countingStor
 }
 
 // countCredit turns credit on or off for the project that lists conn's
-// boards (listBoards), in the setup's credit section.
-func (f *fixture) countCredit(t *testing.T, conn string, on bool) {
+// boards (listBoards), in the setup's credit section, with support, the
+// section's support entries as JSON, when it is given.
+func (f *fixture) countCredit(t *testing.T, conn string, on bool, support ...string) {
 	t.Helper()
-	f.writeSetupFile(t, "boards-"+conn, fmt.Sprintf(`{"credit": {"version": 1, "on": %t}}`, on))
+	f.writeSetupFile(t, "boards-"+conn, fmt.Sprintf(`{"credit": {"version": 1, "on": %t, "rules": [{"from": 0, "review_share": 10, "review_need": 1,
+		"review_actions": ["commented", "logged_time"], "hours_per_point": 8}], "support": [%s]}}`, on, strings.Join(support, ",")))
 	f.svc.setupMu.Lock()
 	clear(f.svc.setups)
 	f.svc.setupMu.Unlock()
@@ -261,5 +265,26 @@ func TestEvidenceStoresWhatAFailedReadReturned(t *testing.T) {
 	}
 	if n := m.storeCount(t, `SELECT count(*) FROM tracker_cache_issue_act_reads WHERE issue_id = '20001' AND source = 1 AND read_at > 0`); n != 1 {
 		t.Fatalf("the comments read before the failure: %d receipts", n)
+	}
+}
+
+// The support entry of the project's credit section reaches the listing:
+// a support ticket in no sprint is asked for its worklogs from the
+// window's start and not its comments, and a done member of the active
+// sprint that is also support is asked for both, every worklog. With no
+// support entry the support ticket is not asked.
+func TestEvidenceReadsSupportTicketsOfTheCreditSetup(t *testing.T) {
+	m, _, asked := evidenceFixture(t, 1, row("20002", 1_799_000_000_000, "z"))
+	m.countCredit(t, m.conn.ID, true)
+	m.evidenceTick(t)
+	if fmt.Sprint(asked()) != "[[{20001 true true 0001-01-01 00:00:00 +0000 UTC}]]" {
+		t.Fatalf("without support: reads %v", asked())
+	}
+	m.countCredit(t, m.conn.ID, true, fmt.Sprintf(`{"tracker": "jira", "site": %q, "boards": [%q]}`, m.conn.Site, testBoard))
+	m.evidenceTick(t)
+	window := m.svc.window().UTC().Truncate(time.Millisecond)
+	want := []tracker.EvidenceIssue{{Issue: "20002", Worklogs: true, WorklogsFrom: window}}
+	if reads := asked(); len(reads) != 2 || !slices.Equal(reads[1], want) {
+		t.Fatalf("with support: reads %v; want %v", reads, want)
 	}
 }

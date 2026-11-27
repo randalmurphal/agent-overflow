@@ -140,6 +140,10 @@ func (f *probedProvider) IssueTypes(ctx context.Context, _ ProjectID) ([]IssueTy
 	f.see(ctx)
 	return nil, nil
 }
+func (f *probedProvider) ProjectIssueTypes(ctx context.Context, _ ProjectID) ([]IssueType, error) {
+	f.see(ctx)
+	return nil, nil
+}
 func (f *probedProvider) Structure(ctx context.Context, _ BoardID, _ time.Time) (Structure, error) {
 	f.see(ctx)
 	return Structure{}, nil

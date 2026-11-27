@@ -968,8 +968,8 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'tracker_cache_board_unexplained', reason: 'a reference a board\'s complete structure did not explain (v162); the fake board\'s structure explains all of its own' },
   {
     table: 'tracker_cache_issues',
-    columns: ['type_level', 'assignee_id', 'priority_id', 'parent_id', 'resolved_at', 'history_from', 'history_wait', 'history_gen', 'history_dirty', 'body_updated_at', 'body_read_at', 'body_wall', 'body_opened_at', 'body_digest'],
-    reason: 'the fields the fake board\'s issues leave empty (type level, assignee, priority, parent, resolution), an issue\'s change history, which the board read stores none of, and its body, read for a ticket a person opens; the top-up opens no ticket',
+    columns: ['type_level', 'assignee_id', 'priority_id', 'parent_id', 'resolved_at', 'labels', 'history_from', 'history_wait', 'history_gen', 'history_dirty', 'body_updated_at', 'body_read_at', 'body_wall', 'body_opened_at', 'body_digest'],
+    reason: 'the fields the fake board\'s issues leave empty (type level, assignee, priority, parent, resolution, labels: v176), an issue\'s change history, which the board read stores none of, and its body, read for a ticket a person opens; the top-up opens no ticket',
   },
   { table: 'tracker_cache_board_issues', columns: ['estimate'], reason: 'a card\'s estimate (v162); the fake board estimates by count' },
   { table: 'tracker_cache_sprints', columns: ['goal', 'completed_at'], values: { state: [1, 3] }, reason: 'a sprint\'s goal, and a future or closed sprint with its completion (v162); the fake board has one active sprint with no goal' },

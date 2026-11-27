@@ -175,7 +175,7 @@ func TestProjectPaceIsTheBoardsPace(t *testing.T) {
 	if got := all[len(all)-1]; got != (BoardPace{Connection: lin.ID, ConnectionKind: store.TrackerKindLinear, Board: "team-1"}) {
 		t.Fatalf("the Linear board listed: %+v", got)
 	}
-	if got := of(all); got.ConnectionKind != store.TrackerKindJira || got.Read || got.Pace != nil || got.Counts != "" {
+	if got := of(all); got.ConnectionKind != store.TrackerKindJira || got.Site != m.conn.Site || got.Read || got.Pace != nil || got.Counts != "" {
 		t.Fatalf("the pace of a board not read: %+v", got)
 	}
 	three, one := 3.0, 1.0
@@ -199,7 +199,7 @@ func TestProjectPaceIsTheBoardsPace(t *testing.T) {
 		}
 		return got
 	}
-	want := BoardPace{Connection: m.conn.ID, ConnectionKind: store.TrackerKindJira, Board: string(testBoard), Name: "WEB board " + string(testBoard), Read: true, Estimate: "points", Counts: "points", PlansSprints: true,
+	want := BoardPace{Connection: m.conn.ID, ConnectionKind: store.TrackerKindJira, Site: m.conn.Site, Board: string(testBoard), Name: "WEB board " + string(testBoard), Read: true, Estimate: "points", Counts: "points", PlansSprints: true,
 		Pace: &PaceView{Sprints: 2, Rows: 1.5, Estimate: 2}}
 	if got := of(pace()); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the project's pace = %+v; want %+v", got, want)
