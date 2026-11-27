@@ -4453,6 +4453,14 @@ export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
 }
 
 /**
+ * PinTrackerWidget pins a widget of a subscribed board's dashboards to the
+ * end of the board's summary row, at most five, or takes it off.
+ */
+export function PinTrackerWidget(subscriptionID: string, widget: string, pinned: boolean): $CancellablePromise<void> {
+    return $Call.ByID(610896236, subscriptionID, widget, pinned);
+}
+
+/**
  * PostPRComment posts a comment on pr itself, not on a line: a GitHub
  * conversation comment, a GitLab merge request note.
  */
@@ -6426,6 +6434,15 @@ export function SetTrackerEstimate(connectionID: string, $in: trackerapp$0.Estim
  */
 export function SetTrackerSubscriptionVisible(subscriptionID: string, visible: boolean): $CancellablePromise<void> {
     return $Call.ByID(2154788414, subscriptionID, visible);
+}
+
+/**
+ * SetTrackerWidgetLimit sets the limit of a number widget of a subscribed
+ * board's dashboards, or clears it for nil; over it, the widget and its
+ * tile on the board's summary row are marked.
+ */
+export function SetTrackerWidgetLimit(subscriptionID: string, widget: string, limit: number | null): $CancellablePromise<void> {
+    return $Call.ByID(3937459196, subscriptionID, widget, limit);
 }
 
 /**

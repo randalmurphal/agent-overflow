@@ -149,7 +149,9 @@ type FailureView struct {
 // of no one project. IssueURL is the address of a card of the board less
 // its key, which completes it escaped as a path segment
 // (jiraprovider.IssueURLPrefix); empty on a tracker whose cards carry
-// their own (CardView.URL).
+// their own (CardView.URL). Pins is the widgets the project pins to the
+// board's summary row, by widget ID in the row's order (BoardTiles), when
+// a project's read fills it (boardViewOf); none when it pins none.
 type BoardView struct {
 	ID             string            `json:"id"`
 	Lifetime       int64             `json:"lifetime"`
@@ -171,6 +173,7 @@ type BoardView struct {
 	Pace           *PaceView         `json:"pace,omitempty"`
 	Sections       []SectionPage     `json:"sections"`
 	IssueURL       string            `json:"issue_url,omitempty"`
+	Pins           []string          `json:"pins,omitempty"`
 }
 
 // PaceView is what a board's last finished sprints (at most

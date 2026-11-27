@@ -148,21 +148,22 @@ func (s *Service) boardPins(key setupKey, board string) ([]string, error) {
 	return slices.Clone(tilesOf(held.kept.tiles, key.site, board).Pins), nil
 }
 
-// BoardTilesView is a board's summary row as its Dashboards screen and
-// its Board read it: the widgets pinned, in the row's order, and each
-// number widget's limit, by widget ID; both empty, never absent, so a
-// client tells a computer that keeps tiles from an older one that does
-// not.
+// BoardTilesView is a board's summary row as its Dashboards screen reads
+// it: the widgets pinned, in the row's order, each number widget's limit
+// by widget ID, a proposed one's included, and the proposals Keep pins
+// (Proposed); none of them nil, so a client tells a computer that keeps
+// tiles from an older one, whose answer has none.
 type BoardTilesView struct {
-	Pins   []string           `json:"pins"`
-	Limits map[string]float64 `json:"limits"`
+	Pins     []string           `json:"pins"`
+	Limits   map[string]float64 `json:"limits"`
+	Proposed []string           `json:"proposed"`
 }
 
-// tilesView is key's board's tiles as the listing answers them, keeping
-// only the widgets the board's dashboards have (listed) and a limit only
-// on a number widget.
-func tilesView(t BoardTiles, listed map[string]trackerdash.WidgetView) BoardTilesView {
-	out := BoardTilesView{Pins: []string{}, Limits: map[string]float64{}}
+// tilesView is t and the marks of proposed as the listing l answers them:
+// only the widgets l lists, and a limit only on a number widget.
+func tilesView(t BoardTiles, proposed []heldProposal, l trackerdash.Listing) BoardTilesView {
+	listed := listedWidgets(l)
+	out := BoardTilesView{Pins: []string{}, Limits: map[string]float64{}, Proposed: []string{}}
 	for _, id := range t.Pins {
 		if _, ok := listed[id]; ok {
 			out.Pins = append(out.Pins, id)
@@ -171,6 +172,17 @@ func tilesView(t BoardTiles, listed map[string]trackerdash.WidgetView) BoardTile
 	for id, v := range t.Limits {
 		if w, ok := listed[id]; ok && w.Form == trackerdash.FormNumber {
 			out.Limits[id] = v
+		}
+	}
+	for _, p := range proposed {
+		if !slices.ContainsFunc(l.Proposals, func(v trackerdash.ProposalView) bool { return v.View.ID == p.widget.ID }) {
+			continue
+		}
+		if p.marks.Limit != nil && p.widget.Form == trackerdash.FormNumber {
+			out.Limits[p.widget.ID] = *p.marks.Limit
+		}
+		if p.marks.Pin {
+			out.Proposed = append(out.Proposed, p.widget.ID)
 		}
 	}
 	return out
@@ -187,12 +199,34 @@ func listedWidgets(l trackerdash.Listing) map[string]trackerdash.WidgetView {
 	return out
 }
 
+// checkMarks refuses marks w cannot carry: a limit on a widget that is not
+// a number, or one that is not a finite number.
+func checkMarks(w KeptWidget, marks TileMarks) error {
+	if marks.Limit == nil {
+		return nil
+	}
+	if w.Form != trackerdash.FormNumber {
+		return dashRefusal("dashboard_limit_not_number", fmt.Sprintf("a limit is a number widget's; this one is a %s", w.Form))
+	}
+	return checkLimit(*marks.Limit)
+}
+
+// checkLimit refuses a limit that is not a finite number.
+func checkLimit(v float64) error {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return dashRefusal("dashboard_limit_invalid", "a limit is a finite number")
+	}
+	return nil
+}
+
 // SetWidgetLimit sets the limit of widget, a number widget of the board
 // subscription's dashboards, or clears it for nil; the board's tile and
 // the widget are marked when its number passes it.
 func (s *Service) SetWidgetLimit(ctx context.Context, subscription, widget string, limit *float64) error {
-	if limit != nil && (math.IsNaN(*limit) || math.IsInf(*limit, 0)) {
-		return dashRefusal("dashboard_limit_invalid", "a limit is a number")
+	if limit != nil {
+		if err := checkLimit(*limit); err != nil {
+			return err
+		}
 	}
 	return s.editTiles(ctx, subscription, widget, func(w trackerdash.WidgetView, t *BoardTiles) error {
 		if w.Form != trackerdash.FormNumber {
@@ -248,7 +282,7 @@ func (s *Service) editTiles(ctx context.Context, subscription, widget string, ed
 	if err != nil {
 		return err
 	}
-	list, err := s.Dashboards(ctx, subscription)
+	list, _, err := s.Dashboards(ctx, subscription)
 	if err != nil {
 		return err
 	}

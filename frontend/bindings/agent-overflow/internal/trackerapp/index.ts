@@ -9,6 +9,7 @@ export {
     BoardPatch,
     BoardRef,
     BoardSubscription,
+    BoardTilesView,
     BoardTotals,
     BoardView,
     CardView,

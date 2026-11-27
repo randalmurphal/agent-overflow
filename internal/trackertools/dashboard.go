@@ -44,6 +44,10 @@ type widgetSpec struct {
 	Series []string `json:"series"`
 	Form   string   `json:"form"`
 	Width  int      `json:"width"`
+	// Limit and Pin are what Keep gives the widget's tile: a number's
+	// limit, and a place on the board's summary row.
+	Limit *float64 `json:"limit"`
+	Pin   bool     `json:"pin"`
 }
 
 // widgetAnswer is a counted widget as the agent reads it: what it counts
@@ -124,7 +128,7 @@ func (s *Server) dashboardWidget(ctx context.Context, caller Caller, raw json.Ra
 			w.Width = 3
 		}
 	}
-	tried, err := s.t.TryWidget(ctx, project, board.Connection, board.Board, w, caller.Thread, args.Show)
+	tried, err := s.t.TryWidget(ctx, project, board.Connection, board.Board, w, trackerapp.TileMarks{Limit: spec.Limit, Pin: spec.Pin}, caller.Thread, args.Show)
 	if err != nil {
 		return nil, err
 	}

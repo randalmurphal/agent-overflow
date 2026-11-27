@@ -143,11 +143,7 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 		return BoardSubscription{}, err
 	}
 	answer := BoardSubscription{ID: id, Seq: seq, PollEvery: p.every.Milliseconds()}
-	var view BoardView
-	groups, err := s.boardStatusGroups(key)
-	if err == nil {
-		view, err = s.Board(scope, groups, sections)
-	}
+	view, err := s.boardViewOf(key, scope, sections)
 	switch {
 	case err == nil:
 		answer.Loaded, answer.View = true, &view

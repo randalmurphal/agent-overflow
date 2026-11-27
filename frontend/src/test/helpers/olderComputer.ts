@@ -39,7 +39,7 @@ export const METHODS_AFTER_V0_0_19 = [
   'FollowTrackerPoker', 'TrackerPoker', 'VoteTrackerPoker', 'RevealTrackerPoker', 'ClearTrackerPokerVotes',
   'SetThreadTicket', 'ClearThreadTicket', 'ThreadsForTicket', 'GetTicketWork', 'SearchTicketWork', 'StartTicketThread', 'StartTicketsThread',
   'TrackerDashboards', 'EvaluateTrackerDashboard', 'TrackerDashboardDrill', 'StartTrackerDashboardThread',
-  'KeepTrackerWidget', 'DismissTrackerWidget', 'RemoveTrackerWidget',
+  'KeepTrackerWidget', 'DismissTrackerWidget', 'RemoveTrackerWidget', 'SetTrackerWidgetLimit', 'PinTrackerWidget',
 ] as const;
 
 /**

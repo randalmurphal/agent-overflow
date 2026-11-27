@@ -126,7 +126,7 @@ type Tracker interface {
 
 	// TryWidget counts w on board of connection, which project lists, and
 	// with show proposes it there for thread (trackerapp.Service.TryWidget).
-	TryWidget(ctx context.Context, project, connection, board string, w trackerapp.KeptWidget, thread string, show bool) (trackerdash.Tried, error)
+	TryWidget(ctx context.Context, project, connection, board string, w trackerapp.KeptWidget, marks trackerapp.TileMarks, thread string, show bool) (trackerdash.Tried, error)
 }
 
 // WritePolicy is what a thread's change of tickets may do.

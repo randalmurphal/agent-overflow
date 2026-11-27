@@ -23,12 +23,15 @@ import (
 // TrackerDashboardsView is what a subscribed board's Dashboards screen
 // lays out: the dashboards it offers, the built-in first, each with its
 // ranges and its widgets' layout and How this is counted, and the widgets
-// agents proposed on the board with their threads (trackerdash.Listing).
-// Ask is why Ask your agent cannot start a thread on this computer, ""
-// when it can (trackerToolsProvider).
+// agents proposed on the board with their threads (trackerdash.Listing),
+// and the board's summary row: its pins, the number widgets' limits and
+// the proposals Keep pins (trackerapp.BoardTilesView), which an older
+// computer's answer lacks. Ask is why Ask your agent cannot start a thread
+// on this computer, "" when it can (trackerToolsProvider).
 type TrackerDashboardsView struct {
 	Dashboards []trackerdash.DashboardView `json:"dashboards"`
 	Proposals  []trackerdash.ProposalView  `json:"proposals"`
+	Tiles      trackerapp.BoardTilesView   `json:"tiles"`
 	Ask        string                      `json:"ask"`
 }
 
@@ -43,11 +46,11 @@ func (a *App) TrackerDashboards(ctx context.Context, subscriptionID string) (Tra
 	if err != nil {
 		return TrackerDashboardsView{}, err
 	}
-	list, err := svc.Dashboards(ctx, subscriptionID)
+	list, tiles, err := svc.Dashboards(ctx, subscriptionID)
 	if err != nil {
 		return TrackerDashboardsView{}, dashboardError(err)
 	}
-	out := TrackerDashboardsView{Dashboards: list.Dashboards, Proposals: list.Proposals}
+	out := TrackerDashboardsView{Dashboards: list.Dashboards, Proposals: list.Proposals, Tiles: tiles}
 	if a.trackerToolsProvider(ctx) == "" {
 		out.Ask = noTrackerToolsProvider
 	}
@@ -195,6 +198,33 @@ func (a *App) RemoveTrackerWidget(ctx context.Context, subscriptionID, dashboard
 		return err
 	}
 	return dashboardError(svc.RemoveWidget(subscriptionID, dashboard, widget))
+}
+
+// SetTrackerWidgetLimit sets the limit of a number widget of a subscribed
+// board's dashboards, or clears it for nil; over it, the widget and its
+// tile on the board's summary row are marked.
+//
+//ao:scope tracker:operate
+//ao:route home
+func (a *App) SetTrackerWidgetLimit(ctx context.Context, subscriptionID, widget string, limit *float64) error {
+	svc, err := a.trackerService()
+	if err != nil {
+		return err
+	}
+	return dashboardError(svc.SetWidgetLimit(ctx, subscriptionID, widget, limit))
+}
+
+// PinTrackerWidget pins a widget of a subscribed board's dashboards to the
+// end of the board's summary row, at most five, or takes it off.
+//
+//ao:scope tracker:operate
+//ao:route home
+func (a *App) PinTrackerWidget(ctx context.Context, subscriptionID, widget string, pinned bool) error {
+	svc, err := a.trackerService()
+	if err != nil {
+		return err
+	}
+	return dashboardError(svc.PinWidget(ctx, subscriptionID, widget, pinned))
 }
 
 // dashboardError is err with the evaluator's refusal as its public code

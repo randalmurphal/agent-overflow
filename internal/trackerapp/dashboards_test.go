@@ -48,7 +48,7 @@ func TestAWidgetReadsTypesPrioritiesAndLabelsAsTheReadGaveThem(t *testing.T) {
 	w := openTickets()
 	w.Metric.SQL = `SELECT t.id AS ticket, coalesce(t.type, '-') || '|' || coalesce(t.priority, '-') || '|' ||
 	  coalesce((SELECT group_concat(name, ',') FROM (SELECT name FROM labels WHERE ticket = t.id ORDER BY name)), '-') AS note FROM tickets t`
-	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, "thread-1", false)
+	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, TileMarks{}, "thread-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestAJoinCountsTheSameUsingNaturalOrOn(t *testing.T) {
 	for _, name := range names {
 		w := openTickets()
 		w.Metric.Title, w.Metric.SQL = name, queries[name]
-		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, "thread-1", true)
+		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, TileMarks{}, "thread-1", true)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -135,7 +135,7 @@ func numText(t *testing.T, n *trackerdash.Num) string {
 // proposal's ID.
 func (m *mirrorFixture) propose(t *testing.T, w KeptWidget) string {
 	t.Helper()
-	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, "thread-1", true)
+	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, TileMarks{}, "thread-1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,11 @@ func (m *mirrorFixture) evaluate(t *testing.T, sub, dashboard string) trackerdas
 // list is the dashboards and proposals subscription sub shows.
 func (m *mirrorFixture) list(t *testing.T, sub string) trackerdash.Listing {
 	t.Helper()
-	return must[trackerdash.Listing](t)(m.svc.Dashboards(t.Context(), sub))
+	l, _, err := m.svc.Dashboards(t.Context(), sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
 }
 
 // proposed is whether listing l holds proposal id.
@@ -176,7 +180,7 @@ func refusalCode(err error) string {
 func TestATriedWidgetIsCountedAndShownOnlyWhenAsked(t *testing.T) {
 	t.Parallel()
 	m, sub := dashboardFixture(t)
-	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), openTickets(), "thread-1", false)
+	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), openTickets(), TileMarks{}, "thread-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,23 +217,23 @@ func TestATriedWidgetIsRefusedWithItsReason(t *testing.T) {
 	m, sub := dashboardFixture(t)
 	bad := openTickets()
 	bad.Metric.SQL = "SELECT id AS ticket FROM tickets WHERE labels = 'x'"
-	_, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), bad, "thread-1", true)
+	_, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), bad, TileMarks{}, "thread-1", true)
 	if r, ok := errors.AsType[*trackerdash.Refusal](err); !ok || r.Code != "dashboard_widget_refused" || !strings.Contains(r.Sentence, "labels") {
 		t.Fatalf("a query on a column the copy lacks: %v", err)
 	}
 	if l := m.list(t, sub); len(l.Proposals) != 0 {
 		t.Fatalf("a refused widget was proposed: %+v", l.Proposals)
 	}
-	if _, err := m.svc.TryWidget(t.Context(), m.project(), Scope{Connection: m.conn.ID, Board: "5"}, openTickets(), "thread-1", true); !errors.Is(err, ErrNotListed) {
+	if _, err := m.svc.TryWidget(t.Context(), m.project(), Scope{Connection: m.conn.ID, Board: "5"}, openTickets(), TileMarks{}, "thread-1", true); !errors.Is(err, ErrNotListed) {
 		t.Fatalf("a board the project does not list: %v", err)
 	}
 	for range maxProposals {
 		m.propose(t, openTickets())
 	}
-	if _, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), openTickets(), "thread-1", true); refusalCode(err) != "dashboard_proposals_full" {
+	if _, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), openTickets(), TileMarks{}, "thread-1", true); refusalCode(err) != "dashboard_proposals_full" {
 		t.Fatalf("a proposal past the cap: %v", err)
 	}
-	if _, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), openTickets(), "thread-1", false); err != nil {
+	if _, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), openTickets(), TileMarks{}, "thread-1", false); err != nil {
 		t.Fatalf("a try without show past the cap: %v", err)
 	}
 }

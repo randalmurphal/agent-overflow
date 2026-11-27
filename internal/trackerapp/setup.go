@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker"
 )
 
 // A project's tracker setup: the per-project choices of the Issues
@@ -539,8 +540,9 @@ func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setu
 
 // setupMoved tells what a change of slug's held setup from before to
 // after moves, either nil when none is held: every board subscription of
-// the project on a site whose status groups changed reads again, and a
-// change of what is stored is told. A side that holds nothing is not
+// the project on a site whose status groups changed reads again, and so
+// does one of a board whose pins changed (BoardView.Pins), and a change of
+// what is stored is told. A side that holds nothing is not
 // known to agree with the other on any site, so every site counts as
 // moved: a board of the project read with groups that may be stale, or
 // failed to read them, reads again.
@@ -551,27 +553,54 @@ func (s *Service) setupMoved(slug string, before, after *heldSetup) {
 	case before != nil && after != nil && before.view.Revision == after.view.Revision:
 		return
 	}
-	s.readBoardsAgain(slug, func(site siteKey) bool {
-		return before == nil || after == nil || before.groups[site].version != after.groups[site].version
+	s.readBoardsAgain(slug, func(site siteKey, board tracker.BoardID) bool {
+		return before == nil || after == nil || before.groups[site].version != after.groups[site].version ||
+			!slices.Equal(tilesOf(before.kept.tiles, site, string(board)).Pins, tilesOf(after.kept.tiles, site, string(board)).Pins)
 	})
 	s.setupChanged()
 }
 
 // readBoardsAgain has every board pump with a handle of project slug on a
-// site moved holds for send ReadAgain.
-func (s *Service) readBoardsAgain(slug string, moved func(siteKey) bool) {
+// site and board moved holds for send ReadAgain.
+func (s *Service) readBoardsAgain(slug string, moved func(siteKey, tracker.BoardID) bool) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	told := map[*boardPump]bool{}
 	for _, h := range s.subs.handles {
 		p := h.board
-		if p == nil || told[p] || h.setup.slug != slug || !moved(h.setup.site) || p.over || p.core.DeadLocked() {
+		if p == nil || told[p] || h.setup.slug != slug || !moved(h.setup.site, p.scope.Board) || p.over || p.core.DeadLocked() {
 			continue
 		}
 		told[p] = true
 		p.pending.add(nil, nil, true)
 		s.flushBoardLocked(p)
 	}
+}
+
+// boardViewOf is board scope as project key reads it (Board): with the
+// status groups the project gives its site, and the widgets the project
+// pins to it.
+func (s *Service) boardViewOf(key setupKey, scope Scope, sections []Section) (BoardView, error) {
+	groups, err := s.boardStatusGroups(key)
+	if err != nil {
+		return BoardView{}, err
+	}
+	view, err := s.Board(scope, groups, sections)
+	if err != nil {
+		return BoardView{}, err
+	}
+	view.Pins, err = s.boardPins(key, string(scope.Board))
+	return view, err
+}
+
+// SubscriptionBoardView is board handle id's board as its project reads
+// it (boardViewOf).
+func (s *Service) SubscriptionBoardView(id string, sections []Section) (BoardView, error) {
+	scope, key, err := s.boardHandle(id)
+	if err != nil {
+		return BoardView{}, err
+	}
+	return s.boardViewOf(key, scope, sections)
 }
 
 // boardStatusGroups is the status groups key's project gives its site,
