@@ -2129,8 +2129,9 @@ delete is refused and the links the delete read are the ones it ends.
   the two methods walks on its own, so a ticket's open walks them up to
   twice. An origin read is cached for five minutes once it has
   succeeded, so a walk that starts after another's read finished reads
-  again only the origins that failed; the two walks of one open start
-  together and may each read an origin neither has cached. A read
+  again only the origins that failed; the two requests of one open
+  start together, so their walks can overlap and each read an origin
+  neither has cached. A read
   is up to two git processes (`rev-parse --git-common-dir`, then
   `remote get-url origin`). With 10 other projects, a ticket with no
   rows and one whose rows the covered projects clone read none of their
