@@ -226,7 +226,12 @@ func TestAnAgentsPostLogsOnlyWhatThePersonSaw(t *testing.T) {
 	}
 	// While the prompt is open: the person edits WEB-1 and removes WEB-2,
 	// and another thread drafts WEB-3.
-	entries, err := f.a.ThreadTimeEntries(ctx, thread.ID)
+	drafts := timeDraftRows(t, f.a, thread.ID)
+	var drafting struct{ Call string }
+	if len(drafts) != 1 || json.Unmarshal([]byte(drafts[0].Meta), &drafting) != nil || drafting.Call == "" {
+		t.Fatalf("the draft's timeline rows %+v", drafts)
+	}
+	entries, err := f.a.ThreadTimeEntries(ctx, thread.ID, drafting.Call)
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("ThreadTimeEntries = %+v, %v", entries, err)
 	}
