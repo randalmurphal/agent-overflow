@@ -779,19 +779,19 @@ func (ev *evaluation) narrowing(r Request) (narrowing, error) {
 	return n, nil
 }
 
-// keep is the rows of the narrowed page: a row's person is the metric's
-// person column, else the viewer for a metric of the viewer's logged time
-// (p reads worklogs), else its ticket's assignee; its epic likewise. A row
-// of a metric with a person column that is not counted and names no
-// person could be anyone's (credit whose evidence is not read), so every
-// person narrowing keeps it, as not counted.
-func (ev *evaluation) keep(n narrowing, p prepared, rows []contribution) []contribution {
+// keeps is whether the narrowed page keeps row c, nil for a page not
+// narrowed: a row's person is the metric's person column, else the
+// viewer for a metric of the viewer's logged time (p reads worklogs),
+// else its ticket's assignee; its epic likewise. A row of a metric with a
+// person column that is not counted and names no person could be
+// anyone's (credit whose evidence is not read), so every person narrowing
+// keeps it, as not counted. The row sink keeps no other row (count).
+func (ev *evaluation) keeps(n narrowing, p prepared) func(c contribution) bool {
 	if n.person == nil && n.epic == nil {
-		return rows
+		return nil
 	}
 	cols := p.cols
-	var out []contribution
-	for _, c := range rows {
+	return func(c contribution) bool {
 		t := ev.tickets[c.ticket]
 		person, epic := t.assignee, t.epic
 		anyone := false
@@ -804,11 +804,8 @@ func (ev *evaluation) keep(n narrowing, p prepared, rows []contribution) []contr
 		if cols.has(ColumnEpic) {
 			epic = c.epic
 		}
-		if (n.person == nil || person == n.person.ID || anyone) && (n.epic == nil || epic == n.epic.ID) {
-			out = append(out, c)
-		}
+		return (n.person == nil || person == n.person.ID || anyone) && (n.epic == nil || epic == n.epic.ID)
 	}
-	return out
 }
 
 // location is the IANA zone name names.
@@ -832,11 +829,11 @@ type counted struct {
 	note string
 }
 
-// run runs metric m's prepared statement p, narrowed by n, a state
-// metric's rows those that hold at one of at. A failure of the metric is
-// the widget's; one of the evaluation is returned.
-func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing, now, since int64, at heldAt) (counted, error) {
-	rows, err := ev.s.run(ctx, p, now, since, ev.estimates, at)
+// run runs metric m's prepared statement p for the rows k keeps. A
+// failure of the metric is the widget's; one of the evaluation is
+// returned.
+func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, now, since int64, k kept) (counted, error) {
+	rows, err := ev.s.run(ctx, p, now, since, ev.estimates, k)
 	if ctx.Err() != nil {
 		return counted{}, tooSlow(ctx, ctx.Err())
 	}
@@ -846,7 +843,6 @@ func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing
 	if err != nil {
 		return counted{}, fmt.Errorf("count metric %s: %w", m.Name, err)
 	}
-	rows = ev.keep(n, p, rows)
 	if m.numbersUnit() == UnitEstimate && ev.estimates == "none" {
 		// The board counts tickets (it has no estimates, or its project
 		// counts tickets): each counted row is its share of a ticket, one
@@ -1070,9 +1066,8 @@ func (e *Evaluator) relationsOf(ctx context.Context, k *Kind, metrics map[string
 }
 
 // count runs metric m once, its prepared statement from the view, for
-// what its widgets read (r): a state metric keeps only the rows that hold
-// where they read it, and an event metric placed in periods only the rows
-// of the periods they take.
+// the rows its widgets take (r, reads.kept) of the narrowed page
+// (evaluation.keeps): the sink holds and charges no other row.
 func (o *opened) count(m Metric, r reads) (counted, error) {
 	pr := o.preps[m.Name]
 	if pr.err != nil {
@@ -1082,12 +1077,12 @@ func (o *opened) count(m Metric, r reads) (counted, error) {
 		return counted{p: pr.p, note: note}, nil
 	}
 	now := o.now.UnixMilli()
-	bySprint := m.Bucket == BucketSprint
-	at := r.instants(now, bySprint)
-	if !pr.p.cols.state() && pr.p.cols.periodBound(m) {
-		at.events, at.takes, at.bySprint, at.spanOf = true, r.takes, bySprint, o.ev.spanOf
+	k := r.kept(m, pr.p.cols, now, o.ev.spanOf)
+	if narrowed := o.ev.keeps(o.n, pr.p); narrowed != nil {
+		taken := k.keep
+		k.keep = func(c contribution) bool { return narrowed(c) && (taken == nil || taken(c)) }
 	}
-	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now), at)
+	return o.ev.run(o.ctx, m, pr.p, now, o.sp.since(now), k)
 }
 
 // Evaluate counts dashboard r.Dashboard of board b and then the board's
@@ -1428,16 +1423,21 @@ func periodsOf(m Metric, sp span) []period {
 // metric, the rows that hold now, where the range begins, or at the end
 // of periods; of an event metric placed in periods, the rows of the
 // periods it takes (takes). A metric that runs for several widgets runs
-// for all of what they read (and). The sink keeps no other row (count).
+// for all of what they read (and). kept is the rows they take, which is
+// all the sink keeps (count).
 type reads struct {
 	now, start bool
 	periods    []period
 	day        bool
 	takes      []period
+	// unplaced is whether they take an event row of no instant, which
+	// place puts in no period: a widget counts it as not counted, a cell
+	// does not hold it.
+	unplaced bool
 }
 
 func (r reads) and(o reads) reads {
-	r.now, r.start, r.day = r.now || o.now, r.start || o.start, r.day || o.day
+	r.now, r.start, r.day, r.unplaced = r.now || o.now, r.start || o.start, r.day || o.day, r.unplaced || o.unplaced
 	union := func(to, from []period) []period {
 		for _, p := range from {
 			if !slices.ContainsFunc(to, func(q period) bool { return q.id == p.id }) {
@@ -1464,60 +1464,98 @@ func widgetReads(w Widget, m Metric, sp span) reads {
 	}
 	switch {
 	case w.Form == FormNumber:
-		return reads{now: true, start: m.Bucket != BucketDay && len(ps) > 0, periods: ps, day: m.Bucket == BucketDay, takes: takes}
+		return reads{now: true, start: m.Bucket != BucketDay && len(ps) > 0, periods: ps, day: m.Bucket == BucketDay, takes: takes, unplaced: true}
 	case w.Form == FormList || ranks(w, m):
-		return reads{now: true, takes: takes}
+		return reads{now: true, takes: takes, unplaced: true}
 	}
-	return reads{periods: ps, day: m.Bucket == BucketDay, takes: takes}
+	return reads{periods: ps, day: m.Bucket == BucketDay, takes: takes, unplaced: true}
 }
 
-// instants is r's instants at now, a period to come left out, and where
-// they are in words: now and where the range begins in any sprint, a
-// period's end in its own sprints for a metric by sprint (bySprint, its
-// ends), as the widget reads them (ranged).
-func (r reads) instants(now int64, bySprint bool) heldAt {
-	var in heldAt
-	var where []string
+// kept is the rows of metric m, of columns cols, that r takes, by the
+// rules the reduction selects them by (inRange): every row of a metric
+// that counts now; a state row that holds at an instant r reads, now or
+// where the range begins in any sprint (holdsAt), or at the end of a
+// period r reads, in the period's own sprints for a metric by sprint
+// (period.holdsState); an event row in a period r takes (period.places),
+// one with no instant, where r takes those, when its ticket's life
+// (spanOf) meets such a period (period.meets), as place puts it.
+func (r reads) kept(m Metric, cols columns, now int64, spanOf func(ticket string) (from, to int64)) kept {
+	bySprint := m.Bucket == BucketSprint
+	switch {
+	case cols.state():
+		at, ends, where := r.instants(now, bySprint)
+		return kept{where: where, shorter: len(at)+len(ends) != 1, keep: func(c contribution) bool {
+			i := 0
+			if c.hasAt {
+				i, _ = slices.BinarySearch(at, c.at)
+			}
+			if i < len(at) && c.holdsAt(at[i]) {
+				return true
+			}
+			return slices.ContainsFunc(ends, func(p period) bool { return p.holdsState(c, true) })
+		}}
+	case cols.periodBound(m):
+		return kept{keep: func(c contribution) bool {
+			if bySprint || c.hasAt {
+				return slices.ContainsFunc(r.takes, func(p period) bool { return p.places(c, bySprint) })
+			}
+			if !r.unplaced {
+				return false
+			}
+			from, to := spanOf(c.ticket)
+			return slices.ContainsFunc(r.takes, func(p period) bool { return p.meets(from, to) })
+		}}
+	}
+	return kept{}
+}
+
+// instants is where r reads a state metric at now, a period to come left
+// out: the instants read in any sprint, sorted (at: now, where the range
+// begins, and a period's end for a metric not by sprint), the periods
+// whose end is read in the period's own sprints for a metric by sprint
+// (ends), and where they are in words.
+func (r reads) instants(now int64, bySprint bool) (at []int64, ends []period, where string) {
+	var words []string
 	if r.now {
-		in.at = append(in.at, now)
-		where = append(where, "now")
+		at = append(at, now)
+		words = append(words, "now")
 	}
 	if r.start {
-		in.at = append(in.at, r.periods[0].from)
-		where = append(where, "where the range begins")
+		at = append(at, r.periods[0].from)
+		words = append(words, "where the range begins")
 	}
-	ends := 0
+	n := 0
 	for _, p := range r.periods {
 		switch {
 		case p.future:
 			continue
 		case bySprint:
-			in.ends = append(in.ends, p)
+			ends = append(ends, p)
 		default:
-			in.at = append(in.at, p.to)
+			at = append(at, p.to)
 		}
-		ends++
+		n++
 	}
 	switch {
-	case ends == 1 && len(r.periods) == 1:
-		where = append(where, "at the end of "+r.periods[0].label)
-	case ends > 0 && r.day:
-		where = append(where, "at the end of a sprint day")
-	case ends > 0:
-		where = append(where, "at the end of a period")
+	case n == 1 && len(r.periods) == 1:
+		words = append(words, "at the end of "+r.periods[0].label)
+	case n > 0 && r.day:
+		words = append(words, "at the end of a sprint day")
+	case n > 0:
+		words = append(words, "at the end of a period")
 	}
-	slices.Sort(in.at)
-	in.at = slices.Compact(in.at)
-	switch len(where) {
+	slices.Sort(at)
+	at = slices.Compact(at)
+	switch len(words) {
 	case 0:
 	case 1:
-		in.where = where[0]
+		where = words[0]
 	case 2:
-		in.where = where[0] + " or " + where[1]
+		where = words[0] + " or " + words[1]
 	default:
-		in.where = strings.Join(where[:len(where)-1], ", ") + ", or " + where[len(where)-1]
+		where = strings.Join(words[:len(words)-1], ", ") + ", or " + words[len(words)-1]
 	}
-	return in
+	return at, ends, where
 }
 
 // ranks is whether a widget ranks its buckets and shows the first of
@@ -1771,7 +1809,7 @@ type DrillAnswer struct {
 func drillReads(w Widget, m Metric, sp span, r DrillRequest) reads {
 	ps := periodsOf(m, sp)
 	if r.Cell == nil || r.Rest || ranks(w, m) {
-		return reads{now: true, takes: ps}
+		return reads{now: true, takes: ps, unplaced: true}
 	}
 	for _, p := range ps {
 		if p.id == r.Cell.Bucket {
@@ -1812,6 +1850,12 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	if err != nil {
 		return DrillAnswer{}, err
 	}
+	return o.drill(w, m, c, r)
+}
+
+// drill answers the number r names of widget w from c, its metric m's
+// rows.
+func (o *opened) drill(w Widget, m Metric, c counted, r DrillRequest) (DrillAnswer, error) {
 	if c.err != nil {
 		return DrillAnswer{}, refuse("dashboard_metric_failed", c.err.Sentence, nil)
 	}

@@ -2772,7 +2772,15 @@ on Jira), the ticket names no person and its reviews are one row not
 counted, and one whose history starts after its finish (a ticket the
 tracker no longer answers for) names no one, its points still counted.
 When it finished is read from that history too, else from its
-resolution. Support time counts in closed
+resolution. One whose history covers it but names no one for an unknown
+finish (no move into done, no resolution, a reassignment) counts the
+review of each person who never had it, and lists the actions of those
+who did as one review row not counted. Each finished ticket's row and
+review rows read one answer for who had it or why no one is named
+(`cr_f` in `mirrorCreditFinishedSQL`). A closed sprint's member carried
+into a later sprint counts as done at the closed sprint's end from its
+status now only when its history is read for its card
+(`mirrorStatusAtCompletionSQL`), for the pace too. Support time counts in closed
 and active sprints only: work after the last completion while no sprint
 is active counts once the next one starts. While the evidence unit's
 last whole read failed, each value of a widget that reads `credit`
@@ -2960,14 +2968,16 @@ statement.
   step, under a 1 s deadline counted from before its prepare, at most
   20,000 rows and 4 MiB of encoded rows. A row counts toward them only
   if a widget or drill of the evaluation takes it (`reads`), by the
-  rules the reduction places it by (`heldAt`, `period.holdsState`,
+  rules the reduction places it by (`reads.kept`, `period.holdsState`,
   `period.places`, `period.meets`): a state's if it holds now or where
   the range begins, or at the end of a period they show, in that
   period's sprint for a metric by sprint; an event's placed in periods
   if it falls in a period they show, or in the previous range for a
   number that compares with it, one with no instant if its ticket's
-  life meets such a period; so rows no widget reduces do not fill the
-  limit; past it, a state widget's sentence says which of those
+  life meets such a period and not for a drill of one period, which
+  holds placed rows alone; on a person's or an epic's page, only the
+  rows the page keeps (`evaluation.keeps`); so rows no widget reduces do
+  not fill the limit; past it, a state widget's sentence says which of those
   instants the rows held at. An evaluation has 4 s. A
   count of a dashboard is two, one after the other: its own widgets, on
   a copy of what they read, with their titles, then the board's

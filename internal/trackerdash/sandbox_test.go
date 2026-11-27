@@ -60,7 +60,7 @@ func runSQL(s *session, m Metric) ([]contribution, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.run(context.Background(), p, ms(testNow), 0, "points", heldAt{})
+	return s.run(context.Background(), p, ms(testNow), 0, "points", kept{})
 }
 
 // A metric's SQL reads the board's relations and calls the allowed
@@ -167,11 +167,11 @@ func TestTheDeadlineCountsThePrepare(t *testing.T) {
 	if p.took <= 0 || p.took > call {
 		t.Fatalf("the prepare recorded %v of a call of %v; want the time it took", p.took, call)
 	}
-	if rows, err := s.run(context.Background(), p, ms(testNow), 0, "points", heldAt{}); err != nil || len(rows) != 10 {
+	if rows, err := s.run(context.Background(), p, ms(testNow), 0, "points", kept{}); err != nil || len(rows) != 10 {
 		t.Fatalf("the query after its own prepare: %d rows, %v", len(rows), err)
 	}
 	p.took = metricDeadline
-	_, err = s.run(context.Background(), p, ms(testNow), 0, "points", heldAt{})
+	_, err = s.run(context.Background(), p, ms(testNow), 0, "points", kept{})
 	var me *MetricError
 	if !errors.As(err, &me) || !me.Limit {
 		t.Fatalf("the query after a prepare that took the whole deadline: %v; want the limit's sentence", err)

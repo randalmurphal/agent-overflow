@@ -400,13 +400,12 @@ func (s *session) wrapped(p prepared) string {
 // to the sink, and answers its rows. The host binds :now, the
 // evaluation's instant, :since, where the range's periods begin
 // (span.since), so a metric of the range reads only the rows it can
-// place, and :estimates (hostParams). A state metric's rows are those
-// that hold at one of at.
-func (s *session) run(ctx context.Context, p prepared, now, since int64, estimates string, at heldAt) ([]contribution, error) {
+// place, and :estimates (hostParams). It answers the rows k keeps.
+func (s *session) run(ctx context.Context, p prepared, now, since int64, estimates string, k kept) ([]contribution, error) {
 	ctx, cancel := context.WithTimeout(ctx, metricDeadline-p.took)
 	defer cancel()
-	s.sink.reset(p.cols, p.series, at)
-	defer s.sink.reset(columns{}, nil, heldAt{})
+	s.sink.reset(p.cols, p.series, k)
+	defer s.sink.reset(columns{}, nil, kept{})
 	s.take()
 	s.setWrapping(true)
 	var n int64
