@@ -330,7 +330,7 @@ func (h trackerToolsHost) Boards(threadID string) (string, []trackertools.Listed
 	}
 	out := make([]trackertools.ListedBoard, len(choices))
 	for i, c := range choices {
-		out[i] = trackertools.ListedBoard{Connection: c.Connection, Board: c.Board, Name: c.Name, TrackerProject: c.TrackerProject,
+		out[i] = trackertools.ListedBoard{Connection: c.Connection, ConnectionLabel: c.ConnectionLabel, Board: c.Board, Name: c.Name, TrackerProject: c.TrackerProject,
 			Thread: thread.ProjectID != "" && c.Project == thread.ProjectID}
 	}
 	return thread.ProjectID, out, nil

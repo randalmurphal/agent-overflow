@@ -2,6 +2,7 @@ package trackertools
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -169,9 +170,11 @@ func (s *Server) dashboardWidget(ctx context.Context, caller Caller, raw json.Ra
 
 // widgetBoard is the thread's project and the board of it named, by
 // name, ID, or site/ID: the project's one board when none is named. A
-// board two connections reach is one board; a name or an ID that more
-// than one board answers to is refused, naming each by its site/ID, which
-// the agent passes back and the user tells apart.
+// name or an ID that more than one board answers to is refused, naming
+// each by its site/ID, which the agent passes back and the user tells
+// apart. A board listed through two connections of its site is two
+// accounts' copies of it, refused naming the connections by the labels
+// the user gave them.
 func (s *Server) widgetBoard(threadID, named string) (string, ListedBoard, error) {
 	project, boards, err := s.h.Boards(threadID)
 	if err != nil {
@@ -181,48 +184,71 @@ func (s *Server) widgetBoard(threadID, named string) (string, ListedBoard, error
 	if err != nil {
 		return "", ListedBoard{}, err
 	}
-	// handle is a board's site/ID, its ID alone when no connection turned
-	// on reaches it (its count then refuses on its own).
-	handle := func(b ListedBoard) string {
+	// site is a board's site, "" when no connection turned on reaches it
+	// (its count then refuses on its own); handle is its site/ID.
+	site := func(b ListedBoard) string {
 		if i := slices.IndexFunc(sources, func(src trackerapp.TicketSource) bool { return src.ID == b.Connection }); i >= 0 {
-			return sources[i].Site + "/" + b.Board
+			return sources[i].Site
+		}
+		return ""
+	}
+	handle := func(b ListedBoard) string {
+		if site := site(b); site != "" {
+			return site + "/" + b.Board
 		}
 		return b.Board
 	}
 	var listed []ListedBoard
 	var names []string
 	for _, b := range boards {
-		if b.Thread && !slices.ContainsFunc(listed, func(l ListedBoard) bool { return handle(l) == handle(b) }) {
+		if b.Thread {
 			listed = append(listed, b)
 			names = append(names, fmt.Sprintf("%q", b.Name))
 		}
 	}
 	named = strings.TrimSpace(named)
+	var match []ListedBoard
 	switch {
 	case len(listed) == 0:
 		return "", ListedBoard{}, errorsx.Public(CodeNoBoard, "This thread's project lists no board on this computer; the user adds one in the project's Issues settings.", nil)
 	case named == "" && len(listed) == 1:
-		return project, listed[0], nil
+		match = listed
 	case named == "":
 		return "", ListedBoard{}, errorsx.Public(CodeNoBoard, fmt.Sprintf("This thread's project lists %s; give board.", sayList(names, "and")), nil)
-	}
-	var match []ListedBoard
-	for _, b := range listed {
-		if strings.EqualFold(b.Name, named) || b.Board == named || strings.EqualFold(handle(b), named) {
-			match = append(match, b)
+	default:
+		for _, b := range listed {
+			if strings.EqualFold(b.Name, named) || b.Board == named || strings.EqualFold(handle(b), named) {
+				match = append(match, b)
+			}
 		}
 	}
-	switch len(match) {
-	case 0:
+	if len(match) == 0 {
 		return "", ListedBoard{}, errorsx.Public(CodeNoBoard, fmt.Sprintf("This thread's project lists no board %q; it lists %s.", named, sayList(names, "and")), nil)
-	case 1:
-		return project, match[0], nil
 	}
-	each := make([]string, len(match))
-	for i, b := range match {
-		each[i] = fmt.Sprintf("%q at %s", b.Name, handle(b))
+	var each []string
+	for _, b := range match {
+		if h := fmt.Sprintf("%q at %s", b.Name, handle(b)); !slices.Contains(each, h) {
+			each = append(each, h)
+		}
 	}
-	return "", ListedBoard{}, errorsx.Public(CodeNoBoard, fmt.Sprintf("Board %q names more than one board of this thread's project: %s; give board as the site/ID of one.", named, sayList(each, "and")), nil)
+	if len(each) > 1 {
+		return "", ListedBoard{}, errorsx.Public(CodeNoBoard, fmt.Sprintf("Board %q names more than one board of this thread's project: %s; give board as the site/ID of one.", named, sayList(each, "and")), nil)
+	}
+	if len(match) > 1 {
+		var labels []string
+		for _, b := range match {
+			if b.ConnectionLabel != "" {
+				labels = append(labels, fmt.Sprintf("%q", b.ConnectionLabel))
+			}
+		}
+		which := ""
+		if len(labels) == len(match) {
+			which = " (" + sayList(labels, "and") + ")"
+		}
+		return "", ListedBoard{}, errorsx.Public(CodeNoBoard, fmt.Sprintf("Board %q is listed through %d connections of %s%s, each one account's copy; the user removes one of them from the project's boards in its Issues settings.",
+			cmp.Or(named, handle(match[0])), len(match), site(match[0]), which), nil)
+	}
+	return project, match[0], nil
 }
 
 // numOf is n's value, nil when it has none (not known, or a gap).

@@ -165,7 +165,9 @@ type Host interface {
 // and ID, its name, the tracker project its tickets are made in (its
 // key), and whether the calling thread's project lists it.
 type ListedBoard struct {
-	Connection, Board    string
+	Connection, Board string
+	// ConnectionLabel is the name the user gave the connection, "" for none.
+	ConnectionLabel      string
 	Name, TrackerProject string
 	Thread               bool
 }

@@ -200,8 +200,9 @@ func TestDashboardWidgetPassesTheRefusalAndNeedsNoWrite(t *testing.T) {
 // Two boards of the thread's project with one name, or one ID on two
 // sites, are not told apart by first match: the call is refused naming
 // each by its site and ID, with no connection's ID, and counts nothing;
-// the site and ID it names picks one. The same board reached through two
-// connections is one board.
+// the site and ID it names picks one. The same board listed through two
+// connections of its site is refused naming the connections by the
+// labels the user gave them: each is one account's copy of the board.
 func TestDashboardWidgetRefusesABoardNamedTwice(t *testing.T) {
 	t.Parallel()
 	f := &fakeTracker{
@@ -209,8 +210,8 @@ func TestDashboardWidgetRefusesABoardNamedTwice(t *testing.T) {
 		sources: []trackerapp.TicketSource{{ID: "conn-a", Site: "a.example.net"}, {ID: "conn-a2", Site: "a.example.net"}, {ID: "conn-b", Site: "b.example.net"}},
 	}
 	h := &fakeHost{project: "p1", boards: []ListedBoard{
-		{Connection: "conn-a", Board: "1", Name: "Engineering", Thread: true},
-		{Connection: "conn-a2", Board: "1", Name: "Engineering", Thread: true},
+		{Connection: "conn-a", ConnectionLabel: "Work", Board: "1", Name: "Engineering", Thread: true},
+		{Connection: "conn-a2", ConnectionLabel: "Personal", Board: "1", Name: "Engineering", Thread: true},
 		{Connection: "conn-b", Board: "1", Name: "Engineering", Thread: true},
 		{Connection: "conn-b", Board: "2", Name: "Mobile", Thread: true},
 	}}
@@ -226,6 +227,11 @@ func TestDashboardWidgetRefusesABoardNamedTwice(t *testing.T) {
 	}
 	if len(f.tries) != 1 || !strings.Contains(f.tries[0], " conn-b/1 ") {
 		t.Fatalf("site/ID counted %+v; want the board on b.example.net", f.tries)
+	}
+	_, err := widgetCall(t, f, h, map[string]any{"board": "a.example.net/1", "widget": openWidget})
+	refused(t, err, CodeNoBoard, `Board "a.example.net/1" is listed through 2 connections of a.example.net ("Work" and "Personal"), each one account's copy; the user removes one of them from the project's boards in its Issues settings.`)
+	if len(f.tries) != 1 {
+		t.Fatalf("a board listed through two connections was counted: %v", f.tries)
 	}
 }
 
