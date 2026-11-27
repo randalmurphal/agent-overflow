@@ -1,4 +1,4 @@
-// Settings > Issues > Fields, Starting work, Time and Agents
+// Settings > Issues > Fields, Starting work, Points and credit, Time and Agents
 // (docs/specs/issues.md, "Setup"), shared by the desktop and compact projects, through the
 // shipped UI, the real backend, the project's tracker.json, the fake
 // trackers and mock provider sessions that call the tracker tools.
@@ -12,8 +12,12 @@
 // several at once off, a change to two tickets sent with no prompt; the
 // Time page's meetings ticket found by key and time-off ticket by title,
 // saved with their titles shown, one cleared, and a ticket that is gone
-// said; a Linear-only project's Fields page saying it has nothing to pin;
-// on each of the four pages, a save that lost to a hand edit of the file said in
+// said; the Points and credit page's Count tickets summing the Board's
+// columns and the Backlog's sprint in tickets without a reload while the
+// cards keep their points, and back, and Planning poker off taking the
+// poker section from the project's tickets and on bringing it back; a
+// Linear-only project's Fields page saying it has nothing to pin;
+// on each of the five pages, a save that lost to a hand edit of the file said in
 // words with the hand edit shown and kept, a save whose outcome is unknown
 // (the project's directory refuses the write) said in the computer's
 // words, a file that cannot be read said with its path, and a section a
@@ -76,6 +80,10 @@ function fieldsPage(page: Page, compact: boolean): Promise<Locator> {
 
 function startWorkPage(page: Page, compact: boolean): Promise<Locator> {
   return openIssuesSetting(page, compact, 'Starting work', 'settings-tracker-start-work');
+}
+
+function pointsPage(page: Page, compact: boolean): Promise<Locator> {
+  return openIssuesSetting(page, compact, 'Points and credit', 'settings-tracker-points');
 }
 
 function timePage(page: Page, compact: boolean): Promise<Locator> {
@@ -164,6 +172,16 @@ const CASES: PageCase[] = [
     showsHandEdit: (screen) => expect(place(screen, 'WEB').getByTestId('tracker-start-work-branch-example')).toHaveText('web/WEB-123'),
   },
   {
+    name: 'Points and credit',
+    open: pointsPage,
+    id: 'points',
+    section: 'estimates',
+    what: 'points and credit settings',
+    handEdit: () => ({ estimates: { version: 1, poker: false } }),
+    control: (screen) => rule(screen, 'Planning poker'),
+    showsHandEdit: (screen) => expect(rule(screen, 'Planning poker')).toHaveAttribute('aria-checked', 'false'),
+  },
+  {
     name: 'Time',
     open: timePage,
     id: 'time',
@@ -188,7 +206,7 @@ const CASES: PageCase[] = [
 /** The controls a page offers for a change: none while it cannot be read
  * or a newer build saved its section. */
 function controls(screen: Locator): Locator {
-  return screen.locator('[role="switch"], [data-testid="tracker-fields-pinned"], [data-testid="tracker-fields-find"], [data-testid="tracker-time-ticket-find"]');
+  return screen.locator('[role="switch"], [data-testid="tracker-fields-pinned"], [data-testid="tracker-fields-find"], [data-testid="tracker-time-ticket-find"], [data-testid="tracker-points-count"]');
 }
 
 /** A project on the fake Jira site with one thread on the mock Claude,
@@ -399,6 +417,56 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     expect(await storedSetup(file)).toEqual({ time: { version: 1, time_off: timeOff } });
   });
 
+  test('the Points and credit page counts tickets on the Board and the Backlog without a reload, the cards keeping their points, and planning poker off leaves the tickets without it', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    const { pane, file } = await openBoard(harness, page, 'settings-points', compact, { ...SETUP, estimation: EFFORT, poker: {} });
+    const columnCounts = pane.getByTestId('issues-column-count');
+    await expect(columnCounts.first()).toContainText('pts', { timeout: 15_000 });
+    await expect(card(pane, PINNED_ID).getByTestId('issues-card-estimate')).toHaveText('3');
+
+    const screen = await pointsPage(page, compact);
+    const count = screen.getByTestId('tracker-points-count');
+    await expect(count).toHaveValue('estimates', { timeout: 15_000 });
+    await expect(count.locator('option')).toHaveText(['Story points', 'Count tickets']);
+    await expect(screen.getByTestId('tracker-points-pace-line')).toHaveText('No sprint of WEB board has finished yet.');
+    await count.selectOption('tickets');
+    await expect.poll(() => storedSetup(file), { timeout: 15_000 }).toEqual({ estimates: { version: 1, count: 'tickets' } });
+
+    await closeSettings(page, compact);
+    await openIssuesPane(page, compact);
+    await expect(columnCounts.first()).not.toContainText('pts', { timeout: 15_000 });
+    await expect(card(pane, PINNED_ID).getByTestId('issues-card-estimate')).toHaveText('3');
+    const backlog = await openBacklog(page, pane, compact);
+    const sprint = backlog.locator('[data-testid="issues-backlog-section"][data-list="sprint:1"] [data-testid="issues-backlog-numbers"]');
+    await expect(sprint).toHaveText(/^\d+ of \d+ tickets done$/, { timeout: 15_000 });
+
+    const back = await pointsPage(page, compact);
+    await back.getByTestId('tracker-points-count').selectOption('estimates');
+    // Counting by the estimates sets nothing, so the setup is no file.
+    await expect.poll(() => readFile(file, 'utf8').then(() => 'a file', () => 'no file'), { timeout: 15_000 }).toBe('no file');
+    await closeSettings(page, compact);
+    await openIssuesPane(page, compact);
+    await expect(sprint).toHaveText(/points done$/, { timeout: 15_000 });
+
+    // Planning poker: on, the ticket has it; off, it has none; on again,
+    // back.
+    const ticket = await openTicket(pane, PINNED_ID, compact);
+    await expect(ticket.getByTestId('ticket-poker-fold')).toBeVisible({ timeout: 15_000 });
+    const off = await pointsPage(page, compact);
+    await press(rule(off, 'Planning poker'), compact);
+    await expect(rule(off, 'Planning poker')).toHaveAttribute('aria-checked', 'false', { timeout: 15_000 });
+    expect(await storedSetup(file)).toEqual({ estimates: { version: 1, poker: false } });
+    await closeSettings(page, compact);
+    await openIssuesPane(page, compact);
+    await expect(ticket.getByTestId('ticket-poker-section')).toHaveCount(0, { timeout: 15_000 });
+    const on = await pointsPage(page, compact);
+    await press(rule(on, 'Planning poker'), compact);
+    await expect(rule(on, 'Planning poker')).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
+    await closeSettings(page, compact);
+    await openIssuesPane(page, compact);
+    await expect(ticket.getByTestId('ticket-poker-fold')).toBeVisible({ timeout: 15_000 });
+  });
+
   test('a Linear-only project\'s Fields page says it has nothing to pin', async ({ harness, page }) => {
     await connectFakeLinearBoard(harness, 'settings-linear', []);
     await harness.open(page);
@@ -597,6 +665,9 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
         const start = await startWorkPage(device, false);
         await press(rule(place(start, 'WEB'), 'Assign it to me'), false);
         await expect(rule(place(start, 'WEB'), 'Assign it to me')).toHaveAttribute('aria-checked', 'false', { timeout: 15_000 });
+        const points = await pointsPage(device, false);
+        await press(rule(points, 'Planning poker'), false);
+        await expect(rule(points, 'Planning poker')).toHaveAttribute('aria-checked', 'false', { timeout: 15_000 });
         const time = await timePage(device, false);
         await chooseTimeTicket(device, time, 'meetings', 'WEB-4', 'WEB-4', false);
         await expect(timeRow(time, 'meetings').getByTestId('tracker-time-ticket-value')).toHaveText(/WEB-4\s*Ticket to pin from/, { timeout: 15_000 });
@@ -608,6 +679,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
           start_work: { version: 1, projects: [{ tracker: 'jira', site: board.site, project: 'WEB', assign: false }] },
           agents: { version: 1, change_tickets: false },
           time: { version: 1, meetings: { tracker: 'jira', site: board.site, key: 'WEB-4' } },
+          estimates: { version: 1, poker: false },
         });
         const there = await fieldsPage(page, false);
         await expect(pinList(there, 'sections').getByTestId('tracker-fields-pinned')).toHaveText(['Linked tickets', 'Attachments'], { timeout: 15_000 });
@@ -642,6 +714,9 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
         const start = await onLaptop(startWorkPage);
         await press(rule(place(start, 'WEB'), 'Assign it to me'), false);
         await expect(rule(place(start, 'WEB'), 'Assign it to me')).toHaveAttribute('aria-checked', 'false', { timeout: 15_000 });
+        const points = await onLaptop(pointsPage);
+        await press(rule(points, 'Planning poker'), false);
+        await expect(rule(points, 'Planning poker')).toHaveAttribute('aria-checked', 'false', { timeout: 15_000 });
         const time = await onLaptop(timePage);
         await chooseTimeTicket(page, time, 'meetings', 'WEB-4', 'WEB-4', false);
         await expect(timeRow(time, 'meetings').getByTestId('tracker-time-ticket-value')).toHaveText(/WEB-4\s*Ticket to pin from/, { timeout: 15_000 });
@@ -654,6 +729,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
           start_work: { version: 1, projects: [{ tracker: 'jira', site: board.site, project: 'WEB', assign: false }] },
           agents: { version: 1, change_tickets: false },
           time: { version: 1, meetings: { tracker: 'jira', site: board.site, key: 'WEB-4' } },
+          estimates: { version: 1, poker: false },
         });
         await closeSettings(page, false);
         const ticket = await openTicket(pane, PINNED_ID, false);
