@@ -121,11 +121,11 @@ var mirrorActsDueSQL = func() (out struct{ active, sprints, closed, weeks, suppo
 		   AND ` + due + ` AND coalesce(` + mirrorStatusAtCompletionSQL + ` IN (` + mirrorDoneStatusesSQL("?3") + `), 0)` + limit
 	out.weeks = columns + ` FROM tracker_cache_issues i
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = i.root_id AND b.board_id = ?2 AND b.issue_id = i.issue_id` + mirrorActsReceiptsSQL + `
-		 WHERE i.root_id = CAST(?1 AS INTEGER) AND i.updated_at > 0 AND i.updated_at >= ` + window + `
+		 WHERE ` + mirrorUpdatedSinceSQL("i", ">=", window) + `
 		   AND ` + due + ` AND i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `)` + limit
 	out.support = `SELECT i.issue_id, 0, 1, ` + mirrorWorklogsFromSQL(window) + ` FROM tracker_cache_issues i
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = i.root_id AND b.board_id = ?2 AND b.issue_id = i.issue_id` + mirrorActsReceiptsSQL + `
-		 WHERE i.root_id = CAST(?1 AS INTEGER) AND i.updated_at > 0 AND i.updated_at >= ` + window + `
+		 WHERE ` + mirrorUpdatedSinceSQL("i", ">=", window) + `
 		   AND ` + mirrorWorklogsDueSQL(window, true) + ` AND ` + support + limit
 	return out
 }()

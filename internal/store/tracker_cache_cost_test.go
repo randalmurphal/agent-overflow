@@ -365,6 +365,7 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 	{"ORDER BY completed_at DESC, position DESC LIMIT", "SCAN l", "the last MirrorPaceSprints closed sprints, which drive the members' lookups by key"},
 	{"ORDER BY completed_at DESC, position DESC LIMIT", "USE TEMP B-TREE FOR GROUP BY", "the members of the last MirrorPaceSprints sprints"},
 	{"cr_sp AS MATERIALIZED", "SCAN last", "the pace's last MirrorPaceSprints closed sprints, the sprints credit counts"},
+	{"cr_sp AS MATERIALIZED", "SCAN sp", "one board's closed and active sprints, each given where its support work can begin"},
 	{"cr_sp AS MATERIALIZED", "SCAN h", "one board's closed and active sprints, which place a support worklog without a sort"},
 	{"cr_sp AS MATERIALIZED", "SCAN cr_m", "the members of the sprints credit counts, read once for what each finished"},
 	{"cr_sp AS MATERIALIZED", "SCAN cm", "the members of the sprints credit counts, read once for those done"},

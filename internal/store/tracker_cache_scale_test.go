@@ -73,6 +73,11 @@ func (c scaleCost) String() string {
 		c.statements, c.writes)
 }
 
+// median is the median of c's times.
+func (c scaleCost) median() time.Duration {
+	return slices.Sorted(slices.Values(c.times))[len(c.times)/2]
+}
+
 // measureScale runs op scaleReps times, rep 0 first, each after its
 // untimed and uncounted prepare (if any).
 func measureScale(t *testing.T, rec *mirrorWriteRecorder, prepare func(rep int), op func(rep int) error) scaleCost {
@@ -165,6 +170,7 @@ func mirrorAtScale(t *testing.T, size benchMirrorSize) {
 		t.Fatalf("root: %v, %v", ok, err)
 	}
 	rec = recordMirrorWrites(t, s)
+	creditAtScale(t, s, root, size, rec)
 	paths := scalePaths(t, s, root, size, rec)
 	for _, name := range slices.Sorted(maps.Keys(paths)) {
 		t.Logf("%-34s %s", name, paths[name])

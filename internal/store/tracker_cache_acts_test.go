@@ -656,3 +656,24 @@ func TestTheSweepRemovesActReceiptsBeforeActs(t *testing.T) {
 	}
 	assertRows(t, s.db, counts+` || ':' || (SELECT count(*) FROM tracker_cache_issues)`, "0:0:0")
 }
+
+// A walk of the issues updated since an instant reads only those: of a
+// mirror's 150 issues, all updated at 1000, a walk from later reads none,
+// and one from 1000 reads them all.
+func TestAnUpdateWalkStartsAtItsBound(t *testing.T) {
+	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: 100})
+	walk := `SELECT count(*) FROM tracker_cache_issues i WHERE ` + mirrorUpdatedSinceSQL("i", ">=", intParam("?2"))
+	for _, c := range []struct {
+		from     int64
+		want     int
+		maxSteps int
+	}{{5_000_000, 0, 30}, {1000, 150, 800}} {
+		var n int
+		if err := s.db.QueryRow(walk, root, c.from).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if steps := statementVMSteps(t, s, walk, root, c.from); n != c.want || steps > c.maxSteps {
+			t.Errorf("from %d: %d issues in %d VM steps; want %d in at most %d", c.from, n, steps, c.want, c.maxSteps)
+		}
+	}
+}
