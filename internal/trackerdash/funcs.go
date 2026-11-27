@@ -306,8 +306,10 @@ func (s *rowSink) reset(cols columns, series []string, at heldAt) {
 // sprints (ends, period.holdsState), with where they are in words for the
 // row limit's sentence (reads.instants); for an event metric placed in
 // periods (events), the periods they take, by sprint for a metric by
-// sprint (period.places), a row with no instant by its ticket's life
-// (spanOf, period.meets), as place puts them.
+// sprint (period.places), a row with no instant, when they take one
+// (unplaced), by its ticket's life (spanOf, period.meets), as place puts
+// them; and of a narrowed page, only the rows it keeps (keeps,
+// evaluation.keeps).
 type heldAt struct {
 	at       []int64
 	ends     []period
@@ -315,12 +317,17 @@ type heldAt struct {
 	events   bool
 	takes    []period
 	bySprint bool
+	unplaced bool
 	spanOf   func(ticket string) (from, to int64)
+	keeps    func(c contribution) bool
 }
 
 // taken is whether event row c falls in a period the widgets take.
 func (in heldAt) taken(c contribution) bool {
 	if !in.bySprint && !c.hasAt {
+		if !in.unplaced {
+			return false
+		}
 		from, to := in.spanOf(c.ticket)
 		return slices.ContainsFunc(in.takes, func(p period) bool { return p.meets(from, to) })
 	}
@@ -388,7 +395,7 @@ func (s *rowSink) add(onBoard driver.Value, args []driver.Value) error {
 		return s.err
 	}
 
-	if s.cols.state() && !s.at.holdAny(c) || s.at.events && !s.at.taken(c) {
+	if s.cols.state() && !s.at.holdAny(c) || s.at.events && !s.at.taken(c) || s.at.keeps != nil && !s.at.keeps(c) {
 		return nil
 	}
 	if len(s.rows) == maxRows {

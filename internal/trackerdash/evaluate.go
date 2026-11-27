@@ -779,19 +779,19 @@ func (ev *evaluation) narrowing(r Request) (narrowing, error) {
 	return n, nil
 }
 
-// keep is the rows of the narrowed page: a row's person is the metric's
-// person column, else the viewer for a metric of the viewer's logged time
-// (p reads worklogs), else its ticket's assignee; its epic likewise. A row
-// of a metric with a person column that is not counted and names no
-// person could be anyone's (credit whose evidence is not read), so every
-// person narrowing keeps it, as not counted.
-func (ev *evaluation) keep(n narrowing, p prepared, rows []contribution) []contribution {
+// keeps is whether the narrowed page keeps row c, nil for a page not
+// narrowed: a row's person is the metric's person column, else the
+// viewer for a metric of the viewer's logged time (p reads worklogs),
+// else its ticket's assignee; its epic likewise. A row of a metric with a
+// person column that is not counted and names no person could be
+// anyone's (credit whose evidence is not read), so every person narrowing
+// keeps it, as not counted. The row sink keeps no other row (heldAt).
+func (ev *evaluation) keeps(n narrowing, p prepared) func(c contribution) bool {
 	if n.person == nil && n.epic == nil {
-		return rows
+		return nil
 	}
 	cols := p.cols
-	var out []contribution
-	for _, c := range rows {
+	return func(c contribution) bool {
 		t := ev.tickets[c.ticket]
 		person, epic := t.assignee, t.epic
 		anyone := false
@@ -804,11 +804,8 @@ func (ev *evaluation) keep(n narrowing, p prepared, rows []contribution) []contr
 		if cols.has(ColumnEpic) {
 			epic = c.epic
 		}
-		if (n.person == nil || person == n.person.ID || anyone) && (n.epic == nil || epic == n.epic.ID) {
-			out = append(out, c)
-		}
+		return (n.person == nil || person == n.person.ID || anyone) && (n.epic == nil || epic == n.epic.ID)
 	}
-	return out
 }
 
 // location is the IANA zone name names.
@@ -846,7 +843,6 @@ func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing
 	if err != nil {
 		return counted{}, fmt.Errorf("count metric %s: %w", m.Name, err)
 	}
-	rows = ev.keep(n, p, rows)
 	if m.numbersUnit() == UnitEstimate && ev.estimates == "none" {
 		// The board counts tickets (it has no estimates, or its project
 		// counts tickets): each counted row is its share of a ticket, one
@@ -1084,8 +1080,9 @@ func (o *opened) count(m Metric, r reads) (counted, error) {
 	now := o.now.UnixMilli()
 	bySprint := m.Bucket == BucketSprint
 	at := r.instants(now, bySprint)
+	at.keeps = o.ev.keeps(o.n, pr.p)
 	if !pr.p.cols.state() && pr.p.cols.periodBound(m) {
-		at.events, at.takes, at.bySprint, at.spanOf = true, r.takes, bySprint, o.ev.spanOf
+		at.events, at.takes, at.bySprint, at.unplaced, at.spanOf = true, r.takes, bySprint, r.unplaced, o.ev.spanOf
 	}
 	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now), at)
 }
@@ -1434,10 +1431,14 @@ type reads struct {
 	periods    []period
 	day        bool
 	takes      []period
+	// unplaced is whether they take an event row of no instant, which
+	// place puts in no period: a widget counts it as not counted, a cell
+	// does not hold it.
+	unplaced bool
 }
 
 func (r reads) and(o reads) reads {
-	r.now, r.start, r.day = r.now || o.now, r.start || o.start, r.day || o.day
+	r.now, r.start, r.day, r.unplaced = r.now || o.now, r.start || o.start, r.day || o.day, r.unplaced || o.unplaced
 	union := func(to, from []period) []period {
 		for _, p := range from {
 			if !slices.ContainsFunc(to, func(q period) bool { return q.id == p.id }) {
@@ -1464,11 +1465,11 @@ func widgetReads(w Widget, m Metric, sp span) reads {
 	}
 	switch {
 	case w.Form == FormNumber:
-		return reads{now: true, start: m.Bucket != BucketDay && len(ps) > 0, periods: ps, day: m.Bucket == BucketDay, takes: takes}
+		return reads{now: true, start: m.Bucket != BucketDay && len(ps) > 0, periods: ps, day: m.Bucket == BucketDay, takes: takes, unplaced: true}
 	case w.Form == FormList || ranks(w, m):
-		return reads{now: true, takes: takes}
+		return reads{now: true, takes: takes, unplaced: true}
 	}
-	return reads{periods: ps, day: m.Bucket == BucketDay, takes: takes}
+	return reads{periods: ps, day: m.Bucket == BucketDay, takes: takes, unplaced: true}
 }
 
 // instants is r's instants at now, a period to come left out, and where
@@ -1771,7 +1772,7 @@ type DrillAnswer struct {
 func drillReads(w Widget, m Metric, sp span, r DrillRequest) reads {
 	ps := periodsOf(m, sp)
 	if r.Cell == nil || r.Rest || ranks(w, m) {
-		return reads{now: true, takes: ps}
+		return reads{now: true, takes: ps, unplaced: true}
 	}
 	for _, p := range ps {
 		if p.id == r.Cell.Bucket {

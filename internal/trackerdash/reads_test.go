@@ -138,3 +138,41 @@ func TestAnUndatedRowIsChargedOnlyWhereItsTicketLived(t *testing.T) {
 		t.Fatalf("Last 4 weeks: %q, %d not counted; want counted, none of WEB-1's", w.Error, w.NotCounted)
 	}
 }
+
+// A person's page is charged only the rows it keeps: 20,800 review rows of
+// User 2 in WEB Sprint 6 leave User 1's pace counted.
+func TestAPersonsPageIsChargedOnlyTheirRows(t *testing.T) {
+	t.Parallel()
+	b := creditOn(manyReviews(creditBoard("points"), "s6"))
+	r := utcSprints5
+	r.Person = "u1"
+	if w := widgetOf(t, mustEvaluate(t, evaluator(), b, r), "pace"); w.Error != "" {
+		t.Fatalf("User 1's pace: %s", w.Error)
+	}
+}
+
+// A drill of one week's bar is charged the rows placed in it alone: rows
+// of no time are the chart's "not counted", in no bar, so 20,800 of WEB-1,
+// whose life meets every week shown, leave each week's drill counted.
+func TestADrillOfAWeekIsNotChargedRowsOfNoTime(t *testing.T) {
+	t.Parallel()
+	m := Metric{Name: "w_1", Title: "Changes", Words: []string{"Changes, WEB-1's of no known time."}, SQL: `SELECT ticket, iif(ticket = 't1', NULL, at) AS at FROM changes`,
+		Reduce: ReduceCount, Unit: UnitTickets, Bucket: BucketPeriod}
+	f := newFixture(false, "points").person("u1", "User 1").status("5", "Done", "done")
+	f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", created: ago(60), updated: ago(1)})
+	f.ticket(ticket{id: "t2", key: "WEB-2", status: "5", group: "done", created: ago(10), updated: ago(2)})
+	f.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20800)
+		INSERT INTO changes SELECT 't1', 'status', i, %d, NULL, '1', '5', NULL, NULL FROM n`, ago(30))
+	f.exec(`INSERT INTO changes VALUES ('t2', 'status', 0, %d, NULL, '1', '5', NULL, NULL)`, ago(2))
+	b := f.board()
+	b.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine", Widgets: []Widget{{ID: "w_1", Metric: "w_1", Form: FormBars, Width: 6}}}},
+		Metrics: map[string]Metric{"w_1": m}}
+	r := Request{Dashboard: "mine", Range: RangeWeeks4, TimeZone: "UTC"}
+	counted := 0
+	for _, p := range mustEvaluate(t, evaluator(), b, r).Range.Periods {
+		counted += mustDrill(t, b, DrillRequest{Request: r, Widget: "w_1", Cell: &DrillCell{Bucket: p.ID}}).Count
+	}
+	if counted != 1 {
+		t.Fatalf("the weeks' drills hold %d rows; want WEB-2's one", counted)
+	}
+}

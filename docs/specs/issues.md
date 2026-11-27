@@ -845,7 +845,9 @@ with credit.
   finished ticket names who had it when it finished only once its
   history is read for its latest change and reaches back to the finish;
   until then its points count for no one and its reviews are not
-  counted. While the last read of who worked on the tickets failed, every
+  counted. When the history cannot say who finished it (done with no
+  date and reassigned), anyone who never had it is still a reviewer, and
+  the actions of those who had it are listed and not counted. While the last read of who worked on the tickets failed, every
   widget that counts credit says so with the reason, on a dashboard and
   in an agent's tried widget.
 
