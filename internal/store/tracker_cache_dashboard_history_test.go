@@ -40,7 +40,7 @@ func TestStuckOverTheIntervalsCountsNowAsOverStatusSince(t *testing.T) {
 	statuses, statusesRoot, regroup := store.DashboardStatusFixtureForTest(t, created.UnixMilli())
 	edge := int64(12_000 + 3*24*3600*1000)
 	for _, c := range []struct {
-		name   string
+		name    string
 		s       *store.Store
 		root    int64
 		board   string

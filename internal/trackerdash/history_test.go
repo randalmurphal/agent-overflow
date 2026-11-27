@@ -9,7 +9,9 @@ import (
 )
 
 // utc is an instant of testNow's November and December in UTC.
-func utc(month time.Month, d, hour int) int64 { return ms(time.Date(2026, month, d, hour, 0, 0, 0, time.UTC)) }
+func utc(month time.Month, d, hour int) int64 {
+	return ms(time.Date(2026, month, d, hour, 0, 0, 0, time.UTC))
+}
 
 // burnBoard is a board (estimates: points, or none) whose active sprint
 // b1 runs from Monday 23 November at 09:00 to Friday 4 December at 17:00,
@@ -84,10 +86,10 @@ func TestTheBurndownCountsTheOpenWorkOfEachDay(t *testing.T) {
 	a := mustEvaluate(t, evaluator(), burnBoard("points").board(), Request{Dashboard: builtinSprintsID, TimeZone: "UTC"})
 	w := widgetOf(t, a, "burndown")
 	want := []string{
-		"Start 13, 1 not counted",       // A, B, D at 2, F, G and H; E's history is not read
-		"Nov 23 13, 2 not counted",      // G removed, D at 4, F's status not known
-		"Nov 24 9, 2 not counted",       // B done, H canceled, C added
-		"Nov 25 9, 2 not counted !",     // so far
+		"Start 13, 1 not counted",   // A, B, D at 2, F, G and H; E's history is not read
+		"Nov 23 13, 2 not counted",  // G removed, D at 4, F's status not known
+		"Nov 24 9, 2 not counted",   // B done, H canceled, C added
+		"Nov 25 9, 2 not counted !", // so far
 		"Nov 26 -", "Nov 27 -", "Nov 30 -", "Dec 1 -", "Dec 2 -", "Dec 3 -", "Dec 4 - |",
 	}
 	if got := days(w); !reflect.DeepEqual(got, want) {
