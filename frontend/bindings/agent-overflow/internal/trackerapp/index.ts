@@ -54,7 +54,6 @@ export {
     PokerView,
     PokerVoteRequest,
     PokerVoteView,
-    PostOutcome,
     PostTimeRequest,
     PostTimeView,
     ProjectBoard,

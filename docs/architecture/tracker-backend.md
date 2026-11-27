@@ -2594,11 +2594,14 @@ nothing fetched. A call whose `set` and comment together pass 256 KiB is
 refused before any prompt, telling the model to make the change in
 smaller calls. The person's answer reaches the call by the kind of the
 prompt triage holds open (`triage.PromptClaim.Kind`), not by its request
-ID, and the waiter is keyed by thread and request ID. An answer that
-names no prompt occurrence comes from a screen that predates it, as a
-paired v0.0.19 one does, which shows no tracker write's changes: it is
-refused saying to answer on a screen with the current version or to
-update, and the prompt stays open. Triage never
+ID, and the waiter is keyed by thread and request ID. An approval counts
+only with `ApprovalResponse.Shown`, which the screen's tracker write list
+(`TrackerWriteChanges.svelte`) sets once it has drawn every ticket,
+change and note of that prompt occurrence. An approval without it comes
+from a screen that drew none of them (a paired v0.0.19 one, a build from
+before the list, or input the list could not draw): it is refused saying
+to answer on a screen with the current version or to update, and the
+prompt stays open. A decline settles from any screen. Triage never
 routes it to a spawner (`triage.promptRoutable`), so a worker's tracker
 write is the person's, which the worker's composer shows on every screen
 and its spawner's Agents row reaches like any prompt routed to nobody
@@ -2847,21 +2850,30 @@ that will not be sent saying why in the words the answer uses
 (`trackerapp.NotSentWhy`: it may already be logged, it is being posted,
 its ticket is not picked), and each question as a note
 (`trackerapp.EntryLine`). A key carries its site when more than one
-connection is on and, when two Jira connections share the site, the name
-the person gave the connection in the Issues settings, or its account
-email when they gave none. Once approved it reads the policy again, then
+connection is on, as every answer writes it. When two Jira connections
+share the site, each ticket, answer line, `unread` and `warnings` entry
+also carries `account`: the name the person gave the connection in the
+Issues settings, or its account email when they gave none, and both
+(`Work · user@example.com`) for every connection of the site when two
+would share one name (`trackertools.postAccount`). Once approved it reads the policy again, then
 posts on each connection exactly the entries shown, at the revisions
 shown, through `PostTrackerTimeEntries` on the server's context, so a
 post is a day's approval with its rules: an entry the person edited or
 removed while the prompt was open is not posted, and one drafted
 meanwhile is not sent. The answer names every entry as the prompt showed
-it (day, key, hours): `logged`, and `not_logged` grouped by why, from
-each entry's outcome (`PostTimeView.Outcomes`: posted, uncertain or
-not_posted); the reasons share what the entries leave of the answer's
-budget. A connection whose post was refused before it sent lists its
-entries as not sent with the refusal; the call fails only when no
-connection's post sent anything. A post that failed after it sent
-answers the outcomes it knows, and its error is logged.
+it (day, key, hours): `logged`, and `not_logged` and `may_be_logged`
+grouped by why, from each entry's outcome (`PostTimeView.Outcomes`,
+which only the agent's post reads: posted, not_posted or uncertain; an
+entry not sent takes `trackerapp.NotSentOutcome`); the reasons and
+warnings share what the entries leave of the answer's budget, which the
+admission reserves for every entry under a reason of its own and a
+warning per connection. A connection whose post was refused before it
+sent lists its entries as not sent with the refusal; when no
+connection's post sent anything, that answer is the call's, and nothing
+goes on the timeline. `warnings` names, per connection, the days whose
+read-back failed (`trackerapp.ReadBackSentence`) and a post that failed
+after it sent, whose outcomes this computer could not record; that error
+is also logged.
 
 **The draft.** There is no draft object: the entries of a connection's
 author by day (`tracker_time_entries`, [schema](schema.md)), each naming

@@ -7,7 +7,7 @@
   import ToolApprovalPanel from './approval/ToolApprovalPanel.svelte';
   import PermissionPanel from './approval/PermissionPanel.svelte';
   import McpElicitationPanel from './approval/McpElicitationPanel.svelte';
-  import TrackerWriteChanges from './approval/TrackerWriteChanges.svelte';
+  import TrackerWriteChanges, { drawnKey } from './approval/TrackerWriteChanges.svelte';
 
   interface Props {
     approval: ApprovalRequest;
@@ -27,6 +27,8 @@
 
   let { approval, count, onResolve, onError, access = 'granted' }: Props = $props();
   let responding = $state(false);
+  // The prompt whose tracker write changes the list drew, if any.
+  let drawn = $state('');
 
   // A tracker write names its action in its title ("Log time for Tue Nov
   // 24"), which heads the prompt; the list below it is the rest. Any other
@@ -41,6 +43,8 @@
     // The answer is for the prompt shown here, not whichever is open under
     // its request id when it lands.
     response.occurrence = approval.occurrence;
+    // Only a tracker write whose changes this screen drew can be approved.
+    if (trackerWrite && drawn === drawnKey(approval)) response.shown = true;
     try {
       await onResolve(response);
     } catch (err) {
@@ -82,7 +86,7 @@
     <McpElicitationPanel {approval} onResolve={resolve} onError={onError} responding={responding} {access} />
   {:else}
     {#if approval.kind === 'tracker-write'}
-      <TrackerWriteChanges {approval} />
+      <TrackerWriteChanges {approval} bind:drawn />
     {/if}
     <ToolApprovalPanel {approval} onResolve={resolve} {responding} {access} />
   {/if}

@@ -48,7 +48,72 @@ describe('<ComposerPendingApprovalPanel> tracker write', () => {
     expect(queryByTestId('approval-edit-toggle')).toBeNull();
     await fireEvent.click(getByTestId('approval-allow'));
     await waitFor(() => expect(onResolve).toHaveBeenCalledTimes(1));
-    expect(onResolve.mock.calls[0]![0]).toMatchObject({ requestId: 'tracker:call-1', decision: 'accept', occurrence: '7' });
+    expect(onResolve.mock.calls[0]![0]).toMatchObject({ requestId: 'tracker:call-1', decision: 'accept', occurrence: '7', shown: true });
+  });
+
+  it('approves without saying it was shown when the changes could not all be drawn', async () => {
+    for (const input of [
+      // A ticket the list cannot draw is not drawn as a smaller list.
+      { ...(trackerWrite().input as object), tickets: [{ key: 'WEB-12', changes: [{ line: 'Status → In Review' }] }, { title: 'no key' }] },
+      { ...(trackerWrite().input as object), tickets: [{ key: 'WEB-12', changes: [{ line: 'Status → In Review' }, { value: 'description' }] }] },
+      { id: 'call-1', tickets: [], notes: ['Tue Nov 24, 15m: Standup', 7] },
+      // Nothing to draw.
+      { id: 'call-1', tickets: [] },
+      'not an approval',
+    ]) {
+      const onResolve = vi.fn<(r: ApprovalResponse) => Promise<void>>(async () => {});
+      const { getByTestId, unmount } = render(ComposerPendingApprovalPanel, {
+        props: { approval: { ...trackerWrite(), input } as ApprovalRequest, count: 1, onResolve, onError: vi.fn() },
+      });
+      await fireEvent.click(getByTestId('approval-allow'));
+      await waitFor(() => expect(onResolve).toHaveBeenCalledTimes(1));
+      expect(onResolve.mock.calls[0]![0].shown, JSON.stringify(input)).toBeFalsy();
+      unmount();
+    }
+  });
+
+  it('says it was shown only for the prompt it drew, and never for another kind of approval', async () => {
+    const onResolve = vi.fn<(r: ApprovalResponse) => Promise<void>>(async () => {});
+    const { getByTestId, rerender } = render(ComposerPendingApprovalPanel, {
+      props: { approval: trackerWrite(), count: 1, onResolve, onError: vi.fn() },
+    });
+    // The same request asked again is another prompt, drawn again.
+    await rerender({ approval: { ...trackerWrite(), occurrence: '8' }, count: 1, onResolve, onError: vi.fn() });
+    await fireEvent.click(getByTestId('approval-allow'));
+    await waitFor(() => expect(onResolve).toHaveBeenCalledTimes(1));
+    expect(onResolve.mock.calls[0]![0]).toMatchObject({ occurrence: '8', shown: true });
+
+    const tool = vi.fn<(r: ApprovalResponse) => Promise<void>>(async () => {});
+    const other = render(ComposerPendingApprovalPanel, {
+      props: {
+        approval: { ...trackerWrite(), requestId: 'call-9', kind: 'command', toolName: 'Bash', title: 'Run a command' } as ApprovalRequest,
+        count: 1,
+        onResolve: tool,
+        onError: vi.fn(),
+      },
+    });
+    await fireEvent.click(other.getAllByTestId('approval-allow').at(-1)!);
+    await waitFor(() => expect(tool).toHaveBeenCalledTimes(1));
+    expect(tool.mock.calls[0]![0].shown).toBeUndefined();
+  });
+
+  it('names the connection beside a ticket two connections of one site change', () => {
+    const approval = {
+      ...trackerWrite(),
+      input: {
+        id: 'call-3',
+        tickets: [
+          { key: 'WEB-1', account: 'Work', changes: [{ line: 'Tue Nov 24, 1h 30m: Built the form' }] },
+          { key: 'WEB-1', account: 'user2@example.com', changes: [{ line: 'Tue Nov 24, 30m: Paired' }] },
+        ],
+      },
+    } as ApprovalRequest;
+    const { getAllByTestId } = render(ComposerPendingApprovalPanel, { props: { approval, count: 1, onResolve: vi.fn(), onError: vi.fn() } });
+    expect(getAllByTestId('tracker-write-approval-ticket').map((t) => t.firstElementChild?.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+      'WEB-1 Work',
+      'WEB-1 user2@example.com',
+    ]);
+    expect(getAllByTestId('tracker-write-approval-change').map((c) => c.textContent)).toEqual(['Tue Nov 24, 1h 30m: Built the form', 'Tue Nov 24, 30m: Paired']);
   });
 
   it('opens the whole of a value a line shows in part, from what the approval carries', async () => {
