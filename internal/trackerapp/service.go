@@ -315,8 +315,9 @@ func New(deps Deps) (*Service, error) {
 }
 
 // Stop stops every pump, the linked loop and the reads of logged time
-// (worklog_reads.go), which cancels their ticks and reads in flight, closes every client, which ends the tracker calls in flight, and
-// waits for the service's calls in flight, its pumps and its loop to
+// (worklog_reads.go), which cancels their ticks and reads in flight,
+// closes every client, which ends the tracker calls in flight, and waits
+// for the service's calls in flight, its pumps, its loop and its reads to
 // return. Subscribers are told nothing. Every later call fails with
 // ErrStopped. Stop may be called more than once.
 func (s *Service) Stop() {

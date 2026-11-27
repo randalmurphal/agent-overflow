@@ -159,7 +159,7 @@ func (s *Service) wantWorklogs(id, author string, gen int64, need trackerdash.Wo
 	if c.author != author || c.gen != gen {
 		c.reset(author, gen)
 	}
-	if c.failure == "" && !r.halted {
+	if c.failure == "" {
 		queue := func(d string) {
 			if d < c.reading[0] || d > c.reading[1] {
 				c.queued[d] = true

@@ -522,8 +522,8 @@ func TestAPersonsReadIsRefusedWhatItCannotRead(t *testing.T) {
 }
 
 // Stopping the service in the middle of a run waits for the read it is
-// in, then the run ends: nothing more is read, no failure is logged, and
-// no goroutine of it is left once Stop returns.
+// in, then the run ends: nothing more is read, no failure is logged, no
+// goroutine of it is left once Stop returns, and no run starts after.
 func TestStoppingTheServiceMidRunJoinsItsReads(t *testing.T) {
 	t.Parallel()
 	s, today := dashTime(t)
@@ -568,6 +568,11 @@ func TestStoppingTheServiceMidRunJoinsItsReads(t *testing.T) {
 	}
 	if got := s.spanCount(); got != 1 {
 		t.Fatalf("the run read %v after Stop", s.spansSince(0))
+	}
+	// An evaluation in flight through Stop tells the reads its need after
+	// it: no run starts.
+	if st := s.shownNeeding(t, trackerdash.WorklogNeed{Unread: []string{today}, Today: today}); st.Reading {
+		t.Fatalf("a show after Stop answered %+v; want no run", st)
 	}
 	buf := make([]byte, 1<<20)
 	if stacks := string(buf[:runtime.Stack(buf, true)]); strings.Contains(stacks, fmt.Sprintf("(*Service).runWorklogs(%p", s.svc)) {
