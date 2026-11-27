@@ -386,6 +386,26 @@ func TestTimeReadAnswersTheMeasuredDay(t *testing.T) {
 	}
 }
 
+// Measured minutes round to the nearest: half a minute is one, and
+// anything shorter is none, so a ticket focused that briefly is named
+// without minutes and the day's phone time is left out.
+func TestTimeReadRoundsMeasuredMinutesToTheNearest(t *testing.T) {
+	t.Parallel()
+	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, time: map[string]trackerapp.WorklogDays{timeJira.ID: {}},
+		links: map[string]trackerapp.JiraTicket{"t1": {Site: timeJira.Site, Key: "WEB-1"}, "t2": {Site: timeJira.Site, Key: "WEB-2"}}}
+	day := activity.Day{Day: "2026-11-24", Active: 59 * time.Second, Phone: 29 * time.Second,
+		Threads: map[string]time.Duration{"t1": 30 * time.Second, "t2": 29 * time.Second}}
+	h := &fakeHost{activity: ActivityDays{Days: []ActivityDay{{Day: day}}}}
+	answer, err := timeCall(t, timeServer(f, h), "time_read", map[string]any{"from": "2026-11-24", "to": "2026-11-24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"days":[{"day":"2026-11-24","logged":[],"active":1,"tickets":[{"key":"WEB-1","minutes":1},{"key":"WEB-2"}]}]}`
+	if answer != want {
+		t.Fatalf("time_read = %s\nwant %s", answer, want)
+	}
+}
+
 // The bytes a week's measured activity adds to time_read's answer, for a
 // day of 7 hours on 3 tickets, a fourth ticket touched, half an hour on
 // the phone and 4 commits.

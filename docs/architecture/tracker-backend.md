@@ -3147,6 +3147,8 @@ an hour on the phone and 4 commits a day adds 2,205 bytes to the answer
 (241 to 2,446; `TestTimeReadsWeekOfActivityBytes`).
 
 **Limits.**
+- A crash loses what the recorder held since its last flush: at most 5
+  minutes of spans and of the days of threads that started a turn.
 - A thread's minutes go to the ticket it is linked to when `time_read`
   runs, so relinking a thread moves its past minutes.
 - Days are this computer's local dates: a turn's when the flush wrote it,

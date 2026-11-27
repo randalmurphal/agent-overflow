@@ -748,7 +748,8 @@ counted, selecting rows in a ticket list, or a number tile's limit.
   it moves its past minutes. Days are the computer's local dates. Linear
   tickets get no minutes.
 - When the computer cannot write what it measured, an agent's read says
-  since when, and so does `GetActivityRecording` for the Time screen.
+  since when, and so does `GetActivityRecording` for the Time screen. A
+  crash loses at most the last 5 minutes measured.
 - The measure is kept 92 days. Its mechanism, costs and limits are in
   [Activity](../architecture/tracker-backend.md#activity).
 

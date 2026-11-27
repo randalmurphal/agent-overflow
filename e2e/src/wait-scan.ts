@@ -75,13 +75,6 @@ export interface WaitAllowance {
 
 export const WAIT_ALLOWED: readonly WaitAllowance[] = [
   {
-    file: 'tests/tracker-activity-flow.ts',
-    function: 'holdForHalfAMinuteOfWork',
-    reason:
-      'time_read rounds the input the backend measured to the minute, in wall time on its own clock, which no ' +
-      'harness timer moves; the half minute the person spends on a thread has no event to await.',
-  },
-  {
     file: 'src/pointer.ts',
     function: 'pressToDragText',
     reason:

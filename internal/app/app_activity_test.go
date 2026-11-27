@@ -28,6 +28,8 @@ type activityClock struct {
 
 func (c *activityClock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
 
+func (c *activityClock) advance(d time.Duration) { c.mu.Lock(); defer c.mu.Unlock(); c.t = c.t.Add(d) }
+
 // activityApp is an App with a store holding a Jira connection, so the
 // recorder writes, and a recorder on clock.
 func activityApp(t *testing.T, clock *activityClock) *App {
@@ -60,13 +62,15 @@ func activityConnectionTie(t *testing.T) connectionTie {
 	}
 }
 
-// Only a screen of this computer's person is recorded: a paired browser
-// that is not one of the person's devices records nothing, and an id no
-// thread could have is refused.
+// Only a screen of this computer's person is recorded, with its layout:
+// a paired browser that is not one of the person's devices records
+// nothing, the host's window in the compact layout records phone time,
+// and an id no thread could have is refused.
 func TestRecordActivityIsThePersonsScreensOnly(t *testing.T) {
 	t.Parallel()
 	b := newPairedBackend(t)
-	b.app.activity = activity.New(b.app.store, activity.Config{})
+	clock := &activityClock{t: time.Date(2026, 11, 24, 9, 0, 0, 0, time.Local)}
+	b.app.activity = activity.New(b.app.store, activity.Config{Now: clock.now})
 	t.Cleanup(func() { _ = b.app.activity.Close() })
 	grants := []identity.Scope{identity.ScopeThreadsRead}
 	session := pairSessionWithScopes(t, b.app, "another-browser", grants)
@@ -82,6 +86,14 @@ func TestRecordActivityIsThePersonsScreensOnly(t *testing.T) {
 	}
 	if n := b.app.activity.OpenSpans(); n != 1 {
 		t.Fatalf("the host's window opened %d spans; want 1", n)
+	}
+	clock.advance(time.Minute)
+	days, err := b.app.activity.Days("2026-11-24", "2026-11-24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 1 || days[0].Phone != time.Minute || days[0].Threads["t1"] != time.Minute {
+		t.Fatalf("the compact window's minute is %+v; want a minute on t1, on the phone", days)
 	}
 	if err := b.app.RecordActivity(window, strings.Repeat("x", maxFocusedThreadBytes+1), false); err == nil {
 		t.Fatal("a thread id longer than any thread's was taken")
@@ -142,15 +154,10 @@ func TestTrackerToolsActivityReadsTheDaysAndTheirCommits(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	advance := func(d time.Duration) {
-		clock.mu.Lock()
-		clock.t = clock.t.Add(d)
-		clock.mu.Unlock()
-	}
 	report("c1", "t1")
-	advance(2 * time.Minute)
+	clock.advance(2 * time.Minute)
 	report("c1", "t2")
-	advance(time.Minute)
+	clock.advance(time.Minute)
 
 	got, err := trackerToolsHost{a}.Activity(context.Background(), "2026-11-23", "2026-11-24")
 	if err != nil {

@@ -1,35 +1,47 @@
 // The activity recorder end to end (docs/specs/issues.md#activity), shared
 // by tracker-activity.spec.ts (desktop) and compact-tracker-activity.spec.ts
 // (compact), with the fake Jira site behind a verified connection: the
-// person opens a thread linked to WEB-1 in the connected browser, its
-// press is the screen's input, and half a minute later an agent in another
-// thread, linked to WEB-2, reads the day through time_read, a REAL MCP call
-// against the app's server. The answer counts the minute on WEB-1 and in
-// the day's active time (and the phone's, on compact), and names WEB-2,
-// which the agent's own turn touched, without minutes. The computer's
-// recording state answers that it is writing.
+// person opens a thread linked to WEB-1 in the connected browser, and its
+// press is the screen's input, which the page reports on that thread. An
+// agent in another thread, linked to WEB-2, then reads the day through
+// time_read, a REAL MCP call against the app's server. The worked thread
+// starts no turn, so WEB-1 among the day's tickets comes only from the
+// screen's report; WEB-2 is there because the agent's own turn touched it.
+// The computer's recording state answers that it is writing. The minutes,
+// their rounding and the phone's share are the recorder's and
+// trackertools' tests, on a fake clock.
 
-import { expect } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 
 import { test, type SeedResult } from './fixtures.js';
 import { setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import { connectFakeJira, press, seedFakeJira } from './tracker-helpers.js';
 import { TRACKER_TOOLS_SERVER } from './tracker-agent-tools-helpers.js';
+import { methodIdByName } from './offhost-helpers.js';
 
 export interface ActivitySurface {
   compact: boolean;
 }
 
-/** Half a minute of input, which time_read rounds to the minute. */
-const READ_AFTER_MS = 35_000;
-
-/**
- * The person's half minute on the thread: the backend measures input in
- * wall time from its own clock, which no harness knob moves, and nothing
- * happens at the half minute to await.
- */
-async function holdForHalfAMinuteOfWork(since: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, READ_AFTER_MS - (Date.now() - since)));
+/** Watches the page's sockets for the answer to its report of thread:
+ * undefined until one arrives, then its error or null. */
+function watchReport(page: Page, thread: string): () => unknown {
+  const method = methodIdByName('RecordActivity');
+  let answer: unknown;
+  page.on('websocket', (socket) => {
+    const asked = new Set<string>();
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+      const frame = JSON.parse(payload) as { id?: string; methodId?: number; params?: unknown[] };
+      if (frame.methodId === method && frame.id && frame.params?.[0] === thread) asked.add(frame.id);
+    });
+    socket.on('framereceived', ({ payload }) => {
+      if (typeof payload !== 'string' || !payload.startsWith('{"type":"rpc"')) return;
+      const frame = JSON.parse(payload) as { id?: string; error?: unknown };
+      if (answer === undefined && frame.id && asked.has(frame.id)) answer = frame.error ?? null;
+    });
+  });
+  return () => answer;
 }
 
 function today(): string {
@@ -39,8 +51,7 @@ function today(): string {
 }
 
 export function registerActivityFlow({ compact }: ActivitySurface): void {
-  test('the minutes the person spent on a linked thread reach time_read on its ticket', async ({ harness, page }) => {
-    test.setTimeout(180_000);
+  test('input on a linked thread reaches time_read on its ticket', async ({ harness, page }) => {
     const day = today();
     await seedFakeJira(harness);
     const seed = await harness.rpc<SeedResult>('HarnessSeed', { projects: [{
@@ -59,30 +70,27 @@ export function registerActivityFlow({ compact }: ActivitySurface): void {
       afterTurns: 'silent',
     }));
 
+    const reported = watchReport(page, worked);
     await harness.open(page);
     if ((await page.locator('html').getAttribute('data-compact-screen')) === 'thread') {
       await page.getByTestId('compact-back').click();
     }
-    const opened = Date.now();
     await press(page.getByTestId('thread-row-title').filter({ hasText: 'Login form' }).first(), compact);
     if (compact) await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
-    await holdForHalfAMinuteOfWork(opened);
+    await expect.poll(reported, { message: 'the page reports the press on the thread it opened' }).not.toBeUndefined();
+    expect(reported()).toBeNull();
 
     await harness.send(agent, 'read my day');
     const event = await harness.awaitMcpResult({ server: TRACKER_TOOLS_SERVER, tool: 'time_read', cwd: project.path, timeoutMs: 60_000 });
     expect(Boolean(event.report.isError), event.report.result).toBe(false);
     const answer = JSON.parse(event.report.result ?? '{}') as {
-      days: Array<{ day: string; active?: number; phone?: number; tickets?: Array<{ key: string; minutes?: number }> }>;
+      days: Array<{ day: string; tickets?: Array<{ key: string; minutes?: number }> }>;
       activity_gap?: string;
     };
     const measured = answer.days.find((d) => d.day === day);
     expect(measured, JSON.stringify(answer)).toBeDefined();
-    // The press is the first input: it opened the span, and the open
-    // span ends at the read, half a minute later, well within the
-    // window, so it counts as one minute.
-    expect(measured!.active, JSON.stringify(measured)).toBe(1);
-    expect(measured!.phone, JSON.stringify(measured)).toBe(compact ? 1 : undefined);
-    expect(measured!.tickets).toEqual([{ key: 'WEB-1', minutes: 1 }, { key: 'WEB-2' }]);
+    expect(measured!.tickets?.map((t) => t.key), JSON.stringify(measured)).toEqual(['WEB-1', 'WEB-2']);
+    expect(measured!.tickets?.[1]).toEqual({ key: 'WEB-2' });
     expect(answer.activity_gap).toBeUndefined();
     expect(await harness.rpc('GetActivityRecording')).toEqual({ since: 0 });
   });
