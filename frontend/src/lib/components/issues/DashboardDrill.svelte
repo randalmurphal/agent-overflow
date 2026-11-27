@@ -4,8 +4,9 @@
   // own, so the two always agree, a page of 100 at a time. A page asked
   // for after the rows changed starts again at the first, and says so. A
   // row opens its ticket, which closes the drill; Escape, Back and Close
-  // close it. Its rows can be selected and acted on together
-  // (TicketListActions); the selection keeps only the page's tickets.
+  // close it, and so does a thread made on its selected rows
+  // (TicketListActions), before the thread opens; the selection keeps only
+  // the page's tickets.
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import type { TicketRow } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
@@ -71,7 +72,7 @@
       {#if answer.restarted}
         <p class="border-b border-border-subtle bg-surface-1 px-5 py-1.5 text-[0.75rem] text-fg-muted" role="status" data-testid="dashboard-drill-restarted">The tickets changed while you paged, so this is the first page again, counted now.</p>
       {/if}
-      <TicketListActions rows={answer.rows} source={tickets} variant="drill" listTestId="dashboard-drill-rows" rowTestId="dashboard-drill-row" {onTicket}>
+      <TicketListActions rows={answer.rows} source={tickets} variant="drill" listTestId="dashboard-drill-rows" rowTestId="dashboard-drill-row" {onTicket} onThread={onClose}>
         {#snippet row(r)}
           <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{r.key}</span>
           <!-- Under compact the note goes under the title, which keeps its width. -->

@@ -2242,7 +2242,8 @@ delete is refused and the links the delete read are the ones it ends.
   `tracker:read`) makes one thread on the tickets a dashboard list's
   selection names, at most `MaxThreadTickets` (8, the attachments one
   message carries), each once, through the same helper and rollback as
-  an Ask: every ticket read first, the thread in the project's checkout,
+  an Ask: every ticket read first (those the mirror holds no body of in
+  one read together), the thread in the project's checkout,
   each ticket's file attached in the order named, and the request's text
   on the unsent draft. A thread of one ticket is titled and linked as its
   Ask; one of several is linked to none and titled with the keys, the

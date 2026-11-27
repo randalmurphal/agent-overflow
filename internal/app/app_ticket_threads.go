@@ -127,7 +127,7 @@ type StartTicketsThreadRequest struct {
 // Nothing is written to the tracker.
 //
 //ao:scope threads:operate
-//ao:budget 7m
+//ao:budget 2m
 func (a *App) StartTicketsThread(ctx context.Context, projectID string, req StartTicketsThreadRequest) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
@@ -174,7 +174,8 @@ type ticketThread struct {
 }
 
 // makeTicketThread makes t's thread: it reads every ticket first (from the
-// mirror, or once from the tracker when it holds no body), then the thread
+// mirror, and those it holds no body of from the tracker together, once),
+// then the thread
 // and, on a branch, its worktree, the link of a thread of one ticket, each
 // ticket's file and the draft. A failure after the thread is made deletes
 // it and takes back the worktree and branch it cut.
@@ -183,14 +184,15 @@ func (a *App) makeTicketThread(ctx context.Context, t ticketThread) (store.Threa
 	if err != nil {
 		return store.Thread{}, err
 	}
-	details := make([]trackerapp.DetailView, len(t.issues))
+	issues := make([]tracker.IssueID, len(t.issues))
 	for i, issue := range t.issues {
-		readCtx, cancel := withinBudget(ctx, budgetExceeded{doing: "Reading the ticket", budget: transport.DefaultMethodBudget, then: trackerSlow})
-		details[i], err = svc.DetailForThread(readCtx, t.conn.ID, tracker.IssueID(issue))
-		cancel()
-		if err != nil {
-			return store.Thread{}, trackerRunError(readCtx, err)
-		}
+		issues[i] = tracker.IssueID(issue)
+	}
+	readCtx, cancel := withinBudget(ctx, budgetExceeded{doing: "Reading the tickets", budget: transport.DefaultMethodBudget, then: trackerSlow})
+	details, err := svc.DetailsForThread(readCtx, t.conn.ID, issues)
+	cancel()
+	if err != nil {
+		return store.Thread{}, trackerRunError(readCtx, err)
 	}
 
 	opts := CreateThreadOptions{ProjectID: t.project.ID, Title: ticketThreadTitle(details)}

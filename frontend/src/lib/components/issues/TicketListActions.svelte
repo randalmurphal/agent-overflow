@@ -21,7 +21,9 @@
   // its box selects it. Selecting shows every row's box and the bar: Move
   // to, Assign and Start a thread on the selected tickets, and clear. The
   // selection is by ticket ID and keeps only the tickets the rows list, so
-  // a count again keeps the rows still listed. Each move and assignment is
+  // a count again keeps the rows still listed, and closes an open action
+  // whose tickets it changed, which acts only on the tickets it opened
+  // for. Each move and assignment is
   // the ticket write store's write of that ticket, and what became of it
   // shows under its row (or in a toast while the list is not shown); the
   // bar then says what the batch came to for a few seconds. On desktop a
@@ -73,9 +75,11 @@
     row: Snippet<[TicketRow]>;
     /** What the list shows with no rows. */
     empty?: Snippet;
+    /** A thread on the selection was made, and opens next. */
+    onThread?: () => void;
   }
 
-  let { rows, source, variant, listTestId, rowTestId, onTicket, row, empty }: Props = $props();
+  let { rows, source, variant, listTestId, rowTestId, onTicket, row, empty, onThread }: Props = $props();
 
   /** A thread carries each ticket as one attachment of its first message. */
   const MAX_THREAD_TICKETS = DEFAULT_MAX_ATTACHMENT_COUNT;
@@ -101,9 +105,19 @@
     chosen = next;
   }
 
+  // The status each ticket this list moved is in now, by ticket ID, until
+  // the rows are counted again: a drill's rows show their tickets as they
+  // were when it counted, so its next move starts from where this one left
+  // them.
+  const movedTo = new Map<string, string>();
+  $effect.pre(() => {
+    void rows;
+    movedTo.clear();
+  });
+
   function listTicket(r: TicketRow): ListTicket {
     const ref = { backend: source.backend, connection: source.connection, issue: r.id };
-    return { ctx: { key: trackerTicketKey(ref), ref, label: r.key }, status: r.status };
+    return { ctx: { key: trackerTicketKey(ref), ref, label: r.key }, status: movedTo.get(r.id) ?? r.status };
   }
   const keyOf = (r: TicketRow) => trackerTicketKey({ backend: source.backend, connection: source.connection, issue: r.id });
 
@@ -123,15 +137,24 @@
   onDestroy(() => clearTimeout(noteTimer));
 
   function madeWords(out: BatchOutcome, verb: string): string {
-    return out.made === out.sent ? `${many(out.sent)} ${verb}` : `${out.made} of ${many(out.sent)} ${verb}`;
+    return out.made.size === out.sent ? `${many(out.sent)} ${verb}` : `${out.made.size} of ${many(out.sent)} ${verb}`;
   }
 
   // ---- The actions ----
 
   type Open = 'move' | 'assign' | 'thread' | null;
   let open = $state<Open>(null);
-  // The tickets the open action is for, taken when it opened.
+  // The tickets the open action is for, taken when it opened, and their
+  // IDs; its reads stop when it ends (`reads`).
   let acting = $state.raw<ListTicket[]>([]);
+  let actingIDs = '';
+  let reads: AbortController | null = null;
+  // A count again that changed the selection ends the action it opened for.
+  $effect.pre(() => {
+    const ids = selected.map((r) => r.id).join(' ');
+    if (open && ids !== actingIDs) endAction();
+  });
+  onDestroy(() => reads?.abort());
   let moveAnchor: HTMLElement | undefined = $state();
   let assignAnchor: HTMLElement | undefined = $state();
   let threadAnchor: HTMLElement | undefined = $state();
@@ -141,52 +164,76 @@
   let movesRead = 0;
 
   function begin(which: Exclude<Open, null>): void {
+    endAction();
     acting = selected.map(listTicket);
+    actingIDs = selected.map((r) => r.id).join(' ');
+    reads = new AbortController();
     open = which;
     if (which !== 'move') return;
     const tickets = acting;
     const read = ++movesRead;
-    moves = { state: 'reading' };
-    void readMoves(tickets).then((got) => {
+    void readMoves(tickets, reads.signal).then((got) => {
       if (read !== movesRead) return;
       moves = 'failed' in got ? { state: 'failed', failed: got.failed } : { state: 'read', statuses: commonMoves(tickets, got.moves) };
     });
   }
 
-  function close(reason?: PopoverCloseReason, anchor?: HTMLElement): void {
+  /** Ends the open action: its reads stop, and it holds no tickets. */
+  function endAction(): void {
     open = null;
+    reads?.abort();
+    reads = null;
+    acting = [];
+    actingIDs = '';
+    movesRead += 1;
+    moves = { state: 'reading' };
+  }
+
+  function close(reason?: PopoverCloseReason, anchor?: HTMLElement): void {
+    endAction();
     restorePickerFocus(reason, { triggerEl: anchor });
   }
 
   async function move(status: ListStatus): Promise<void> {
     const tickets = acting;
-    open = null;
+    endAction();
     chosen = new Set();
     const already = tickets.filter((t) => status.moves.get(t.ctx.key) === null).length;
     say(`Moving ${many(tickets.length - already)} to ${status.name}…`, false);
     const out = await moveTickets(tickets, status);
+    for (const t of tickets) if (out.made.has(t.ctx.key)) movedTo.set(t.ctx.ref.issue, status.name);
     say(`${madeWords(out, `moved to ${status.name}`)}${already ? `, ${already} already in ${status.name}` : ''}`, true);
   }
 
   async function assign(person: PickItem | null): Promise<void> {
     const tickets = acting;
-    open = null;
+    endAction();
     chosen = new Set();
     say(`${person ? `Assigning ${many(tickets.length)} to ${person.name}` : `Unassigning ${many(tickets.length)}`}…`, false);
     const out = await assignTickets(tickets, person);
     say(madeWords(out, person ? `assigned to ${person.name}` : 'unassigned'), true);
   }
 
+  // The text of the form, which a start takes: a refused start gives it
+  // back, with its selection, when the person has not begun another.
   let threadText = $state('');
   async function startThread(): Promise<void> {
     const tickets = acting;
-    open = null;
+    const typed = threadText;
+    const ids = chosen;
+    threadText = '';
+    endAction();
     chosen = new Set();
     say(`Starting a thread on ${many(tickets.length)}…`, false);
-    const made = await askAboutTickets(tickets.map((t) => t.ctx), source.project, threadText.trim());
-    threadText = '';
-    if (made) say(`Thread started with ${many(tickets.length)} attached`, true);
-    else note = null;
+    const made = await askAboutTickets(tickets.map((t) => t.ctx), source.project, typed.trim(), () => onThread?.());
+    if (made) {
+      say(`Thread started with ${many(tickets.length)} attached`, true);
+      return;
+    }
+    note = null;
+    if (chosen.size > 0 || open) return;
+    chosen = ids;
+    threadText = typed;
   }
 
   const threadOff = $derived(
@@ -250,23 +297,27 @@
     <span data-testid="ticket-list-count"><b class="font-semibold tabular-nums">{selected.length}</b> selected</span>
     <span class="flex-1"></span>
     <span bind:this={moveAnchor}>
-      <Button size="xs" variant="ghost" testId="ticket-list-move" disabled={!!writeOff} title={writeOff || undefined} onclick={() => begin('move')}>
+      <Button size="xs" variant="ghost" testId="ticket-list-move" disabled={!!writeOff} onclick={() => begin('move')}>
         Move to <Icon icon={ChevronDown} size={12} strokeWidth={2} />
       </Button>
     </span>
     <span bind:this={assignAnchor}>
-      <Button size="xs" variant="ghost" testId="ticket-list-assign" disabled={!!writeOff} title={writeOff || undefined} onclick={() => begin('assign')}>
+      <Button size="xs" variant="ghost" testId="ticket-list-assign" disabled={!!writeOff} onclick={() => begin('assign')}>
         Assign <Icon icon={ChevronDown} size={12} strokeWidth={2} />
       </Button>
     </span>
     <span bind:this={threadAnchor}>
-      <Button size="xs" variant="ghost" testId="ticket-list-thread" disabled={!!threadOff} title={threadOff || undefined} onclick={() => begin('thread')}>
+      <Button size="xs" variant="ghost" testId="ticket-list-thread" disabled={!!threadOff} onclick={() => begin('thread')}>
         <Icon icon={MessageSquare} size={12} strokeWidth={2} /> Start a thread
       </Button>
     </span>
     <IconButton label="Clear the selection" size="xs" testId="ticket-list-clear" onClick={() => { chosen = new Set(); }}>
       {#snippet children()}<Icon icon={X} size={12} strokeWidth={2} />{/snippet}
     </IconButton>
+    <!-- Why an action is off, in words a tap reaches as well as a pointer. -->
+    {#if writeOff || threadOff}
+      <p class="basis-full text-[0.6875rem] text-fg-muted" data-testid="ticket-list-off">{[...new Set([writeOff, threadOff].filter(Boolean))].join(' ')}</p>
+    {/if}
   </div>
 {:else if note}
   <div class="flex items-center gap-1.5 text-[0.75rem] text-fg-muted {BAR[variant]}" role="status" data-testid="ticket-list-note" data-done={note.done}>
@@ -298,11 +349,11 @@
   anchor={assignAnchor}
   open={open === 'assign'}
   label="Assign {many(acting.length)} to"
-  load={(text) => assignablePeople(acting, text)}
+  load={(text) => assignablePeople(acting, text, reads?.signal ?? AbortSignal.abort())}
   checked={new Set()}
   clearLabel="Unassigned"
   onPick={(person) => void assign(person)}
-  onClose={() => { open = null; }}
+  onClose={endAction}
 />
 
 <Popover anchor={threadAnchor} open={open === 'thread'} onClose={(reason) => close(reason, threadAnchor?.querySelector('button') ?? undefined)} placement="bottom-end" ariaLabel="Start a thread">

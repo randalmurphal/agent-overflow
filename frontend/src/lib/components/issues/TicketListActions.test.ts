@@ -17,6 +17,7 @@ import { getAllPanes } from '../../stores/panes.svelte';
 import { getToasts } from '../../stores/toast.svelte';
 import type { Thread } from '../../types/models';
 import TicketListActions, { type TicketListSource } from './TicketListActions.svelte';
+import { BULK_AT_ONCE } from './ticketSelection';
 import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 
 const SOURCE: TicketListSource = { backend: '', connection: 'c1', project: 'p1', writeBlocked: '', threadBlocked: '' };
@@ -90,6 +91,35 @@ describe('selecting rows', () => {
     expect(view.queryByTestId('ticket-list-bar')).toBeNull();
   });
 
+  it('closes an open action when a count again takes one of its tickets out, so a pick never writes it', async () => {
+    setBindingMock('TrackerAssignableUsers', async () => ({ users: [{ id: 'u1', name: 'User 1' }] }));
+    const edits: string[] = [];
+    setBindingMock('EditTrackerIssue', async (_c: string, input: { issue: string }) => { edits.push(input.issue); return applied(); });
+    setBindingMock('TrackerMoves', async () => [toDone('n')]);
+    const view = draw([rowOf(1), rowOf(2)]);
+    await select('WEB-1', 'WEB-2');
+    for (const action of ['ticket-list-assign', 'ticket-list-move', 'ticket-list-thread']) {
+      await fireEvent.click(view.getByTestId(action));
+      await flush();
+      expect(document.body.querySelector('[role="dialog"], [role="menu"], form')).not.toBeNull();
+      await view.rerender({ rows: [rowOf(1)] });
+      await flush();
+      expect(document.body.querySelector('[data-testid="ticket-picker-find"], [data-testid="ticket-list-move-title"], [data-testid="ticket-list-thread-form"]')).toBeNull();
+      await view.rerender({ rows: [rowOf(1), rowOf(2)] });
+      await select('WEB-2');
+    }
+    await fireEvent.click(view.getByTestId('ticket-list-assign'));
+    await vi.waitFor(() => expect(page().getByTestId('ticket-picker-item')).toBeTruthy());
+    expect(page().getByLabelText('Find assign 2 tickets to')).toBeTruthy();
+    await view.rerender({ rows: [rowOf(1)] });
+    await flush();
+    await fireEvent.click(view.getByTestId('ticket-list-assign'));
+    await vi.waitFor(() => expect(page().getByTestId('ticket-picker-item')).toBeTruthy());
+    await fireEvent.click(page().getByTestId('ticket-picker-item'));
+    await vi.waitFor(() => expect(view.getByTestId('ticket-list-note').textContent?.trim()).toBe('1 ticket assigned to User 1'));
+    expect(edits).toEqual(['10101']);
+  });
+
   it('opens a row\'s ticket from the row, not from its box', async () => {
     const view = draw([rowOf(1)]);
     await select('WEB-1');
@@ -132,6 +162,34 @@ describe('Move to', () => {
     expect(view.queryByTestId('ticket-list-note')).toBeNull();
   });
 
+  it('moves tickets back to where its rows still show them, once this list has moved them away', async () => {
+    // Jira lists a move into Done from Done when every status may move there.
+    const toDo = (id: string): MoveView => ({ id, name: 'Reopen', to: { id: 's1', name: 'To Do' } } as MoveView);
+    setBindingMock('TrackerMoves', async (_c: string, issue: string) => [toDo(`r${issue}`), toDone(`n${issue}`)]);
+    const sent: string[] = [];
+    setBindingMock('MoveTrackerIssue', async (_c: string, input: { issue: string; move: string }) => { sent.push(input.move); return applied(); });
+    const view = draw([rowOf(1, 'Done'), rowOf(2, 'Done')]);
+    const moveBoth = async (to: string) => {
+      await select('WEB-1', 'WEB-2');
+      await fireEvent.click(view.getByTestId('ticket-list-move'));
+      await vi.waitFor(() => expect(page().getAllByTestId('ticket-list-move-status')).toHaveLength(2));
+      return page().getAllByTestId('ticket-list-move-status').find((b) => b.textContent?.includes(to))!;
+    };
+    const done = await moveBoth('Done');
+    expect(done.textContent).toContain('They are all in Done already');
+    await fireEvent.keyDown(document, { key: 'Escape' });
+    await fireEvent.click(view.getByTestId('ticket-list-clear'));
+    await fireEvent.click(await moveBoth('To Do'));
+    await vi.waitFor(() => expect(view.getByTestId('ticket-list-note').textContent?.trim()).toBe('2 tickets moved to To Do'));
+    await fireEvent.click(await moveBoth('Done'));
+    await vi.waitFor(() => expect(view.getByTestId('ticket-list-note').textContent?.trim()).toBe('2 tickets moved to Done'));
+    expect(sent).toEqual(['r10101', 'r10102', 'n10101', 'n10102']);
+
+    // Counted again, the rows say where the tickets are.
+    await view.rerender({ rows: [rowOf(1, 'To Do'), rowOf(2, 'To Do')] });
+    expect((await moveBoth('To Do')).textContent).toContain('They are all in To Do already');
+  });
+
   it('says in a toast what the tracker refused while the list is not shown', async () => {
     setBindingMock('TrackerMoves', async (_c: string, issue: string) => [toDone(`n${issue}`)]);
     setBindingMock('MoveTrackerIssue', async (_c: string, input: { issue: string }) => (input.issue === '10102' ? refused('WEB-2 needs a reviewer first') : applied()));
@@ -172,10 +230,31 @@ describe('Move to', () => {
     const view = draw([rowOf(1)], { writeBlocked: 'This device may not change tickets on this computer.' });
     await select('WEB-1');
     for (const id of ['ticket-list-move', 'ticket-list-assign']) {
-      const button = view.getByTestId(id) as HTMLButtonElement;
-      expect(button.disabled).toBe(true);
-      expect(button.title).toBe('This device may not change tickets on this computer.');
+      expect((view.getByTestId(id) as HTMLButtonElement).disabled).toBe(true);
     }
+    // Said in words, which a tap on a phone reaches, not only in a tip.
+    expect(view.getByTestId('ticket-list-off').textContent?.trim()).toBe('This device may not change tickets on this computer.');
+  });
+
+  it('stops the moves a closed menu still waited to read, so the next action is not queued behind them', async () => {
+    const asked: string[] = [];
+    const held: Array<() => void> = [];
+    setBindingMock('TrackerMoves', (_c: string, issue: string) => {
+      asked.push(issue);
+      return new Promise((resolve) => held.push(() => resolve([toDone(`n${issue}`)])));
+    });
+    const rows = Array.from({ length: 10 }, (_, i) => rowOf(i + 1));
+    const view = draw(rows);
+    await select(...rows.map((r) => r.key));
+    await fireEvent.click(view.getByTestId('ticket-list-move'));
+    await flush();
+    expect(asked).toHaveLength(BULK_AT_ONCE);
+    await fireEvent.keyDown(document, { key: 'Escape' });
+    await flush();
+    expect(page().queryByTestId('ticket-list-move-title')).toBeNull();
+    while (held.length > 0) held.shift()!();
+    await flush();
+    expect(asked).toHaveLength(BULK_AT_ONCE);
   });
 });
 
@@ -217,11 +296,39 @@ describe('Start a thread', () => {
     await select(...rows.map((r) => r.key));
     const button = view.getByTestId('ticket-list-thread') as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(button.title).toBe('A thread takes at most 8 tickets, one file each; 9 are selected.');
+    expect(view.getByTestId('ticket-list-off').textContent?.trim()).toBe('A thread takes at most 8 tickets, one file each; 9 are selected.');
     view.unmount();
 
     const blocked = draw([rowOf(1)], { threadBlocked: 'Pick the project its thread goes in.' });
     await select('WEB-1');
-    expect((blocked.getByTestId('ticket-list-thread') as HTMLButtonElement).title).toBe('Pick the project its thread goes in.');
+    expect((blocked.getByTestId('ticket-list-thread') as HTMLButtonElement).disabled).toBe(true);
+    expect(blocked.getByTestId('ticket-list-off').textContent?.trim()).toBe('Pick the project its thread goes in.');
+  });
+
+  it('keeps the text and the selection when the start is refused, and a start that ends never clears a later form\'s text', async () => {
+    let answer: (ok: boolean) => void = () => {};
+    setBindingMock('StartTicketsThread', () => new Promise((resolve, reject) => {
+      answer = (ok) => (ok ? resolve({ id: 't-1', projectId: 'p1' } as unknown as Thread) : reject(new Error('the tracker did not answer')));
+    }));
+    setBindingMock('SwitchThread', async (id: string) => ({ id, projectId: 'p1' } as unknown as Thread));
+    const view = draw([rowOf(1), rowOf(2), rowOf(3)]);
+    await select('WEB-1', 'WEB-2');
+    await fireEvent.click(view.getByTestId('ticket-list-thread'));
+    await fireEvent.input(page().getByTestId('ticket-list-thread-text'), { target: { value: 'why stuck' } });
+    await fireEvent.click(page().getByTestId('ticket-list-thread-start'));
+    answer(false);
+    await flush();
+    expect(view.getByTestId('ticket-list-count').textContent).toBe('2 selected');
+    await fireEvent.click(view.getByTestId('ticket-list-thread'));
+    expect((page().getByTestId('ticket-list-thread-text') as HTMLInputElement).value).toBe('why stuck');
+
+    await fireEvent.click(page().getByTestId('ticket-list-thread-start'));
+    await flush();
+    await select('WEB-3');
+    await fireEvent.click(view.getByTestId('ticket-list-thread'));
+    await fireEvent.input(page().getByTestId('ticket-list-thread-text'), { target: { value: 'the next one' } });
+    answer(true);
+    await flush();
+    expect((page().getByTestId('ticket-list-thread-text') as HTMLInputElement).value).toBe('the next one');
   });
 });

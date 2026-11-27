@@ -29,6 +29,7 @@ const EDIT_ROUTE = 'PUT rest/api/3/issue/{issue}';
 // The fake's workflow: a transition into each status, named for it.
 const TO_DO = '11';
 const IN_PROGRESS = '21';
+const DONE = '31';
 const keys = (from: number, n: number) => Array.from({ length: n }, (_, i) => `WEB-${from + i}`);
 const errorToasts = (page: Page) => page.locator('[role="alert"].text-error');
 
@@ -99,6 +100,14 @@ export function registerDashboardListFlow({ compact }: DashboardListSurface): vo
     expect(await movesOf(harness, six)).toEqual(six.map(() => ({ transition: { id: IN_PROGRESS } })));
     await expect(drill.getByTestId('ticket-write-pending')).toHaveCount(0);
 
+    // Two of them back to Done: the drill's rows still say Done, and the
+    // move starts from where the last one left them.
+    const back = keys(200, 2);
+    await select(drill, back, compact);
+    await moveTo(page, drill, 'Done', compact);
+    await expect(drill.getByTestId('ticket-list-note')).toHaveText('2 tickets moved to Done', { timeout: 15_000 });
+    expect((await movesOf(harness, back)).filter((b) => JSON.stringify(b) === JSON.stringify({ transition: { id: DONE } }))).toHaveLength(2);
+
     // A move Jira refuses says why under its row; the other is made.
     await harness.rpc('HarnessTrackerFault', {
       origin: JIRA, route: MOVE_ROUTE, kind: 'refuse', times: 1,
@@ -140,6 +149,13 @@ export function registerDashboardListFlow({ compact }: DashboardListSurface): vo
     await expect(page.getByTestId('attachment-file-chip').nth(0)).toContainText('WEB-202.md');
     await expect(page.getByTestId('attachment-file-chip').nth(1)).toContainText('WEB-203.md');
     await expect(page.getByLabel('Message Input')).toHaveValue('find out why these took so long');
+    // The drill closed before the thread opened: the composer takes a press
+    // and what is typed.
+    await expect(page.getByTestId('dashboard-drill')).toHaveCount(0);
+    await press(page.getByLabel('Message Input'), compact);
+    await page.keyboard.press('End');
+    await page.keyboard.type(', and who has them');
+    await expect(page.getByLabel('Message Input')).toHaveValue('find out why these took so long, and who has them');
     const rows = await harness.rpc<Array<{ title: string; ticketLink?: unknown }>>('HarnessListThreadRows');
     expect(rows.map((r) => [r.title, r.ticketLink ?? null])).toEqual([['WEB-202 and WEB-203', null]]);
     expect(await trackerRequests(harness, MOVE_ROUTE)).toEqual([]);

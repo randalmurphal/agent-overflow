@@ -101,24 +101,31 @@ describe('moveTickets', () => {
       sent.shift()!();
       for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
     }
-    expect(await done).toEqual({ made: 6, sent: 6 });
+    expect(await done).toEqual({ made: new Set(tickets.map((t) => t.ctx.key)), sent: 6 });
   });
 });
 
 describe('assignablePeople', () => {
-  it('asks once per project and lists the people every project may assign; a project that fails says so', async () => {
+  it('asks once per project and lists the people every project may assign', async () => {
     const asked: string[] = [];
     setBindingMock('TrackerAssignableUsers', async (_c: string, scope: { issue: string }) => {
       asked.push(scope.issue);
-      if (scope.issue === '20') throw new Error('the tracker did not answer');
       return scope.issue === '1'
         ? { users: [{ id: 'u1', name: 'User 1' }, { id: 'u2', name: 'User 2' }, { id: 'u3', name: 'User 3' }] }
         : { users: [{ id: 'u3', name: 'User 3' }, { id: 'u1', name: 'User 1' }], more: true };
     });
-    const list = await assignablePeople([ticket('WEB-1', '1', ''), ticket('WEB-2', '2', ''), ticket('APP-1', '10', ''), ticket('OPS-1', '20', '')], 'u');
-    expect(asked).toEqual(['1', '10', '20']);
+    const list = await assignablePeople([ticket('WEB-1', '1', ''), ticket('WEB-2', '2', ''), ticket('APP-1', '10', '')], 'u', new AbortController().signal);
+    expect(asked).toEqual(['1', '10']);
     expect(list.items.map((p) => p.name)).toEqual(['User 1', 'User 3']);
     expect(list.more).toBe(true);
-    expect(list.failed).toEqual(['Could not read who may be assigned OPS tickets: The tracker did not answer.']);
+  });
+
+  it('offers nobody when a project\'s read fails, and says which and why', async () => {
+    setBindingMock('TrackerAssignableUsers', async (_c: string, scope: { issue: string }) => {
+      if (scope.issue === '20') throw new Error('the tracker did not answer');
+      return { users: [{ id: 'u1', name: 'User 1' }] };
+    });
+    await expect(assignablePeople([ticket('WEB-1', '1', ''), ticket('OPS-1', '20', '')], 'u', new AbortController().signal))
+      .rejects.toThrow('Could not read who may be assigned OPS tickets: The tracker did not answer.');
   });
 });
