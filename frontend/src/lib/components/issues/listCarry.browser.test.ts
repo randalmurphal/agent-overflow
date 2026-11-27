@@ -56,7 +56,7 @@ function board(): BoardView {
     { name: 'Done', statuses: [{ id: 's3', group: 'done' }], total: { rows: 0, estimate: 0 } },
   ];
   return {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' }, counts: 'points',
     columns, sprints: [], all: { rows: 2_003, estimate: 4_006 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 1 },
     screen: [0, 1, 2].map((column) => ({ kind: 'column', column })),
     sections: [
@@ -478,7 +478,7 @@ describe('ranking cards one after another in a column', () => {
 
   function rankedBoard(rows: RowView[]): BoardView {
     return {
-      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' },
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' }, counts: 'points',
       columns: [{ name: 'To Do', statuses: [{ id: 's1', group: 'todo' }], total: { rows: 4, estimate: 8 } }],
       sprints: [], all: { rows: 4, estimate: 8 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 1 },
       screen: [COLUMN], sections: [{ section: COLUMN, rows, next: null }],

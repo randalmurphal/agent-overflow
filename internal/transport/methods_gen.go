@@ -416,6 +416,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "PreviewNotificationSound", ID: 2105157519, Scope: "host", Route: "home"},                                                         // main.App.PreviewNotificationSound
 	{Name: "ProjectDeletionPreview", ID: 2575010484, Scope: "git:operate", Route: "project"},                                                 // main.App.ProjectDeletionPreview
 	{Name: "ProjectTrackerBoards", ID: 1066511111, Scope: "tracker:read", Route: "project"},                                                  // main.App.ProjectTrackerBoards
+	{Name: "ProjectTrackerPace", ID: 342403521, Scope: "tracker:read", Route: "project"},                                                     // main.App.ProjectTrackerPace
 	{Name: "ProjectTrackerSetup", ID: 3259060803, Scope: "tracker:read", Route: "project"},                                                   // main.App.ProjectTrackerSetup
 	{Name: "ProjectTrackerSiteFields", ID: 1545287804, Scope: "tracker:read", Route: "project"},                                              // main.App.ProjectTrackerSiteFields
 	{Name: "ProjectTrackerStatuses", ID: 315742236, Scope: "tracker:read", Route: "project"},                                                 // main.App.ProjectTrackerStatuses

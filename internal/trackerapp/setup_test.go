@@ -1359,3 +1359,84 @@ func TestTimeSettingsANewerVersionSavedAreKept(t *testing.T) {
 		t.Fatalf("the kept section as written:\n%s", data)
 	}
 }
+
+// An estimates section stores only what turns a built-in rule off:
+// counting tickets and poker off. Counting by estimates and poker on are
+// none, and a count of anything else is refused.
+func TestEstimatesAreSavedWithTheirDefaults(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	off, on := false, true
+	save := m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets", Poker: &off}})
+	if got := save.Stored.Setup.Estimates; got == nil || got.Count != "tickets" || got.Poker == nil || *got.Poker {
+		t.Fatalf("the estimates as stored: %+v", got)
+	}
+	m.restart(t)
+	if got := must[SetupView](t)(m.svc.ProjectSetup(m.project())).Setup.Estimates; got == nil || got.Count != "tickets" || got.Poker == nil || *got.Poker {
+		t.Fatalf("the estimates after a restart: %+v", got)
+	}
+	cleared := m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "estimates", Poker: &on}})
+	if cleared.Stored.Setup.Estimates != nil {
+		t.Fatalf("estimates that set nothing are stored as %+v", cleared.Stored.Setup.Estimates)
+	}
+	if data, _ := os.ReadFile(m.setupPathOf(t, m.project())); strings.Contains(string(data), `"estimates"`) {
+		t.Fatalf("estimates cleared left their section:\n%s", data)
+	}
+	before, _ := os.ReadFile(m.setupPathOf(t, m.project()))
+	if _, err := m.svc.SetProjectSetup(m.project(), setupRevision(before), Setup{Estimates: &Estimates{Count: "hours"}}); !errors.Is(err, ErrInvalidSetup) || !strings.Contains(err.Error(), "neither estimates nor tickets") {
+		t.Fatalf("a count of hours: %v", err)
+	}
+}
+
+// A project that counts tickets reads its Jira board's work in tickets
+// while its cards keep their points; the save has the open board read
+// again, and counting by estimates again reads it in points. Another
+// project that lists the board counts by its own setup.
+func TestAProjectThatCountsTicketsReadsItsBoardInTickets(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	m.listIn(t, "other")
+	mine := m.subscribeShown(t, m.project())
+	theirs := m.subscribeShown(t, "other")
+	if v := m.viewOf(t, mine.ID); v.Estimate.Unit != "points" || v.Counts != "points" {
+		t.Fatalf("the board before: estimate %q, counts %q", v.Estimate.Unit, v.Counts)
+	}
+	n, dashboards := m.boardEventCount(), m.events.dashboards.Load()
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
+	if !m.readAgainSince(n) || m.events.dashboards.Load() != dashboards+1 {
+		t.Fatalf("the project began counting tickets: read again %v, dashboards told %d times", m.readAgainSince(n), m.events.dashboards.Load()-dashboards)
+	}
+	if v := m.viewOf(t, mine.ID); v.Estimate.Unit != "points" || v.Counts != "none" {
+		t.Fatalf("the board counting tickets: estimate %q, counts %q", v.Estimate.Unit, v.Counts)
+	}
+	if v := m.viewOf(t, theirs.ID); v.Counts != "points" {
+		t.Fatalf("the other project's board: counts %q", v.Counts)
+	}
+	n, dashboards = m.boardEventCount(), m.events.dashboards.Load()
+	off := false
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets", Poker: &off}})
+	if m.readAgainSince(n) || m.events.dashboards.Load() != dashboards {
+		t.Fatal("turning poker off read the board or its dashboards again")
+	}
+	n = m.boardEventCount()
+	if _, err := m.svc.SetProjectSetup(m.project(), must[SetupView](t)(m.svc.ProjectSetup(m.project())).Revision, Setup{}); err != nil {
+		t.Fatal(err)
+	}
+	if !m.readAgainSince(n) || m.viewOf(t, mine.ID).Counts != "points" {
+		t.Fatal("counting by estimates again did not read the board again in points")
+	}
+}
+
+// Counting tickets is a Jira board's rule: a Linear board of the project
+// keeps its estimates.
+func TestOnlyAJiraBoardIsCountedInTickets(t *testing.T) {
+	t.Parallel()
+	held := must[*heldSetup](t)(heldOf(Setup{Estimates: &Estimates{Count: "tickets"}}, nil, nil, nil, ""))
+	if g := held.counting(siteKey{store.TrackerKindJira, "https://example.atlassian.net"}); g.unit(tracker.UnitPoints) != tracker.UnitNone {
+		t.Error("a Jira board of a project counting tickets is not counted in tickets")
+	}
+	if g := held.counting(siteKey{store.TrackerKindLinear, "example"}); g.unit(tracker.UnitPoints) != tracker.UnitPoints {
+		t.Error("a Linear board of a project counting tickets is counted in tickets")
+	}
+}

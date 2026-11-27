@@ -265,6 +265,14 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
         answered = { source: s, request: r };
         settledKey = key;
         error = null;
+        // An open drill of this dashboard counted in another unit (the
+        // project changed what it counts in) reads its first page again
+        // in this answer's: its numbers would be in the old one.
+        const d = drill;
+        if (d && drillOf && drillOf.request.dashboard === r.dashboard && drillOf.estimates !== a.estimates) {
+          drillOf = { ...answered, estimates: a.estimates };
+          void readDrill(d.target, 0, 0);
+        }
       } catch (err) {
         if (!token.isCurrent()) return;
         settledKey = key;
@@ -371,8 +379,8 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   }
 
   // The source and request the open drill counts: those of the answer it
-  // was opened from, for every page.
-  let drillOf: { source: DashboardSource; request: Request } | null = null;
+  // was opened from, for every page, and the unit that answer counted in.
+  let drillOf: { source: DashboardSource; request: Request; estimates: string } | null = null;
 
   async function readDrill(target: DrillTarget, page: number, count: number): Promise<void> {
     if (!drillOf) return;
@@ -462,7 +470,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     },
     openDrill(target) {
       if (!answered || !shownAnswer) return;
-      drillOf = answered;
+      drillOf = { ...answered, estimates: shownAnswer.estimates };
       void readDrill(target, 0, 0);
     },
     drillPage(page) {
