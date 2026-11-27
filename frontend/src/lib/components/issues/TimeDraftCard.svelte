@@ -7,9 +7,9 @@
   // answered in place; Discard asks once and removes the call's drafted
   // entries; Review in Time opens the Time screen at the draft's week.
   // The header says what is left: time to approve, questions only, time
-  // logged, nothing left to approve, or none of the call's entries (a
-  // later draft of the thread replaced them, the person removed them, or
-  // a question was answered into another entry). Only the Time screen
+  // logged, nothing left to approve, or that the call has no entries now
+  // (it may have had none: a call can only replace the thread's earlier
+  // ones). Only the Time screen
   // logs an entry of unknown outcome by hand; here it offers Remove.
   // In-thread find skips the card; the row's summary is what it matches.
   import Clock from '@lucide/svelte/icons/clock';
@@ -110,7 +110,7 @@
         <b class="font-semibold">Nothing left to approve</b>
       {:else}
         <Icon icon={X} size={14} strokeWidth={2} class="text-fg-muted" />
-        <span class="text-fg-muted" data-testid="time-draft-card-empty">None of this draft's entries is left: they were removed, answered into another entry, or replaced by a later draft.</span>
+        <span class="text-fg-muted" data-testid="time-draft-card-empty">This draft has no entries now.</span>
       {/if}
       {#if current?.readError}
         <span class="basis-full text-error" role="alert" data-testid="time-draft-card-error">Could not read the drafted time again: {errString(current.readError)}</span>
@@ -128,7 +128,7 @@
           {:else if done.length > 0}
             <span class="inline-flex items-center gap-1 text-success"><Icon icon={Check} size={12} strokeWidth={2} />logged {formatTimeSpent(done.reduce((s, e) => s + e.minutes, 0) * 60)}</span>
           {:else if g.entries.length === 0}
-            <span class="text-fg-muted" data-testid="time-draft-card-day-gone">Nothing of this draft is left on this day.</span>
+            <span class="text-fg-muted" data-testid="time-draft-card-day-gone">This draft has nothing on this day now.</span>
           {/if}
           <span class="flex-1"></span>
           <TimeDraftApprove {ctx} target={draftTarget(`${callScope}:day:${g.day}`)} entries={dayOpen} minutes={dayMinutes} label="Approve" variant="secondary" testId="time-draft-card-approve-day" />

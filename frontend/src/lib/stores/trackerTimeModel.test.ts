@@ -114,7 +114,7 @@ describe('the agent\'s draft in a week', () => {
     expect(wed.drafted.map((e) => e.id)).toEqual([4]);
     expect(wed.draftedMinutes).toBe(0);
     expect([mon.mark, tue.mark, wed.mark, thu.mark]).toEqual(['drafted', 'question', 'drafted', 'none']);
-    expect(shape.draft).toEqual({ days: 2, entries: 2, questions: 1, minutes: 120, threads: ['t1'] });
+    expect(shape.draft).toEqual({ days: 2, entries: 2, questions: 1, minutes: 120, threads: ['t1'], logged: { minutes: 0, worklogs: 0 } });
     expect(weekDrafted(shape).map((e) => e.id)).toEqual([1, 2, 3]);
     expect(weekQuestions(shape).map((q) => q.map((e) => e.id))).toEqual([[], [3], [], [], []]);
     const rows = weekTickets(shape);
@@ -126,17 +126,21 @@ describe('the agent\'s draft in a week', () => {
     expect(rows[0].total).toBe(3600);
   });
 
-  it('hides an entry left out and a posted one whose worklog the read holds, and shows a posted one until it does', () => {
+  // The worklogs say what is logged: a posted entry whose worklog was
+  // deleted or moved is no time on its day.
+  it('draws no entry left out or posted, and counts what the draft logged by the worklogs the read holds', () => {
     const shape = weekShape(MONDAY, answer([log('w9', '2026-11-09', 1800)], { drafted: [
       entry(1, '2026-11-09', 30, { state: 'posted', worklog: 'w9' }),
       entry(2, '2026-11-10', 30, { state: 'posted', worklog: 'w10' }),
       question(3, '2026-11-10', 25, { state: 'left_out' }),
     ] }));
     expect(shape.days[0].drafted).toEqual([]);
-    expect(shape.days[1].drafted.map((e) => e.id)).toEqual([2]);
+    expect(shape.days[0].mark).toBe('logged');
+    expect(shape.days[1].drafted).toEqual([]);
     expect(shape.days[1].questions).toEqual([]);
-    expect(shape.days[1].mark).toBe('logged');
+    expect(shape.days[1].mark).toBe('none');
     expect(shape.draft.entries).toBe(0);
+    expect(shape.draft.logged).toEqual({ minutes: 30, worklogs: 1 });
   });
 
   it('shows a weekend day that holds a draft', () => {

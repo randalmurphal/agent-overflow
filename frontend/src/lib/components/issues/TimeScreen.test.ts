@@ -619,6 +619,42 @@ describe('a draft changed while the person looks at it', () => {
     expect(remove).toHaveBeenCalledWith('c1', [{ id: 11, revision: 2 }]);
   });
 
+  it('says the entry changed since the form opened, and shows the change on request', async () => {
+    answerDraft([], [drafted(11, '2026-11-11', 60)]);
+    const post = setBindingMock('PostTrackerTimeEntries', async () => POSTED('Posted 1 of 1 entries for Wed Nov 11.'));
+    const view = render(TimeScreen, BASE);
+    await fireEvent.click(await view.findByTestId('time-draft-entry-hours'));
+    const form = await body().findByTestId('time-draft-form');
+    expect(within(form).queryByTestId('time-draft-form-moved')).toBeNull();
+    await changedElsewhere([], [drafted(11, '2026-11-11', 180, { revision: 3, issue: '10002', key: 'WEB-2', title: 'Second story', reason: 'Reviewed it' })]);
+    expect(await within(form).findByTestId('time-draft-form-moved')).toHaveTextContent('This entry changed since you opened it.');
+    await fireEvent.click(within(form).getByTestId('time-draft-form-show-change'));
+    expect(within(form).getByTestId('time-draft-form-ticket')).toHaveTextContent('WEB-2');
+    expect(within(form).getByTestId('time-draft-form-time')).toHaveValue('3h');
+    expect(within(form).getByTestId('time-draft-form-reason')).toHaveValue('Reviewed it');
+    expect(within(form).queryByTestId('time-draft-form-moved')).toBeNull();
+    await fireEvent.click(within(form).getByTestId('time-draft-form-log'));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('c1', { entries: [{ id: 11, revision: 3 }], alone: true }));
+  });
+
+  it('acts on its own saved change next, and does not call it another window\'s', async () => {
+    answerDraft([], [drafted(11, '2026-11-11', 60)]);
+    setBindingMock('EditTrackerTimeEntry', async () => drafted(11, '2026-11-11', 120, { revision: 3 }));
+    const post = setBindingMock('PostTrackerTimeEntries', async () => ({ entries: [], posted: 0, of: 1, sentence: 'Posted 0 of 1 entries for Wed Nov 11. WEB-1, 2h, was refused: Worklog is closed.' }));
+    const view = render(TimeScreen, BASE);
+    await fireEvent.click(await view.findByTestId('time-draft-entry-hours'));
+    const form = await body().findByTestId('time-draft-form');
+    await fireEvent.input(within(form).getByTestId('time-draft-form-time'), { target: { value: '2h' } });
+    await fireEvent.click(within(form).getByTestId('time-draft-form-log'));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('c1', { entries: [{ id: 11, revision: 3 }], alone: true }));
+    await changedElsewhere([], [drafted(11, '2026-11-11', 120, { revision: 3 })]);
+    await waitFor(() => expect(view.getByTestId('time-draft-entry-hours')).toHaveTextContent('2h'));
+    expect(within(form).queryByTestId('time-draft-form-moved')).toBeNull();
+    await fireEvent.click(within(form).getByTestId('time-draft-form-log'));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    expect(post).toHaveBeenLastCalledWith('c1', { entries: [{ id: 11, revision: 3 }], alone: true });
+  });
+
   it('discards the entries its question named, not ones drafted after it asked', async () => {
     answerDraft([], [drafted(11, '2026-11-11', 60)]);
     const remove = setBindingMock('RemoveTrackerTimeEntries', async () => []);

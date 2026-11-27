@@ -8,7 +8,7 @@
 // One card per computer, thread and call, held while a card shows it and
 // dropped with its last holder, so only the cards the timeline mounts hold
 // entries (at most a call's 250). Reads are numbered as they start, and
-// an answer applies only above the one applied last. The card reads when
+// an answer, a refusal included, applies only above the one applied last. The card reads when
 // it is first held; a `tracker:time_entries_updated` frame of its
 // computer that names its thread reads it again, coalesced
 // (`DRAFT_CARD_REREAD_DELAY_MS`), since the frame names the threads of
@@ -80,9 +80,12 @@ function read(card: Card): Promise<void> {
       states.set(key, { entries: entries ?? [], readError: null });
     },
     (err: unknown) => {
-      if (n <= card.applied || cards.get(key) !== card) return;
       // A dropped connection says nothing new: the reconnect reads again.
-      if (!isPassiveConnectionFailure(err)) states.set(key, { ...(states.get(key) ?? EMPTY), readError: err });
+      if (n <= card.applied || cards.get(key) !== card || isPassiveConnectionFailure(err)) return;
+      // A refusal is an answer too: an older read that answers later does
+      // not clear it.
+      card.applied = n;
+      states.set(key, { ...(states.get(key) ?? EMPTY), readError: err });
     },
   );
 }

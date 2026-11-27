@@ -147,9 +147,12 @@ func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeReq
 	var unread []StaleView
 	if len(send) > 0 {
 		var settled []store.TimeEntry
-		settled, applied, notes, unread, err = s.sendTimeEntries(ctx, id, author, send, !in.Alone, notes)
-		// Entries a failed post settled changed all the same.
-		s.timeEntriesChanged(id, author, settled)
+		var checked []string
+		settled, checked, applied, notes, unread, err = s.sendTimeEntries(ctx, id, author, send, !in.Alone, notes)
+		// Entries a failed post settled changed all the same, and the days
+		// its check read hold the worklogs it stored, an approval that
+		// skipped every entry included: one frame names both.
+		s.timeEntriesChanged(id, author, settled, checked...)
 		if err != nil {
 			return PostTimeView{}, err
 		}
@@ -210,15 +213,17 @@ func (r *run) checkedDays(author string, entries []store.TimeEntry) ([]tracker.W
 // when check, it reads their days and leaves out each whose day holds a
 // worklog of its ticket made since it was drafted (loggedSince); it marks
 // the rest sent, sends those it marked, and settles each with its outcome. It
-// returns the entries it settled, which of them the time source applied,
-// notes for those not posted, and the read-back that failed
+// returns the entries it settled, the days its check read, which of the
+// entries the time source applied, notes for those not posted, and the
+// read-back that failed
 // (WriteView.Stale). A day that could not be read sends nothing. A store
 // write that fails after the send fails the post: its entries stay sent
 // while this process runs, and the next is told they may have been
 // logged (recoverEarlier).
-func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends []store.TimeEntry, check bool, notes []postNote) ([]store.TimeEntry, map[int64]bool, []postNote, []StaleView, error) {
+func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends []store.TimeEntry, check bool, notes []postNote) ([]store.TimeEntry, []string, map[int64]bool, []postNote, []StaleView, error) {
 	applied := map[int64]bool{}
 	var settled []store.TimeEntry
+	var checked []string
 	var storeErr error
 	notSent := func(err error) tracker.Result {
 		out := tracker.Result{Parts: make([]tracker.Part, len(sends))}
@@ -242,6 +247,11 @@ func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends 
 					notes = append(notes, postNote{e: e, why: "was not posted: the day's logged time could not be read to check it (" + strings.TrimSuffix(why, ".") + "); try again"})
 				}
 				return notSent(err)
+			}
+			for _, e := range sends {
+				if !slices.Contains(checked, e.Day) {
+					checked = append(checked, e.Day)
+				}
 			}
 		}
 		var entries []store.TimeEntry
@@ -330,7 +340,7 @@ func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends 
 	if err == nil {
 		err = storeErr
 	}
-	return settled, applied, notes, view.Stale, err
+	return settled, checked, applied, notes, view.Stale, err
 }
 
 // notMarked notes each entry of entries that ids name, which the mark

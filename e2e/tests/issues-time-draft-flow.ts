@@ -355,13 +355,12 @@ export function registerIssuesTimeDraftFlow({ compact }: TimeDraftSurface): void
     await press(card.getByTestId('time-draft-card-discard-confirm-yes'), compact);
     await expect(card.getByTestId('time-draft-card-header')).toHaveText(/Nothing left to approve/, { timeout: 30_000 });
     await expect(card.getByTestId('time-draft-entry')).toHaveCount(0);
-    // The other thread's card, discarded, has none of its call's entries
-    // left, and says so.
+    // The other thread's card, discarded, has no entries now, and says so.
     await showThread(page, other.title, compact);
     const theirs = cards(page).first();
     await press(theirs.getByTestId('time-draft-card-discard'), compact);
     await press(theirs.getByTestId('time-draft-card-discard-confirm-yes'), compact);
-    await expect(theirs.getByTestId('time-draft-card-empty')).toHaveText("None of this draft's entries is left: they were removed, answered into another entry, or replaced by a later draft.", { timeout: 30_000 });
+    await expect(theirs.getByTestId('time-draft-card-empty')).toHaveText('This draft has no entries now.', { timeout: 30_000 });
     expect(await trackerRequests(harness, WORKLOG_ADD)).toHaveLength(0);
   });
 

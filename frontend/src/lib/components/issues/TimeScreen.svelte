@@ -87,9 +87,10 @@
     onOpenTicket: (ticket: WorklogTicket) => void;
     /** A refresh of the week is out; for the pane's Refresh. */
     refreshing?: boolean;
-    /** A week another surface asked for; each new ask moves the screen
-     * to its week. */
+    /** A week another surface asked for; the screen moves to it, then
+     * takes it (`onAskedWeekTaken`). */
     askedWeek?: { readonly monday: string } | null;
+    onAskedWeekTaken?: () => void;
   }
 
   let {
@@ -106,6 +107,7 @@
     onOpenTicket,
     refreshing = $bindable(false),
     askedWeek = null,
+    onAskedWeekTaken,
   }: Props = $props();
 
   // Today, moved at each midnight while the screen lives.
@@ -128,7 +130,11 @@
   // A week asked for moves the screen to it.
   $effect(() => {
     const asked = askedWeek;
-    if (asked) untrack(() => moveWeek(asked.monday));
+    if (!asked) return;
+    untrack(() => {
+      moveWeek(asked.monday);
+      onAskedWeekTaken?.();
+    });
   });
 
   const readable = $derived(!offline && connectionKind !== 'linear' && connectionOn && !!author);
@@ -265,6 +271,15 @@
       unknown: entry,
     });
   }
+
+  // An entry of unknown outcome another window removed, or logged by hand
+  // and removed, while its form is open here: the form logs nothing.
+  const UNKNOWN_SETTLED = 'This entry was removed or logged elsewhere, so its time is not logged from here.';
+  const unknownSettled = $derived.by(() => {
+    const e = form?.unknown;
+    if (!e || !shape) return false;
+    return !shape.days.some((d) => d.drafted.some((x) => x.id === e.id && x.state === 'unknown'));
+  });
 
   // The hand-logged time of an entry of unknown outcome was logged: the
   // entry goes, under its own target, so a failed removal shows on it.
@@ -463,6 +478,7 @@
           confirmDelete={open.confirmDelete}
           fill={open.unknown ? { time: formatTimeSpent(open.unknown.minutes * 60), description: open.unknown.reason } : undefined}
           candidates={tickets}
+          waiting={unknownSettled ? UNKNOWN_SETTLED : undefined}
           onSaved={(day) => savedFrom(open, day)}
           onDone={() => { if (form === open) form = null; }}
         />

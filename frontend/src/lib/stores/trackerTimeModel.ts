@@ -101,8 +101,8 @@ export interface WeekDay {
   readonly total: number | null;
   readonly uncounted: UncountedReason | null;
   /** The draft's entries on a ticket that are not logged yet (drafted,
-   * sent, unknown) or whose worklog the day does not show yet (posted),
-   * by ID. */
+   * sent, unknown), by ID. A posted entry is the day's worklog, or nothing
+   * once that worklog is gone. */
   readonly drafted: readonly TimeEntryView[];
   /** The draft's questions: drafted entries with no ticket. */
   readonly questions: readonly TimeEntryView[];
@@ -137,13 +137,15 @@ export function postedMinutes(entries: readonly TimeEntryView[]): number {
 
 /** The week's draft as the banner counts it: the days that hold drafted
  * entries, the entries on a ticket, the questions, the minutes an
- * approval of the week posts, and the threads that drafted them. */
+ * approval of the week posts, the threads that drafted them, and what of
+ * the draft is logged: its posted entries whose worklog the read holds. */
 export interface WeekDraft {
   readonly days: number;
   readonly entries: number;
   readonly questions: number;
   readonly minutes: number;
   readonly threads: readonly string[];
+  readonly logged: { readonly minutes: number; readonly worklogs: number };
 }
 
 /** One ticket's row of the grid. */
@@ -195,11 +197,18 @@ export function weekShape(monday: string, answer: WorklogDays): WeekShape {
     if (list) list.push(w);
     else byDay.set(w.day, [w]);
   }
-  // A posted entry whose worklog the read holds shows as that worklog.
+  // The worklogs say what is logged: a posted entry shows as its worklog,
+  // and as nothing once that worklog was deleted or moved. A post whose
+  // worklogs could not be read back is a receipt on the week.
   const logged = new Set(logs.map((w) => w.id));
+  const draftLogged = { minutes: 0, worklogs: 0 };
   const draftByDay = new Map<string, TimeEntryView[]>();
   for (const e of answer.drafted ?? []) {
-    if (e.state === 'left_out' || (e.state === 'posted' && (!e.worklog || logged.has(e.worklog)))) continue;
+    if (e.state === 'posted' && e.worklog && logged.has(e.worklog)) {
+      draftLogged.minutes += e.minutes;
+      draftLogged.worklogs += 1;
+    }
+    if (e.state === 'left_out' || e.state === 'posted') continue;
     const list = draftByDay.get(e.day);
     if (list) list.push(e);
     else draftByDay.set(e.day, [e]);
@@ -217,8 +226,8 @@ export function weekShape(monday: string, answer: WorklogDays): WeekShape {
     // An entry being posted or of unknown outcome is not logged as far as
     // this computer knows, and waits on the person as a drafted one does.
     const mark: DayMark = questions.length > 0 ? 'question'
-      : drafted.some((e) => e.state !== 'posted') ? 'drafted'
-        : entries.length > 0 || drafted.length > 0 ? 'logged' : 'none';
+      : drafted.length > 0 ? 'drafted'
+        : entries.length > 0 ? 'logged' : 'none';
     return { day, entries, uncounted, total: uncounted ? null : entries.reduce((s, w) => s + w.spent_seconds, 0), drafted, questions, draftedMinutes, mark };
   });
   const counted = days.filter((d) => d.total !== null).length;
@@ -232,6 +241,7 @@ export function weekShape(monday: string, answer: WorklogDays): WeekShape {
       questions: days.reduce((s, d) => s + d.questions.length, 0),
       minutes: days.reduce((s, d) => s + d.draftedMinutes, 0),
       threads: [...threads].sort(),
+      logged: draftLogged,
     },
   };
 }
@@ -309,9 +319,8 @@ export function draftDayLabel(day: string): string {
 }
 
 /** A call's entries as its timeline card shows them: one group per day
- * the call's row names, by day, each with the entries still there. A day
- * with none says the call's entries of it are gone (replaced by a later
- * draft, removed, or folded into another entry). */
+ * the call's row names, by day, each with the entries there now; a day
+ * may have none. */
 export interface CardDay {
   readonly day: string;
   readonly entries: readonly TimeEntryView[];
@@ -330,7 +339,7 @@ export function cardDays(entries: readonly TimeEntryView[], rowDays: readonly st
 
 /** What a call's card says in its header, from its entries now: time to
  * approve, only questions left, time logged (some may wait in another
- * state), nothing left to approve, or no entry of the call left. */
+ * state), nothing left to approve, or no entries. */
 export type CardState =
   | { readonly kind: 'draft'; readonly days: number; readonly minutes: number }
   | { readonly kind: 'questions'; readonly questions: number }

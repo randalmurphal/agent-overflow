@@ -418,22 +418,23 @@ export function removeDraftEntries(ctx: DraftWriteContext, target: string, entri
  * a day, the week shown, a call's card, or one entry `alone`, which posts
  * it though time was logged on its ticket that day since. Its outcome is
  * the computer's sentence of what was posted and what was not, and why
- * (`PostTimeView.sentence`). Days whose read after the post failed
- * (`stale`) are a receipt on the weeks that show them, and the outcome
- * says so. */
+ * (`PostTimeView.sentence`), which also names the days whose read after
+ * the post failed (`stale`); those days hold it as a receipt on the weeks
+ * that show them. */
 export function postDraftEntries(ctx: DraftWriteContext, target: string, entries: readonly TimeEntryView[], alone = false): Promise<DraftWriteResult<PostTimeView> | null> {
   return draftWrite(ctx, target, 'post', alone ? `Logging ${entryName(entries[0])}` : 'The approval of the draft',
     () => PostTrackerTimeEntries(ctx.connection, { entries: refs(entries), alone: alone || undefined }),
     (view) => {
-      const stale = view.stale?.find((st) => st.resources.some(DRAFT_SUBJECT.reads));
-      if (!stale) return view.sentence;
-      const unread = `The week shows it after its next read: ${stale.failure.message}`;
+      // The sentence names the days not read back and why; the weeks
+      // showing those days hold it as a receipt until their next read.
       const days = new Map<string, string[]>();
-      for (const r of stale.resources) {
-        if (r.kind === 'worklogs' && r.author && r.day) days.set(r.author, [...(days.get(r.author) ?? []), r.day]);
+      for (const st of view.stale ?? []) {
+        for (const r of st.resources) {
+          if (DRAFT_SUBJECT.reads(r) && r.author && r.day) days.set(r.author, [...(days.get(r.author) ?? []), r.day]);
+        }
       }
-      for (const [author, of] of days) weeks?.receipt({ ...ctx, author }, of, `${view.sentence} ${unread}`);
-      return `${view.sentence} ${unread}`;
+      for (const [author, of] of days) weeks?.receipt({ ...ctx, author }, of, view.sentence);
+      return view.sentence;
     });
 }
 

@@ -529,8 +529,11 @@ export interface BoardSelection {
    * to. */
   openTicket(issue: string, seed: TicketSeed, from: 'list' | 'ticket'): void;
   /** A week asked for from outside the pane (`TimeOpenRequest`), which the
-   * Time screen moves to on each new ask; null until one is. */
+   * Time screen moves to and then takes (`takeAskedWeek`), so a Time
+   * screen shown again later opens on this week; null while none waits. */
   readonly askedWeek: { readonly monday: string } | null;
+  /** The Time screen moved to the week asked for. */
+  takeAskedWeek(): void;
   /** Opens a ticket asked for from outside the pane, on the Board or
    * Backlog screen, whichever shows: over the board shown when it is of the ticket's computer and
    * connection, else over the board `boardForTicket` picks once that
@@ -1075,6 +1078,7 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     get timeShown() { return timeShown; },
     get dashboardsShown() { return dashboardsShown; },
     get askedWeek() { return askedWeek; },
+    takeAskedWeek() { askedWeek = null; },
     setScreen(next) {
       writeFrontendValue(SCREEN_KEY, next);
       if (next === screen) return;

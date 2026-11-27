@@ -33,7 +33,8 @@ const (
 )
 
 // TimeEntriesEvent says that the time entries of a connection's author
-// changed on days, drafted by threads' agents among others.
+// changed on days, drafted by threads' agents among others, or that a
+// post's check read and stored those days' worklogs.
 type TimeEntriesEvent struct {
 	Connection string   `json:"connection"`
 	Author     string   `json:"author"`
@@ -353,12 +354,18 @@ func (s *Service) DraftTime(id string, in TimeDraftRequest) (TimeDraftView, erro
 }
 
 // timeEntriesChanged tells the change of entries, on connection's
-// author, by their days and threads.
-func (s *Service) timeEntriesChanged(connection, author string, entries []store.TimeEntry) {
-	if s.emitTimeEntries == nil || len(entries) == 0 {
+// author, by their days and threads, and days whose stored worklogs a
+// post's check read beside them.
+func (s *Service) timeEntriesChanged(connection, author string, entries []store.TimeEntry, days ...string) {
+	if s.emitTimeEntries == nil || len(entries)+len(days) == 0 {
 		return
 	}
 	e := TimeEntriesEvent{Connection: connection, Author: author}
+	for _, d := range days {
+		if !slices.Contains(e.Days, d) {
+			e.Days = append(e.Days, d)
+		}
+	}
 	for _, x := range entries {
 		if !slices.Contains(e.Days, x.Day) {
 			e.Days = append(e.Days, x.Day)

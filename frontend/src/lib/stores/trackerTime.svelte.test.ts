@@ -411,9 +411,10 @@ describe('an agent\'s draft changing', () => {
 
   it('reads every shown week of the computer on a gap, settled by their answers', async () => {
     const stored = held('TrackerWorklogs');
-    held('RefreshTrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
     const week = attachTrackerWeek(REF, true);
     stored.answer({ worklogs: [] });
+    refresh.answer({ worklogs: [] });
     await flush();
     expect(trackerTimeEntriesGap('peer-2')).toBeUndefined();
     let settled = false;

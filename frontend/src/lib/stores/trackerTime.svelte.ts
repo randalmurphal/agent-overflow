@@ -45,7 +45,8 @@
 // changed, removed or approved entries) reads the computer's copy of each
 // shown week holding one of its days again, coalesced
 // (`DRAFT_REREAD_DELAY_MS`); a week not shown reads it when it shows. A
-// gap on the channel reads every shown week of its computer again.
+// gap on the channel reads every shown week of its computer again. Either
+// read waits for a refresh out.
 
 import { SvelteMap } from 'svelte/reactivity';
 import type { FailureView, WorklogDays } from '../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -392,7 +393,10 @@ takeTrackerTimeEntriesChannel({
     if (draftChanged.size > 0) draftRereads.request();
   },
   gap(backend) {
-    const reads = [...weeks.values()].filter((w) => w.ref.backend === backend && w.visible).map(readStored);
+    // A read behind a refresh out waits for it, as a frame's does, so the
+    // refresh's answer never lands over the newer read.
+    const reads = [...weeks.values()].filter((w) => w.ref.backend === backend && w.visible)
+      .map((w) => (w.refresh ? w.refresh.then(() => readStored(w)) : readStored(w)));
     return reads.length > 0 ? Promise.all(reads).then(() => undefined) : undefined;
   },
 });

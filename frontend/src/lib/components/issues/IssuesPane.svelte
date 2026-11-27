@@ -554,6 +554,7 @@
               {compact}
               shown={selection.timeShown}
               askedWeek={selection.askedWeek}
+              onAskedWeekTaken={selection.takeAskedWeek}
               openIssue={ticket?.ref.issue ?? null}
               onOpenTicket={(t) => selection.openTicket(t.issue, { key: t.key, title: t.title, card: null }, 'list')}
             />
