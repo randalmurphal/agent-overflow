@@ -424,7 +424,7 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"TrackerConnections", "AddTrackerConnection", "RenameTrackerConnection", "SetTrackerConnectionEnabled",
 		"SetTrackerConnectionTokenExpiry", "RemoveTrackerConnection", "VerifyTrackerConnection",
 		"EditTrackerKeyFile", "OpenTrackerTokenPage", "TrackerProjects", "TrackerBoards",
-		"ProjectTrackerBoards", "SetProjectTrackerBoards", "TrackerBoardChoices", "ProjectTrackerSetup", "ProjectTrackerStatuses", "SetProjectTrackerSetup",
+		"ProjectTrackerBoards", "SetProjectTrackerBoards", "TrackerBoardChoices", "ProjectTrackerSetup", "ProjectTrackerStatuses", "ProjectTrackerSiteFields", "SetProjectTrackerSetup",
 		"SubscribeTrackerBoard", "TrackerBoard", "TrackerSectionRows", "TrackerBoardPatch",
 		"SetTrackerSubscriptionVisible", "RefreshTrackerSubscription", "ReleaseTrackerSubscription",
 		"SubscribeTrackerTicket", "TrackerTicket", "TrackerComments", "TrackerAssignableUsers", "TrackerChoices",
@@ -435,7 +435,7 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"MintTrackerAttachmentUploadTicket", "MintTrackerAttachmentDownloadTicket",
 		"SaveTrackerAttachment", "TrackerLinkTypes", "LinkTrackerIssues", "UnlinkTrackerIssues", "TrackerPokerSupport",
 		"FollowTrackerPoker", "TrackerPoker", "VoteTrackerPoker", "RevealTrackerPoker", "ClearTrackerPokerVotes",
-		"SetThreadTicket", "ClearThreadTicket", "ThreadsForTicket", "GetTicketWork", "StartTicketThread",
+		"SetThreadTicket", "ClearThreadTicket", "ThreadsForTicket", "GetTicketWork", "SearchTicketWork", "StartTicketThread",
 		"TrackerDashboards", "EvaluateTrackerDashboard", "TrackerDashboardDrill",
 	} {
 		absent[name] = true
