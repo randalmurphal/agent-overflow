@@ -490,13 +490,36 @@ export function acquireTrackerSupport(project: string, connection: string, board
   return acquire(supports, supportKey(project, connection, board, issues), () => new HeldSupport(project, connection, board, issues));
 }
 
-/** Which of `issues` are support tickets as held, with the hours a point
- * and the unit; null before a read answers or after it failed, when the
- * screen shows no line. Reactive. */
-export function trackerSupportOf(project: string, connection: string, board: string, issues: readonly string[]): SupportView | null {
-  const entry = supports.get(supportKey(project, connection, board, issues));
-  return entry?.error == null ? entry?.value ?? null : null;
+/** Which of a week's issues are support tickets as a surface shows it. */
+export interface TrackerSupportState {
+  /** The support tickets, the hours a point and the unit; null before a
+   * read answers or while the last read failed, when the screen shows no
+   * line. */
+  readonly support: SupportView | null;
+  /** The last read's failure; null when it answered. */
+  readonly error: unknown;
 }
+
+const NO_SUPPORT: TrackerSupportState = { support: null, error: null };
+
+/** Which of `issues` are support tickets as held. Reactive. */
+export function trackerSupportOf(project: string, connection: string, board: string, issues: readonly string[]): TrackerSupportState {
+  const entry = supports.get(supportKey(project, connection, board, issues));
+  if (!entry) return NO_SUPPORT;
+  return { support: entry.error == null ? entry.value : null, error: entry.error };
+}
+
+/** Reads which of `issues` are support tickets again if a surface holds
+ * them: the surface's Refresh, its retry, and a change of the board's
+ * mirror, which can make a ticket support or not (an estimate, a label, a
+ * type, the board's rows). */
+export function refreshTrackerSupport(project: string, connection: string, board: string, issues: readonly string[]): Promise<void> {
+  return supports.get(supportKey(project, connection, board, issues))?.read() ?? Promise.resolve();
+}
+
+/** The least time between two reads of a week's support tickets that the
+ * board's changes ask for, as a dashboard's counts. */
+export const SUPPORT_CHANGE_INTERVAL_MS = 5_000;
 
 /** Whether the project counts credit: its credit section is on. A
  * project with no section reads as off (trackerapp's heldSetup.credit). */

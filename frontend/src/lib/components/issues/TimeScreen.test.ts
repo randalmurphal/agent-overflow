@@ -12,12 +12,14 @@ import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
 import { trackerSetupUpdated, trackerTimeEntriesUpdated } from '../../stores/trackerBoardEvents';
 import { DRAFT_REREAD_DELAY_MS } from '../../stores/trackerTime.svelte';
+import { SUPPORT_CHANGE_INTERVAL_MS } from '../../stores/trackerSetup.svelte';
 
 const BASE: ComponentProps<typeof TimeScreen> = {
   backend: 'peer-1',
   project: 'p1',
   connection: 'c1',
   board: '1',
+  boardChanges: 0,
   connectionKind: 'jira',
   connectionOn: true,
   author: 'acct-1',
@@ -170,6 +172,74 @@ describe('support tickets', () => {
     await tick();
     expect(getBindingMock('ProjectTrackerSupport')!.mock.calls).toHaveLength(2);
     expect(view.queryByTestId('time-entry-support')).toBeNull();
+  });
+});
+
+describe('what the support line follows', () => {
+  const supportCalls = () => getBindingMock('ProjectTrackerSupport')!.mock.calls;
+
+  it('reads again for another board or another project of the same connection and week', async () => {
+    answerWeek(WEEK);
+    setBindingMock('ProjectTrackerSupport', async (_p: string, _c: string, board: string) => ({ issues: board === '2' ? ['10002'] : [], hours_per_point: 4, counts: 'points' }));
+    const view = render(TimeScreen, BASE);
+    await waitFor(() => expect(supportCalls()).toEqual([['p1', 'c1', '1', ['10001', '10002']]]));
+    expect(view.queryByTestId('time-entry-support')).toBeNull();
+    await view.rerender({ ...BASE, board: '2' });
+    await waitFor(() => expect(supportCalls().at(-1)).toEqual(['p1', 'c1', '2', ['10001', '10002']]));
+    await waitFor(() => expect(view.getAllByTestId('time-entry-support').map((e) => e.textContent)).toEqual(['Support · 0.1 points']));
+    await view.rerender({ ...BASE, board: '2', project: 'p2' });
+    await waitFor(() => expect(supportCalls().at(-1)).toEqual(['p2', 'c1', '2', ['10001', '10002']]));
+  });
+
+  it('reads again on Refresh, so a ticket that stopped being support loses its line', async () => {
+    answerWeek(WEEK);
+    let support = ['10002'];
+    setBindingMock('ProjectTrackerSupport', async () => ({ issues: support, hours_per_point: 4, counts: 'points' }));
+    const view = render(TimeScreen, BASE);
+    await view.findByTestId('time-entry-support');
+    // The ticket was given an estimate: the computer no longer names it.
+    support = [];
+    (view.component as unknown as { refresh(): void }).refresh();
+    await waitFor(() => expect(view.queryByTestId('time-entry-support')).toBeNull());
+    expect(supportCalls()).toHaveLength(2);
+  });
+
+  it('reads again once for a burst of board changes, and at most once every interval', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(new Date(2026, 10, 12, 10, 0));
+    answerWeek(WEEK);
+    setBindingMock('ProjectTrackerSupport', async () => ({ issues: [], hours_per_point: 4, counts: 'points' }));
+    const view = render(TimeScreen, BASE);
+    await vi.waitFor(() => expect(supportCalls()).toHaveLength(1));
+    for (let n = 1; n <= 10; n++) await view.rerender({ ...BASE, boardChanges: n });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(supportCalls(), 'one read for the burst').toHaveLength(2);
+    // A change soon after that read waits out the interval from it.
+    await view.rerender({ ...BASE, boardChanges: 11 });
+    await vi.advanceTimersByTimeAsync(SUPPORT_CHANGE_INTERVAL_MS / 2);
+    expect(supportCalls(), 'not again within the interval').toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(SUPPORT_CHANGE_INTERVAL_MS);
+    expect(supportCalls()).toHaveLength(3);
+    // Another board's count starts again: no read for its first number.
+    await view.rerender({ ...BASE, board: '2', boardChanges: 0 });
+    await vi.advanceTimersByTimeAsync(SUPPORT_CHANGE_INTERVAL_MS * 2);
+    expect(supportCalls().filter(([, , board]) => board === '2')).toHaveLength(1);
+  });
+
+  it('says a read that failed, keeps the week, and reads again on Try again', async () => {
+    answerWeek(WEEK);
+    let fail = true;
+    setBindingMock('ProjectTrackerSupport', async () => {
+      if (fail) throw new Error("the project's tracker setup file cannot be read");
+      return { issues: ['10002'], hours_per_point: 4, counts: 'points' };
+    });
+    const view = render(TimeScreen, BASE);
+    expect(await view.findByTestId('time-support-failure')).toHaveTextContent("Which tickets are support could not be read, so no entry shows what it is worth: The project's tracker setup file cannot be read.");
+    expect(view.getAllByTestId('time-entry')).toHaveLength(2);
+    fail = false;
+    await fireEvent.click(view.getByTestId('time-support-retry'));
+    await view.findByTestId('time-entry-support');
+    expect(view.queryByTestId('time-support-failure')).toBeNull();
   });
 });
 

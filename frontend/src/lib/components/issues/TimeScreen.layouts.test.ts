@@ -33,7 +33,7 @@ afterEach(() => {
 describe('the rows each layout derives', () => {
   it('builds ticket rows only once By ticket shows', async () => {
     const view = render(TimeScreen, {
-      backend: 'peer-1', project: 'p1', connection: 'c1', board: '1', connectionKind: 'jira', connectionOn: true, author: 'acct-1',
+      backend: 'peer-1', project: 'p1', connection: 'c1', board: '1', boardChanges: 0, connectionKind: 'jira', connectionOn: true, author: 'acct-1',
       computerName: 'Laptop', offline: false, compact: false, shown: true, openIssue: null, onOpenTicket: () => {},
     });
     await view.findAllByTestId('time-entry');
