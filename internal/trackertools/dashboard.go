@@ -57,8 +57,10 @@ type widgetSpec struct {
 // count, the days of the person's logged time each could not read (not
 // known until the board's computer reads them) or whether it counts days
 // older than the logged time kept (never known), why it counts
-// nothing when it does not (Note), how many rows its query returned, the
-// first of them, and, when shown, where the person finds it.
+// nothing when it does not (Note), that what it counts of credit may lack
+// what a failed read of who worked on the tickets was to read (Evidence),
+// how many rows its query returned, the first of them, and, when shown,
+// where the person finds it.
 type widgetAnswer struct {
 	Board    string   `json:"board"`
 	Range    string   `json:"range"`
@@ -77,6 +79,7 @@ type widgetAnswer struct {
 	Old             bool            `json:"old,omitempty"`
 	PreviousOld     bool            `json:"previous_old,omitempty"`
 	Note            string          `json:"note,omitempty"`
+	Evidence        string          `json:"evidence,omitempty"`
 	Series          []string        `json:"series,omitempty"`
 	Buckets         []widgetBucket  `json:"buckets,omitempty"`
 	More            int             `json:"more,omitempty"`
@@ -148,7 +151,7 @@ func (s *Server) dashboardWidget(ctx context.Context, caller Caller, raw json.Ra
 	}
 	out := widgetAnswer{Board: board.Name, Range: tried.Range.Label, Counts: tried.View.How.Counts, Unit: tried.Unit, Rows: tried.Count,
 		Value: numOf(tried.Value.Value), Previous: numOf(tried.Value.Previous), Series: tried.Value.Series, More: tried.Value.More,
-		NotCounted: tried.Value.NotCounted, Note: tried.Value.Note, First: []widgetRow{}}
+		NotCounted: tried.Value.NotCounted, Note: tried.Value.Note, Evidence: tried.Value.Evidence, First: []widgetRow{}}
 	// A number's tickets not counted are its value's; a list's or a
 	// chart's are the widget's.
 	if v := tried.Value.Value; v != nil {

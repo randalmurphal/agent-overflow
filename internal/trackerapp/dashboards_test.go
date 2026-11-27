@@ -598,8 +598,8 @@ func TestAProjectCountingCreditCountsItsPaceFromCredit(t *testing.T) {
 	if !slices.Contains(paceReads(), "credit") {
 		t.Fatalf("the pace with credit reads %v", paceReads())
 	}
-	// pace is the board's review credit as a widget sums it, and the
-	// sentence the built-in dashboard's answer gives.
+	// pace is the board's review credit as a tried widget sums it, and
+	// the sentence beside it, which the built-in dashboard's pace says too.
 	credit := openTickets()
 	credit.Metric.Title, credit.Metric.SQL = "Review credit", `SELECT ticket, value, share FROM credit WHERE kind = 'review'`
 	credit.Metric.Reduce, credit.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
@@ -616,7 +616,10 @@ func TestAProjectCountingCreditCountsItsPaceFromCredit(t *testing.T) {
 				t.Fatalf("widget %s failed: %s", w.ID, w.Error)
 			}
 		}
-		return numText(t, tried.Value.Value), a.Evidence
+		if said := paceSays(t, a); said != tried.Value.Evidence {
+			t.Fatalf("the built-in pace says %q, the tried widget %q", said, tried.Value.Evidence)
+		}
+		return numText(t, tried.Value.Value), tried.Value.Evidence
 	}
 	out := must[Outcome](t)(m.svc.SyncLinked(t.Context(), m.conn.ID, LinkedDue{Evidence: true}, Background))
 	if out.Failure == nil {
@@ -630,8 +633,8 @@ func TestAProjectCountingCreditCountsItsPaceFromCredit(t *testing.T) {
 	// The ticket is the active sprint's; the last five finished sprints,
 	// the range a dashboard opens on, count credit too, which the failed
 	// read may have left out.
-	if a := m.evaluate(t, sub, ""); a.Evidence != evidence {
-		t.Fatalf("the last five sprints say %q; want %q", a.Evidence, evidence)
+	if said := paceSays(t, m.evaluate(t, sub, "")); said != evidence {
+		t.Fatalf("the last five sprints say %q; want %q", said, evidence)
 	}
 	m.p.set(func(p *scripted) { p.evidence = read })
 	m.evidenceTick(t)
@@ -693,4 +696,16 @@ func TestADashboardsChangeReachesEveryOpenDashboardOfItsBoardAndNoOther(t *testi
 	if got := told(n); len(got) != 3 || !slices.Equal(got[m.scope()], counts) || !slices.Equal(got[second], counts) || !slices.Equal(got[there], counts) {
 		t.Fatalf("a change of the unit was told %+v; want once on each of the project's boards, counting again", got)
 	}
+}
+
+// paceSays is the sentence beside the built-in dashboard's pace in a.
+func paceSays(t *testing.T, a trackerdash.Answer) string {
+	t.Helper()
+	for _, w := range a.Widgets {
+		if w.ID == "pace" {
+			return w.Evidence
+		}
+	}
+	t.Fatal("the answer has no pace")
+	return ""
 }

@@ -57,8 +57,6 @@ type Tried struct {
 	Reading bool        `json:"reading,omitempty"`
 	Rows    []TicketRow `json:"rows"`
 	Count   int         `json:"count"`
-	// Evidence is as an Answer's.
-	Evidence string `json:"evidence,omitempty"`
 }
 
 // Try counts widget w, drawing metric m, on board b over the board's
@@ -86,8 +84,7 @@ func (e *Evaluator) Try(ctx context.Context, b Board, w Widget, m Metric, timeZo
 		return Tried{}, refuse("dashboard_widget_refused", c.err.Sentence, nil)
 	}
 	ev := o.ev
-	out := Tried{View: o.view.Widgets[0], Value: ev.widget(w, m, c, o.sp), Unit: valueUnit(m, ev.estimates), Range: rangeView(o.sp), Reading: !ev.export.FirstReadDone, Rows: []TicketRow{},
-		Evidence: o.evidence(b, m)}
+	out := Tried{View: o.view.Widgets[0], Value: o.widget(w, m, c), Unit: valueUnit(m, ev.estimates), Range: rangeView(o.sp), Reading: !ev.export.FirstReadDone, Rows: []TicketRow{}}
 	g := ev.inRange(m, c, o.sp)
 	rows := slices.Clone(g.listed().rows)
 	sortDrill(rows, ev.keyOf)

@@ -106,11 +106,11 @@ func TestThePacesDrillSaysHowCreditWasCounted(t *testing.T) {
 }
 
 // While the last read of who worked on the tickets failed as a whole,
-// every answer with a widget that reads the credit relation says so and
-// why, whatever its rows hold: the built-in pace, a kept number of
-// finished tickets alone, a proposal, and a tried widget. An answer with
-// no widget that reads it, or with no failure, says nothing.
-func TestTheCreditSentenceGoesWithTheCreditRelation(t *testing.T) {
+// every value of a widget that reads the credit relation says so and why,
+// whatever its rows hold: the built-in pace, a kept number of finished
+// tickets alone, a proposal, and a tried widget. A widget beside them that
+// does not read it, and any widget with no failure, says nothing.
+func TestTheCreditSentenceGoesWithEachWidgetOfCredit(t *testing.T) {
 	t.Parallel()
 	const failure = "Jira refused the request: 401 Unauthorized."
 	sentence := "Credit may not count everything: the last read of who worked on the tickets failed. " + failure
@@ -122,17 +122,11 @@ func TestTheCreditSentenceGoesWithTheCreditRelation(t *testing.T) {
 		Reduce: ReduceSum, Unit: UnitEstimate}
 	open := Metric{Name: "w_2", Title: "Open", Words: []string{"Open tickets."}, SQL: `SELECT id AS ticket FROM tickets WHERE open = 1`,
 		Reduce: ReduceCount, Unit: UnitTickets}
-	own := func(kept, proposed *Metric) Board {
+	own := func(kept, proposed Metric) Board {
 		b := creditOn(creditBoard("points"))
-		b.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine"}}, Metrics: map[string]Metric{}}
-		if kept != nil {
-			b.Own.Dashboards[0].Widgets = []Widget{{ID: "kept", Metric: kept.Name, Form: FormNumber, Width: 3}}
-			b.Own.Metrics[kept.Name] = *kept
-		}
-		if proposed != nil {
-			b.Own.Proposals = []Proposal{{Widget: Widget{ID: "proposed", Metric: proposed.Name, Form: FormNumber, Width: 3}}}
-			b.Own.Metrics[proposed.Name] = *proposed
-		}
+		b.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine", Widgets: []Widget{{ID: "kept", Metric: kept.Name, Form: FormNumber, Width: 3}}}},
+			Proposals: []Proposal{{Widget: Widget{ID: "proposed", Metric: proposed.Name, Form: FormNumber, Width: 3}}},
+			Metrics:   map[string]Metric{kept.Name: kept, proposed.Name: proposed}}
 		return b
 	}
 	mine := Request{Dashboard: "mine", Range: RangeSprints5, TimeZone: "UTC"}
@@ -140,17 +134,19 @@ func TestTheCreditSentenceGoesWithTheCreditRelation(t *testing.T) {
 		name string
 		b    Board
 		r    Request
-		want string
+		want map[string]string
 	}{
-		{"the built-in pace", failing(creditOn(creditBoard("points"))), utcSprints5, sentence},
-		{"a kept number of finished tickets", failing(own(&finished, nil)), mine, sentence},
-		{"a proposal", failing(own(&open, &finished)), mine, sentence},
-		{"no widget reads credit", failing(own(&open, &open)), mine, ""},
-		{"credit not counted", failing(creditBoard("points").board()), utcSprints5, ""},
-		{"no failure", creditOn(creditBoard("points")), utcSprints5, ""},
+		{"the built-in pace", failing(creditOn(creditBoard("points"))), utcSprints5, map[string]string{"pace": sentence}},
+		{"a kept number of finished tickets beside a proposal of tickets", failing(own(finished, open)), mine, map[string]string{"kept": sentence, "proposed": ""}},
+		{"a proposal of finished tickets beside a kept number of tickets", failing(own(open, finished)), mine, map[string]string{"kept": "", "proposed": sentence}},
+		{"credit not counted", failing(creditBoard("points").board()), utcSprints5, map[string]string{"pace": ""}},
+		{"no failure", creditOn(creditBoard("points")), utcSprints5, map[string]string{"pace": ""}},
 	} {
-		if a := mustEvaluate(t, evaluator(), c.b, c.r); a.Evidence != c.want {
-			t.Errorf("%s: evidence %q; want %q", c.name, a.Evidence, c.want)
+		a := mustEvaluate(t, evaluator(), c.b, c.r)
+		for id, want := range c.want {
+			if got := widgetOf(t, a, id).Evidence; got != want {
+				t.Errorf("%s: %s says %q; want %q", c.name, id, got, want)
+			}
 		}
 	}
 	for _, c := range []struct {
@@ -162,8 +158,8 @@ func TestTheCreditSentenceGoesWithTheCreditRelation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
-		if tried.Evidence != c.want {
-			t.Errorf("%s: evidence %q; want %q", c.name, tried.Evidence, c.want)
+		if tried.Value.Evidence != c.want {
+			t.Errorf("%s: evidence %q; want %q", c.name, tried.Value.Evidence, c.want)
 		}
 	}
 }
