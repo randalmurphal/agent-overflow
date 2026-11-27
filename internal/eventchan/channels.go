@@ -318,6 +318,16 @@ const (
 	TrackerTimeEntriesUpdated Channel = "tracker:time_entries_updated"
 )
 
+// activity:* — this computer's activity recorder (internal/activity).
+//
+// ActivityRecording is activity.Status, the recorder's whole state, sent
+// when its writes start failing and when they write again: since when
+// the person's activity is not recorded, and why. Receivers replace what
+// they hold; GetActivityRecording is the pull half.
+const (
+	ActivityRecording Channel = "activity:recording"
+)
+
 // terminal:* — local PTY session bytes and lifecycle.
 //
 // TerminalOpened is the other half of TerminalExit: one frame per PTY

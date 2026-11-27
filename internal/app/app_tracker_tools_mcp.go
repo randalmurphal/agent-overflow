@@ -237,6 +237,14 @@ func (t trackerToolsAdapter) TicketsOfKey(key string) ([]trackerapp.KeyedTicket,
 	return svc.TicketsOfKey(key)
 }
 
+func (t trackerToolsAdapter) ThreadJiraTickets(threadIDs []string) (map[string]trackerapp.JiraTicket, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return nil, err
+	}
+	return svc.ThreadJiraTickets(threadIDs)
+}
+
 func (t trackerToolsAdapter) BoardSummary(connection, board string) (trackerapp.BoardSummary, error) {
 	svc, err := t.a.trackerService()
 	if err != nil {
