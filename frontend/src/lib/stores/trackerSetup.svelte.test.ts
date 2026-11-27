@@ -10,12 +10,15 @@ import { trackerSetupUpdated } from './trackerBoardEvents';
 import {
   acquireTrackerSetup,
   acquireTrackerStatuses,
+  acquireTrackerTicketCheck,
   editTrackerSetup,
   trackerSetupOf,
   trackerStatusesOf,
+  trackerTicketCheckOf,
 } from './trackerSetup.svelte';
 import { __setBackendStatusForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
+import { getPinnedBackend } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
@@ -194,5 +197,33 @@ describe('the tracker setup store', () => {
     await flush();
     expect(reads).toHaveBeenCalledTimes(2);
     expect(trackerStatusesOf('p1').sites).toBeNull();
+  });
+
+  it('checks tickets once for every holder on their computer, again when it connects again, not on the event, only while held', async () => {
+    const pins: (string | null)[] = [];
+    const lookups = setBindingMock('TrackerLookup', async () => {
+      pins.push(getPinnedBackend());
+      return { found: [], unmatched: ['OPS-1'] };
+    });
+    const first = acquireTrackerTicketCheck('p1', HOME_BACKEND, 'jira-1', ['OPS-1']);
+    const second = acquireTrackerTicketCheck('p1', HOME_BACKEND, 'jira-1', ['OPS-1']);
+    await flush();
+    expect(lookups.mock.calls).toEqual([['jira-1', ['OPS-1']]]);
+    expect(pins).toEqual([HOME_BACKEND]);
+    expect(trackerTicketCheckOf('p1', HOME_BACKEND, 'jira-1', ['OPS-1']).found?.unmatched).toEqual(['OPS-1']);
+    trackerSetupUpdated(HOME_BACKEND);
+    await flush();
+    expect(lookups).toHaveBeenCalledTimes(1);
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'disconnected', nextAttemptAt: null });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await flush();
+    expect(lookups).toHaveBeenCalledTimes(2);
+    first();
+    second();
+    expect(trackerTicketCheckOf('p1', HOME_BACKEND, 'jira-1', ['OPS-1']).found).toBeNull();
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'disconnected', nextAttemptAt: null });
+    __setBackendStatusForTest(HOME_BACKEND, { status: 'connected', nextAttemptAt: null });
+    await flush();
+    expect(lookups).toHaveBeenCalledTimes(2);
   });
 });
