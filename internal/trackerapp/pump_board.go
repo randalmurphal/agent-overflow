@@ -48,6 +48,10 @@ type boardPump struct {
 type boardPending struct {
 	changed, removed     []tracker.IssueID
 	readAgain, truncated bool
+	// pins are a project's pins that changed (tellPins), and dashboards a
+	// change of a project's dashboards (tellDashboards), each sent at once.
+	pins       *ProjectPins
+	dashboards *ProjectDashboards
 	// due reports something to send: a change or a failure that started,
 	// changed or cleared.
 	due bool
@@ -143,11 +147,7 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 		return BoardSubscription{}, err
 	}
 	answer := BoardSubscription{ID: id, Seq: seq, PollEvery: p.every.Milliseconds()}
-	var view BoardView
-	groups, err := s.boardStatusGroups(key)
-	if err == nil {
-		view, err = s.Board(scope, groups, sections)
-	}
+	view, err := s.boardViewOf(key, scope, sections)
 	switch {
 	case err == nil:
 		answer.Loaded, answer.View = true, &view
@@ -508,7 +508,7 @@ func (s *Service) flushBoardLocked(p *boardPump) {
 	p.pending = boardPending{}
 	s.emitBoard(BoardEvent{
 		Scope: p.scope, Seq: s.nextSeqLocked(), Changed: pending.changed, Removed: pending.removed,
-		Truncated: pending.truncated, ReadAgain: pending.readAgain, Sync: p.toldLocked(),
+		Truncated: pending.truncated, ReadAgain: pending.readAgain, Pins: pending.pins, Dashboards: pending.dashboards, Sync: p.toldLocked(),
 	})
 }
 

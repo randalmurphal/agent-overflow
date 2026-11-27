@@ -148,15 +148,20 @@ func bulkFetch(c *jiraCall) answer {
 		return jiraErrors(http.StatusBadRequest, fmt.Sprintf("The number of issues must be between 1 and %d.", n))
 	}
 	sel := parseFields(in.Fields, selectNavigable)
-	issues := []any{}
+	issues, errs := []any{}, []any{}
 	seen := map[string]bool{}
 	for _, ref := range in.IssueIDsOrKeys {
-		if is := c.s.issue(ref); is != nil && !seen[is.ID] {
+		switch is := c.s.issue(ref); {
+		case is == nil || seen[is.ID]:
+		case is.BulkError != "":
+			seen[is.ID] = true
+			errs = append(errs, map[string]any{"id": is.ID, "errorMessage": is.BulkError, "status": http.StatusServiceUnavailable})
+		default:
 			seen[is.ID] = true
 			issues = append(issues, c.s.issueJSON(is, sel, c.viewer))
 		}
 	}
-	return jsonAnswer(http.StatusOK, map[string]any{"expand": "", "issues": issues, "issueErrors": []any{}})
+	return jsonAnswer(http.StatusOK, map[string]any{"expand": "", "issues": issues, "issueErrors": errs})
 }
 
 // matchJQL answers which of the issues each query matches, judged on the

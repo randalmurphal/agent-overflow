@@ -18,8 +18,8 @@ import {
 import { getPinnedBackend } from '../transport/backends';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { readFrontendValue } from './frontendStorage';
-import { trackerDashboardsUpdated } from './trackerBoardEvents';
 import { applySettingsSnapshot } from './settings.svelte';
+import { methodNotFound } from '../../test/helpers/olderComputer';
 
 const VIEW = {
   id: 'overview_sprints',
@@ -59,6 +59,14 @@ function held<T>(name: string): { calls: unknown[][]; pins: (string | null)[]; a
   };
 }
 
+/** The board's subscription tells a change of its project's dashboards
+ * of the board (TrackerBoardState.dashboards), one that moves what they
+ * count, and so the board's changes, unless `counts` is false. */
+function told(counts = true): void {
+  source = { ...source!, dashboards: source!.dashboards + 1, changes: source!.changes + (counts ? 1 : 0) };
+  flushSync();
+}
+
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i += 1) await tick();
   flushSync();
@@ -78,7 +86,7 @@ function open(): TrackerDashboard {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
   vi.setSystemTime(new Date(2026, 10, 25, 12, 0));
-  source = { backend: 'peer-1', board: testBoard, subscription: 'sub-1', changes: 0 };
+  source = { backend: 'peer-1', board: testBoard, subscription: 'sub-1', changes: 0, dashboards: 0 };
   shown = true;
 });
 
@@ -141,7 +149,8 @@ describe('when the screen opens', () => {
     const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     const evaluate = held<Answer>('EvaluateTrackerDashboard');
     const s = open();
-    list.answer(null);
+    // A release before dashboards has no such method.
+    list.fail(methodNotFound());
     await flush();
     expect(s.dashboards).toBe('older');
     expect(evaluate.calls).toHaveLength(0);
@@ -202,7 +211,7 @@ describe('when what is counted changes', () => {
   it('counts a subscription made again after a reconnect at once', async () => {
     const { evaluate } = await opened();
     held<TrackerDashboardsView | null>('TrackerDashboards');
-    source = { backend: 'peer-1', board: testBoard, subscription: 'sub-2', changes: 0 };
+    source = { backend: 'peer-1', board: testBoard, subscription: 'sub-2', changes: 0, dashboards: 0 };
     flushSync();
     expect(evaluate.calls.at(-1)![0]).toBe('sub-2');
   });
@@ -333,7 +342,8 @@ describe('the drill', () => {
     expect(drill.calls).toHaveLength(2);
     // The project's count changed on another computer: the dashboards are
     // told, and the count answers in tickets.
-    trackerDashboardsUpdated('peer-1');
+    told();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
     await flush();
     evaluate.answer({ ...answerFor('sprints_5', 2), estimates: 'none' } as Answer);
     await flush();
@@ -348,7 +358,8 @@ describe('the drill', () => {
     expect(s.drill?.answer?.estimates).toBe('none');
     expect(s.drill?.page).toBe(0);
     // A count in the same unit leaves the drill as it is.
-    trackerDashboardsUpdated('peer-1');
+    told();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
     await flush();
     evaluate.answer({ ...answerFor('sprints_5', 3), estimates: 'none' } as Answer);
     await flush();
@@ -441,14 +452,14 @@ describe('the board\'s own dashboards', () => {
     expect(again.dashboard?.id).toBe('d_1');
     again.destroy();
 
-    source = { backend: 'peer-1', board: { ...testBoard, board: '2' }, subscription: 'sub-2', changes: 0 };
+    source = { backend: 'peer-1', board: { ...testBoard, board: '2' }, subscription: 'sub-2', changes: 0, dashboards: 0 };
     const other = open();
     list.answer(listed([VIEW, MINE_VIEW]));
     await flush();
     expect(other.dashboard?.id).toBe('overview_sprints');
   });
 
-  it('lists and counts again on a change from the board\'s computer only', async () => {
+  it('lists again on each change of its project\'s dashboards of the board, and counts again only when what they count changed', async () => {
     const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     const evaluate = held<Answer>('EvaluateTrackerDashboard');
     open();
@@ -456,13 +467,21 @@ describe('the board\'s own dashboards', () => {
     await flush();
     evaluate.answer(answerFor('sprints_5'));
     await flush();
-    trackerDashboardsUpdated('home');
-    await flush();
-    expect(list.calls).toHaveLength(1);
-    expect(evaluate.calls).toHaveLength(1);
-    trackerDashboardsUpdated('peer-1');
+    told();
     await flush();
     expect(list.calls).toHaveLength(2);
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    expect(evaluate.calls).toHaveLength(2);
+    list.answer(listed([VIEW]));
+    evaluate.answer(answerFor('sprints_5', 2));
+    await flush();
+    // A limit lists again and counts nothing.
+    told(false);
+    await flush();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS * 2);
+    await flush();
+    expect(list.calls).toHaveLength(3);
     expect(evaluate.calls).toHaveLength(2);
   });
 
@@ -516,7 +535,7 @@ describe('the board\'s own dashboards', () => {
     await flush();
     s.pick('d_1');
     flushSync();
-    trackerDashboardsUpdated('peer-1');
+    told();
     await flush();
     list.answer(listed([VIEW]));
     await flush();
@@ -534,7 +553,7 @@ describe('the board\'s own dashboards', () => {
     s.pick('d_1');
     s.setRange('sprints_5');
     flushSync();
-    trackerDashboardsUpdated('peer-1');
+    told();
     await flush();
     list.answer(listed([VIEW]));
     await flush();
@@ -570,7 +589,7 @@ describe('the board\'s own dashboards', () => {
     await flush();
     shown = false;
     flushSync();
-    trackerDashboardsUpdated('peer-1');
+    told();
     await flush();
     vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS * 2);
     await flush();
@@ -587,7 +606,7 @@ describe('the board\'s own dashboards', () => {
     const s = open();
     list.answer(listed([VIEW, MINE_VIEW]));
     await flush();
-    trackerDashboardsUpdated('peer-1');
+    told();
     await flush();
     const failure = new Error('offline');
     list.fail(failure);
@@ -802,7 +821,7 @@ describe('your logged time', () => {
     const { s, evaluate, reads } = await openedLogged(loggedAnswer(['2026-11-25']));
     const list = held<TrackerDashboardsView | null>('TrackerDashboards');
     expect(reads.calls).toHaveLength(1);
-    source = { backend: 'peer-1', board: { ...testBoard, connection: 'conn-2', board: '2' }, subscription: 'sub-2', changes: 0 };
+    source = { backend: 'peer-1', board: { ...testBoard, connection: 'conn-2', board: '2' }, subscription: 'sub-2', changes: 0, dashboards: 0 };
     await flush();
     list.answer(listed([LOGGED_VIEW]));
     await flush();
@@ -817,5 +836,103 @@ describe('your logged time', () => {
     reads.answer({});
     await flush();
     expect(s.logged.reading).toBe(false);
+  });
+});
+
+describe("a board's summary row", () => {
+  const ROW_VIEW = { ...VIEW, default_range: 'sprints_3' } as unknown as DashboardView;
+  type Tiles = { limits: Record<string, { value: number; unit: string }>; proposed: string[]; max: number };
+  function rowListed(tiles: Partial<Tiles> = {}): TrackerDashboardsView {
+    return { ...listed([ROW_VIEW]), tiles: { limits: {}, proposed: [], max: 5, ...tiles } } as unknown as TrackerDashboardsView;
+  }
+  let rowPins = $state<readonly string[]>([]);
+  beforeEach(() => {
+    rowPins = [];
+  });
+  function openRow(): TrackerDashboard {
+    const s: TrackerDashboard = createTrackerDashboard({ source: () => source, shown: () => shown, row: () => rowPins });
+    store = s;
+    flushSync();
+    return s;
+  }
+
+  it('counts the pinned widgets alone over the built-in\'s default range, nothing with none pinned, and again when a pin moves, with no list', async () => {
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
+    const evaluate = held<Answer>('EvaluateTrackerDashboard');
+    openRow();
+    list.answer(rowListed());
+    await flush();
+    expect(evaluate.calls).toHaveLength(0);
+
+    // The board's subscription tells the pins.
+    rowPins = ['stuck', 'w_1'];
+    flushSync();
+    await flush();
+    expect(list.calls).toHaveLength(1);
+    expect(evaluate.calls).toHaveLength(1);
+    expect(evaluate.calls[0][1]).toMatchObject({ dashboard: 'overview_sprints', range: 'sprints_3', mine: false, person: '', epic: '', widgets: ['stuck', 'w_1'] });
+    evaluate.answer(answerFor('sprints_3'));
+    await flush();
+
+    // A limit lists again and counts nothing.
+    told(false);
+    list.answer(rowListed({ limits: { stuck: { value: 3, unit: 'tickets' } } }));
+    await flush();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    expect(evaluate.calls).toHaveLength(1);
+    expect(list.calls).toHaveLength(2);
+
+    // The board's changes count it again by the dashboards' rule.
+    source = { ...source!, changes: source!.changes + 1 };
+    flushSync();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    expect(evaluate.calls).toHaveLength(2);
+    expect(evaluate.calls[1][1]).toMatchObject({ widgets: ['stuck', 'w_1'] });
+  });
+});
+
+describe("a widget's limit", () => {
+  type Limits = Record<string, { value: number; unit: string }>;
+  function withLimits(limits: Limits): TrackerDashboardsView {
+    return { ...listed([VIEW]), tiles: { limits, proposed: [], max: 5 } } as unknown as TrackerDashboardsView;
+  }
+
+  it('shows the limit the latest list holds, whatever a write answers after it', async () => {
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
+    held<Answer>('EvaluateTrackerDashboard');
+    const write = held<void>('SetTrackerWidgetLimit');
+    const s = open();
+    list.answer(withLimits({ pace: { value: 3, unit: 'points' } }));
+    await flush();
+
+    // Raise: the computer steps the limit it stores, and tells the change
+    // before it answers. The list that change asks for answers with what
+    // another window wrote since, before this write's answer lands.
+    const first = s.setLimit('pace', { step: 1 });
+    told(false);
+    await flush();
+    expect(list.calls).toHaveLength(2);
+    list.answer(withLimits({ pace: { value: 10, unit: 'points' } }));
+    await flush();
+    write.answer();
+    await first;
+    expect(write.calls.map((c) => c[2])).toEqual([{ step: 1 }]);
+    expect(s.tiles?.limits.pace).toEqual({ value: 10, unit: 'points' });
+  });
+
+  it('sends one write at a time for a widget', async () => {
+    const list = held<TrackerDashboardsView | null>('TrackerDashboards');
+    held<Answer>('EvaluateTrackerDashboard');
+    const write = held<void>('SetTrackerWidgetLimit');
+    const s = open();
+    list.answer(withLimits({}));
+    await flush();
+    const first = s.setLimit('pace', { step: 1, value: 4, estimates: 'points' });
+    await s.setLimit('pace', { step: 1 });
+    write.answer();
+    await first;
+    expect(write.calls.map((c) => c[2])).toEqual([{ step: 1, value: 4, estimates: 'points' }]);
   });
 });

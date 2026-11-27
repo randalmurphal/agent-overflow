@@ -1406,3 +1406,21 @@ func TestChannelSequenceReadsThePublishedBoundary(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// A change of one board's dashboards and then another's, told on the
+// board channel (trackerapp.BoardEvent.Dashboards), both replay to a
+// client that missed them, with no gap: the channel keeps each frame, so
+// a change of one board is never lost behind another's.
+func TestEventBus_TrackerBoardChannelReplaysEachDashboardsChange(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	for _, board := range []string{"1", "2"} {
+		if _, err := bus.Emit("tracker:board_updated", map[string]any{"scope": map[string]string{"connection": "c1", "board": board}, "dashboards": map[string]any{"project": "p1", "counts": true}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := bus.Replay(map[string]uint64{"tracker:board_updated": 0})
+	if len(out) != 2 || out[0].Gap || out[1].Gap || out[0].Seq != 1 || out[1].Seq != 2 {
+		t.Fatalf("replay = %+v; want both changes, no gap", out)
+	}
+}

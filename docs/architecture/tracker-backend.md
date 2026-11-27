@@ -134,6 +134,39 @@ this is its shape.
   `errors.Join` of each failed read. A Jira site whose summary says it
   keeps no such data fails wrapping `tracker.ErrNoDevelopmentData`;
   Linear fails as unsupported before any request.
+- Evidence: who commented on and logged time on up to 100 issues
+  (`Evidence`, for credit), each issue asking for its comments, its
+  worklogs from `WorklogsFrom`, or both: per issue and source, each act's
+  ID, author, time and, for a worklog, time spent, with the issue's update
+  time the read was for, or a failure of that source alone
+  (`Capabilities.Evidence`). Jira reads the comments and update times in
+  one bulk fetch, and the worklogs from the connection's time source:
+  its own worklogs in the same fetch, an issue holding more comments or
+  worklogs than the fetch embeds read again whole through its comment
+  or worklog list; while Tempo is the time, every author's Tempo
+  worklogs through Tempo's worklog search by issue ID
+  (`POST /4/worklogs/search`), one search for the issues of each
+  `WorklogsFrom`, from the day before it, since Tempo dates a worklog on
+  its author's clock. A Tempo worklog before its bound is dropped before
+  its author is looked up in Jira, each author once a read; one with no
+  UTC start is placed by its date and time on its author's Jira time
+  zone. A batch, a comment page, a worklog page or a Tempo page whose
+  answer is over the transport's bound is read again in halves
+  (`trackerapi.Halved`); an issue whose answer alone is over it is read
+  for its update time and its lists through their pages. Worklogs are
+  kept from the issue's `WorklogsFrom`. An app's, a customer's and an
+  authorless act are left out. Jira returns an account type with every
+  comment and worklog author; an act whose author names none fails its
+  source, since whether a person made it is not known. A source fails
+  alone, with its reason, when Jira did not return its issue or said it
+  could not read it, withheld its list, its author's account (naming the
+  Browse users and groups permission a lookup needs) or the author's time
+  zone a Tempo worklog needs, or one item of it is over the bound; any
+  other failure fails the read, with the sources read before it. Linear
+  fails as unsupported. No live call has confirmed that the Tempo search
+  answers another person's worklogs with one person's token, nor the
+  largest page it answers: its spec states no maximum, and the client
+  asks for 1,000 a page.
 - Finding: issues by key, and a page of cards matching text.
 - Writes: create, edit fields, move to a status (with the fields the move
   takes), set an estimate on a board, rank between neighbors, move to a
@@ -387,8 +420,11 @@ no step runs at root creation, restore or start.
   (below). The writer (`validateSetup`)
   owns these defaults: a client sends the value it shows. Beside them,
   `dashboards` (by tracker site and board, the dashboards the project
-  keeps) is written only by its own edits ([Own dashboards and
-  proposals](#own-dashboards-and-proposals)); a replace keeps it. A section this build does not know, or one
+  keeps) and `board_tiles` (by tracker site and board, the widgets
+  pinned to the board's summary row and the number widgets' limits) are
+  written only by their own edits ([Own dashboards and
+  proposals](#own-dashboards-and-proposals), [Limits and the summary
+  row](#limits-and-the-summary-row)); a replace keeps them. A section this build does not know, or one
   at a newer version, is kept byte for byte by a replace and named in the
   read's `newer`; a replace that sets it is refused.
 - **A site** is named as its connection names it, by the rules a
@@ -634,6 +670,7 @@ classification:
 | `tracker_cache_issue_bodies` | The ticket bodies of the open tickets' issues and the most recently opened, 200 a mirror: what a ticket shows besides its card, one JSON document each. |
 | `tracker_cache_worklogs` | Logged time by issue, author and day. A Tempo connection has no mirror of its own; its worklogs are in its Jira connection's. |
 | `tracker_cache_worklog_days` | The latest read of an author's day, an unchanged or empty day included; a replace from an earlier read leaves the day. |
+| `tracker_cache_issue_acts`, `_issue_act_reads` | Who commented on and logged time on an issue, for credit, and per source the receipt of its last read (the card update it was for, when, and the worklogs' start) and the last failed attempt with its reason. |
 | `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. The linked-issues scope has no cursor: it reads its cards by ID. |
 | `tracker_cache_open_tickets` | One row per open ticket's pump, named by the process's session and the pump's number: the issue it keeps in the mirror while the ticket is open. |
 | `tracker_cache_issue_missing` | The latest read of a linked issue that did not return it, while no card the mirror holds is from a later read ([Thread links](#thread-links)). |
@@ -987,6 +1024,7 @@ and writes share:
 | Detail | one issue, or a connection's open tickets together | the detail document |
 | Structure | one board | columns, statuses, estimate, sprints, users |
 | Worklogs | an author's span of days, from the time tracker | that author's worklogs of those days, replaced whole |
+| Evidence | up to 50 issues' due comments and worklogs | each issue's comment and worklog authors, replaced per issue and source, or the source's failed attempt |
 
 - **Delta.** Each tick reads pages of a board's changed rows from its
   cursor. One transaction stores a page's rows and the cursor that page
@@ -1155,6 +1193,50 @@ and writes share:
   staged in transactions of at most 500 and made the issue's history in
   one more, so a reader sees the old history until the switch, never part
   of either.
+- **Evidence** is read for credit: who commented on and logged time on
+  the tickets of the boards a project counting credit lists (its credit
+  section on), each connection's in its linked tick, after the history
+  unit. The unit reads the connection's own board listings
+  (`ListConnectionProjectBoards`) and each project's setup once. With no
+  such project, or a provider that reads no evidence, it lists and reads
+  nothing. Which source of which ticket is due, from when, is the
+  listing's rule (`ListMirrorActsDue`), per source, from the receipts
+  `ReplaceMirrorActs` stores:
+  - the members of the boards' active sprints done now, their comments
+    and every worklog; then the members of each sprint closed in the
+    history window (180 days), newest first, done at its completion,
+    the same; then each project's support tickets (its support rule)
+    whose card moved in the window, walked by the update index, their
+    worklogs from the window's start. A ticket two arms or two projects
+    list is listed once, with every source any needs and the earliest
+    worklog start.
+  - A source is due when it has no receipt or one for an earlier card
+    update, and worklogs also when the receipt covers them from later
+    than the need, or, of an active sprint's member or a support ticket,
+    when it was read more than a day ago: a deleted worklog, a time
+    source's daily summary or a late import moves no card. A worklog
+    write, an edit included, moves the issue's update time, as measured
+    on Jira Cloud, also for worklogs a time source syncs into Jira, so a
+    closed sprint's member is read again only when its card moves.
+  - The app's own worklog write makes the ticket's worklog evidence due
+    (`ReplaceMirrorWorklogs`), for every worklog it adds, changes, moves
+    or removes.
+  - A read never narrows a receipt's coverage: its worklogs are read
+    from the earlier of the need and the receipt's start.
+
+  A unit reads at most 4 batches of 50 a tick and reports More while the
+  listing has more. A source that failed for its ticket alone is stored
+  as an attempt with its reason and is not due for a day, so the next
+  tick reaches the tickets behind it; the tick's attempts reach the
+  linked loop's failure report as a count with the first reason. A read
+  that fails for every ticket stores what it read before the failure,
+  then fails the tick. Each read is stored with the update it was for,
+  replaced per ticket and source, its authors in the first transaction;
+  a read that began no later than the stored one is superseded. Under a
+  time source change the read's comments are stored and its worklogs
+  refused, and the unit reports More, so the next tick reads under the
+  new source; a read that failed because the change closed its client
+  reports More without a failure.
 - **Linked issues.** The cards unit reads the linked issues no polled
   board has a row of (`ListMirrorOffBoardLinkedIssues`): a board whose
   pump is not over, not paused while hidden and tells no failure. It takes
@@ -1162,7 +1244,7 @@ and writes share:
   stops, pauses or starts failing is read by the round it happens in, from
   the next page on, or the next round, `Cadence.Linked` later. A linked
   tick runs the cards unit, then the names unit of an upgraded mirror
-  (above), then the history unit; the names unit makes at most 10 reads a
+  (above), then the history unit, then the evidence unit; the names unit makes at most 10 reads a
   tick, so the linked issues' cards and history keep their tick, and the
   loop ticks again until the worklist ends.
 - **A tick's record.** A tick's successes and the failure that followed
@@ -2351,9 +2433,12 @@ closes a database of its own.
 | The sandbox, the metric contract and its validator, the reductions, ranges, narrowing, drills and the built-in dashboard | `trackerdash` (its package comment is the sandbox's contract) |
 | The board, its status groups and the viewer of an evaluation | `trackerapp` |
 | The dashboards a project keeps (the setup file's `dashboards` section) and the widgets agents proposed | `trackerapp` (`dashboard_setup.go`, `dashboards.go`) |
+| A board's summary row and its number widgets' limits (the setup file's `board_tiles` section) | `trackerapp` (`board_tiles.go`) |
 | Bound methods, scopes and the older-computer surface | `app` (`app_tracker_dashboards.go`) |
-| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine, the drill, and the reads of the days of your logged time a shown widget counts | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine and the drill; the summary row's answer (`row`); its asks of the board's computer to read your logged time | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+| Which days of your logged time are read, one read at a time per account, and the newest days read again | `trackerapp/worklog_reads.go` |
 | Where logged time counts and where it is not known, and the sentences of a widget that cannot count it | `trackerdash/worklogs.go` |
+| The tickets a summary row tile filters the board to | `frontend/src/lib/stores/boardTicketSet.svelte.ts` |
 
 ### Own dashboards and proposals
 
@@ -2392,10 +2477,99 @@ the proposal under the proposals' lock, and every reader of both (the
 list, a count, a drill) reads them under that lock too, so it sees the
 widget proposed or kept and never both or neither, and a failed write
 leaves it proposed.
-Each change, from any client, emits the payload-less
-`tracker:dashboards_updated` once, on which an open screen of that
-computer lists the board's dashboards and counts again; a hidden screen
-lists them when it shows.
+Each change, from any client or an agent's proposal, is told once on the
+board's event to the board's subscriptions of the project
+(`BoardEvent.Dashboards`, `trackerapp.ProjectDashboards`: the project
+and `counts`, whether what the dashboards count moved; `tellDashboards`),
+and a change of the unit the project counts in is told so on every board
+of the project. The board's event is per site and board and replays
+with its gaps, so no change is lost behind another board's. In the
+window, the board's subscription moves its `dashboards` count, and its
+`changes` too when `counts` says so; a gap moves both. An open screen of
+that project's board lists the board's dashboards again when
+`dashboards` moves and counts again by the rule `changes` follows; a
+screen of another board, site or project reads nothing, and a hidden
+screen lists them when it shows.
+
+### Limits and the summary row
+
+A board's summary row is the widgets its project pins to it, at most 5
+(the list's `tiles.max`), in the row's order, and a number widget may
+carry a limit. Both live in
+the setup file's `board_tiles` section, by tracker site and board, a
+section of its own so an older build, which refuses a field it does not
+know, keeps it as it keeps any section it does not read; like
+`dashboards` it is not part of `Setup` and only its own edits write it.
+A widget is named by its ID on the board's dashboards, a built-in's
+included. One rule says which tiles hold (`board_tiles.go`,
+`tileWidgets`): a pin or a limit of a widget the board has, a limit only
+on a number, every reader (the board's pins, the list, the row's room)
+reads through it, and every edit of the board's section drops the rest
+before and after it, so Remove drops the widget's pin and limit.
+A limit is stored with the unit it was set in (`trackerdash.ValueUnit`:
+tickets, days, points or seconds) and shows only while the widget counts
+in that unit: a project that changes what it counts in shows no limit
+and no mark until it counts in that unit again, which shows the limit
+again. Which way a limit warns is the widget's `good` (below it when up
+is good news, else above it); nothing is stored for it.
+`SetTrackerWidgetLimit` and `PinTrackerWidget` (`tracker:operate`) set
+them inside the setup file's write (`editBoard`), against the widgets
+the board has in that write, so a removal written beside a pin leaves no
+pin of a widget that is gone. A limit's change (`LimitChange`) is a
+value, with the `estimates` of the count that answered it, or a step,
+Raise (1) or Lower (-1): the computer moves the limit it stores by one
+step of its unit (`limitStep`: an hour of seconds, half a day, else 1),
+and a widget with no limit in its unit now steps from the value sent. A
+value is kept as sent, below 0 too, as a signed count gives; a Lower
+stops at 0 and never lowers a limit at or below it (`stepped`). So the value, its unit and the step have one owner, a press
+before any count lands steps the stored limit in its own unit, and a
+step after another window's write steps from it. They refuse a widget
+the board does not have, a limit on a widget that is not a number or one
+that is not finite, a value counted in other estimates than the board's
+now (`dashboard_limit_unit`), a step with nothing to step from, and a
+pin past a full row (`admitPin`, which Keep shares). A limit is told
+with `counts` false; a pin is told by the pins. The list answers `tiles`
+(the limits shown, each with its unit, the proposals whose agent asked
+for a pin, and `max`). An agent's widget may name `limit` and `pin` (the
+rules `dashboard_widget` answers say so); the proposal holds the limit
+in the unit its number was in when it was proposed, shown while that
+unit holds, and Keep gives the kept widget that limit in that unit, and
+pins it while the row has room. A count and a drill
+(`EvaluateTrackerDashboard`, `TrackerDashboardDrill`) refuse a request
+naming more widgets than the row holds.
+
+The pins are the board subscription's: `BoardView.pins` carries them
+with the board, and a change of them is the board event's `pins`
+(`ProjectPins`, which names the project, since a board's pump serves
+every project that lists the board), which reads nothing. A subscription
+of another project on the same board folds in none of it. The Board
+screen loads the row (`components/issues/BoardSummaryRow.svelte`) only
+for a board that pins a widget or while the person edits it from the
+empty board's Add a tile: one that pins none reads nothing more. The row
+lists the
+board's dashboards and counts one request whose `Widgets` names the
+pinned widgets on the built-in dashboard: one evaluation of those
+widgets alone over its default range, for the team, without the
+proposals, counted again by the dashboards' rule (the board's changes,
+at most once every 5 s, and every 10 minutes); a change of its pins
+changes that request. A change of a limit lists again and counts
+nothing. A screen shows the limit its latest list holds, in that
+limit's unit, and holds no record of its own writes. A tile whose
+value is a set of tickets now (a number or a list of a widget that
+counts now, or a state's number with no bucket, `WidgetView.State`)
+filters the board to its tickets: a drill of it asked
+for `IDs` answers every ticket of its rows, in the drill's order, and no
+page. The set follows the tile's count: it is read again by the same
+rule while the Board or the Backlog shows, a dashboards change that
+moves counts included. It is the pane's board's: it
+holds through a reconnect, reading nothing until the new subscription
+answers, and clears when the pane shows another board or its widget
+leaves the board's pins. The filter is applied on the page, as Only mine and Search are,
+so while it is on every column and section is read whole. Measured on
+the fixture's copy (`TestATicketSetsCost`, `AO_TRACKER_SCALE=5000`), a
+set of 5,000 tickets is 5,000 rows from the metric and an answer of
+40,183 bytes with Jira's IDs (8 a ticket) or 195,183 with Linear's UUIDs
+(39 a ticket).
 
 ### The export
 
@@ -2999,7 +3173,8 @@ on the Dashboards screen (`StartTrackerDashboardThread`, which needs
 `threads:operate` and `tracker:read`) makes a new thread on the board's
 computer, in the checkout of the project the board's subscription was
 made for, with an unsent draft naming the board by its name and
-site/ID, on a provider whose agents get the tracker tools
+site/ID (from the summary row, also asking for a widget with `pin` that
+shows what the person typed), on a provider whose agents get the tracker tools
 (`SupportsTrackerMCP`) and that the computer offers: the one a new thread
 starts on when it has them, else Claude, else Codex
 (`app.trackerToolsProvider`). A draft that cannot be saved takes the
@@ -3704,8 +3879,11 @@ screen ([Dashboards](#dashboards)): the built-in, the ones its project
 keeps and the widgets agents propose, with the wrappers of
 `TrackerDashboards`, `EvaluateTrackerDashboard`, `TrackerDashboardDrill`,
 `KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`,
-`StartTrackerDashboardThread` and `tracker:dashboards_updated`
-(`stores/trackerDashboard.svelte.ts`), and a ticket list's selection
+`SetTrackerWidgetLimit`, `PinTrackerWidget` and
+`StartTrackerDashboardThread` (`stores/trackerDashboard.svelte.ts`), the board's summary row and the
+tickets its tile filters the board to
+(`components/issues/BoardSummaryRow.svelte`,
+`stores/boardTicketSet.svelte.ts`), and a ticket list's selection
 (`components/issues/TicketListActions.svelte`), whose moves and
 assignments are the ticket write store's, at most 4 of a page's batch
 calls out at once, and whose thread is `StartTicketsThread`'s.

@@ -114,7 +114,7 @@ func mirrorScopes(t *testing.T, s *Store, root int64) map[string]mirrorScope {
 			content: func() string {
 				return map[string]string{"60": "a", "120": "b"}[scalar(`SELECT spent_seconds FROM tracker_cache_worklogs`)()]
 			},
-			later: map[string]int{"tracker_cache_worklog_days": 1}, statements: 7,
+			later: map[string]int{"tracker_cache_worklog_days": 1}, statements: 8,
 		},
 	}
 }

@@ -213,6 +213,113 @@ func (c *Client) Worklogs(ctx context.Context, q WorklogQuery) ([]Worklog, error
 	return out, nil
 }
 
+// IssueWorklogQuery selects the worklogs of a set of issues, every
+// author's that the token may see.
+type IssueWorklogQuery struct {
+	// Issues are Jira issue IDs. Required.
+	Issues []int64
+	// From, when set, keeps the worklogs whose start date is at or after
+	// it.
+	From Date
+}
+
+// issueWorklogSearch is POST /4/worklogs/search's body (the spec's
+// WorklogSearchInput) for an IssueWorklogQuery.
+type issueWorklogSearch struct {
+	IssueIDs []int64 `json:"issueIds"`
+	From     string  `json:"from,omitempty"`
+}
+
+// IssueWorklog is a worklog as a count of who worked on an issue reads
+// it: no description and no attributes.
+type IssueWorklog struct {
+	ID     int64
+	Issue  int64
+	Author string // Atlassian account ID
+	Start  Start
+	// StartUTC is Tempo's conversion of Start to UTC; zero when Tempo did
+	// not give it, which its spec allows.
+	StartUTC time.Time
+	Spent    time.Duration
+}
+
+// issueWorklogJSON is the members of a worklog an IssueWorklog keeps:
+// the decoder skips the rest of each, its description and attributes
+// included, unread.
+type issueWorklogJSON struct {
+	ID    int64 `json:"tempoWorklogId"`
+	Issue struct {
+		ID int64 `json:"id"`
+	} `json:"issue"`
+	Author struct {
+		AccountID string `json:"accountId"`
+	} `json:"author"`
+	StartDate string `json:"startDate"`
+	StartTime string `json:"startTime"`
+	StartUTC  string `json:"startDateTimeUtc"`
+	Spent     int64  `json:"timeSpentSeconds"`
+}
+
+func (w issueWorklogJSON) read() (IssueWorklog, error) {
+	out := IssueWorklog{ID: w.ID, Issue: w.Issue.ID, Author: w.Author.AccountID, Spent: duration(w.Spent)}
+	var err error
+	if out.Start.Date, err = ParseDate(w.StartDate); err != nil {
+		return IssueWorklog{}, fmt.Errorf("worklog %d: start date: %w", w.ID, err)
+	}
+	if w.StartTime != "" {
+		if out.Start.Time, err = ParseTimeOfDay(w.StartTime); err != nil {
+			return IssueWorklog{}, fmt.Errorf("worklog %d: start time: %w", w.ID, err)
+		}
+	}
+	if w.StartUTC != "" {
+		if out.StartUTC, err = parseTimestamp(w.StartUTC); err != nil {
+			return IssueWorklog{}, fmt.Errorf("worklog %d: startDateTimeUtc: %w", w.ID, err)
+		}
+	}
+	return out, nil
+}
+
+// IssueWorklogs reads the worklogs of q's issues through Tempo's worklog
+// search, by issue ID and from q.From, in Tempo's order (start, then ID),
+// a page of pageSize at a time; a page drawn under another credential
+// read than the first reads the whole search again (trackerapi.Walk). It
+// keeps what IssueWorklog holds of each, a page decoded at a time; a
+// failure returns none. Which authors' worklogs the token sees is Tempo's
+// permission; no live call has confirmed that one person's token sees
+// another person's worklogs, nor the largest page this search answers
+// (its spec states no maximum).
+func (c *Client) IssueWorklogs(ctx context.Context, q IssueWorklogQuery) ([]IssueWorklog, error) {
+	if err := c.admit(); err != nil {
+		return nil, err
+	}
+	if len(q.Issues) == 0 {
+		return nil, trackerapi.InvalidInput(errors.New("tempo: search worklogs: the query names no issue"))
+	}
+	body := issueWorklogSearch{IssueIDs: q.Issues}
+	if !q.From.IsZero() {
+		body.From = q.From.String()
+	}
+	r := trackerapi.Request{Method: "POST", Path: "4/worklogs/search", Body: body, ReadOnly: true}
+	out, err := trackerapi.Walk(ctx, func(ctx context.Context) ([]IssueWorklog, error) {
+		var out []IssueWorklog
+		err := pages(ctx, c.http, r, func(resp *trackerapi.Response, raw []issueWorklogJSON) error {
+			for _, w := range raw {
+				log, err := w.read()
+				if err != nil {
+					return unreadable(resp, err)
+				}
+				out = append(out, log)
+			}
+			return nil
+		})
+		return out, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("tempo: search the worklogs of %d issues: %w", len(q.Issues), err)
+	}
+	return out, nil
+}
+
 // Worklog reads one worklog by its Tempo ID. A worklog that does not
 // exist fails with an error matching trackerapi.ErrNotFound.
 func (c *Client) Worklog(ctx context.Context, id int64) (Worklog, error) {

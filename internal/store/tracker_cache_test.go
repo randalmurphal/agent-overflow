@@ -120,7 +120,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 // board.
 func TestMirrorDrainCoversEveryTable(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, trackerParentsMigrationVersion)
+	db := migrateThrough(t, migrations[len(migrations)-1].Version)
 	tables, err := queryIDs(db, `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'tracker\_cache\_%' ESCAPE '\'
 		AND name <> 'tracker_cache_roots' ORDER BY name`)
 	if err != nil {
@@ -239,6 +239,12 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, err := s.DropMirrorBodies(root, []string{"10001"})
 			return err
 		},
+		"ReplaceMirrorActs": func(root int64) error {
+			_, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 9), []MirrorIssueActs{commentsOf("10001", 5, 2, "c1"),
+				{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 5, Acts: []MirrorAct{{ID: "w1", Person: "acc-user2", At: 3, Seconds: 60}}}},
+				nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user2", Name: "User 2"}}})
+			return err
+		},
 	}
 }
 
@@ -246,7 +252,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 // the cleanup and the reads.
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
-	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorBodies", "ListMirrorIssueWorklogs",
+	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorActsDue", "ListMirrorBodies", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorBoardStatuses", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorParents", "ListMirrorUnnamedParents", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections", "GetMirrorBoardPace", "ListMirrorSupport",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards", "ListMirrorSprintNames", "LastMirrorPlanRow",
 	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays", "ReadMirrorWorklogReadDays",

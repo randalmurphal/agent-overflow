@@ -3,7 +3,7 @@
 // and the tone by the metric's good direction.
 
 import { describe, expect, it } from 'vitest';
-import { changeMark, drillCountWords, formatNum, GAP_TEXT, numValue, numWords } from './trackerDashboardModel';
+import { changeMark, drillCountWords, formatNum, GAP_TEXT, limitSide, limitWords, numValue, numWords, overLimit, pastLimitWords, showsTotal } from './trackerDashboardModel';
 import { band, labelEvery, unitScale, valueScale } from '../components/issues/charts/chartScale';
 
 describe('a number', () => {
@@ -121,5 +121,41 @@ describe('the charts\' geometry', () => {
     expect(labelEvery(10, 640)).toBe(1);
     expect(labelEvery(10, 320)).toBe(2);
     expect(labelEvery(12, 100)).toBe(12);
+  });
+});
+
+describe("a number's limit", () => {
+  it('warns below it where up is good news, else above it, and not with no limit or no value', () => {
+    expect([limitSide('up'), limitSide('down'), limitSide('')]).toEqual(['below', 'above', 'above']);
+    const three = { value: 3, unit: 'tickets' };
+    expect(overLimit({ v: 4 }, 'tickets', 'points', three, 'down')).toBe(true);
+    expect(overLimit({ v: 3 }, 'tickets', 'points', three, 'down')).toBe(false);
+    expect(overLimit({ v: 4 }, 'tickets', 'points', three, '')).toBe(true);
+    expect(overLimit({ v: 2 }, 'tickets', 'points', three, 'up')).toBe(true);
+    expect(overLimit({ v: 3 }, 'tickets', 'points', three, 'up')).toBe(false);
+    expect(overLimit({ v: 4 }, 'tickets', 'points', null, 'down')).toBe(false);
+    expect(overLimit({ nc: 2 }, 'tickets', 'points', { value: 0, unit: 'tickets' }, 'down')).toBe(false);
+    // A number in another unit than its limit's is never past it.
+    expect(overLimit({ v: 20 }, 'estimate', 'points', { value: 25, unit: 'tickets' }, 'up')).toBe(false);
+    expect(overLimit({ v: 20 }, 'estimate', 'none', { value: 25, unit: 'tickets' }, 'up')).toBe(true);
+    expect(overLimit({ v: 15 }, 'estimate', 'time', { value: 25, unit: 'points' }, 'up')).toBe(false);
+    expect(overLimit({ v: 15 }, 'estimate', 'time', { value: 25, unit: 'seconds' }, 'up')).toBe(true);
+    expect(overLimit({ v: 3 }, 'days', '', { value: 2, unit: 'days' }, 'down')).toBe(true);
+  });
+
+  it('reads in the unit it was set in, whatever the count is in', () => {
+    expect(limitWords({ value: 7200, unit: 'seconds' })).toBe('2h');
+    expect(limitWords({ value: 3, unit: 'points' })).toBe('3 points');
+    expect(limitWords({ value: 1, unit: 'tickets' })).toBe('1 ticket');
+    expect(limitWords({ value: 2.5, unit: 'days' })).toBe('2.5 days');
+    expect(pastLimitWords({ value: 3, unit: 'tickets' }, 'up')).toBe('under your limit of 3 tickets');
+  });
+});
+
+describe("a table's totals", () => {
+  it('are shown for named series that do not overlap, and for no other', () => {
+    expect(showsTotal({}, ['Committed', 'Added'])).toBe(true);
+    expect(showsTotal({ overlap: true }, ['Committed', 'Done'])).toBe(false);
+    expect(showsTotal({}, [''])).toBe(false);
   });
 });

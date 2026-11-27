@@ -33,21 +33,25 @@ type User struct {
 	AvatarURL   string // 48x48
 }
 
-// userJSON is a user as the API sends it.
+// userJSON is a user as the API sends it. Of its avatars it keeps the
+// one User carries, so decoding a user (each comment's and worklog's
+// author among them) allocates no map.
 type userJSON struct {
-	AccountID   string            `json:"accountId"`
-	DisplayName string            `json:"displayName"`
-	Email       string            `json:"emailAddress"`
-	Active      bool              `json:"active"`
-	AccountType string            `json:"accountType"`
-	TimeZone    string            `json:"timeZone"`
-	Avatars     map[string]string `json:"avatarUrls"`
+	AccountID   string `json:"accountId"`
+	DisplayName string `json:"displayName"`
+	Email       string `json:"emailAddress"`
+	Active      bool   `json:"active"`
+	AccountType string `json:"accountType"`
+	TimeZone    string `json:"timeZone"`
+	Avatars     struct {
+		Large string `json:"48x48"`
+	} `json:"avatarUrls"`
 }
 
 func (u userJSON) user() User {
 	return User{
 		AccountID: u.AccountID, DisplayName: u.DisplayName, Email: u.Email, Active: u.Active,
-		AccountType: u.AccountType, TimeZone: u.TimeZone, AvatarURL: u.Avatars["48x48"],
+		AccountType: u.AccountType, TimeZone: u.TimeZone, AvatarURL: u.Avatars.Large,
 	}
 }
 
@@ -149,7 +153,7 @@ func (c *Client) lookUpUser(ctx context.Context, accountID string, voter bool) (
 	var u userJSON
 	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "user", Query: url.Values{"accountId": {accountID}}}, &u)
 	if err != nil {
-		if voter && withheld(err) {
+		if voter && Withheld(err) {
 			err = fmt.Errorf("%w: %w", ErrUserWithheld, err)
 			c.voterMisses.put(missEpoch, mark, accountID, err)
 		}
@@ -159,9 +163,10 @@ func (c *Client) lookUpUser(ctx context.Context, accountID string, voter bool) (
 	return u.user(), nil
 }
 
-// withheld reports a user lookup's error that is Jira withholding the
-// user: a confirmed 404, or a 403.
-func withheld(err error) bool {
+// Withheld reports an error of a read of one user or one issue's list
+// that is Jira withholding it: a confirmed 404, or a 403 (a user lookup
+// needs the global Browse users and groups permission).
+func Withheld(err error) bool {
 	se, ok := errors.AsType[*trackerapi.StatusError](err)
 	return errors.Is(err, trackerapi.ErrNotFound) || ok && se.Status == http.StatusForbidden
 }

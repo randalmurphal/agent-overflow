@@ -4,6 +4,7 @@
 // The numbers themselves are the board's computer's (trackerdash), one
 // evaluation per answer.
 
+import type { TileLimit } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { formatAmount, unitWord, type DashboardUnit } from '../utils/dashboardAmount';
 
 /** One number of a dashboard (trackerdash.Num, which the bindings type
@@ -132,4 +133,70 @@ export function changeMark(
   const amount = formatAmount(Math.abs(delta), unit, estimates);
   const word = unitWord(Math.abs(delta), unit, estimates);
   return { kind: 'change', direction, tone, text: `${direction === 'up' ? 'Up' : 'Down'} ${amount}${word ? ` ${word}` : ''} from ${formatAmount(p, unit, estimates)}${then}` };
+}
+
+/** Which way a number widget's limit warns: below it when up is good
+ * news (`good`), else above it. The one rule; the board's computer stores
+ * no direction (trackerapp/board_tiles.go). */
+export function limitSide(good: string): 'above' | 'below' {
+  return good === 'up' ? 'below' : 'above';
+}
+
+/** The unit a widget of `unit` counts in where its answer's estimates
+ * are `estimates`, as a limit names it (trackerdash.ValueUnit): tickets,
+ * days, points or seconds. `limitFormat` is its inverse. */
+export function countUnit(unit: DashboardUnit, estimates: string): string {
+  if (unit !== 'estimate') return unit;
+  return estimates === 'points' ? 'points' : estimates === 'time' ? 'seconds' : 'tickets';
+}
+
+/** Whether a number of a widget of `unit`, from an answer whose estimates
+ * are `estimates`, is past the widget's limit on the side `limitSide`
+ * names; false with no limit, no value, or a limit set in another unit
+ * than the number's, such as while a count in the board's former
+ * estimates is still shown. The one comparison, for the Dashboards screen
+ * and the board's row. */
+export function overLimit(value: Num | null | undefined, unit: DashboardUnit, estimates: string, limit: TileLimit | null | undefined, good: string): boolean {
+  const v = numValue(value);
+  if (v === null || !limit || countUnit(unit, estimates) !== limit.unit) return false;
+  return limitSide(good) === 'below' ? v < limit.value : v > limit.value;
+}
+
+/** A limit as the screen's numbers are formatted: the unit it was set in
+ * (trackerapp.TileLimit: tickets, days, points or seconds) as a widget's
+ * unit and the estimates its numbers are counted in. */
+export function limitFormat(limit: TileLimit): { unit: DashboardUnit; estimates: string } {
+  switch (limit.unit) {
+    case 'seconds': return { unit: 'estimate', estimates: 'time' };
+    case 'points': return { unit: 'estimate', estimates: 'points' };
+    case 'days': return { unit: 'days', estimates: '' };
+  }
+  return { unit: 'tickets', estimates: '' };
+}
+
+/** A limit as words, in its own unit: "3 tickets", "2h". */
+export function limitWords(limit: TileLimit): string {
+  const { unit, estimates } = limitFormat(limit);
+  const word = unitWord(limit.value, unit, estimates);
+  return word ? `${formatAmount(limit.value, unit, estimates)} ${word}` : formatAmount(limit.value, unit, estimates);
+}
+
+/** What a number past its limit says: "over your limit of 3 tickets",
+ * or "under …" where the limit warns below. */
+export function pastLimitWords(limit: TileLimit, good: string): string {
+  return `${limitSide(good) === 'below' ? 'under' : 'over'} your limit of ${limitWords(limit)}`;
+}
+
+/** Whether a widget's series are named: more than one, or one with a
+ * name. */
+export function namedSeries(series: readonly string[]): boolean {
+  return series.length > 1 || (series[0] ?? '') !== '';
+}
+
+/** Whether a bucket of a widget's named series shows its total: not when
+ * the metric's series overlap (a ticket counting in several, as the
+ * sprint table's do), whose total would count such a ticket more than
+ * once. The one rule, for the Dashboards screen and the board's row. */
+export function showsTotal(view: { readonly overlap?: boolean }, series: readonly string[]): boolean {
+  return namedSeries(series) && !view.overlap;
 }
