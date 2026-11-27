@@ -26,7 +26,7 @@
     withPoker,
   } from '../../stores/trackerSetup.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import { formatEstimateSum } from '../issues/boardFormat';
+  import { formatPace } from '../issues/boardFormat';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import TrackerProjectSettings, { jiraOnly, type TrackerProjectPage } from './TrackerProjectSettings.svelte';
   import { SELECT_CLASS } from './styles';
@@ -56,13 +56,7 @@
     const name = b.name || `Board ${b.board}`;
     if (!b.read) return `Read when ${name} is opened in Issues.`;
     if (!b.pace) return `No sprint of ${name} has finished yet.`;
-    const n = measureOf(b.pace, b.counts);
-    const amount =
-      b.counts === 'points'
-        ? `${formatEstimateSum(n, 'points') ?? '0'} ${n === 1 ? 'point' : 'points'}`
-        : b.counts === 'time'
-          ? `${formatEstimateSum(n, 'time') ?? '0'}`
-          : `${Math.round(n * 10) / 10} ${n === 1 ? 'ticket' : 'tickets'}`;
+    const amount = formatPace(measureOf(b.pace, b.counts), b.counts);
     const from = b.pace.sprints === 1 ? 'the last sprint' : `the last ${b.pace.sprints} sprints`;
     return `${named ? `${name}: ` : ''}${amount} a sprint, from ${from}.`;
   }

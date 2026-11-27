@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import type { BoardPace, Setup, SetupView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import TrackerPointsSettings from './TrackerPointsSettings.svelte';
+import { formatPace } from '../issues/boardFormat';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
 import { trackerBoardChoice, trackerConnection } from '../../../test/helpers/trackerConnections';
@@ -123,6 +124,14 @@ describe('<TrackerPointsSettings>', () => {
       'Read when OPS board is opened in Issues.',
       'No sprint of New board has finished yet.',
     ]);
+  });
+
+  it('says a pace to a tenth as sprint planning does', async () => {
+    paces = () => [paceOf({ pace: { sprints: 1, rows: 1, estimate: 1.15 } })];
+    render(TrackerPointsSettings);
+    await screen.findByTestId('tracker-points-count');
+    expect(paceLines()).toEqual([`${formatPace(1.15, 'points')} a sprint, from the last sprint.`]);
+    expect(paceLines()).toEqual(['1.2 points a sprint, from the last sprint.']);
   });
 
   it('names the pick the board\'s estimates when a board estimates in time', async () => {

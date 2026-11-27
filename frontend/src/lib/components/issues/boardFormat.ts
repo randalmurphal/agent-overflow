@@ -37,6 +37,23 @@ function trim(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, '');
 }
 
+/** A sum in the unit a board is counted in, with no word: points or
+ * time as `formatEstimateSum` words them, tickets as a count. */
+function bareAmount(v: number, unit: string): string {
+  return unit === 'points' || unit === 'time' ? (formatEstimateSum(v, unit) ?? '0') : trim(v);
+}
+
+/** The word after a sum in `unit`: none for time, which carries its own. */
+function amountWord(v: number, unit: string): string {
+  return unit === 'points' ? (v === 1 ? ' point' : ' points') : unit === 'time' ? '' : v === 1 ? ' ticket' : ' tickets';
+}
+
+/** A usual pace in the unit a board is counted in, to a tenth, as sprint
+ * planning and Settings say it: "7.3 points", "10h", "3 tickets". */
+export function formatPace(v: number, unit: string): string {
+  return `${bareAmount(Math.round(v * 10) / 10, unit)}${amountWord(v, unit)}`;
+}
+
 /** A column's count and, for a board with estimates, its sum. */
 function formatTotal(total: SectionTotal, unit: string): string {
   const sum = formatEstimateSum(total.estimate, unit);
@@ -106,8 +123,8 @@ export interface LinePart {
 export function sectionLine(kind: 'active' | 'future' | 'backlog', n: SectionNumbers, unit: string, estimates: string): LinePart[] {
   const estimated = unit === 'points' || unit === 'time';
   const measure = (t: { rows: number; estimate: number }) => (estimated ? t.estimate : t.rows);
-  const bare = (v: number) => (estimated ? (formatEstimateSum(v, unit) ?? '0') : trim(v));
-  const word = (v: number) => (unit === 'points' ? (v === 1 ? ' point' : ' points') : unit === 'time' ? '' : v === 1 ? ' ticket' : ' tickets');
+  const bare = (v: number) => bareAmount(v, unit);
+  const word = (v: number) => amountWord(v, unit);
   const tickets = (v: number) => (v === 1 ? ' ticket' : ' tickets');
   const parts: LinePart[] = [];
   /** `now`, after `was` and an arrow when a moved row changes it. */
@@ -130,7 +147,7 @@ export function sectionLine(kind: 'active' | 'future' | 'backlog', n: SectionNum
     const pace = measure(n.pace);
     moving(was, now, '');
     const last = n.pace.sprints === 1 ? 'the last sprint' : `the last ${n.pace.sprints} sprints' average`;
-    parts.push({ text: ` of about ${bare(Math.round(pace * 10) / 10)}${word(pace)}, ${last}` });
+    parts.push({ text: ` of about ${formatPace(pace, unit)}, ${last}` });
     if (n.over > 0) parts.push({ text: ' · ' }, { text: `${bare(Math.round(n.over * 10) / 10)} over`, tone: 'warn' });
     return parts;
   }
