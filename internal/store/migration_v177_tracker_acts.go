@@ -11,7 +11,9 @@ package store
 //     names its reviewer by account (person) or, when no single account
 //     has the name the development data gives, by that name alone
 //     (unmatched, person empty); no writer stores one yet. Each source's
-//     shape is checked on its own.
+//     shape is checked on its own. idx_tracker_cache_issue_acts_worklogs
+//     holds a root's worklogs by their start, which credit walks for the
+//     support time of a sprint's dates (mirrorCreditRowsSQL).
 //   - tracker_cache_issue_act_reads: one row per issue and source, the
 //     receipt of the last read that stored its acts and the last failed
 //     attempt since. The receipt: the issue's update time the read
@@ -49,6 +51,7 @@ CREATE TABLE tracker_cache_issue_acts (
  PRIMARY KEY (root_id, issue_id, source, act_id),
  FOREIGN KEY (root_id, issue_id) REFERENCES tracker_cache_issues(root_id, issue_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
+CREATE INDEX idx_tracker_cache_issue_acts_worklogs ON tracker_cache_issue_acts(root_id, at) WHERE source = 2;
 CREATE TABLE tracker_cache_issue_act_reads (
  root_id INTEGER NOT NULL,
  issue_id TEXT NOT NULL,

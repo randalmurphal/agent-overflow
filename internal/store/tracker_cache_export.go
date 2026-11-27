@@ -191,17 +191,18 @@ var mirrorExportBoardSQL = `SELECT b.name, b.plans_sprints, b.estimate_unit, b.e
 	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2")
 
 // mirrorExportStatusChangeSQL is the changes into a status of list of
-// issue i's current history generation, at or before bound (an SQL
-// expression; "" for none), by key: agg(c.at) of them. The tickets' done
-// time and credit's moment a sprint member moved to done
-// (mirrorCreditMembersSQL) are its max.
-func mirrorExportStatusChangeSQL(agg, list, bound string) string {
+// the issue of alias i (its root_id, issue_id and history_gen) of its
+// current history generation, at or before bound (an SQL expression; ""
+// for none), by key: agg(c.at) of them. The tickets' done time and
+// credit's moment a sprint member moved to done (mirrorCreditFinishedSQL)
+// are its max.
+func mirrorExportStatusChangeSQL(i, agg, list, bound string) string {
 	upTo := ""
 	if bound != "" {
 		upTo = ` AND c.at <= ` + bound
 	}
 	return `(SELECT ` + agg + `(c.at) FROM tracker_cache_changes c
-	      WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id AND c.gen = i.history_gen AND c.kind = 1
+	      WHERE c.root_id = ` + i + `.root_id AND c.issue_id = ` + i + `.issue_id AND c.gen = ` + i + `.history_gen AND c.kind = 1
 	        AND c.to_value IN (` + list + `)` + upTo + `)`
 }
 
@@ -311,8 +312,8 @@ var mirrorExportFills = append([]mirrorExportFill{
 	    iif(i.history_for > 0, iif(i.history_from > 0, i.history_from, i.created_at), NULL),
 	    iif(i.history_for > 0 AND NOT ` + mirrorExportHistoryCurrent + `, 1, 0),
 	    iif(` + mirrorExportStartKnownSQL + `, 1, 0),
-	    iif(` + mirrorExportStartKnownSQL + `, ` + mirrorExportStatusChangeSQL("min", mirrorGroupStatusesSQL("?3", MirrorGroupInProgress), "") + `, NULL),
-	    iif(i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `), ` + mirrorExportStatusChangeSQL("max", mirrorDoneStatusesSQL("?3"), "") + `, NULL),
+	    iif(` + mirrorExportStartKnownSQL + `, ` + mirrorExportStatusChangeSQL("i", "min", mirrorGroupStatusesSQL("?3", MirrorGroupInProgress), "") + `, NULL),
+	    iif(i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `), ` + mirrorExportStatusChangeSQL("i", "max", mirrorDoneStatusesSQL("?3"), "") + `, NULL),
 	    iif(` + mirrorRegroupedNotDone("?3") + `, 1, 0), iif(` + mirrorLeftOut("?3") + `, 0, 1)`, afterCard: `
 	  FROM tracker_cache_board_issues b
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id

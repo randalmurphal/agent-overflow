@@ -286,7 +286,8 @@ func TestMirrorExportSearchesByTheBoard(t *testing.T) {
 	}
 	// The copy's tables, and the subqueries and rows of the fills' own
 	// CTEs and json_each, which are not the file's.
-	snapshot := map[string]bool{"l": true, "x": true, "o": true, "c": true, "v": true, "s": true, "g": true, "e": true, "j": true, "p": true, "ri": true, "pick": true, "pk": true, "sp": true}
+	snapshot := map[string]bool{"l": true, "x": true, "o": true, "c": true, "v": true, "s": true, "g": true, "e": true, "j": true, "p": true, "ri": true, "pick": true, "pk": true, "sp": true,
+		"cm": true, "f": true, "d": true, "h": true}
 	for _, table := range MirrorExportTables {
 		snapshot[table] = true
 	}

@@ -90,6 +90,11 @@ func TestTheActsMigrationChecksEachSourcesShape(t *testing.T) {
 			t.Errorf("%+v: %v", c, err)
 		}
 	}
+	// The worklog index holds a root's worklogs by their start, and no
+	// other source's acts.
+	assertRows(t, db, `SELECT group_concat(name, ',') FROM pragma_index_info('idx_tracker_cache_issue_acts_worklogs')`, "root_id,at")
+	assertRows(t, db, `SELECT count(*) FROM tracker_cache_issue_acts INDEXED BY idx_tracker_cache_issue_acts_worklogs
+		WHERE root_id = 7 AND source = 2 AND at >= 0`, "1")
 }
 
 // commentsOf is issue's comments as one read found them: one act per ID,

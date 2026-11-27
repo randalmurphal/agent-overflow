@@ -245,6 +245,16 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 			}
 			return err
 		},
+		func() error {
+			credit, err := MirrorRegroup{}.WithSupport(MirrorSupportRule{Types: []string{"10004"}, Labels: []string{"support"}})
+			if err == nil {
+				credit, err = credit.WithCredit(creditRules(true))
+			}
+			if err == nil {
+				_, _, err = s.GetMirrorBoardPace(root, "10", credit)
+			}
+			return err
+		},
 	}
 	for _, section := range []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"}, {Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}} {
 		reads = append(reads, func() error {
@@ -344,6 +354,15 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 	{"ORDER BY completed_at DESC, position DESC LIMIT", "USE TEMP B-TREE FOR ORDER BY", "one board's closed sprints, at most mirrorMaxSprints"},
 	{"ORDER BY completed_at DESC, position DESC LIMIT", "SCAN l", "the last MirrorPaceSprints closed sprints, which drive the members' lookups by key"},
 	{"ORDER BY completed_at DESC, position DESC LIMIT", "USE TEMP B-TREE FOR GROUP BY", "the members of the last MirrorPaceSprints sprints"},
+	{"cr_sp AS MATERIALIZED", "SCAN last", "the pace's last MirrorPaceSprints closed sprints, the sprints credit counts"},
+	{"cr_sp AS MATERIALIZED", "SCAN h", "one board's closed and active sprints, which place a support worklog without a sort"},
+	{"cr_sp AS MATERIALIZED", "SCAN cr_m", "the members of the sprints credit counts, read once for what each finished"},
+	{"cr_sp AS MATERIALIZED", "SCAN cm", "the members of the sprints credit counts, read once for those done"},
+	{"cr_sp AS MATERIALIZED", "SCAN f", "the done members of the sprints credit counts, each read for its rows"},
+	{"cr_sp AS MATERIALIZED", "SCAN d", "the reviewers of the done members, one row a person each"},
+	{"cr_sp AS MATERIALIZED", "SCAN s", "the support time of the sprints credit counts, one row a sprint, ticket and person"},
+	{"cr_sp AS MATERIALIZED", "SCAN cr_rows", "the credit rows of the sprints credit counts, summed by sprint"},
+	{"cr_sp AS MATERIALIZED", "USE TEMP B-TREE FOR count(DISTINCT)", "the tickets of the credit rows of the sprints credit counts"},
 	{"WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group = 4 AND st.status_id NOT IN (SELECT o.key FROM json_each(", "SEARCH st USING PRIMARY KEY (root_id=?)",
 		"the statuses that count as done when a sprint closed (mirrorPaceSQL) are listed once a statement from the root's catalog"},
 	{`DELETE FROM main."tracker_cache_`, "", "a restore empties each mirror table whole"},
