@@ -913,11 +913,21 @@ best of 5 runs, two runs each, and the VM steps, which do not vary):
 | `labels`, filled beside it when a query reads it | 134,026 steps; 7.6 and 6.7 ms | 1,340,026 steps; 77.6 and 67.6 ms |
 
 A query that reads neither column decodes no blob, whatever it
-multiplies or counts with `*`: SQLite reports the columns it reads and
-the fill selects NULL for the rest, 4 VM steps a ticket. Each column read
-costs 9 steps a ticket,
+multiplies or counts with `*`: the plan of the statement the count runs
+reads no `Column` of it, and the fill selects NULL for the rest, 4 VM
+steps a ticket. Each column read costs 9 steps a ticket,
 which is why the fill does not decode them for every count. The times
 of these runs spread more than the columns cost.
+
+A join SQLite drops from the plan copies nothing: `SELECT DISTINCT
+t.id AS ticket FROM tickets t LEFT JOIN changes c ON c.ticket = t.id`
+copies what a query of tickets alone does. Copying the history it does
+not read would add 24,160,468 VM steps at 20,000 issues (the changes,
+the statuses and the people they name; 202, 64 and 110 ms in one run),
+and labels 1,340,026. Reading a metric's plan costs 48 to 91 µs for
+each built-in metric and 141 µs for the empty session's layout (best of
+20, on the developer machine), once per kind for the built-ins and once
+per count for a project's own widgets.
 
 The fill is still most of an evaluation and grows with the board; the
 metrics and the reduction take about 10 ms at 2,000 issues and 55 ms at

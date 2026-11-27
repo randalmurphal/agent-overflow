@@ -45,7 +45,7 @@ func sealedOpen(t *testing.T) *session {
 		t.Fatal(errors.Join(err, s.close()))
 	}
 	// The copy holds every relation; what metricOf's metric reads of it is
-	// the probe's, which these tests do not read.
+	// read from its plan on an empty session, which these tests do not do.
 	s.asked = map[string]asks{"probe": {}}
 	return s
 }
@@ -336,9 +336,9 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 	if !hasUTC || !hasYork || registrations != 4*zones {
 		t.Errorf("%d registrations over %d zone drivers (UTC %v, New York %v); want 4 a zone", registrations, zones, hasUTC, hasYork)
 	}
-	sessionsByKey.mu.Lock()
-	left := len(sessionsByKey.m)
-	sessionsByKey.mu.Unlock()
+	sessionSinks.mu.Lock()
+	left := len(sessionSinks.m)
+	sessionSinks.mu.Unlock()
 	if left != 0 {
 		t.Errorf("%d session sinks left in the registry after every session closed", left)
 	}
@@ -435,9 +435,9 @@ func TestASessionThatCannotConnectLeavesNothing(t *testing.T) {
 		if _, err := openSession(ctx, time.UTC); err == nil || !strings.Contains(err.Error(), "open the dashboard's database") {
 			t.Fatalf("a session opened under a canceled context = %v; want its connection's failure", err)
 		}
-		sessionsByKey.mu.Lock()
-		left := len(sessionsByKey.m)
-		sessionsByKey.mu.Unlock()
+		sessionSinks.mu.Lock()
+		left := len(sessionSinks.m)
+		sessionSinks.mu.Unlock()
 		if left != 0 {
 			t.Errorf("%d session sinks left in the registry after the session failed to open", left)
 		}
@@ -457,18 +457,61 @@ func TestASessionThatCannotConnectLeavesNothing(t *testing.T) {
 	})
 }
 
-// A probe table tells a statement's use of each of its columns apart only
-// up to probeColumnsMax columns: every export relation has at most that
-// many, or every probe fails to open.
-func TestEveryRelationFitsTheProbe(t *testing.T) {
-	t.Parallel()
-	columns, err := exportColumns()
+// emptyFor runs f on an empty session whose layout readLayout read, after
+// schema ran beside the export's.
+func emptyFor(t *testing.T, schema string, f func(*session) error) error {
+	t.Helper()
+	ctx := context.Background()
+	s, err := openSession(ctx, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range store.MirrorExportTables {
-		if n := len(columns[table]); n == 0 || n > probeColumnsMax {
-			t.Errorf("relation %s has %d columns; a probe table reads 1 to %d", table, n, probeColumnsMax)
+	defer func() {
+		if err := s.close(); err != nil {
+			t.Error(err)
 		}
+	}()
+	if _, err := s.conn.ExecContext(ctx, store.MirrorExportSchema+schema); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.readLayout(ctx); err != nil {
+		return err
+	}
+	if err := s.gate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return f(s)
+}
+
+// The plan reader fails loudly where its reading would ask for less: a
+// relation stored in a second b-tree, whose index could hold a column
+// outside the table's own cursor, fails the layout; a cursor on a b-tree
+// the layout does not know and a column past a relation's records refuse
+// the widget, saying so.
+func TestThePlanReaderRefusesWhatItCannotAttribute(t *testing.T) {
+	t.Parallel()
+	if err := emptyFor(t, `CREATE INDEX main.by_type ON tickets(type);`, func(*session) error { return nil }); err == nil ||
+		!strings.Contains(err.Error(), "relation tickets is stored in 2 b-trees") {
+		t.Errorf("a layout with an index on tickets: %v; want its refusal", err)
+	}
+	err := emptyFor(t, "", func(s *session) error {
+		for root, table := range s.layout.roots {
+			if table == "labels" {
+				delete(s.layout.roots, root)
+			}
+		}
+		_, err := s.prepare(metricOf(`SELECT ticket FROM labels`))
+		if err == nil || !strings.Contains(err.Error(), "could not tell what it reads of the board (OpenRead opens b-tree") {
+			t.Errorf("a cursor on a b-tree the layout does not know: %v; want the refusal naming OpenRead", err)
+		}
+		s.layout.columns["tickets"] = s.layout.columns["tickets"][:1]
+		_, err = s.prepare(metricOf(`SELECT id AS ticket FROM tickets WHERE type = 'Bug'`))
+		if err == nil || !strings.Contains(err.Error(), "could not tell what it reads of the board (Column 20 of tickets, which has 1)") {
+			t.Errorf("a column past the layout's: %v; want the refusal naming it", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

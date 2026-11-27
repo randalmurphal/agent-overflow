@@ -125,8 +125,8 @@ func TestProposalsPastTheDeadlineFailInTheirOwnPlace(t *testing.T) {
 	}
 }
 
-// A count asks the copy for what its query reads as SQLite resolves it
-// (probe.go): a relation by any form of its name, a ticket's type or
+// A count asks the copy for what the plan of its statement reads
+// (plan.go): a relation by any form of its name, a ticket's type or
 // priority read by name, a USING or NATURAL join's condition or a *
 // SQLite reads, and nothing a comment or a * it never reads names; How
 // this is counted names relations alone. The store's

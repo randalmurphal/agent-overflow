@@ -98,7 +98,7 @@ type session struct {
 	db   *sql.DB
 	conn *sql.Conn
 	sink *rowSink
-	// key names the session in the sessions registry (sessionsByKey).
+	// key names the sink in the sessions registry (sessionSinks).
 	key string
 	// denied is what the authorizer refused last, for the sentence of the
 	// error SQLite reports as "not authorized". The authorizer runs while
@@ -111,12 +111,13 @@ type session struct {
 	// call bounded_rows. A metric's own text is prepared first without it,
 	// so a metric that calls bounded_rows never runs.
 	wrapping bool
-	// probe is what a probe session's statements use of its probe tables
-	// since the last prepare (probe.go); nil on a session filled with a
-	// copy, whose prepares read asked instead.
-	probe probeUse
+	// layout is how an empty session stores the export, from which its
+	// prepares read what each statement reads (plan.go); nil on a session
+	// filled with a copy, whose prepares read asked instead.
+	layout *layout
 	// asked is what the copy was filled with for each metric, by name,
-	// from the probe: what a filled session's prepare says it reads.
+	// from its plan on an empty session: what a filled session's prepare
+	// says it reads.
 	asked map[string]asks
 }
 
@@ -134,14 +135,14 @@ func openSession(ctx context.Context, loc *time.Location) (*session, error) {
 		return nil, err
 	}
 	s := &session{sink: &rowSink{}}
-	if s.key, err = registerSession(s); err != nil {
+	if s.key, err = openSink(s.sink); err != nil {
 		return nil, err
 	}
 	s.db = sql.OpenDB(connector{d})
 	s.db.SetMaxOpenConns(1)
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
-		unregisterSession(s.key)
+		closeSink(s.key)
 		closeErr := s.db.Close()
 		return nil, errors.Join(fmt.Errorf("open the dashboard's database: %w", err), closeErr)
 	}
@@ -152,7 +153,7 @@ func openSession(ctx context.Context, loc *time.Location) (*session, error) {
 // close closes the connection and its database: nothing of the
 // evaluation outlives it.
 func (s *session) close() error {
-	unregisterSession(s.key)
+	closeSink(s.key)
 	err := s.conn.Close()
 	if closeErr := s.db.Close(); closeErr != nil {
 		err = errors.Join(err, closeErr)
@@ -296,7 +297,7 @@ type prepared struct {
 	sql   string
 	names []string
 	cols  columns
-	// asks is what it reads of the copy, as the probe found it.
+	// asks is what it reads of the copy, from its plan (plan.go).
 	asks asks
 	// series is the metric's declared series (Metric.Series).
 	series []string
@@ -316,11 +317,6 @@ func (s *session) prepare(m Metric) (prepared, error) {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + err.Error() + ". A metric is one SELECT; change its query."}
 	}
 	s.take()
-	if s.probe != nil {
-		if _, err := s.takeAsks(); err != nil {
-			return prepared{}, err
-		}
-	}
 	var info []sqlite.ColumnInfo
 	err = s.conn.Raw(func(dc any) error {
 		ci, ok := dc.(interface {
@@ -347,27 +343,50 @@ func (s *session) prepare(m Metric) (prepared, error) {
 	if err != nil {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + strings.TrimPrefix(err.Error(), "the query ") + "; change its query."}
 	}
-	a, err := s.asksOf(m)
-	if err != nil {
+	p := prepared{sql: text, names: names, cols: cols, series: m.Series}
+	if p.asks, err = s.asksOf(m, p); err != nil {
 		return prepared{}, err
 	}
-	return prepared{sql: text, names: names, cols: cols, asks: a, series: m.Series, took: time.Since(start)}, nil
+	p.took = time.Since(start)
+	return p, nil
 }
 
-// asksOf is what metric m, just prepared, reads of the copy: on a probe
-// session what its probe tables recorded, on a filled session what the
-// copy was filled with for it. The probe prepares the metric's own text;
-// the wrapper (run) reads tickets.id beside it, and every count copies
-// the tickets (boardRelations).
-func (s *session) asksOf(m Metric) (asks, error) {
-	if s.probe != nil {
-		return s.takeAsks()
+// asksOf is what metric m, prepared as p, reads of the copy: on an empty
+// session what the plan of the statement a count runs reads, on a filled
+// session what the copy was filled with for it, or why its plan could not
+// be read there.
+func (s *session) asksOf(m Metric, p prepared) (asks, error) {
+	if s.layout != nil {
+		return s.planAsks(s.wrapped(p))
 	}
 	a, ok := s.asked[m.Name]
 	if !ok {
-		return asks{}, fmt.Errorf("metric %s was not probed before its count", m.Name)
+		return asks{}, fmt.Errorf("metric %s was not planned before its count", m.Name)
 	}
-	return a, nil
+	return a, a.failed
+}
+
+// hostParams is what the host binds to the wrapped statement: :now, the
+// evaluation's instant, and :since, where the range's periods begin.
+func hostParams(now, since int64) []any {
+	return []any{sql.Named("now", now), sql.Named("since", since)}
+}
+
+// wrapped is the statement a count of p runs: p's own between
+// parentheses, its rows capped, each one with whether its ticket is on
+// the board, into the session's sink through bounded_rows.
+func (s *session) wrapped(p prepared) string {
+	var b strings.Builder
+	b.WriteString("WITH q AS (\n")
+	b.WriteString(p.sql)
+	b.WriteString("\n), r AS (SELECT * FROM q LIMIT ")
+	fmt.Fprint(&b, maxRows+1)
+	b.WriteString(") SELECT bounded_rows('" + s.key + "', EXISTS (SELECT 1 FROM main.tickets WHERE id = r.\"ticket\")")
+	for _, name := range p.names {
+		b.WriteString(`, r."` + name + `"`)
+	}
+	b.WriteString(") FROM r")
+	return b.String()
 }
 
 // run runs a prepared metric under its deadline, which began when its
@@ -382,20 +401,10 @@ func (s *session) run(ctx context.Context, p prepared, now, since int64) ([]cont
 	defer cancel()
 	s.sink.reset(p.cols, p.series)
 	defer s.sink.reset(columns{}, nil)
-	var b strings.Builder
-	b.WriteString("WITH q AS (\n")
-	b.WriteString(p.sql)
-	b.WriteString("\n), r AS (SELECT * FROM q LIMIT ")
-	fmt.Fprint(&b, maxRows+1)
-	b.WriteString(") SELECT bounded_rows('" + s.key + "', EXISTS (SELECT 1 FROM main.tickets WHERE id = r.\"ticket\")")
-	for _, name := range p.names {
-		b.WriteString(`, r."` + name + `"`)
-	}
-	b.WriteString(") FROM r")
 	s.take()
 	s.setWrapping(true)
 	var n int64
-	err := s.conn.QueryRowContext(ctx, b.String(), sql.Named("now", now), sql.Named("since", since)).Scan(&n)
+	err := s.conn.QueryRowContext(ctx, s.wrapped(p), hostParams(now, since)...).Scan(&n)
 	s.setWrapping(false)
 	denied := s.take()
 	switch {

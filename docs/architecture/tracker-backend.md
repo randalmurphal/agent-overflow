@@ -2324,22 +2324,28 @@ whether the board's first sync has reconciled
 drill carry `reading`, and the range before is not compared. A board
 unlisted and listed again starts over.
 
-The relations a count reads are its metrics', as SQLite resolves each
-statement (`trackerdash/probe.go`): the metric prepares on a probe
-session, whose relations are virtual tables with the export's columns
-and no rows, and SQLite tells each table it plans which of its columns
-the statement uses (`colUsed`), a USING or NATURAL join's condition
-included, a CTE that shadows a relation's name resolved to the CTE, and
-a `*` it never reads left out. The tables planned are what the count
-copies and what "How this is counted" names (`How.Reads`), and a column
-of `MirrorExportColumns` is decoded only when its bit is set. SQLite's
-authorizer is not the source: it reports no read of a USING or NATURAL
-join's columns. The probe can only ask for more than the real copy
-reads: an unread LEFT JOIN on a whole unique key, which SQLite drops
-from the real plan, still names its table. Built-in metrics are probed
-once per dashboard kind, and a count asks for those of the widgets it
-counts and the tickets, statuses, people and epics its answer names. No
-built-in metric reads `changes`, so none copies them.
+The relations a count reads are what the plan of the statement it runs
+reads (`trackerdash/plan.go`). Each metric's wrapped statement is
+planned on an empty session of the copy's own schema
+(`MirrorExportSchema`), and the program `EXPLAIN` lists says what it
+reads: each relation a cursor opens on (`OpenRead`), and each column of
+it a `Column` reads. The copy has no statistics, so the plan is the one
+the count runs on the filled copy: a join SQLite drops reads nothing,
+a USING or NATURAL join's condition reads its columns, a CTE that
+shadows a relation's name reads what the CTE reads, and a `*` SQLite
+never reads asks for nothing. That one result is what the count copies
+and what "How this is counted" names (`How.Reads`); every count lists
+tickets, which the wrapper looks each row's ticket up in. A column of
+`MirrorExportColumns` is decoded only when the plan reads it. Every
+relation is one b-tree with no column of `MirrorExportColumns` in its
+key, so no index or key comparison reads one unseen; the empty session
+refuses a schema where that fails, and a program whose reads the reader
+cannot attribute refuses its widget. SQLite's authorizer is not the
+source: it reports no read of a USING or NATURAL join's columns.
+Built-in metrics are planned once per dashboard kind, and a count asks
+for those of the widgets it counts and the tickets, statuses, people and
+epics its answer names. No built-in metric reads `changes`, so none
+copies them.
 `TestADashboardCountCopiesWhatItsQueryReads` in `internal/store` runs
 each kind of read on the copy it asks for and on a copy of everything.
 

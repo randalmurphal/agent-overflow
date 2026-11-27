@@ -28,14 +28,15 @@
 //     denies everything else, recursion, pragmas, attach and the catalog
 //     included, and records what it denied for the widget's sentence.
 //   - What a count asks the copy for, and what How this is counted names,
-//     is what SQLite resolves its statements to read: each prepares on a
-//     probe session whose relations are virtual tables that record the
-//     columns a plan uses (probe.go), so the copy holds every relation
-//     and every column filled only when asked (store.MirrorExportColumns)
-//     that the statement reads, the columns of a USING or NATURAL join
-//     included, and nothing a shadowing CTE or an unread * names. It
-//     can only ask for more: an unread LEFT JOIN on a whole unique key,
-//     which SQLite drops from the real plan, still names its table.
+//     is what the plan of the statement it runs reads (plan.go): the
+//     wrapped statement is planned on an empty session of the copy's own
+//     schema, and its program's cursors and column reads are the
+//     relations and the columns filled only when asked
+//     (store.MirrorExportColumns) it reads, the columns of a USING or
+//     NATURAL join included, and nothing a join SQLite drops, a shadowing
+//     CTE or an unread * names. Every count reads tickets, which the
+//     wrapper looks each row's ticket up in. A program the reader cannot
+//     attribute refuses the widget.
 //   - A metric's SQL is one statement (oneStatement): it cannot close the
 //     wrapper's parenthesis or add a statement. The wrapper produces the
 //     whole result in SQLite's first step, which a canceled context

@@ -58,7 +58,7 @@ type Evaluator struct {
 
 	readsMu sync.Mutex
 	// reads is, by kind, what each built-in metric reads of the copy, from
-	// its prepare on a probe session (metricReads).
+	// its plan on an empty session (metricReads).
 	reads map[Kind]map[string]asks
 }
 
@@ -281,19 +281,20 @@ func estimatesOf(unit int) string {
 	return "none"
 }
 
-// onEmpty runs f on a probe session, the export's relations as probe
-// tables with no rows (probe.go), sealed as a count's is, and closes it.
+// onEmpty runs f on a session of the export's empty relations, sealed as
+// a count's is, whose prepares read what each statement reads (plan.go),
+// and closes it.
 func onEmpty(ctx context.Context, f func(*session) error) error {
 	s, err := openSession(ctx, time.UTC)
 	if err != nil {
 		return err
 	}
 	err = func() error {
-		if err := s.createProbeTables(func(q string) error {
-			_, err := s.conn.ExecContext(ctx, q)
-			return err
-		}); err != nil {
+		if _, err := s.conn.ExecContext(ctx, store.MirrorExportSchema); err != nil {
 			return fmt.Errorf("create the export's relations: %w", err)
+		}
+		if err := s.readLayout(ctx); err != nil {
+			return err
 		}
 		if err := s.gate(ctx); err != nil {
 			return refuse("dashboard_unsealed", "the dashboard was not counted, because its copy of the board could not be sealed", err)
@@ -321,8 +322,8 @@ func builtinView(s *session, k Kind, estimates string) (DashboardView, error) {
 }
 
 // metricReads is what each built-in metric of kind k reads of the copy,
-// by metric name, worked out on the kind's first count and kept: the
-// built-ins are fixed, so their prepares read the same relations every
+// by metric name, from its plan on the kind's first count, and kept: the
+// built-ins are fixed, so their plans read the same relations every
 // time. A count fills only these and what the board's labels need
 // (boardRelations).
 func (e *Evaluator) metricReads(ctx context.Context, k Kind) (map[string]asks, error) {
@@ -351,8 +352,11 @@ func (e *Evaluator) metricReads(ctx context.Context, k Kind) (map[string]asks, e
 }
 
 // ownReads is what each of metrics reads of the copy, by name, from their
-// prepares on a probe session; a metric that does not prepare reads
-// none, and its widget shows its failure once the count prepares it again.
+// plans on an empty session. A metric whose prepare fails reads none and
+// keeps the failure, which its widget shows once the count prepares it
+// again: the copy's schema is the empty session's, so a statement fails
+// there as it failed here, and one whose plan the reader could not read
+// fails with that.
 func ownReads(ctx context.Context, metrics []Metric) (map[string]asks, error) {
 	r := map[string]asks{}
 	if len(metrics) == 0 {
@@ -363,9 +367,11 @@ func ownReads(ctx context.Context, metrics []Metric) (map[string]asks, error) {
 			if m.Validate() != nil {
 				continue
 			}
-			if p, err := s.prepare(m); err == nil {
-				r[m.Name] = p.asks
+			p, err := s.prepare(m)
+			if err != nil {
+				p.asks = asks{failed: err}
 			}
+			r[m.Name] = p.asks
 		}
 		return nil
 	})
@@ -498,7 +504,7 @@ type ticketRow struct {
 
 // open opens a session, fills it with b's export of relations and seals
 // it, then reads the rows every widget names. asked is what each metric
-// reads of the copy, as the probe found it.
+// reads of the copy, from its plan on an empty session.
 func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, relations []string, asked map[string]asks) (*evaluation, error) {
 	s, err := openSession(ctx, loc)
 	if err != nil {

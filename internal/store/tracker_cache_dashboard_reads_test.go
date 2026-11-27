@@ -17,9 +17,11 @@ import (
 // metrics' reads (trackerdash's boardRelations): what the answer names.
 var countRelations = []string{"epics", "people", "statuses", "tickets"}
 
-// A count copies what its query reads as SQLite resolves it and nothing
-// else, and "How this is counted" names those relations: each case says
-// the relations its query reads and the on-demand columns it reads. Its
+// A count copies what the statement it runs reads as SQLite plans it and
+// nothing else, and "How this is counted" names those relations: each
+// case says the relations its query reads, tickets always (the count
+// looks up each row's ticket on the board), and the on-demand columns it
+// reads. Its
 // rows on that copy are its rows on a reference copy of every relation
 // and column, so a read the count missed is a different answer here and
 // not a silent zero. A new export relation or on-demand column adds rows
@@ -62,14 +64,21 @@ func TestADashboardCountCopiesWhatItsQueryReads(t *testing.T) {
 		{"sprint_finished ON", `SELECT t.id AS ticket FROM tickets t JOIN sprint_finished f ON f.ticket = t.id`, "", []string{"sprint_finished", "tickets"}, nil, 2},
 		{"a CTE named changes", `WITH changes AS (SELECT id AS ticket FROM tickets) SELECT ticket FROM changes`, "", []string{"tickets"}, nil, 3},
 		{"a CTE named labels", `WITH labels AS (SELECT id AS ticket FROM tickets) SELECT ticket FROM labels`, "", []string{"tickets"}, nil, 3},
-		{"a label filter naming changes", `SELECT ticket FROM labels WHERE name IN ('frontend', 'changes')`, "", []string{"labels"}, nil, 1},
+		{"a label filter naming changes", `SELECT ticket FROM labels WHERE name IN ('frontend', 'changes')`, "", []string{"labels", "tickets"}, nil, 1},
 		{"a product", `SELECT id AS ticket, points * 2 AS value FROM tickets`, sum, []string{"tickets"}, nil, 3},
 		{"count(*)", `SELECT id AS ticket FROM tickets WHERE (SELECT count(*) FROM tickets) > 0`, "", []string{"tickets"}, nil, 3},
 		{"a windowed count(*)", `SELECT id AS ticket, count(*) OVER () AS value FROM tickets`, sum, []string{"tickets"}, nil, 3},
 		{"* through a CTE", `WITH c AS (SELECT * FROM tickets) SELECT id AS ticket FROM c`, "", []string{"tickets"}, nil, 3},
-		{"U+FEFF before labels", `SELECT ticket FROM ` + bom + `labels`, "", []string{"labels"}, nil, 1},
+		{"U+FEFF before labels", `SELECT ticket FROM ` + bom + `labels`, "", []string{"labels", "tickets"}, nil, 1},
 		{"U+FEFF before type", `SELECT id AS ticket FROM tickets WHERE ` + bom + `type = 'Bug'`, "", []string{"tickets"}, []string{"tickets.type"}, 1},
 		{"people beside a CTE named changes", `WITH changes AS (SELECT id AS ticket FROM tickets WHERE open = 1) SELECT ticket FROM changes WHERE (SELECT count(*) FROM people) = 1`, "", []string{"people", "tickets"}, nil, 2},
+		{"an unread LEFT JOIN of changes under DISTINCT", `SELECT DISTINCT t.id AS ticket FROM tickets t LEFT JOIN changes c ON c.ticket = t.id`, "", []string{"tickets"}, nil, 3},
+		{"an unread LEFT JOIN of labels under DISTINCT", `SELECT DISTINCT t.id AS ticket FROM tickets t LEFT JOIN labels l ON l.ticket = t.id`, "", []string{"tickets"}, nil, 3},
+		{"an unread LEFT JOIN of a parent under DISTINCT", `SELECT DISTINCT t.id AS ticket FROM tickets t LEFT JOIN tickets p ON p.id = t.parent AND p.priority = 'High'`, "", []string{"tickets"}, nil, 3},
+		{"people beside an unread LEFT JOIN of changes", `WITH t AS (SELECT id AS ticket FROM tickets) SELECT DISTINCT t.ticket FROM t LEFT JOIN changes USING (ticket) WHERE (SELECT count(*) FROM people) = 1`, "", []string{"people", "tickets"}, nil, 3},
+		{"an index hint", `SELECT ticket FROM sprint_tickets INDEXED BY sqlite_autoindex_sprint_tickets_1 WHERE sprint = '21'`, "", []string{"sprint_tickets", "tickets"}, nil, 2},
+		{"an index hint on tickets", `SELECT id AS ticket FROM tickets INDEXED BY sqlite_autoindex_tickets_1`, "", []string{"tickets"}, nil, 3},
+		{"a bare rowid, the board's", `SELECT t.id AS ticket FROM board, tickets t WHERE rowid > 0`, "", []string{"board", "tickets"}, nil, 3},
 		{"people beside a CTE named c", `WITH c AS (SELECT id AS ticket FROM tickets WHERE open = 1) SELECT ticket FROM c WHERE (SELECT count(*) FROM people) = 1`, "", []string{"people", "tickets"}, nil, 2},
 	}
 	try := func(t *testing.T, m trackerdash.Metric, fill func([]string) []string) (trackerdash.Tried, []string) {
