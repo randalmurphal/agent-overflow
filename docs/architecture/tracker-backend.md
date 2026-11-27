@@ -2435,9 +2435,9 @@ closes a database of its own.
 | The dashboards a project keeps (the setup file's `dashboards` section) and the widgets agents proposed | `trackerapp` (`dashboard_setup.go`, `dashboards.go`) |
 | A board's summary row and its number widgets' limits (the setup file's `board_tiles` section) | `trackerapp` (`board_tiles.go`) |
 | Bound methods, scopes and the older-computer surface | `app` (`app_tracker_dashboards.go`) |
-| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine and the drill; the summary row's answer (`row`); its asks of the board's computer to read your logged time | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
-| Which days of your logged time are read, one read at a time per account, and the newest days read again | `trackerapp/worklog_reads.go` |
-| Where logged time counts and where it is not known, and the sentences of a widget that cannot count it | `trackerdash/worklogs.go` |
+| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine and the drill; the summary row's answer (`row`); the person's Refresh and Read again of your logged time | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+| When your logged time is read and which days: from evaluations, one turn per connection, the newest days again, a failure held for the person | `trackerapp/worklog_reads.go` |
+| Where logged time counts and where it is not known, what an evaluation needs of it, and the sentences of a widget that cannot count it | `trackerdash/worklogs.go` |
 | The tickets a summary row tile filters the board to | `frontend/src/lib/stores/boardTicketSet.svelte.ts` |
 
 ### Own dashboards and proposals
@@ -2745,13 +2745,12 @@ The rules are the comments at the top of
 - `worklogs(id, ticket, day, seconds)` is the logged time on the board's
   tickets of one person, the connection's verified account (the viewer,
   `MirrorExport.Viewer`, read in the export's own snapshot), and
-  `worklog_days(day)` the days of that person's
-  the mirror read, whatever was logged on them. Both start the day before
-  the history window (`MirrorExport.Window`, 180 days), where the page's
-  reads stop, not at the earliest instant a count can ask: a sprint that
-  began before the window has days the copy never holds. A count that reads `worklogs`
-  also copies `worklog_days`. A metric of it counts in the unit `time`,
-  seconds that the screen shows as hours.
+  `worklog_days(day)` the days of that person's the mirror read, whatever
+  was logged on them. Both start at one day, `MirrorExport.LoggedFrom`,
+  which trackerapp's `loggedFrom` gives the export: the day before the
+  history window's first in UTC, 182 days to today. A count that reads
+  `worklogs` also copies `worklog_days`. A metric of it counts in the unit
+  `time`, seconds that the screen shows as hours.
 - `day_start(day)` is the instant a row of a day is placed at: the first
   millisecond after that date's first instant in the request's time zone,
   whatever zone the person logged it in, so a period that begins at
@@ -2766,103 +2765,42 @@ The rules are the comments at the top of
   drill refuses with the same sentence.
 - A day with no read is not zero hours, and a row of logged time can
   count in a period other than its day's (a sprint's tickets, a state that
-  holds from its day on). So a widget of logged time is known only once
-  every day of the history window up to now is read: each number, period,
-  bar or cell and total, and drill value carries the window's days not
-  read, with those of its periods before the window, which are never read,
-  in `Num.UR`, and is not known while it carries any. A weekend's day is a
-  day like any other; days after now are not counted. The widget lists
-  the window's days not read for the page (`WidgetValue.Unread`); the
-  evaluator makes no tracker request. A metric counted by period over a
-  range with no period lists and marks nothing; one that counts now needs
-  the window like any other.
+  holds from its day on). So a number a reduction took rows of logged
+  time for (`ranged.held`, `of`, `reduce`) is known only once every day
+  from `LoggedFrom` up to now is read: each number, period, bar or cell
+  and total, and drill value carries those days not read, with the days
+  of its periods before `LoggedFrom`, which the copy never holds, in
+  `Num.UR`, and is not known while it carries any. A reduction that took
+  no rows (a metric counted by period over a range with no period) marks
+  and lists nothing. A weekend's day is a day like any other; days after
+  now are not counted. The widget lists the window's days not read
+  (`WidgetValue.Unread`).
+- The evaluator makes no tracker request: an evaluation (or an agent's
+  Try) in which a widget counted logged time calls `Board.Worklogs` once
+  with the days it found not read and today, and puts the answer, whether
+  the reads run and why the last failed, on `Answer.Logged`.
 - The reads have one owner on the board's computer
-  (`trackerapp/worklog_reads.go`): per connection, one read at a time of
-  its verified account's logged time, shared with `RefreshWorklogs` (the
-  Time screen, the agents' time tools), which waits its turn and always
-  reads. The page asks with `ReadTrackerWorklogDays(connection, today,
-  reason)`, which answers status alone (read, more, failure, how long
-  until a change may read again), and calls again while more is
-  answered and its demand holds (the store alive, the screen shown, a
-  widget of logged time on the dashboard, the same computer and
-  connection). Each call reads at most 31 days, newest first: days the
-  person asked for, else days of the window never read and not tried. A
-  day read on its own is tried and not read on its own again until the
-  person asks, so a failed read stops the reads and the widget offers
-  Read again. `changed`, sent after an answer when the board's changes
-  moved since the newest days were last read, reads the newest 31 days
-  again at most once per `worklogRereadEvery` (5 minutes) per account;
-  `person` (Refresh, Read again) reads all of the window again. What a
-  connection tried and owes is bounded by the window and dropped with
-  the connection (`stopUsing`) or when its account or time source
-  changes. A first show of nothing read is 6 calls (182 days); one with
-  everything read is 1 call, the newest days read again. While days not
-  read are being read the widget says it is reading; a read of days
-  already read leaves the numbers shown.
-
-Their costs at 2,000 and 20,000 issues are in
-[Tracker API measurements](../references/tracker-api-measurements.md#sprint-history).
-
-### Thread links and logged time
-
-The rules are the comments at the top of
-`store/tracker_cache_export_relations.go`, `trackerdash/worklogs.go` and
-`trackerapp/worklog_reads.go`.
-
-- `threads(id, ticket, origin, linked_at, created_at, archived,
-  last_turn_at)` is the threads of the board's computer linked to one of
-  the board's tickets on the board's site, as that computer's Ticket
-  screen lists them (no hidden mode, none being deleted), with no title.
-  A ticket's Work lists the linked threads of every attached computer, so
-  it can show more than a dashboard counts; How this is counted says
-  which threads it counts.
-- `worklogs(id, ticket, day, seconds)` is the logged time on the board's
-  tickets of one person, the connection's verified account (the viewer,
-  `MirrorExport.Viewer`, read in the export's own snapshot), and
-  `worklog_days(day)` the days of that person's
-  the mirror read, whatever was logged on them. Both start the day before
-  the history window (`MirrorExport.Window`, 180 days), where the page's
-  reads stop, not at the earliest instant a count can ask: a sprint that
-  began before the window has days the copy never holds. A count that reads `worklogs`
-  also copies `worklog_days`. A metric of it counts in the unit `time`,
-  seconds that the screen shows as hours.
-- `day_start(day)` is the instant a row of a day is placed at: the first
-  millisecond after that date's first instant in the request's time zone,
-  whatever zone the person logged it in, so a period that begins at
-  midnight holds its first day and not the day before. A date whose
-  midnight a zone change skips begins where the change lands
-  (`trackerdash.placed`, the one conversion the days not read use too).
-- A row of logged time is the viewer's: its person is the viewer unless
-  the metric returns `person`, so Mine keeps it all. A page narrowed to
-  another person says "Only your own logged time is read." in the
-  widget's place, a Linear board that it has no time tracking, and a
-  connection whose account is not verified to check the connection; the
-  drill refuses with the same sentence.
-- A day with no read is not zero hours. A number, a period's value, a
-  bar's or cell's value and its total, and a drill's value that a day not
-  read falls in are not known, carrying the days not read (`Num.UR`); a
-  ranked bar counts the range's days. A weekend's day is a day like any
-  other; days after now are not counted. The widget lists the days not
-  read of the range, and of the range before when it shows a value of it
-  (a number's comparison), for the page to read (`WidgetValue.Unread`);
-  the evaluator makes no tracker request. It lists no day at or before
-  the copy's history window (`MirrorExport.Window`, 180 days), so a
-  period that holds one, a sprint that began before it, stays not known
-  rather than counting part of its time. A number that counts now counts
-  the days from the window, and is known once they are read.
-- The Dashboards screen reads those days, while a widget that lists
-  them is shown, through `RefreshTrackerWorklogs` on the board's
-  computer: one read at a time, each of at most 31 consecutive days, then
-  it counts again. A first show of nothing read takes at most 6 reads,
-  since the days lie in 180: This sprint with its sprint before is 1 read
-  on two-week sprints (2 on four-week ones), Last 5 sprints with the 5
-  before is 5 on two-week sprints, and Last 10 sprints, Last 12 weeks
-  (168 days with the 12 before) and a number that counts now are 6. A
-  later day is 1. A day asked for is not asked again without the person:
-  after a failed read the widget says "Not known" with the days not read
-  and the reason, and Read again asks for them. While a read runs the
-  widget says it is reading. Another connection or account starts over,
-  and a read for the last one changes nothing when it returns.
+  (`trackerapp/worklog_reads.go`). Per connection, one turn for the life
+  of the process, which `RefreshWorklogs` (the Time screen, the agents'
+  time tools) takes too; and the state of its verified account's reads
+  under its time source, replaced without the turn when either changes.
+  An evaluation queues the days it found not read, and the newest 31 days
+  once `worklogRereadEvery` (5 minutes) has passed since they were last
+  queued, but no day of the read in flight; one run reads what is queued,
+  newest first, 31 days a read, back to back, checking the account and
+  time source before each, and tells the connection's boards when it ends
+  (`BoardEvent.Logged`), on which the page counts again. A screen that
+  closes does not stop a run; turning the connection off, `Stop`, and a
+  change of account or source do. After a read failed nothing is queued
+  on its own until the person's Refresh or Read again
+  (`ReadTrackerWorklogDays(connection, timeZone)`), which queues every day
+  to today in that zone and returns. A first show of nothing read is one
+  run of 6 reads; a show with everything read is 1 read once 5 minutes
+  have passed, else none; a dashboard shown for an hour reads the newest
+  days 6 times while the board is idle (its 10-minute recount) and at
+  most 12 while it is busy, per connection. An evaluation that copied the
+  board just before a run stored its days queues them again, one extra
+  read.
 
 Their costs at 2,000 and 20,000 issues are in
 [Tracker API measurements](../references/tracker-api-measurements.md#thread-links-and-logged-time).
