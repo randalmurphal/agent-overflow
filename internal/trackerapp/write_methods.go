@@ -286,9 +286,11 @@ func hasTimeTracking(kind string) bool { return kind == store.TrackerKindJira }
 // from to to, at most worklogSpan days, from the connection's time
 // tracker through the worklogs resource (Service.write with no write),
 // makes them the mirror's, and returns them as the mirror then holds
-// them. A read that failed is settled as the connection's problem and
-// returned as the answer's Failure. A connection with no time tracking
-// is refused with an error wrapping tracker.ErrUnsupported.
+// them. It waits its turn among the reads of the author's logged time on
+// the connection (worklog_reads.go) and then always reads. A read that
+// failed is settled as the connection's problem and returned as the
+// answer's Failure. A connection with no time tracking is refused with an
+// error wrapping tracker.ErrUnsupported.
 func (s *Service) RefreshWorklogs(ctx context.Context, id, author, from, to string) (WorklogDays, error) {
 	first, last, err := worklogRange(author, from, to)
 	if err != nil {
@@ -297,12 +299,37 @@ func (s *Service) RefreshWorklogs(ctx context.Context, id, author, from, to stri
 	if daysBetween(first, last) >= worklogSpan {
 		return WorklogDays{}, fmt.Errorf("%w: a worklog refresh reads at most %d days", ErrInvalidRequest, worklogSpan)
 	}
+	row, err := s.get(id)
+	if err != nil {
+		return WorklogDays{}, err
+	}
+	t := s.worklogs.of(id, author, row.TimeSourceGen)
+	if err := t.take(ctx); err != nil {
+		return WorklogDays{}, err
+	}
+	failure, err := s.readWorklogSpan(ctx, id, author, first, last)
+	t.give()
+	if err != nil {
+		return WorklogDays{}, err
+	}
+	out, err := s.Worklogs(id, author, from, to)
+	if err == nil && failure != nil {
+		out.Failure = failure
+	}
+	return out, err
+}
+
+// readWorklogSpan reads author's worklogs on connection id from first to
+// last (at most worklogSpan days) into the mirror: the failure of a read
+// that failed, settled as the connection's problem, or nil. The caller
+// holds the turn of the author's reads on the connection.
+func (s *Service) readWorklogSpan(ctx context.Context, id, author string, first, last tracker.Date) (*FailureView, error) {
 	n := daysBetween(first, last)
 	days := make([]tracker.Resource, 0, n+1)
 	for i := range n + 1 {
 		d, err := tracker.DateOf(dayTime(first).AddDate(0, 0, i))
 		if err != nil {
-			return WorklogDays{}, fmt.Errorf("%w: %w", ErrInvalidRequest, err)
+			return nil, fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 		}
 		days = append(days, tracker.WorklogsOf(tracker.UserID(author), d))
 	}
@@ -314,16 +341,14 @@ func (s *Service) RefreshWorklogs(ctx context.Context, id, author, from, to stri
 	}})
 	switch {
 	case err != nil:
-		return WorklogDays{}, err
+		return nil, err
 	case view.Ended:
-		return WorklogDays{}, fmt.Errorf("%w: %s was turned off while its worklogs were read", ErrDisabled, id)
-	}
-	out, err := s.Worklogs(id, author, from, to)
-	if err == nil && len(view.Stale) > 0 {
+		return nil, fmt.Errorf("%w: %s was turned off while its worklogs were read", ErrDisabled, id)
+	case len(view.Stale) > 0:
 		f := view.Stale[0].Failure
-		out.Failure = &f
+		return &f, nil
 	}
-	return out, err
+	return nil, nil
 }
 
 // worklogRange checks an author's days from to to.

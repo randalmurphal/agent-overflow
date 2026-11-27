@@ -248,6 +248,10 @@ type Service struct {
 	// (agent_writes.go).
 	agentSends agentSends
 
+	// worklogs are the reads of each connection's logged time
+	// (worklog_reads.go).
+	worklogs worklogReads
+
 	// owedDrops are the keeps of ended pumps whose drop failed, owed until
 	// one commits (dropKeep, payOwedDrops). Guarded by opMu.
 	owedDrops []owedDrop
@@ -380,8 +384,10 @@ func (s *Service) use(row store.TrackerConnection) (*clients, error) {
 // connection takes the Tempo connection that belongs to it along, since
 // a provider made while both were in use holds both clients; the Tempo
 // row is left as it is, and its next use builds a new client. It reports
-// whether a problem was forgotten. The caller holds opMu.
+// whether a problem was forgotten. The reads of its logged time forget
+// what they tried and owe. The caller holds opMu.
 func (s *Service) stopUsing(id string) bool {
+	s.worklogs.drop(id)
 	s.mu.Lock()
 	_, had := s.problems[id]
 	delete(s.problems, id)

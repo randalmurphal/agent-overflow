@@ -19,17 +19,19 @@ import (
 
 // worklogGateStore runs gate, once, before the first ReplaceMirrorWorklogs
 // after it is set: a test holds a refresh between its read and its store
-// with it.
+// with it. It records the days of each replace, "from..to", in spans.
 type worklogGateStore struct {
 	*store.Store
-	mu   sync.Mutex
-	gate func()
+	mu    sync.Mutex
+	gate  func()
+	spans []string
 }
 
 func (g *worklogGateStore) ReplaceMirrorWorklogs(root, sourceGen int64, author, from, to string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
 	g.mu.Lock()
 	gate := g.gate
 	g.gate = nil
+	g.spans = append(g.spans, from+".."+to)
 	g.mu.Unlock()
 	if gate != nil {
 		gate()
