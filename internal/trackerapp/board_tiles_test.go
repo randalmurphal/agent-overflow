@@ -279,7 +279,12 @@ func TestKeepGivesAProposalTheTileItsAgentAskedFor(t *testing.T) {
 	if _, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), list, TileMarks{Limit: &limit}, "thread-1", true); refusalCode(err) != "dashboard_limit_not_number" {
 		t.Fatalf("a list proposed with a limit: %v", err)
 	}
-	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), openTickets(), TileMarks{Limit: &limit, Pin: true}, "thread-1", true)
+	// A sum of points: Keep stores its limit in points, the unit its
+	// number is in, so the tile shows it.
+	sum := openTickets()
+	sum.Metric.Title, sum.Metric.SQL = "Estimate on the board", `SELECT id AS ticket, points AS value FROM tickets`
+	sum.Metric.Reduce, sum.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
+	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), sum, TileMarks{Limit: &limit, Pin: true}, "thread-1", true)
 	if err != nil {
 		t.Fatal(err)
 	}

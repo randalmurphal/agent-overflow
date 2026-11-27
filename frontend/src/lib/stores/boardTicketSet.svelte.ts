@@ -93,7 +93,7 @@ export function createBoardTicketSet(opts: {
     error = null;
     pickedOn = boardOf(opts.board());
     scheduler.reset();
-    if (next && opts.shown() && opts.source()) scheduler.request({ immediate: true });
+    if (next && opts.shown()) scheduler.request({ immediate: true });
   }
 
   const stop = $effect.root(() => {
@@ -103,7 +103,7 @@ export function createBoardTicketSet(opts: {
     const board = $derived(boardOf(opts.board()));
     const subscription = $derived(opts.source()?.subscription ?? '');
     $effect(() => {
-      const sub = subscription;
+      void subscription;
       const on = board;
       const shown = opts.shown();
       untrack(() => {
@@ -113,7 +113,7 @@ export function createBoardTicketSet(opts: {
           return;
         }
         scheduler.reset();
-        if (sub && shown) scheduler.request({ immediate: true });
+        if (shown) scheduler.request({ immediate: true });
       });
     });
     // The widget left the board's row: the tile that filtered is gone.
