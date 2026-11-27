@@ -51,25 +51,31 @@ func init() {
 }
 
 // recordVMSteps adds the steps stmt ran since its last run to the count,
-// while counting. A counter that went back (statementVMSteps resets it)
-// counts from zero.
+// while counting. The counter is SQLite's unsigned 32-bit one: a counter
+// that went back from past half its range wrapped and counts on through
+// the wrap; one that went back from below it was reset
+// (statementVMSteps resets it) and counts from zero.
 func recordVMSteps(stmt driver.Stmt, query string) {
 	tls, pstmt, err := sqliteStmtHandles(stmt)
 	if err != nil || pstmt == 0 {
 		return
 	}
-	now := int(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0))
+	now := int(uint32(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0)))
 	vmSteps.mu.Lock()
 	defer vmSteps.mu.Unlock()
 	if vmSteps.last == nil {
 		vmSteps.last = map[driver.Stmt]int{}
 	}
 	last := vmSteps.last[stmt]
-	if now < last {
-		last = 0
+	ran := now - last
+	switch {
+	case now < last && last >= 1<<31:
+		ran += 1 << 32
+	case now < last:
+		ran = now
 	}
 	if vmSteps.counting && (vmSteps.query == "" || vmSteps.query == query) {
-		vmSteps.total += now - last
+		vmSteps.total += ran
 		vmSteps.runs++
 	}
 	vmSteps.last[stmt] = now
@@ -194,7 +200,17 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d")}, ReadAt: mirrorReadAt(62)}, nil)
 	assertRows(t, s.db, fmt.Sprintf(`SELECT read_at FROM tracker_cache_issues WHERE root_id = %d AND issue_id = '10004'`, root), "62")
 	mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_dirty = 1 WHERE issue_id = '10002'`)
+	// A board that plans no sprints, whose done tickets credit lists.
+	weeks := webStructure()
+	weeks.Board.ID, weeks.Board.PlansSprints, weeks.Sprints, weeks.ReadAt = "12", false, nil, mirrorReadAt(63)
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, weeks)); err != nil {
+		t.Fatal(err)
+	}
 	reads := []func() error{
+		func() error {
+			_, _, err := s.ListMirrorActsDue(root, []MirrorActsBoard{{BoardID: "12"}}, 0, testNow)
+			return err
+		},
 		func() error { _, _, err := s.GetMirrorRoot(jira.ID); return err },
 		func() error { _, _, err := s.GetMirrorSync(root, "10", testNow); return err },
 		func() error { _, _, err := s.GetMirrorSync(root, "", testNow); return err },
@@ -242,6 +258,16 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 			support, err := MirrorRegroup{}.WithSupport(MirrorSupportRule{Types: []string{"10004"}, Labels: []string{"support"}})
 			if err == nil {
 				_, _, err = s.ListMirrorSupport(root, "10", support, []string{"10001", "10002"})
+			}
+			return err
+		},
+		func() error {
+			credit, err := MirrorRegroup{}.WithSupport(MirrorSupportRule{Types: []string{"10004"}, Labels: []string{"support"}})
+			if err == nil {
+				credit, err = credit.WithCredit(creditRules(true))
+			}
+			if err == nil {
+				_, _, err = s.GetMirrorBoardPace(root, "10", credit)
 			}
 			return err
 		},
@@ -344,6 +370,16 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 	{"ORDER BY completed_at DESC, position DESC LIMIT", "USE TEMP B-TREE FOR ORDER BY", "one board's closed sprints, at most mirrorMaxSprints"},
 	{"ORDER BY completed_at DESC, position DESC LIMIT", "SCAN l", "the last MirrorPaceSprints closed sprints, which drive the members' lookups by key"},
 	{"ORDER BY completed_at DESC, position DESC LIMIT", "USE TEMP B-TREE FOR GROUP BY", "the members of the last MirrorPaceSprints sprints"},
+	{"cr_sp AS MATERIALIZED", "SCAN last", "the pace's last MirrorPaceSprints closed sprints, the sprints credit counts"},
+	{"cr_sp AS MATERIALIZED", "SCAN sp", "one board's closed and active sprints, each given where its support work can begin"},
+	{"cr_sp AS MATERIALIZED", "SCAN h", "one board's closed and active sprints, which place a support worklog without a sort"},
+	{"cr_sp AS MATERIALIZED", "SCAN cr_m", "the members of the sprints credit counts, read once for what each finished"},
+	{"cr_sp AS MATERIALIZED", "SCAN cm", "the members of the sprints credit counts, read once for those done"},
+	{"cr_sp AS MATERIALIZED", "SCAN f", "the done members of the sprints credit counts, each read for its rows"},
+	{"cr_sp AS MATERIALIZED", "SCAN d", "the reviewers of the done members, one row a person each"},
+	{"cr_sp AS MATERIALIZED", "SCAN s", "the support time of the sprints credit counts, one row a sprint, ticket and person"},
+	{"cr_sp AS MATERIALIZED", "SCAN cr_rows", "the credit rows of the sprints credit counts, summed by sprint"},
+	{"cr_sp AS MATERIALIZED", "USE TEMP B-TREE FOR count(DISTINCT)", "the tickets of the credit rows of the sprints credit counts"},
 	{"WHERE st.root_id = CAST(?1 AS INTEGER) AND st.status_group = 4 AND st.status_id NOT IN (SELECT o.key FROM json_each(", "SEARCH st USING PRIMARY KEY (root_id=?)",
 		"the statuses that count as done when a sprint closed (mirrorPaceSQL) are listed once a statement from the root's catalog"},
 	{`DELETE FROM main."tracker_cache_`, "", "a restore empties each mirror table whole"},

@@ -50,8 +50,9 @@ func supportOf(rows []RowView) []string {
 // again: its support tickets are flagged on their rows and leave the
 // backlog's count of tickets without an estimate, and a ticket of a
 // support type with an estimate is no support ticket. A save of the hours
-// for a point alone reads nothing again; a change of the rule reads it
-// again; turning credit off, its rule kept, restores the count.
+// for a point alone reads it again too, since the pace counts support time
+// by it; a change of the rule reads it again; turning credit off, its rule
+// kept, restores the count.
 func TestASupportRuleLeavesItsTicketsOutOfTheUnestimatedCount(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -70,7 +71,7 @@ func TestASupportRuleLeavesItsTicketsOutOfTheUnestimatedCount(t *testing.T) {
 		support     []string
 	}{
 		{"credit on", m.creditOn(true, 4), true, 1, []string{"10001", "10002"}},
-		{"the hours for a point", m.creditOn(true, 6), false, 1, []string{"10001", "10002"}},
+		{"the hours for a point", m.creditOn(true, 6), true, 1, []string{"10001", "10002"}},
 		{"the rule", typesOnly, true, 2, []string{"10001"}},
 		{"credit off", m.creditOn(false, 6), true, 3, nil},
 	} {

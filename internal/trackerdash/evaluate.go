@@ -86,10 +86,13 @@ type Kind struct {
 	PlansSprints bool
 	// Epics is whether the board's tracker has epics (Jira).
 	Epics bool
+	// Credit is whether the board's project counts credit, which its pace
+	// counts beside what each period finished (creditMetric).
+	Credit bool
 }
 
 // Board is the board an evaluation reads: Fill exports it, Epics is as
-// Kind has it, TimeTracking is whether its tracker logs time (Jira), and
+// Kind has it, Credit too, TimeTracking is whether its tracker logs time (Jira), and
 // Own is what its project keeps and its agents proposed beside the
 // built-in dashboard. The viewer, whom Mine narrows to and whose logged
 // time the copy holds, is the export's (store.MirrorExport.Viewer), read
@@ -97,12 +100,17 @@ type Kind struct {
 // logged time (worklogs.go): an evaluation or a Try in which a widget
 // counted it tells them what it needs, once, and answers the state they
 // return; nil, there are none. It must not wait on I/O.
+// EvidenceFailure is why the last read of who worked on the connection's
+// tickets failed, "" while none did, which each value of a widget of
+// credit says (WidgetValue.Evidence).
 type Board struct {
-	Fill         Fill
-	Epics        bool
-	TimeTracking bool
-	Own          Own
-	Worklogs     func(WorklogNeed) WorklogState
+	Fill            Fill
+	Epics           bool
+	Credit          bool
+	TimeTracking    bool
+	Own             Own
+	Worklogs        func(WorklogNeed) WorklogState
+	EvidenceFailure string
 }
 
 // Request is what one evaluation counts: a dashboard, over a range,
@@ -198,7 +206,9 @@ type BucketValue struct {
 // TicketRow is one row of a metric in a ticket list or a drill: a ticket
 // as one row counts it. Row is the row's place among the answer's rows,
 // unique within it, since a ticket can count more than once (done in two
-// sprints). Period is the sprint or week a row of the range falls in.
+// sprints). Assignee is the person the row counts for: the metric's
+// person column, else the ticket's assignee. Period is the sprint or week
+// a row of the range falls in, Series the metric's series it is in.
 // Value is the row's number in the metric's unit, absent for a metric
 // that counts tickets, whose rows' values are not what it counts.
 type TicketRow struct {
@@ -212,6 +222,7 @@ type TicketRow struct {
 	Value    *float64 `json:"value,omitempty"`
 	Counted  bool     `json:"counted"`
 	Period   string   `json:"period,omitempty"`
+	Series   string   `json:"series,omitempty"`
 	Note     string   `json:"note,omitempty"`
 }
 
@@ -246,6 +257,10 @@ type WidgetValue struct {
 	// viewer's logged time older than the copy holds, so it is never
 	// whole, even with no rows (worklogs.go); a number says so in its Num.
 	Old bool `json:"old,omitempty"`
+	// Evidence says, beside a widget whose metric reads the credit
+	// relation while the last read of who worked on the tickets failed as
+	// a whole, that it failed and why (EvidenceSentence); "" otherwise.
+	Evidence string `json:"evidence,omitempty"`
 }
 
 // Answer is one evaluation of a dashboard and of the widgets agents
@@ -528,7 +543,11 @@ func how(m Metric, p prepared, plansSprints bool, estimates string) How {
 	case p.cols.periodBound(m):
 		rng = "It counts the range's " + periods + " and compares them with the " + periods + " before."
 	}
-	return How{Words: m.Words, Counts: counts, Range: rng, Rules: "none", SQL: strings.TrimSpace(m.SQL), Reads: p.asks.tables}
+	rules := "none"
+	if slices.Contains(p.asks.tables, "credit") {
+		rules = "the project's credit rules, in its Issues settings"
+	}
+	return How{Words: m.Words, Counts: counts, Range: rng, Rules: rules, SQL: strings.TrimSpace(m.SQL), Reads: p.asks.tables}
 }
 
 // dayRangeWords is How this is counted's range sentence of a metric
@@ -762,7 +781,10 @@ func (ev *evaluation) narrowing(r Request) (narrowing, error) {
 
 // keep is the rows of the narrowed page: a row's person is the metric's
 // person column, else the viewer for a metric of the viewer's logged time
-// (p reads worklogs), else its ticket's assignee; its epic likewise.
+// (p reads worklogs), else its ticket's assignee; its epic likewise. A row
+// of a metric with a person column that is not counted and names no
+// person could be anyone's (credit whose evidence is not read), so every
+// person narrowing keeps it, as not counted.
 func (ev *evaluation) keep(n narrowing, p prepared, rows []contribution) []contribution {
 	if n.person == nil && n.epic == nil {
 		return rows
@@ -772,16 +794,17 @@ func (ev *evaluation) keep(n narrowing, p prepared, rows []contribution) []contr
 	for _, c := range rows {
 		t := ev.tickets[c.ticket]
 		person, epic := t.assignee, t.epic
+		anyone := false
 		if p.readsWorklogs() {
 			person = ev.export.Viewer
 		}
 		if cols.has(ColumnPerson) {
-			person = c.person
+			person, anyone = c.person, !c.counted && c.person == ""
 		}
 		if cols.has(ColumnEpic) {
 			epic = c.epic
 		}
-		if (n.person == nil || person == n.person.ID) && (n.epic == nil || epic == n.epic.ID) {
+		if (n.person == nil || person == n.person.ID || anyone) && (n.epic == nil || epic == n.epic.ID) {
 			out = append(out, c)
 		}
 	}
@@ -813,7 +836,7 @@ type counted struct {
 // metric's rows those that hold at one of at. A failure of the metric is
 // the widget's; one of the evaluation is returned.
 func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing, now, since int64, at heldAt) (counted, error) {
-	rows, err := ev.s.run(ctx, p, now, since, at)
+	rows, err := ev.s.run(ctx, p, now, since, ev.estimates, at)
 	if ctx.Err() != nil {
 		return counted{}, tooSlow(ctx, ctx.Err())
 	}
@@ -826,11 +849,12 @@ func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing
 	rows = ev.keep(n, p, rows)
 	if m.numbersUnit() == UnitEstimate && ev.estimates == "none" {
 		// The board counts tickets (it has no estimates, or its project
-		// counts tickets): each counted row is one ticket, whatever value
-		// the query gave it, and a row it did not count stays uncounted.
+		// counts tickets): each counted row is its share of a ticket, one
+		// unless the query says (ColumnShare), whatever value it gave it,
+		// and a row it did not count stays uncounted.
 		for i := range rows {
 			if rows[i].counted {
-				rows[i].value = 1
+				rows[i].value = rows[i].share
 			}
 		}
 	}
@@ -859,6 +883,8 @@ type opened struct {
 	now       time.Time
 	// timeTracking is Board.TimeTracking.
 	timeTracking bool
+	// evidenceFailure is Board.EvidenceFailure.
+	evidenceFailure string
 }
 
 // widgets is the dashboard's widgets and then the proposals.
@@ -878,7 +904,7 @@ func (e *Evaluator) begin(ctx context.Context, b Board, r Request, counts func(w
 	if err != nil {
 		return nil, err
 	}
-	o := &opened{now: e.now()}
+	o := &opened{now: e.now(), evidenceFailure: b.EvidenceFailure}
 	if o.d, o.metrics, o.kind, err = dashboardOf(r, b); err != nil {
 		return nil, err
 	}
@@ -965,7 +991,7 @@ func dashboardOf(r Request, b Board) (Dashboard, map[string]Metric, *Kind, error
 		metrics = map[string]Metric{}
 	}
 	if r.Dashboard == builtinSprintsID || r.Dashboard == builtinWeeksID {
-		k := Kind{PlansSprints: r.Dashboard == builtinSprintsID, Epics: b.Epics}
+		k := Kind{PlansSprints: r.Dashboard == builtinSprintsID, Epics: b.Epics, Credit: b.Credit}
 		d, builtins := builtin(k)
 		maps.Copy(metrics, builtins)
 		if r.Widgets != nil {
@@ -1045,7 +1071,8 @@ func (e *Evaluator) relationsOf(ctx context.Context, k *Kind, metrics map[string
 
 // count runs metric m once, its prepared statement from the view, for
 // what its widgets read (r): a state metric keeps only the rows that hold
-// where they read it.
+// where they read it, and an event metric placed in periods only the rows
+// of the periods they take.
 func (o *opened) count(m Metric, r reads) (counted, error) {
 	pr := o.preps[m.Name]
 	if pr.err != nil {
@@ -1055,7 +1082,12 @@ func (o *opened) count(m Metric, r reads) (counted, error) {
 		return counted{p: pr.p, note: note}, nil
 	}
 	now := o.now.UnixMilli()
-	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now), r.instants(now))
+	bySprint := m.Bucket == BucketSprint
+	at := r.instants(now, bySprint)
+	if !pr.p.cols.state() && pr.p.cols.periodBound(m) {
+		at.events, at.takes, at.bySprint, at.spanOf = true, r.takes, bySprint, o.ev.spanOf
+	}
+	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now), at)
 }
 
 // Evaluate counts dashboard r.Dashboard of board b and then the board's
@@ -1113,12 +1145,36 @@ func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer
 			}
 			runs[m.Name] = c
 		}
-		a.Widgets = append(a.Widgets, o.ev.widget(w, m, c, o.sp))
+		a.Widgets = append(a.Widgets, o.widget(w, m, c))
 	}
 	if err := o.ev.titles(o.ctx, listed(a.Widgets)); err != nil {
 		return Answer{}, nil, err
 	}
 	return a, o.worklogNeed(), nil
+}
+
+// widget is the value of widget w drawing metric m from c, as every
+// answer gives it (ev.widget), with the sentence beside it
+// (EvidenceSentence): while the evidence unit's last read of the board's
+// connection failed as a whole, for a metric that reads the credit
+// relation, whatever its rows hold.
+func (o *opened) widget(w Widget, m Metric, c counted) WidgetValue {
+	v := o.ev.widget(w, m, c, o.sp)
+	if slices.Contains(o.preps[m.Name].p.asks.tables, "credit") {
+		v.Evidence = EvidenceSentence(o.evidenceFailure)
+	}
+	return v
+}
+
+// EvidenceSentence is what a screen says beside credit it counts while
+// the evidence unit's last read of who worked on the tickets failed as a
+// whole with failure: what it counts may lack what that read was to
+// read. "" for none (Board.EvidenceFailure, WidgetValue.Evidence).
+func EvidenceSentence(failure string) string {
+	if failure == "" {
+		return ""
+	}
+	return "Credit may not count everything: the last read of who worked on the tickets failed. " + failure
 }
 
 // proposals is the values of b's proposals over r's range and narrowing,
@@ -1161,7 +1217,7 @@ func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []Widg
 				c = counted{err: outOfTime}
 			}
 		}
-		out = append(out, o.ev.widget(w, m, c, o.sp))
+		out = append(out, o.widget(w, m, c))
 	}
 	if err := o.ev.titles(o.ctx, listed(out)); err != nil {
 		if o.ctx.Err() == nil {
@@ -1267,6 +1323,13 @@ func (t taken) sub(rows []contribution) taken {
 	return t
 }
 
+// spanOf is ticket's creation and last update: where a row of it with
+// no instant could have happened (place).
+func (ev *evaluation) spanOf(ticket string) (from, to int64) {
+	t := ev.tickets[ticket]
+	return t.created, t.updated
+}
+
 // inRange is c's rows sorted into the range sp and the one before it, or
 // into the sprint's days for a metric grouped by day; a state's rows are
 // read where they hold.
@@ -1309,7 +1372,7 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 			}
 			buf = buf[:0]
 			for _, r := range c.rows {
-				if r.holdsAt(p.to) && (!bySprint || slices.Contains(p.sprints, r.bucket)) {
+				if p.holdsState(r, bySprint) {
 					r.period = p.label
 					buf = append(buf, r)
 				}
@@ -1318,11 +1381,7 @@ func (ev *evaluation) inRange(m Metric, c counted, sp span) *ranged {
 		}
 		return g
 	}
-	spanOf := func(ticket string) (int64, int64) {
-		t := ev.tickets[ticket]
-		return t.created, t.updated
-	}
-	placed, unplaced := place(m, c.rows, spanOf, periods, previous)
+	placed, unplaced := place(m, c.rows, ev.spanOf, periods, previous)
 	over := func(ps []period, loose []contribution) taken {
 		if len(ps) == 0 {
 			return taken{none: true}
@@ -1365,43 +1424,58 @@ func periodsOf(m Metric, sp span) []period {
 	return sp.periods
 }
 
-// reads is where widgets read a state metric's rows: now, where the range
-// begins, and at the end of periods. A metric that runs for several
-// widgets runs for all of what they read (and).
+// reads is what widgets take of a metric's rows (inRange): of a state
+// metric, the rows that hold now, where the range begins, or at the end
+// of periods; of an event metric placed in periods, the rows of the
+// periods it takes (takes). A metric that runs for several widgets runs
+// for all of what they read (and). The sink keeps no other row (count).
 type reads struct {
 	now, start bool
 	periods    []period
 	day        bool
+	takes      []period
 }
 
 func (r reads) and(o reads) reads {
 	r.now, r.start, r.day = r.now || o.now, r.start || o.start, r.day || o.day
-	for _, p := range o.periods {
-		if !slices.ContainsFunc(r.periods, func(q period) bool { return q.id == p.id }) {
-			r.periods = append(r.periods, p)
+	union := func(to, from []period) []period {
+		for _, p := range from {
+			if !slices.ContainsFunc(to, func(q period) bool { return q.id == p.id }) {
+				to = append(to, p)
+			}
 		}
+		return to
 	}
+	r.periods, r.takes = union(r.periods, o.periods), union(r.takes, o.takes)
 	return r
 }
 
-// widgetReads is where widget w reads metric m's states: a number now,
-// where the range begins and at its periods' ends (its trend); a list,
-// and a chart whose buckets are not periods, now; a chart of periods at
-// their ends.
+// widgetReads is what widget w reads of metric m. Its states: a number
+// now, where the range begins and at its periods' ends (its trend); a
+// list, and a chart whose buckets are not periods, now; a chart of
+// periods at their ends. Its events: every form the range's periods, and
+// a number the previous range's too when it compares with it, which it
+// does not across a gap or by the sprint's days (widget).
 func widgetReads(w Widget, m Metric, sp span) reads {
+	ps := periodsOf(m, sp)
+	takes := ps
+	if w.Form == FormNumber && m.Bucket != BucketDay && sp.previousGap == "" {
+		takes = slices.Concat(ps, sp.previous)
+	}
 	switch {
 	case w.Form == FormNumber:
-		ps := periodsOf(m, sp)
-		return reads{now: true, start: m.Bucket != BucketDay && len(ps) > 0, periods: ps, day: m.Bucket == BucketDay}
+		return reads{now: true, start: m.Bucket != BucketDay && len(ps) > 0, periods: ps, day: m.Bucket == BucketDay, takes: takes}
 	case w.Form == FormList || ranks(w, m):
-		return reads{now: true}
+		return reads{now: true, takes: takes}
 	}
-	return reads{periods: periodsOf(m, sp), day: m.Bucket == BucketDay}
+	return reads{periods: ps, day: m.Bucket == BucketDay, takes: takes}
 }
 
 // instants is r's instants at now, a period to come left out, and where
-// they are in words.
-func (r reads) instants(now int64) heldAt {
+// they are in words: now and where the range begins in any sprint, a
+// period's end in its own sprints for a metric by sprint (bySprint, its
+// ends), as the widget reads them (ranged).
+func (r reads) instants(now int64, bySprint bool) heldAt {
 	var in heldAt
 	var where []string
 	if r.now {
@@ -1414,10 +1488,15 @@ func (r reads) instants(now int64) heldAt {
 	}
 	ends := 0
 	for _, p := range r.periods {
-		if !p.future {
+		switch {
+		case p.future:
+			continue
+		case bySprint:
+			in.ends = append(in.ends, p)
+		default:
 			in.at = append(in.at, p.to)
-			ends++
 		}
+		ends++
 	}
 	switch {
 	case ends == 1 && len(r.periods) == 1:
@@ -1615,15 +1694,21 @@ func (ev *evaluation) keyOf(ticket string) string {
 	return ticket
 }
 
-// ticket is row c, the answer's row i, as a list or a drill shows it.
+// ticket is row c, the answer's row i, as a list or a drill shows it:
+// with the person the row counts for (its person column, else its
+// ticket's assignee) and its series.
 func (ev *evaluation) ticket(c contribution, m Metric, cols columns, i int) TicketRow {
 	t, ok := ev.tickets[c.ticket]
-	r := TicketRow{Row: i, ID: c.ticket, Key: c.ticket, Counted: c.counted, Period: c.period, Note: c.note}
+	r := TicketRow{Row: i, ID: c.ticket, Key: c.ticket, Counted: c.counted, Period: c.period, Series: c.series, Note: c.note}
+	person := t.assignee
+	if cols.has(ColumnPerson) {
+		person = c.person
+	}
 	if ok {
 		r.Key = t.key
-		if t.assignee != "" {
-			r.Assignee = cmpOr(ev.people[t.assignee], t.assignee)
-		}
+	}
+	if person != "" {
+		r.Assignee = cmpOr(ev.people[person], person)
 	}
 	if c.counted && cols.has(ColumnValue) && m.Reduce != ReduceCount {
 		v := c.value
@@ -1679,15 +1764,18 @@ type DrillAnswer struct {
 	At        int64       `json:"at"`
 }
 
-// drillReads is where drill r of widget w reads metric m's states: at
-// the end of the period its cell names, else now.
+// drillReads is what drill r of widget w reads of metric m (reads): the
+// period its cell names, at its end for a state; else, as the range's
+// number does (Drill), its states now and its events of the range's
+// periods.
 func drillReads(w Widget, m Metric, sp span, r DrillRequest) reads {
+	ps := periodsOf(m, sp)
 	if r.Cell == nil || r.Rest || ranks(w, m) {
-		return reads{now: true}
+		return reads{now: true, takes: ps}
 	}
-	for _, p := range periodsOf(m, sp) {
+	for _, p := range ps {
 		if p.id == r.Cell.Bucket {
-			return reads{periods: []period{p}, day: m.Bucket == BucketDay}
+			return reads{periods: []period{p}, day: m.Bucket == BucketDay, takes: []period{p}}
 		}
 	}
 	return reads{}

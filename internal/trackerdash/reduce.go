@@ -129,36 +129,21 @@ func reduceCounted(r Reducer, rows []contribution) Num {
 func place(m Metric, rows []contribution, spanOf func(ticket string) (from, to int64), ranges ...[]period) (map[string][]contribution, [][]contribution) {
 	out := map[string][]contribution{}
 	unplaced := make([][]contribution, len(ranges))
-	bySprint := map[string]period{}
-	var all []period
-	for _, ps := range ranges {
-		for _, p := range ps {
-			all = append(all, p)
-			for _, s := range p.sprints {
-				bySprint[s] = p
-			}
-		}
-	}
+	all := slices.Concat(ranges...)
+	bySprint := m.Bucket == BucketSprint
 	for _, c := range rows {
-		if m.Bucket == BucketSprint {
-			if p, ok := bySprint[c.bucket]; ok {
-				c.period = p.label
-				out[p.id] = append(out[p.id], c)
-			}
-			continue
-		}
-		if !c.hasAt {
+		if !bySprint && !c.hasAt {
 			c.counted = false
 			from, to := spanOf(c.ticket)
 			for i, ps := range ranges {
-				if slices.ContainsFunc(ps, func(p period) bool { return from <= p.to && to > p.from }) {
+				if slices.ContainsFunc(ps, func(p period) bool { return p.meets(from, to) }) {
 					unplaced[i] = append(unplaced[i], c)
 				}
 			}
 			continue
 		}
 		for _, p := range all {
-			if p.holds(c.at) {
+			if p.places(c, bySprint) {
 				c.period = p.label
 				out[p.id] = append(out[p.id], c)
 				break

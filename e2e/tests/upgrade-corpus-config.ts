@@ -987,6 +987,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'tracker_cache_parents', reason: 'the name of a parent a card names (v172); the fake board\'s issues name no parent' },
   { table: 'tracker_cache_issue_acts', reason: 'who commented on or logged time on an issue credit counts (v177); the top-up\'s project has no credit section, so nothing is collected' },
   { table: 'tracker_cache_issue_act_reads', reason: 'the read of an issue\'s comments or worklogs for credit, or its failed attempt (v177); the top-up\'s project has no credit section, so nothing is collected' },
+  { table: 'tracker_cache_roots', columns: ['evidence_failure'], reason: 'why the last whole read of who worked on a root\'s tickets failed (v177); the top-up\'s project has no credit section, so no such read runs' },
   { table: 'tracker_agent_writes', reason: 'a tracker write an agent made through the tracker tools (v171); no step of the top-up runs an agent that writes a ticket' },
   { table: 'tracker_time_entries', reason: 'the user\'s time draft, which an agent writes through the time tools and the person approves (v173); no step of the top-up runs an agent that drafts time' },
   { table: 'chat_model_profiles', values: { reasoning_effort: ['none', 'minimal', 'low', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last' },

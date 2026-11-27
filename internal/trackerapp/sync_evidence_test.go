@@ -14,7 +14,8 @@ import (
 )
 
 // evidenceFixture is a mirror fixture whose board holds rows, each in the
-// active sprint and done, read by a delta, and whose tracker reads
+// active sprint and done, read by a delta with their histories, and
+// whose tracker reads
 // comments and worklogs of each ticket asked: one comment by User 2 and
 // one hour logged by User 1, and rows extra. asked collects the tickets of
 // each read.
@@ -33,8 +34,17 @@ func evidenceFixture(t *testing.T, rows int, extra ...tracker.Row) (m *mirrorFix
 		p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {
 			return tracker.RowPage{Rows: page, Next: cursorAfter("end")}, nil
 		}
+		// Each ticket's history is read, final and with no change: who had
+		// it is who has it.
+		p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
+			var h tracker.History
+			for _, id := range q.Issues {
+				h.Issues = append(h.Issues, tracker.IssueHistory{Issue: id, CompleteTo: time.UnixMilli(1_900_000_000_000)})
+			}
+			return h, nil
+		}
 	})
-	must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true}, Background))
+	must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true, History: true}, Background))
 	var reads [][]tracker.EvidenceIssue
 	m.p.set(func(p *scripted) {
 		p.evidence = func(q tracker.EvidenceQuery) (tracker.Evidence, error) {

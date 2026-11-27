@@ -261,12 +261,15 @@ type contribution struct {
 	ticket  string
 	value   float64
 	counted bool
-	bucket  string
-	series  string
-	person  string
-	epic    string
-	at      int64
-	hasAt   bool
+	// share is the part of a ticket the row counts where the board counts
+	// tickets (ColumnShare).
+	share  float64
+	bucket string
+	series string
+	person string
+	epic   string
+	at     int64
+	hasAt  bool
 	// until is when a state row stops holding (ColumnUntil); hasUntil is
 	// false for one that still holds.
 	until    int64
@@ -278,8 +281,11 @@ type contribution struct {
 
 // rowSink gathers the rows of the metric that runs, charged against the
 // row limit and the byte budget. One metric runs at a time on a session.
-// A state metric's row is kept only when it holds at one of the instants
-// its widgets read (at); the limit and the budget count the rows kept.
+// It keeps only the rows its widgets take (reads, at): a state metric's
+// that hold at one of the instants they read, and an event metric's
+// placed in periods that fall in one of the periods they take, or have
+// no period to fall in (place lists those by their ticket's span); the
+// limit and the budget count the rows kept, and no other row is held.
 type rowSink struct {
 	cols columns
 	// series is the metric's declared series, which a row's series is one of.
@@ -294,20 +300,44 @@ func (s *rowSink) reset(cols columns, series []string, at heldAt) {
 	s.cols, s.series, s.at, s.rows, s.bytes, s.err = cols, series, at, nil, 0, nil
 }
 
-// heldAt is the instants a state metric's widgets read, sorted, with
-// where they are in words for the row limit's sentence (reads.instants).
+// heldAt is what the sink keeps (rowSink), by the reduction's own rules:
+// for a state metric, the instants its widgets read in any sprint,
+// sorted (at), and the periods whose end they read in the period's own
+// sprints (ends, period.holdsState), with where they are in words for the
+// row limit's sentence (reads.instants); for an event metric placed in
+// periods (events), the periods they take, by sprint for a metric by
+// sprint (period.places), a row with no instant by its ticket's life
+// (spanOf, period.meets), as place puts them.
 type heldAt struct {
-	at    []int64
-	where string
+	at       []int64
+	ends     []period
+	where    string
+	events   bool
+	takes    []period
+	bySprint bool
+	spanOf   func(ticket string) (from, to int64)
 }
 
-// holdAny is whether state row c holds at one of the instants (holdsAt).
+// taken is whether event row c falls in a period the widgets take.
+func (in heldAt) taken(c contribution) bool {
+	if !in.bySprint && !c.hasAt {
+		from, to := in.spanOf(c.ticket)
+		return slices.ContainsFunc(in.takes, func(p period) bool { return p.meets(from, to) })
+	}
+	return slices.ContainsFunc(in.takes, func(p period) bool { return p.places(c, in.bySprint) })
+}
+
+// holdAny is whether state row c holds at one of the instants (holdsAt),
+// or in one of the periods whose end is read (holdsState).
 func (in heldAt) holdAny(c contribution) bool {
 	i := 0
 	if c.hasAt {
 		i, _ = slices.BinarySearch(in.at, c.at)
 	}
-	return i < len(in.at) && c.holdsAt(in.at[i])
+	if i < len(in.at) && c.holdsAt(in.at[i]) {
+		return true
+	}
+	return slices.ContainsFunc(in.ends, func(p period) bool { return p.holdsState(c, true) })
 }
 
 // errRows is the row limit's failure: of a state metric, the rows that
@@ -317,7 +347,7 @@ func (in heldAt) errRows(state bool) *MetricError {
 		return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows, its limit. Pick a shorter range.", maxRows), Limit: true}
 	}
 	advice := " Pick a shorter range."
-	if len(in.at) == 1 {
+	if len(in.at)+len(in.ends) == 1 {
 		advice = ""
 	}
 	return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows that hold %s, its limit.%s", maxRows, in.where, advice), Limit: true}
@@ -358,10 +388,8 @@ func (s *rowSink) add(onBoard driver.Value, args []driver.Value) error {
 		return s.err
 	}
 
-	if s.cols.state() {
-		if !s.at.holdAny(c) {
-			return nil
-		}
+	if s.cols.state() && !s.at.holdAny(c) || s.at.events && !s.at.taken(c) {
+		return nil
 	}
 	if len(s.rows) == maxRows {
 		s.err = s.at.errRows(s.cols.state())
@@ -391,11 +419,23 @@ func (s *rowSink) read(args []driver.Value) (contribution, error) {
 	if c.ticket, err = text(ColumnTicket, at(ColumnTicket)); err == nil && c.ticket == "" {
 		err = errors.New("a row's ticket is empty or NULL; each row names the ticket it counts")
 	}
-	c.value, c.counted = 1, true
+	c.value, c.counted, c.share = 1, true, 1
 	if err == nil && s.cols.has(ColumnValue) {
 		c.value, c.counted, err = number(ColumnValue, at(ColumnValue))
 		if err == nil && c.counted && (math.IsNaN(c.value) || math.Abs(c.value) > maxValue) {
 			err = fmt.Errorf("ticket %q's value is %g, past %g either way, the most a metric counts", truncate(c.ticket, 64), c.value, maxValue)
+		}
+	}
+	if err == nil && s.cols.has(ColumnShare) {
+		var share float64
+		var ok bool
+		share, ok, err = number(ColumnShare, at(ColumnShare))
+		switch {
+		case err != nil || !ok:
+		case math.IsNaN(share) || math.Abs(share) > maxValue:
+			err = fmt.Errorf("ticket %q's share is %g, past %g either way, the most a metric counts", truncate(c.ticket, 64), share, maxValue)
+		default:
+			c.share = share
 		}
 	}
 	for _, f := range []struct {

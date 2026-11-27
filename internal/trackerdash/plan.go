@@ -192,7 +192,7 @@ func (s *session) planAsks(text string) (asks, error) {
 			}
 		}
 		return nil
-	}, hostParams(0, 0)...)
+	}, hostParams(0, 0, "")...)
 	s.setWrapping(false)
 	if denied := s.take(); err != nil {
 		if me, ok := errors.AsType[*MetricError](err); ok {

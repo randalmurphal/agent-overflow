@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -79,7 +80,7 @@ func TestTheExportHoldsTheBoardsThreadsAndYourLoggedTime(t *testing.T) {
 	s, root := relationsFixture(t)
 	conn := exportConn(t)
 	window := dayMS(t, "2026-11-10")
-	export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"threads", "worklogs", "worklog_days"}, window, MirrorLoggedDays{From: "2026-11-09", Through: "2026-11-19"}, CardShapeForTest)
+	export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"threads", "worklogs", "worklog_days"}, window, math.MaxInt64, MirrorLoggedDays{From: "2026-11-09", Through: "2026-11-19"}, CardShapeForTest)
 	if err != nil || !ok {
 		t.Fatalf("export: %v, %v", ok, err)
 	}
@@ -107,7 +108,7 @@ func TestTheExportHoldsNoLoggedTimeWithoutAnAccount(t *testing.T) {
 	s, root := relationsFixture(t)
 	mustExec(t, s.db, `UPDATE tracker_connections SET verified_account_id = '' WHERE id = (SELECT connection_id FROM tracker_cache_roots WHERE id = ?)`, root)
 	conn := exportConn(t)
-	if export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"worklogs", "worklog_days"}, 0, MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok || export.Viewer != "" {
+	if export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"worklogs", "worklog_days"}, 0, math.MaxInt64, MirrorLoggedDays{}, CardShapeForTest); err != nil || !ok || export.Viewer != "" {
 		t.Fatalf("export: %+v, %v, %v; want no viewer", export, ok, err)
 	}
 	if got := exportRows(t, conn, `SELECT (SELECT count(*) FROM worklogs) || '|' || (SELECT count(*) FROM worklog_days)`); got[0] != "0|0" {

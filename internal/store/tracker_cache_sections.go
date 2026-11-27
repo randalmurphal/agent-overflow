@@ -174,6 +174,9 @@ type MirrorRegroup struct {
 	statuses string
 	// support is the JSON object mirrorSupportSQL reads, empty for none.
 	support string
+	// credit is the JSON list of credit rule snapshots mirrorCreditSQL
+	// reads (WithCredit), empty when the project counts no credit.
+	credit string
 }
 
 // MirrorSupportRule names a project's support tickets of one tracker

@@ -261,7 +261,7 @@ func (a *App) RefreshTrackerWorklogs(ctx context.Context, connectionID, author, 
 // dashboards count: every day of the window, to today in timeZone, is read
 // again now, and a failure that stopped the reads is forgotten
 // (trackerapp.Service.ReadWorklogDays). It starts the reads and returns;
-// the boards' event says when they end (BoardEvent.Logged).
+// the boards' event says when they end (BoardEvent.Recount).
 //
 //ao:scope tracker:read
 //ao:route home

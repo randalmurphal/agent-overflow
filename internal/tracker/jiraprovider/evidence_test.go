@@ -301,6 +301,31 @@ func TestEvidencePlacesATempoWorklogWithoutAUTCStart(t *testing.T) {
 		"users acc-east:User 4")
 }
 
+// Whether a Tempo worklog's author is a person is decided before its
+// start is placed: an app's or a customer's worklog with no UTC start is
+// left out, though its author hides a time zone, and the person's
+// worklogs of the issue are read; an author of no account type fails the
+// source for that, not for the time zone.
+func TestEvidenceLeavesOutAnAppsTempoWorklogWithoutAUTCStart(t *testing.T) {
+	var day time.Time
+	s := newEditedScenario(t, nil, func(site *trackerfake.JiraSite) {
+		site.Users = append(site.Users, trackerfake.JiraUser{AccountID: "acc-app", DisplayName: "Automation", AccountType: "app", HidesTimeZone: true},
+			trackerfake.JiraUser{AccountID: "acc-customer", DisplayName: "Customer 1", AccountType: "customer", HidesTimeZone: true},
+			trackerfake.JiraUser{AccountID: "acc-bot", DisplayName: "Bot", OmitsAccountType: true, HidesTimeZone: true})
+		day = site.Issues[0].Created.Truncate(24 * time.Hour)
+		at := day.Add(9 * time.Hour)
+		site.Tempo.Worklogs = append(site.Tempo.Worklogs,
+			trackerfake.TempoWorklog{ID: 7201, Issue: "10103", Author: "acc-app", StartDate: day.Format(time.DateOnly), StartTime: "09:00:00", Spent: 60, OmitsUTCStart: true},
+			trackerfake.TempoWorklog{ID: 7202, Issue: "10103", Author: "acc-customer", StartDate: day.Format(time.DateOnly), StartTime: "09:00:00", Spent: 60, OmitsUTCStart: true},
+			trackerfake.TempoWorklog{ID: 7203, Issue: "10103", Author: "acc-user1", StartDate: at.Format(time.DateOnly), StartTime: at.Format(time.TimeOnly), Spent: 1800},
+			trackerfake.TempoWorklog{ID: 7204, Issue: "10102", Author: "acc-bot", StartDate: day.Format(time.DateOnly), StartTime: "09:00:00", Spent: 60, OmitsUTCStart: true})
+	})
+	ev := readEvidence(t, s, tracker.EvidenceIssue{Issue: "10102", Worklogs: true}, tracker.EvidenceIssue{Issue: "10103", Worklogs: true})
+	wantEvidence(t, ev, "10103/w: 7203 acc-user1 "+day.Add(9*time.Hour).UTC().Format(time.RFC3339)+" 30m0s\n"+
+		"10102/w ! issue 10102: Jira named no account type for acc-bot, the author of worklog 7204, so whether a person made it is not known\n"+
+		"users acc-user1:User 1")
+}
+
 // A query Evidence cannot send is refused before any request.
 func TestEvidenceRefusesAnInvalidQuery(t *testing.T) {
 	s, _, requests := evidenceScenario(t, false)

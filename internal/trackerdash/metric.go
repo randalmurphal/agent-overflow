@@ -31,13 +31,18 @@ const (
 	// anything) until until (NULL: still), and is counted at each instant
 	// it holds (contribution.holdsAt).
 	ColumnUntil = "until"
+	// ColumnShare is the part of a ticket a counted row counts where the
+	// board counts tickets (no estimates, or a project that counts
+	// tickets), for a metric in the board's estimate: 1 when absent or
+	// NULL (evaluation.run).
+	ColumnShare = "share"
 	// ColumnNote is a short text the ticket list and the drill show beside
 	// the row. A row not counted is listed as "Not counted: " and its
 	// note, so its note says only why.
 	ColumnNote = "note"
 )
 
-var metricColumns = []string{ColumnTicket, ColumnValue, ColumnBucket, ColumnSeries, ColumnPerson, ColumnEpic, ColumnAt, ColumnUntil, ColumnNote}
+var metricColumns = []string{ColumnTicket, ColumnValue, ColumnShare, ColumnBucket, ColumnSeries, ColumnPerson, ColumnEpic, ColumnAt, ColumnUntil, ColumnNote}
 
 // Reducer is how a metric's rows become one number.
 type Reducer string

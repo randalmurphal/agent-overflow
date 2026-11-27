@@ -187,7 +187,7 @@ var (
 	mirrorHistoryStateSQL = `SELECT h.value ->> 'i', i.history_from, i.history_for, i.history_answered_at, i.history_wait,
 		i.history_boards_rev, i.history_receipt, i.boards_rev, i.updated_at, i.history_gen, i.history_dirty, ` +
 		mirrorIssueKept("i.root_id", "i.issue_id") + `, ` + mirrorRemovalsSQL + `, i.status_id, i.created_at, i.status_since,
-		i.status_final_for
+		i.status_final_for, (` + mirrorHistoryReadForCard("i") + `)
 		FROM json_each(?2) h CROSS JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = h.value ->> 'i'`
 	mirrorChangesUpsertSQL = `INSERT INTO tracker_cache_changes(root_id, issue_id, gen, kind, seq, at, author_id, board_id,
 		        from_value, to_value, from_number, to_number)
@@ -208,8 +208,9 @@ var (
 	// mirrorHistoryTimesSQL writes each listed issue's times and the
 	// status result they give its card (mirrorStatusWriteSQL), and
 	// advances its receipt when they or its changes changed. It returns
-	// each issue it wrote with the status time and finality it left, which
-	// the writer compares with those it read (writeMirrorHistoryTimesTx).
+	// each issue it wrote with the status time and finality it left, and
+	// whether its history is read for its card and from when, which the
+	// writer compares with those it read (writeMirrorHistoryTimesTx).
 	// The list, materialized, drives the join and finds each issue by its
 	// primary key (as the ticket move does, mirrorTicketMoveSQL); it names
 	// an issue once.
@@ -222,7 +223,7 @@ var (
 		  AND ((history_from, history_for, history_answered_at, history_wait, history_boards_rev, status_since, status_final_for,
 		        status_read_at) IS NOT (` + mirrorHistoryTimesOf("") + `)
 		    OR coalesce(h.value ->> 'c', 0))
-		RETURNING issue_id, status_since, status_final_for >= updated_at`
+		RETURNING issue_id, status_since, status_final_for >= updated_at, (` + mirrorHistoryReadForCard("tracker_cache_issues") + `), history_from`
 )
 
 // mirrorHistoryTimesOf lists the times the list's entry h holds for the
@@ -236,18 +237,21 @@ func mirrorHistoryTimesOf(extra string) string {
 
 // writeMirrorHistoryTimesTx runs mirrorHistoryTimesSQL over listed,
 // tells the boards whose pace the issues it wrote may have moved
-// (advanceMirrorPaceTx), and returns the issues whose shown status
-// changed: its time or whether a final read decided it, against states,
-// the issues' state the same transaction read before. A write that moved only the history's times or
-// the order of its status evidence (a newer read of the same provisional
-// result) changed nothing a view shows of the issue's status.
+// (advanceMirrorPaceTx), and returns the issues whose history changed
+// what a reader reads of them, against states, the issues' state the same
+// transaction read before: the shown status (its time, or whether a final
+// read decided it), and what credit reads, whether the history is read
+// for the card (mirrorHistoryReadForCard) and from when. A write that
+// moved only the history's other times or the order of its status
+// evidence (a newer read of the same provisional result) changed none
+// of those.
 func writeMirrorHistoryTimesTx(tx *sql.Tx, rootID int64, listed string, states map[string]mirrorHistoryState) ([]string, error) {
 	var changed, written []string
 	err := scanMirrorRows(tx, mirrorHistoryTimesSQL, []any{rootID, listed}, func(r rowScanner) error {
 		var id string
-		var since int64
-		var final bool
-		if err := r.Scan(&id, &since, &final); err != nil {
+		var since, from int64
+		var final, readForCard bool
+		if err := r.Scan(&id, &since, &final, &readForCard, &from); err != nil {
 			return err
 		}
 		written = append(written, id)
@@ -255,7 +259,7 @@ func writeMirrorHistoryTimesTx(tx *sql.Tx, rootID int64, listed string, states m
 		if !ok {
 			return fmt.Errorf("issue %s written with no state read", id)
 		}
-		if since != st.since || final != st.final() {
+		if since != st.since || final != st.final() || readForCard != st.readForCard || from != st.storedFrom {
 			changed = append(changed, id)
 		}
 		return nil

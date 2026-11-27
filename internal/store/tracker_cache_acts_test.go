@@ -90,6 +90,11 @@ func TestTheActsMigrationChecksEachSourcesShape(t *testing.T) {
 			t.Errorf("%+v: %v", c, err)
 		}
 	}
+	// The worklog index holds a root's worklogs by their start, and no
+	// other source's acts.
+	assertRows(t, db, `SELECT group_concat(name, ',') FROM pragma_index_info('idx_tracker_cache_issue_acts_worklogs')`, "root_id,at")
+	assertRows(t, db, `SELECT count(*) FROM tracker_cache_issue_acts INDEXED BY idx_tracker_cache_issue_acts_worklogs
+		WHERE root_id = 7 AND source = 2 AND at >= 0`, "1")
 }
 
 // commentsOf is issue's comments as one read found them: one act per ID,
@@ -144,7 +149,7 @@ func TestMirrorActsReplaceAnIssuesSource(t *testing.T) {
 	catalog := MirrorCatalog{Users: []MirrorUser{{ID: "acc-user2", Name: "User 2"}}}
 	catalogWrite, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), []MirrorIssueActs{commentsOf("10001", 5, 2, "c1", "c2"), worklogs,
 		commentsOf("99999", 5, 2, "c9")}, nil, catalog)
-	if err != nil || !catalogWrite.Changed {
+	if err != nil || !catalogWrite.Catalog.Changed {
 		t.Fatalf("first replace: %v, catalog %+v", err, catalogWrite)
 	}
 	assertRows(t, s.db, storedActsSQL, "10001:1:c1:acc-user1:2:0,10001:1:c2:acc-user1:2:0,10001:2:w1:acc-user2:3:600")
@@ -391,6 +396,43 @@ func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
 	check(0, "10001:cw")
 }
 
+// On a board that plans no sprints, the tickets due are its rows done now
+// whose card moved in the window, their comments and every worklog, each
+// source until a read for its update stored its receipt; a row not done,
+// one that did not move in the window, and a sprint board's done row in no
+// sprint are not. Its worklogs are revalidated as a live sprint's are.
+func TestMirrorActsDueOnABoardWithoutSprints(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	weeks := webStructure()
+	weeks.Board.ID, weeks.Board.PlansSprints, weeks.Sprints = "11", false, nil
+	mustReplaceStructure(t, s, root, weeks, true)
+	done := func(r MirrorRow) MirrorRow { r.Card.StatusID = "10001"; return r }
+	mustWriteRowPage(t, s, root, webPage("11",
+		done(webRow("10001", 500, "a")), // done, moved in the window
+		done(webRow("10002", 50, "b")),  // done, moved before it
+		webRow("10003", 500, "c"),       // to do
+	), nil)
+	mustWriteRowPage(t, s, root, webPage("10", done(webRow("10004", 500, "d"))), nil)
+	check := func(want string) {
+		t.Helper()
+		if got, more := actsDue(t, s, root, 100, 20); got != want || more {
+			t.Fatalf("due = %q, more %v; want %q", got, more, want)
+		}
+	}
+	check("10001:cw")
+	replaceActs(t, s, root, 10, nil, commentsOf("10001", 500, 2))
+	check("10001:w")
+	replaceActs(t, s, root, 11, nil, worklogsOf("10001", 500, 0, 2))
+	check("")
+	// A week's reviews count through today, so its worklogs are read again
+	// a day after their read, as a live sprint's are.
+	if got, _ := actsDue(t, s, root, 100, 11+mirrorActsRevalidate.Milliseconds()+1); got != "10001:w" {
+		t.Fatalf("due a day after the read = %q; want the worklogs again", got)
+	}
+}
+
 // A worklog receipt of a ticket the active-sprint arm lists is due again
 // a day after its read, its comments not; a closed sprint's member is not
 // read again until its card moves.
@@ -436,6 +478,32 @@ func TestMirrorActsDueRetryAFailedSourceAfterADay(t *testing.T) {
 	}
 	if got, _ := actsDue(t, s, root, 0, tried+day+1); got != "10001:cw" {
 		t.Fatalf("due a day after the failure = %q", got)
+	}
+}
+
+// A closed sprint's member whose source a read failed for alone, after
+// a read that stored, is due again a day after the failure though its
+// card never moves: credit does not count the source while the failure
+// stands, so the due rule must not either.
+func TestAFailedSourceOfAClosedSprintsMemberIsDueAgainAfterADay(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	done := func(r MirrorRow) MirrorRow { r.Card.StatusID = "10001"; return r }
+	mustWriteRowPage(t, s, root, webPage("10", done(webRow("10003", 5, "c", "20"))), []byte("c1"))
+	mustReplaceHistory(t, s, root, MirrorHistory{IssueID: "10003", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 900, From: "1", To: "10001"}}},
+		MirrorWrite{Changed: true})
+	replaceActs(t, s, root, 1_000, nil, commentsOf("10003", 5, 2), worklogsOf("10003", 5, 0, 2))
+	const tried = 2_000
+	replaceActs(t, s, root, tried, []MirrorActsAttempt{{IssueID: "10003", Source: MirrorActWorklog, Reason: "Jira is busy"}})
+	day := mirrorActsRetry.Milliseconds()
+	for _, c := range []struct {
+		now  int64
+		want string
+	}{{tried + day, ""}, {tried + day + 1, "10003:w"}, {tried + 2*day, "10003:w"}} {
+		if got, _ := actsDue(t, s, root, 0, c.now); got != c.want {
+			t.Errorf("due at %d = %q; want %q", c.now, got, c.want)
+		}
 	}
 }
 
@@ -618,4 +686,25 @@ func TestTheSweepRemovesActReceiptsBeforeActs(t *testing.T) {
 		t.Fatalf("a sweep transaction deleted %d rows", most)
 	}
 	assertRows(t, s.db, counts+` || ':' || (SELECT count(*) FROM tracker_cache_issues)`, "0:0:0")
+}
+
+// A walk of the issues updated since an instant reads only those: of a
+// mirror's 150 issues, all updated at 1000, a walk from later reads none,
+// and one from 1000 reads them all.
+func TestAnUpdateWalkStartsAtItsBound(t *testing.T) {
+	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: 100})
+	walk := `SELECT count(*) FROM tracker_cache_issues i WHERE ` + mirrorUpdatedSinceSQL("i", ">=", intParam("?2"))
+	for _, c := range []struct {
+		from     int64
+		want     int
+		maxSteps int
+	}{{5_000_000, 0, 30}, {1000, 150, 800}} {
+		var n int
+		if err := s.db.QueryRow(walk, root, c.from).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if steps := statementVMSteps(t, s, walk, root, c.from); n != c.want || steps > c.maxSteps {
+			t.Errorf("from %d: %d issues in %d VM steps; want %d in at most %d", c.from, n, steps, c.want, c.maxSteps)
+		}
+	}
 }

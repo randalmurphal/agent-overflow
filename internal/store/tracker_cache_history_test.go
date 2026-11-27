@@ -61,23 +61,28 @@ func TestReplaceMirrorHistoryReportsChanges(t *testing.T) {
 	assertRows(t, s.db, `SELECT history_from || ':' || history_for || ':' || history_answered_at || ':' || history_wait FROM tracker_cache_issues`, "0:9:1:0")
 
 	// A history whose times alone differ stores them and advances the
-	// receipt, but changes nothing a view shows: not its changes, and not
-	// the card's status time (a read that is not final never replaces a
-	// final time, and the latest status change decides the time, not the
-	// history's start).
-	for name, edit := range map[string]func(*MirrorHistory){
-		"answered later": func(h *MirrorHistory) { h.AnsweredAt = 10 },
-		"not final":      func(h *MirrorHistory) { h.Wait = 60_000 },
-		"complete later": func(h *MirrorHistory) { h.CompleteFrom = 1 },
+	// receipt. It changes nothing a view shows of its changes or the card's
+	// status time (a read that is not final never replaces a final time,
+	// and the latest status change decides the time, not the history's
+	// start), but credit reads whether it is final for the card and from
+	// when it is complete (mirrorHistoryReadForCard), so those two report a
+	// change and the answer's arrival alone does not.
+	for name, c := range map[string]struct {
+		edit func(*MirrorHistory)
+		want MirrorWrite
+	}{
+		"answered later": {func(h *MirrorHistory) { h.AnsweredAt = 10 }, MirrorWrite{}},
+		"not final":      {func(h *MirrorHistory) { h.Wait = 60_000 }, MirrorWrite{Changed: true}},
+		"complete later": {func(h *MirrorHistory) { h.CompleteFrom = 1 }, MirrorWrite{Changed: true}},
 	} {
 		s, _, root := newMirror(t)
 		writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 9, "a")})
 		mustReplaceHistory(t, s, root, webHistory("10001"), MirrorWrite{Changed: true})
 		receipt := receiptOf(t, s, root, "10001")
 		edited := webHistory("10001")
-		edit(&edited)
-		if got, err := replaceHistory(s, root, edited); err != nil || got != (MirrorWrite{}) {
-			t.Errorf("%s: %+v, %v; want unchanged", name, got, err)
+		c.edit(&edited)
+		if got, err := replaceHistory(s, root, edited); err != nil || got != c.want {
+			t.Errorf("%s: %+v, %v; want %+v", name, got, err, c.want)
 		}
 		if got := receiptOf(t, s, root, "10001"); got != receipt+1 {
 			t.Errorf("%s: receipt %d; want %d, the times stored", name, got, receipt+1)

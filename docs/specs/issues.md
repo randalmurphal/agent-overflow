@@ -121,9 +121,10 @@ All dated 2026-11-15.
   navigate itself to an outside address carrying data. A custom page would
   be a separate page in the browser pane reading the same metrics; it is
   not built.
-- **A credit rule is a named value with a first sprint, read by metric
-  queries by name.** Changing how credit is counted edits the value, never
-  a query. A change counts from the current sprint, and finished sprints
+- **Credit rules are values with a first sprint, applied where the
+  board's copy is made.** The copy's `credit` relation holds each credit
+  row counted with the rules in force for it, and the values its note
+  needs. Changing how credit is counted edits the values, never a query. A change counts from the current sprint, and finished sprints
   keep the value they were counted with, unless the user applies it to
   every sprint. Rule values are per-project settings.
 - **The pane shows one tracker board at a time.** There is no view that
@@ -819,9 +820,10 @@ the credit rules in How this is counted.
 ### Credit
 
 Status: built: the rules in Settings, support tickets left out of the
-Backlog's count of tickets without an estimate, and a support ticket's
-points on the Time screen. Not built: credit counted on a dashboard or
-in the pace, and the evidence it reads.
+Backlog's count of tickets without an estimate, a support ticket's
+points on the Time screen, the evidence credit reads, and credit counted
+in the built-in dashboard's pace. Not built: the Backlog's pace counted
+with credit.
 
 - A support ticket carries no points. It counts as its logged hours divided
   by the project's hours-per-point value, and shows hours where points
@@ -833,8 +835,19 @@ in the pace, and the evidence it reads.
   approved, logged time. The share, the number and the actions are
   settings.
 - Opening a credited number lists each finished ticket, each review with
-  its arithmetic and what the reviewer did, each support ticket with its
-  hours, and anyone who acted but did not qualify.
+  its arithmetic ("10% of 5 points for commented, logged time"), each
+  support ticket with its hours, and anyone who acted but did not
+  qualify, with the actions the rule counts and how many it needs.
+- Support time counts in the sprint whose dates hold it; time logged
+  between sprints counts in the next sprint to start, once it starts.
+  Credit counts only on a Jira site.
+- A ticket whose credit is not read yet is listed and not counted. A
+  finished ticket names who had it when it finished only once its
+  history is read for its latest change and reaches back to the finish;
+  until then its points count for no one and its reviews are not
+  counted. While the last read of who worked on the tickets failed, every
+  widget that counts credit says so with the reason, on a dashboard and
+  in an agent's tried widget.
 
 ### Time
 

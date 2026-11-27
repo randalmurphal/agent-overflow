@@ -289,3 +289,30 @@ func TestCreditSnapshotsKeepEveryRuleOverGeneratedSaves(t *testing.T) {
 		t.Fatalf("the generated saves left %d snapshots; the generator changes too little", len(stored))
 	}
 }
+
+// Credit counts where the tracker reads who worked on a ticket
+// (tracker.Capabilities.Evidence): a Jira site counts it, named in the
+// setup or not, and a Linear site does not, named or not, so its boards
+// keep the dashboard and the pace without credit.
+func TestCreditCountsOnlyWhereTheTrackerReadsEvidence(t *testing.T) {
+	t.Parallel()
+	on := &Credit{On: true, Rules: []CreditRules{creditRules(new(int64(0)), 10, 1, []string{"commented"}, 4)}}
+	setup := Setup{Credit: on, StatusGroups: []SiteStatusGroups{{Tracker: store.TrackerKindLinear, Site: "named", Statuses: map[string]string{"s1": "done"}},
+		{Tracker: store.TrackerKindJira, Site: "https://named.example.atlassian.net", Statuses: map[string]string{"s1": "done"}}}}
+	held := must[*heldSetup](t)(heldOf(setup, keptSections{}, nil, nil, ""))
+	for _, c := range []struct {
+		site   siteKey
+		credit bool
+	}{
+		{siteKey{store.TrackerKindJira, "https://named.example.atlassian.net"}, true},
+		{siteKey{store.TrackerKindJira, "https://example.atlassian.net"}, true},
+		{siteKey{store.TrackerKindLinear, "named"}, false},
+		{siteKey{store.TrackerKindLinear, "example"}, false},
+	} {
+		g := held.counting(c.site)
+		bare := must[store.MirrorRegroup](t)(g.regroup.WithCredit(nil))
+		if g.credit != c.credit || (bare != g.regroup) != c.credit {
+			t.Errorf("%v counts credit %v (regroup %+v); want %v", c.site, g.credit, g.regroup, c.credit)
+		}
+	}
+}
