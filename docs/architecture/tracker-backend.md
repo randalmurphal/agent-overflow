@@ -386,8 +386,11 @@ no step runs at root creation, restore or start.
   nothing; it applies only to the project's Jira boards). The writer (`validateSetup`)
   owns these defaults: a client sends the value it shows. Beside them,
   `dashboards` (by tracker site and board, the dashboards the project
-  keeps) is written only by its own edits ([Own dashboards and
-  proposals](#own-dashboards-and-proposals)); a replace keeps it. A section this build does not know, or one
+  keeps) and `board_tiles` (by tracker site and board, the widgets
+  pinned to the board's summary row and the number widgets' limits) are
+  written only by their own edits ([Own dashboards and
+  proposals](#own-dashboards-and-proposals), [Limits and the summary
+  row](#limits-and-the-summary-row)); a replace keeps them. A section this build does not know, or one
   at a newer version, is kept byte for byte by a replace and named in the
   read's `newer`; a replace that sets it is refused.
 - **A site** is named as its connection names it, by the rules a
@@ -2303,8 +2306,10 @@ closes a database of its own.
 | The sandbox, the metric contract and its validator, the reductions, ranges, narrowing, drills and the built-in dashboard | `trackerdash` (its package comment is the sandbox's contract) |
 | The board, its status groups and the viewer of an evaluation | `trackerapp` |
 | The dashboards a project keeps (the setup file's `dashboards` section) and the widgets agents proposed | `trackerapp` (`dashboard_setup.go`, `dashboards.go`) |
+| A board's summary row and its number widgets' limits (the setup file's `board_tiles` section) | `trackerapp` (`board_tiles.go`) |
 | Bound methods, scopes and the older-computer surface | `app` (`app_tracker_dashboards.go`) |
-| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine and the drill | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine and the drill; the summary row's answer (`row`) | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+| The tickets a summary row tile filters the board to | `frontend/src/lib/stores/boardTicketSet.svelte.ts` |
 
 ### Own dashboards and proposals
 
@@ -2347,6 +2352,50 @@ Each change, from any client, emits the payload-less
 `tracker:dashboards_updated` once, on which an open screen of that
 computer lists the board's dashboards and counts again; a hidden screen
 lists them when it shows.
+
+### Limits and the summary row
+
+A board's summary row is the widgets its project pins to it, at most 5,
+in the row's order, and a number widget may carry a limit. Both live in
+the setup file's `board_tiles` section, by tracker site and board, a
+section of its own so an older build, which refuses a field it does not
+know, keeps it as it keeps any section it does not read; like
+`dashboards` it is not part of `Setup` and only its own edits write it.
+A widget is named by its ID on the board's dashboards, a built-in's
+included; a pin or a limit naming a widget the board no longer has is
+ignored where it is read, and Remove drops the widget's pin and limit.
+Which way a limit warns is the widget's `good` (below it when up is good
+news, else above it); nothing is stored for it.
+`SetTrackerWidgetLimit` and `PinTrackerWidget` (`tracker:operate`) set
+them, refuse a limit on a widget that is not a number or one that is
+not finite, and a pin past a full row, and emit
+`tracker:dashboards_updated`. The list answers them as `tiles` (pins,
+limits, and the proposals whose agent asked for a pin), which an older
+computer's list lacks, so its screen shows no limit or pin. An agent's
+widget may name `limit` and `pin` (the rules `dashboard_widget` answers
+say so); Keep gives the kept widget that limit, and pins it while the
+row has room.
+
+`BoardView.pins` carries the pins with the board, and a change of them
+reads the board again, so the Board screen loads the row
+(`components/issues/BoardSummaryRow.svelte`) only for a board that pins
+a widget: one that pins none reads nothing more. The row lists the
+board's dashboards and counts one request whose `Widgets` names the
+pinned widgets on the built-in dashboard: one evaluation of those
+widgets alone over its default range, for the team, without the
+proposals, counted again by the dashboards' rule (the board's changes,
+at most once every 5 s, and every 10 minutes). A change of a limit lists
+again and counts nothing. A tile of a widget that counts now and is a
+number or a list filters the board to its tickets: a drill of it asked
+for `IDs` answers every ticket of its rows, in the drill's order, and no
+page. The set follows the tile's count: it is read again by the same
+rule while the Board or the Backlog shows, and on each dashboards
+change. The filter is applied on the page, as Only mine and Search are,
+so while it is on every column and section is read whole. Measured on
+the fixture's copy (`TestATicketSetsCost`, `AO_TRACKER_SCALE=5000`), a
+set of 5,000 tickets is 5,000 rows from the metric and an answer of
+40,183 bytes with Jira's IDs (8 a ticket) or 195,183 with Linear's UUIDs
+(39 a ticket).
 
 ### The export
 
@@ -2691,7 +2740,8 @@ on the Dashboards screen (`StartTrackerDashboardThread`, which needs
 `threads:operate` and `tracker:read`) makes a new thread on the board's
 computer, in the checkout of the project the board's subscription was
 made for, with an unsent draft naming the board by its name and
-site/ID, on a provider whose agents get the tracker tools
+site/ID (from the summary row, also asking for a widget with `pin` that
+shows what the person typed), on a provider whose agents get the tracker tools
 (`SupportsTrackerMCP`) and that the computer offers: the one a new thread
 starts on when it has them, else Claude, else Codex
 (`app.trackerToolsProvider`). A draft that cannot be saved takes the
@@ -3396,8 +3446,12 @@ screen ([Dashboards](#dashboards)): the built-in, the ones its project
 keeps and the widgets agents propose, with the wrappers of
 `TrackerDashboards`, `EvaluateTrackerDashboard`, `TrackerDashboardDrill`,
 `KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`,
+`SetTrackerWidgetLimit`, `PinTrackerWidget`,
 `StartTrackerDashboardThread` and `tracker:dashboards_updated`
-(`stores/trackerDashboard.svelte.ts`), and a ticket list's selection
+(`stores/trackerDashboard.svelte.ts`), the board's summary row and the
+tickets its tile filters the board to
+(`components/issues/BoardSummaryRow.svelte`,
+`stores/boardTicketSet.svelte.ts`), and a ticket list's selection
 (`components/issues/TicketListActions.svelte`), whose moves and
 assignments are the ticket write store's, at most 4 of a page's batch
 calls out at once, and whose thread is `StartTicketsThread`'s.
