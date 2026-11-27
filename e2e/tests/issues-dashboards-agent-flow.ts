@@ -54,6 +54,8 @@ const PRIORITY = { ...OPEN, title: 'Urgent', sql: "SELECT id AS ticket FROM tick
 
 /** The seed's board estimated in story points. */
 const POINTS_BOARD: ExtraJira = {
+  projects: [],
+  boards: [],
   estimation: 'customfield_10016',
   fields: [{ id: 'customfield_10016', name: 'Story Points', schema: { type: 'number', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:float', customId: 10016 } }],
 };
