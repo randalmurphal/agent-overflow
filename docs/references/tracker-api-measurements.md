@@ -1136,9 +1136,9 @@ exports' best of 5:
 
 | Fill | Rows | 2,000 tickets | 20,000 tickets |
 |---|---|---|---|
-| threads | 2,000 | 158,303 steps, 3.7 to 4.4 ms | 158,303 steps, 4.0 to 4.7 ms |
-| worklogs | 1,000 | 27,047 steps, 0.79 to 1.1 ms | 27,047 steps, 0.86 to 1.1 ms |
-| worklog_days | 180 | 2,745 steps, 30 to 48 µs | 2,745 steps, 33 to 40 µs |
+| threads | 2,000 | 158,303 steps, 4.2 to 5.5 ms | 158,303 steps, 4.8 to 6.0 ms |
+| worklogs | 1,000 | 27,039 steps, 0.92 to 1.2 ms | 27,039 steps, 1.0 to 1.3 ms |
+| worklog_days | 180 | 2,737 steps, 34 to 46 µs | 2,737 steps, 39 to 48 µs |
 
 The steps follow the links and the viewer's worklogs, not the board's
 tickets: about 79 a link (each with its newest turn) and 27 a worklog of
