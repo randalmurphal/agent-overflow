@@ -13,8 +13,9 @@ package store
 //     NULL until a read lands), whether the first full read is done
 //     (walked), the repository's own head identity in the forge's terms
 //     (own_head), the parent the forge names when it is a fork, the last
-//     read's wall time (read_at) and its failure (failure_kind, failure,
-//     failed_at), which a read that lands clears.
+//     read's wall time (read_at) and its failure (failure_kind, the
+//     sentence a person reads as failure, the app's JSON detail of it as
+//     failure_detail, failed_at), which a read that lands clears.
 //   - forge_history_prs: one row per pull request updated inside the
 //     window: its number, address, title, source branch and head
 //     repository, state, author and times. A parent's pull request of
@@ -47,8 +48,9 @@ CREATE TABLE forge_history_sources (
  read_at INTEGER NOT NULL DEFAULT 0 CHECK(read_at >= 0),
  failure_kind TEXT NOT NULL DEFAULT '',
  failure TEXT NOT NULL DEFAULT '',
+ failure_detail TEXT NOT NULL DEFAULT '' CHECK(failure_detail = '' OR json_valid(failure_detail)),
  failed_at INTEGER NOT NULL DEFAULT 0 CHECK(failed_at >= 0),
- CHECK((failure_kind = '') = (failure = '') AND (failure = '') = (failed_at = 0)),
+ CHECK((failure_kind = '') = (failure = '') AND (failure = '') = (failed_at = 0) AND (failure <> '' OR failure_detail = '')),
  CHECK((parent_namespace = '') = (parent_repo = '')),
  CHECK(walked = 0 OR reach IS NOT NULL),
  UNIQUE(repo_key, keep_head)

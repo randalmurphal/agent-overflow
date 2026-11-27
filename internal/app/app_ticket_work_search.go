@@ -31,8 +31,9 @@ type ticketHeadLookup struct {
 }
 
 // searchTicketForge adds to read what the forge holds for the ticket's
-// key, in two rounds of concurrent requests, at most
-// prListReadConcurrency at a time:
+// key in the repositories of origins, Work's origins whose pull request
+// history cannot answer for the ticket (addTicketHistory), in two rounds
+// of concurrent requests, at most prListReadConcurrency at a time:
 //
 //   - one key search per distinct repository Work's projects clone
 //     (gitops.Core.SearchPRsByKey), however many projects clone it: the
@@ -50,10 +51,10 @@ type ticketHeadLookup struct {
 // search and lookups read before they failed; a failed search gets no
 // lookups. A project whose origin
 // names no forge repository is not searched.
-func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) {
+func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead, origins []ForgeProject) {
 	var repos []*ticketSearchRepo
 	byKey := map[string]*ticketSearchRepo{}
-	for _, origin := range read.origins {
+	for _, origin := range origins {
 		if origin.Error != "" {
 			read.work.ForgeProblems = append(read.work.ForgeProblems, TicketForgeProblem{ProjectID: origin.ProjectID, Error: origin.Error, ErrorKind: forgeFailureForge})
 			continue

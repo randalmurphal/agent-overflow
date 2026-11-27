@@ -33,9 +33,9 @@ func TestGitLabHistoryRoutes(t *testing.T) {
 		return strings.Join(out, ",")
 	}
 	for path, want := range map[string]string{
-		"projects/grp%2Fhist/merge_requests?state=all&order_by=updated_at&sort=asc":                                     "1,2",
-		"projects/grp%2Fhist/merge_requests?state=all&order_by=updated_at&sort=desc":                                    "2,1",
-		"projects/grp%2Fhist/merge_requests?state=all&order_by=updated_at&sort=asc&updated_after=2026-03-06T00:00:00Z":  "2",
+		"projects/grp%2Fhist/merge_requests?state=all&order_by=updated_at&sort=asc":                                      "1,2",
+		"projects/grp%2Fhist/merge_requests?state=all&order_by=updated_at&sort=desc":                                     "2,1",
+		"projects/grp%2Fhist/merge_requests?state=all&order_by=updated_at&sort=asc&updated_after=2026-03-06T00:00:00Z":   "2",
 		"projects/grp%2Fhist/merge_requests?state=all&order_by=updated_at&sort=desc&updated_before=2026-03-02T00:00:00Z": "1",
 	} {
 		if got := iids(path); got != want {

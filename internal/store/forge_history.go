@@ -63,9 +63,11 @@ type ForgeHistorySource struct {
 	// ReadAt is the wall time (Unix ms) the last read landed, failed or
 	// not; 0 before one.
 	ReadAt int64
-	// FailureKind and Failure are the last read's failure, its kind and
-	// the sentence a person reads, at FailedAt; empty when it landed.
+	// FailureKind, Failure and FailureDetail are the last read's
+	// failure, its kind, the sentence a person reads and the app's JSON
+	// detail of it, at FailedAt; empty when it landed.
 	FailureKind, Failure string
+	FailureDetail        []byte
 	FailedAt             int64
 }
 
@@ -132,9 +134,10 @@ type ForgeHistoryRead struct {
 	Walked bool
 	// ReadAt is the read's wall time (Unix ms).
 	ReadAt int64
-	// FailureKind and Failure are the read's failure; empty clears the
-	// stored one.
+	// FailureKind, Failure and FailureDetail are the read's failure
+	// (ForgeHistorySource); empty clears the stored one.
 	FailureKind, Failure string
+	FailureDetail        []byte
 	// WindowStart is the start of the kept window (Unix ms): a pull
 	// request with no update and no act since is pruned.
 	WindowStart int64
@@ -167,6 +170,8 @@ func (r ForgeHistoryRead) check() error {
 		return fmt.Errorf("store: forge history read of %s needs its time and window", r.Source.RepoKey)
 	case (r.FailureKind == "") != (r.Failure == ""):
 		return fmt.Errorf("store: forge history read of %s names a failure kind %q with sentence %q", r.Source.RepoKey, r.FailureKind, r.Failure)
+	case len(r.FailureDetail) > 0 && (r.Failure == "" || !json.Valid(r.FailureDetail)):
+		return fmt.Errorf("store: forge history read of %s has a failure detail that is not JSON of a failure", r.Source.RepoKey)
 	case r.Walk != nil && !json.Valid(r.Walk):
 		return fmt.Errorf("store: forge history read of %s has a walk that is not JSON", r.Source.RepoKey)
 	case r.Walk != nil && r.Reach < 0:
@@ -251,15 +256,18 @@ func (s *Store) SetForgeHistorySources(wanted []ForgeHistoryRef) (changed bool, 
 }
 
 const forgeHistorySourceColumns = `id, repo_key, keep_head, forge, host, namespace, repo, own_head, parent_namespace, parent_repo,
-	walk, reach, walked, read_at, failure_kind, failure, failed_at`
+	walk, reach, walked, read_at, failure_kind, failure, failure_detail, failed_at`
 
 func scanForgeHistorySource(row interface{ Scan(...any) error }) (ForgeHistorySource, error) {
 	var src ForgeHistorySource
-	var walk string
+	var walk, detail string
 	var reach sql.NullInt64
 	err := row.Scan(&src.ID, &src.RepoKey, &src.KeepHead, &src.Forge, &src.Host, &src.Namespace, &src.Repo, &src.OwnHead,
-		&src.ParentNamespace, &src.ParentRepo, &walk, &reach, &src.Walked, &src.ReadAt, &src.FailureKind, &src.Failure, &src.FailedAt)
+		&src.ParentNamespace, &src.ParentRepo, &walk, &reach, &src.Walked, &src.ReadAt, &src.FailureKind, &src.Failure, &detail, &src.FailedAt)
 	src.Walk, src.Reach, src.HasReach = []byte(walk), reach.Int64, reach.Valid
+	if detail != "" {
+		src.FailureDetail = []byte(detail)
+	}
 	return src, err
 }
 
@@ -382,8 +390,8 @@ func (s *Store) ApplyForgeHistory(read ForgeHistoryRead) (err error) {
 	if read.Failure != "" {
 		failedAt = read.ReadAt
 	}
-	if _, err := tx.Exec(`UPDATE forge_history_sources SET read_at = ?2, failure_kind = ?3, failure = ?4, failed_at = ?5 WHERE id = ?1`,
-		id, read.ReadAt, read.FailureKind, read.Failure, failedAt); err != nil {
+	if _, err := tx.Exec(`UPDATE forge_history_sources SET read_at = ?2, failure_kind = ?3, failure = ?4, failure_detail = ?5, failed_at = ?6 WHERE id = ?1`,
+		id, read.ReadAt, read.FailureKind, read.Failure, string(read.FailureDetail), failedAt); err != nil {
 		return fmt.Errorf("%s: record the read: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {

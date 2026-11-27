@@ -94,6 +94,7 @@ func testCallbacks(d Deps, log *eventLog) Deps {
 	d.LoopFailed = log.loopFailed
 	d.SetupChanged = func() { log.setups.Add(1) }
 	d.LinksChanged = log.linksChanged
+	d.ReadForgeHistory = func(context.Context) error { return nil }
 	return d
 }
 

@@ -15,7 +15,7 @@
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import StartWorkForm from './StartWorkForm.svelte';
-  import type { TicketBranch, TicketPullRequest } from '../../stores/bindings';
+  import type { TicketBranch, TicketForgeProblem, TicketPullRequest } from '../../stores/bindings';
   import { assistantCurrentThread, getThreadById, getThreads } from '../../stores/threads.svelte';
   import { assistantDisplayName } from '../../stores/assistants.svelte';
   import { attachedBackendEntry, backendDisplayName, hasMultipleBackends, unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
@@ -54,7 +54,7 @@
   import { userFacingError } from '../../utils/userFacingError';
   import { pullNumberLabel } from '../pulls/pullRowView';
   import PullsProjectError from '../pulls/PullsProjectError.svelte';
-  import { forgeFailureFrom, forgeReadFailureCause, rateLimitRetryMessage } from '../../utils/forgeFailure';
+  import { forgeFailureFrom, forgeReadFailureCause, rateLimitRetryMessage, type ForgeFailure } from '../../utils/forgeFailure';
   import { prRefFromWire } from '../../utils/prReference';
   import type { TicketPullRequestOpen } from '../../stores/issuesPane.svelte';
   import { openPullOnForge } from './ticketPullOnForge';
@@ -154,6 +154,18 @@
   function reviewOf(pr: TicketPullRequest): TicketPullRequestOpen | null {
     const ref = pr.reviewProjectId ? prRefFromWire(pr.ref) : null;
     return ref && pr.reviewProjectId ? { pr: ref, projectId: pr.reviewProjectId, url: pr.url } : null;
+  }
+
+  /** What a failed read of Work's says: the last read of a repository's
+   * stored pull request history, whose rows Work lists, the search of a
+   * repository, or a project whose origin git could not read, which was
+   * not searched. */
+  function forgeProblemSentence(problem: TicketForgeProblem, what: string, failure: ForgeFailure | null): string {
+    if (failure?.kind === 'rate_limited') {
+      return rateLimitRetryMessage(problem.repo.Forge, problem.history ? `the read of ${what}'s pull requests` : `the search of ${what}`, failure);
+    }
+    if (problem.history) return `Could not read the pull requests of ${what}, so these may not be all of them: ${problem.error}`;
+    return problem.repo.Repo ? `Could not finish searching ${what}: ${problem.error}` : `Could not search ${what}: ${problem.error}`;
   }
 
   function openPull(pr: TicketPullRequest): void {
@@ -380,10 +392,12 @@
       {@const failure = forgeFailureFrom(problem)}
       {@const what = problem.repo.Repo ? `${problem.repo.Namespace}/${problem.repo.Repo}` : getProjectLabelText(problem.projectId)}
       <!-- A repository's search may have read rows before it failed; a
-        project whose origin git could not read was not searched. -->
+        project whose origin git could not read was not searched; a
+        repository whose stored pull request history's last read failed
+        lists what that history holds. -->
       <div data-testid="ticket-work-forge-problem">
         <PullsProjectError
-          message={failure?.kind === 'rate_limited' ? rateLimitRetryMessage(problem.repo.Forge, what, failure) : problem.repo.Repo ? `Could not finish searching ${what}: ${problem.error}` : `Could not search ${what}: ${problem.error}`}
+          message={forgeProblemSentence(problem, what, failure)}
           {failure}
           polled={false}
           forge={problem.repo.Forge}

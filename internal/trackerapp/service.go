@@ -111,6 +111,10 @@ type Deps struct {
 	// shows, or whether it is current), so their rows are sent again. It
 	// must not block.
 	LinksChanged func(threadIDs []string)
+	// ReadForgeHistory reads the forge pull request history that is due
+	// (the app's), within ctx; the linked loop calls it after each round
+	// it runs and reports its error as its own failure.
+	ReadForgeHistory func(ctx context.Context) error
 	// Cadence is the sync intervals; its zero value is production's.
 	Cadence Cadence
 }
@@ -231,6 +235,7 @@ type Service struct {
 	clientConnected func() bool
 	loopFailed      func(error)
 	linksChanged    func([]string)
+	readForgeHist   func(context.Context) error
 	cadence         Cadence
 	// dash evaluates the boards' dashboards (dashboards.go).
 	dash *trackerdash.Evaluator
@@ -276,8 +281,8 @@ func New(deps Deps) (*Service, error) {
 	case deps.Store == nil, deps.Changed == nil, deps.Origin == nil, deps.Now == nil, deps.Life == nil:
 		return nil, errors.New("trackerapp: Deps needs Store, Changed, Origin, Now and Life")
 	case deps.EmitBoard == nil, deps.EmitIssue == nil, deps.Settled == nil, deps.ClientConnected == nil, deps.LoopFailed == nil,
-		deps.LinksChanged == nil:
-		return nil, errors.New("trackerapp: Deps needs EmitBoard, EmitIssue, Settled, ClientConnected, LoopFailed and LinksChanged")
+		deps.LinksChanged == nil, deps.ReadForgeHistory == nil:
+		return nil, errors.New("trackerapp: Deps needs EmitBoard, EmitIssue, Settled, ClientConnected, LoopFailed, LinksChanged and ReadForgeHistory")
 	case deps.CredentialsDir == "", deps.ConfigDir == "":
 		return nil, errors.New("trackerapp: Deps needs CredentialsDir and ConfigDir")
 	case deps.SetupChanged == nil:
@@ -300,7 +305,7 @@ func New(deps Deps) (*Service, error) {
 		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},
 		logf:      log.Printf,
 		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, emitTimeEntries: deps.TimeEntriesChanged, settled: deps.Settled,
-		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, linksChanged: deps.LinksChanged, cadence: deps.Cadence.withDefaults(),
+		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, linksChanged: deps.LinksChanged, readForgeHist: deps.ReadForgeHistory, cadence: deps.Cadence.withDefaults(),
 		digestSeed: maphash.MakeSeed(), session: int64(binary.LittleEndian.Uint64(session[:]) >> 1),
 		dash: trackerdash.NewEvaluator(deps.Now),
 	}

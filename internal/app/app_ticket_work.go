@@ -27,10 +27,10 @@ type TicketWork struct {
 	// Problems are the repositories whose branches could not be read,
 	// each with why; the rest of the answer stands beside them.
 	Problems []TicketWorkProblem `json:"problems"`
-	// ForgeProblems are the repositories whose forge search failed
+	// ForgeProblems are the repositories whose last pull request history
+	// read failed (History), and those whose forge search failed
 	// (SearchTicketWork), each with why in the Pull requests page's
-	// terms; the rest of the answer stands beside them. Empty in
-	// GetTicketWork's answer, which searches nothing.
+	// terms; the rest of the answer stands beside them.
 	ForgeProblems []TicketForgeProblem `json:"forgeProblems"`
 	// SearchFull are the repositories whose search found more pull
 	// requests than its one page holds, so the list may lack some.
@@ -39,8 +39,9 @@ type TicketWork struct {
 
 // TicketPullRequest is a pull request of a ticket's Work. An open one of
 // the stored Pull requests list carries its title, author and CI. One
-// the forge's search found (SearchTicketWork) carries its title, author
-// and state as the forge answered them, and no CI. One a thread linked to
+// the stored pull request history holds, or the forge's search found
+// (SearchTicketWork), carries its title, author and state as the forge
+// answered them, and no CI. One a thread linked to
 // the ticket was last seen with, that none of those holds, records no
 // title, author or CI.
 type TicketPullRequest struct {
@@ -87,13 +88,16 @@ type TicketWorkProblem struct {
 	Error     string `json:"error"`
 }
 
-// TicketForgeProblem is a repository whose forge search failed, with the
-// fields a Pull requests page project carries for a failed read
-// (ProjectPRList): the caller-safe sentence, its kind, the rate limit's
-// reserve and resume time, and the detail behind it. ProjectID is the
-// first project of Work's that clones the repository. Repo is zero for a
+// TicketForgeProblem is a repository whose pull request history read or
+// forge search failed, with the fields a Pull requests page project
+// carries for a failed read (ProjectPRList): the caller-safe sentence,
+// its kind, the rate limit's reserve and resume time, and the detail
+// behind it. ProjectID is the first project of Work's that clones the
+// repository, or of a fork's parent the fork's. Repo is zero for a
 // project whose origin git could not read, whose Error is that failure's
-// own text.
+// own text. History marks the last read of the repository's stored pull
+// request history, which Work's rows of it come from, at FailedAt (Unix
+// ms); otherwise the failure is this answer's search.
 type TicketForgeProblem struct {
 	ProjectID    string               `json:"projectId"`
 	Repo         gitops.RepoReference `json:"repo"`
@@ -102,15 +106,18 @@ type TicketForgeProblem struct {
 	ErrorDetails *ForgeErrorDetail    `json:"errorDetails,omitempty"`
 	Reserve      bool                 `json:"reserve,omitempty"`
 	ResumeAt     string               `json:"resumeAt,omitempty"`
+	History      bool                 `json:"history,omitempty"`
+	FailedAt     int64                `json:"failedAt,omitempty"`
 }
 
 // GetTicketWork lists the pull requests and branches of the ticket issueID
 // that connectionID reads, from what this computer stores and from git's
 // refs, with no forge or tracker request: the stored Pull requests list
-// (open pull requests), the pull requests its linked threads were last
-// seen with (merged and closed ones too), and the branches of the projects
-// that list a board of the connection, hold one of those pull requests or
-// hold a thread linked to the ticket.
+// (open pull requests), the stored pull request history (addTicketHistory)
+// with each repository's failed read, the pull requests its linked
+// threads were last seen with (merged and closed ones too), and the
+// branches of the projects that list a board of the connection, hold one
+// of those pull requests or hold a thread linked to the ticket.
 // The ticket's key is the one its mirror holds, so the ticket must have
 // been read on this computer, as an open ticket has.
 //
@@ -124,15 +131,20 @@ func (a *App) GetTicketWork(ctx context.Context, connectionID, issueID string) (
 	if err != nil {
 		return TicketWork{}, err
 	}
+	if _, err := a.addTicketHistory(&read); err != nil {
+		return TicketWork{}, err
+	}
 	return a.answerTicketWork(ctx, &read)
 }
 
-// SearchTicketWork is GetTicketWork's answer with the forge searched by
-// the ticket's key, for the pull requests the stored sources do not hold
-// (a merged one, one opened where this computer never read the list):
-// once per repository the Work's projects clone, and once per branch of
-// the ticket (searchTicketForge). Each repository's failure is its
-// ForgeProblem, and the rest of the answer stands beside them. A client
+// SearchTicketWork is GetTicketWork's answer with each pull request
+// history of Work's repositories read again when its last read is
+// forgeHistoryCatchUp old (catchUpTicketHistory), and the forge searched
+// by the ticket's key in each repository whose history cannot answer for
+// the ticket (addTicketHistory): once per such repository, and once per
+// branch of the ticket in it (searchTicketForge). Each repository's
+// failure is its ForgeProblem, and the rest of the answer stands beside
+// them. A client
 // shows GetTicketWork's answer first and this one when it lands, so a slow
 // forge holds no row of the stored sources back. The budget runs from
 // entry: every forge request runs within it, and no project's local read
@@ -151,7 +163,14 @@ func (a *App) SearchTicketWork(ctx context.Context, connectionID, issueID string
 	if err != nil {
 		return TicketWork{}, budgetError(ctx, err)
 	}
-	a.searchTicketForge(ctx, &read)
+	if err := a.catchUpTicketHistory(ctx, &read); err != nil {
+		return TicketWork{}, err
+	}
+	search, err := a.addTicketHistory(&read)
+	if err != nil {
+		return TicketWork{}, err
+	}
+	a.searchTicketForge(ctx, &read, search)
 	return a.answerTicketWork(ctx, &read)
 }
 
@@ -161,16 +180,21 @@ func (a *App) SearchTicketWork(ctx context.Context, connectionID, issueID string
 // read it) and every branch of theirs that names the key.
 // answerTicketWork folds a branch into the pull request whose head it is.
 type ticketWorkRead struct {
-	work     TicketWork
+	work TicketWork
+	// created is the ticket's creation time (Unix ms, the tracker's
+	// clock), 0 when its mirror holds none.
+	created  int64
 	projects []string
 	origins  []ForgeProject
 	branches []TicketBranch
 	// recorded are the pull requests, by identity, that only a linked
 	// thread's record lists.
 	recorded map[string]bool
-	// heads are the pull requests each forge lookup by a branch's name
-	// found, by the project whose checkout it ran in and the branch
-	// (searchTicketForge): the proof that a fork's branch is the head of
+	// heads are the pull requests whose head is a branch of a project's
+	// checkout, by the project and the branch: those a forge lookup by
+	// the branch's name found in the checkout (searchTicketForge), and
+	// the stored history's whose head repository is the project's origin
+	// (addTicketHistory). They prove that a fork's branch is the head of
 	// a pull request of its parent.
 	heads map[ticketHead][]string
 }
@@ -193,11 +217,12 @@ func (a *App) readTicketWork(ctx context.Context, connectionID, issueID string) 
 	if err != nil {
 		return ticketWorkRead{}, err
 	}
-	key, err := a.mirroredTicketKey(connectionID, issueID)
+	key, created, err := a.mirroredTicket(connectionID, issueID)
 	if err != nil {
 		return ticketWorkRead{}, err
 	}
 	read := ticketWorkRead{
+		created: created,
 		work: TicketWork{Key: key, PullRequests: []TicketPullRequest{}, Branches: []TicketBranch{}, Problems: []TicketWorkProblem{},
 			ForgeProblems: []TicketForgeProblem{}, SearchFull: []gitops.RepoReference{}},
 	}
@@ -399,22 +424,23 @@ func (a *App) reviewProjects(ctx context.Context, read *ticketWorkRead) error {
 	return nil
 }
 
-// mirroredTicketKey is the key of issueID in connectionID's mirror.
-func (a *App) mirroredTicketKey(connectionID, issueID string) (string, error) {
+// mirroredTicket is the key and creation time (Unix ms) of issueID in
+// connectionID's mirror.
+func (a *App) mirroredTicket(connectionID, issueID string) (string, int64, error) {
 	root, ok, err := a.store.GetMirrorRoot(connectionID)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if ok {
 		cards, err := a.store.ListMirrorCards(root, []string{issueID})
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		if len(cards) == 1 && cards[0].Key != "" {
-			return cards[0].Key, nil
+			return cards[0].Key, cards[0].CreatedAt, nil
 		}
 	}
-	return "", errorsx.Public("ticket_not_read", "this computer has not read the ticket yet: open it first", fmt.Errorf("issue %s of connection %s is not in its mirror", issueID, connectionID))
+	return "", 0, errorsx.Public("ticket_not_read", "this computer has not read the ticket yet: open it first", fmt.Errorf("issue %s of connection %s is not in its mirror", issueID, connectionID))
 }
 
 // storedPRList is the part of a stored repository read that a ticket's

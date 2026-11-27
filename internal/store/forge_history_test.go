@@ -238,15 +238,17 @@ func TestForgeHistoryRecordsTheWalkAndTheFailure(t *testing.T) {
 		t.Fatal("a source covers a ticket by its reach and the margin")
 	}
 	// A failed read that read nothing keeps the walk.
-	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, FailureKind: "rate_limited", Failure: "GitHub rate limit reached", ReadAt: 6_000_000})
+	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, FailureKind: "rate_limited", Failure: "GitHub rate limit reached",
+		FailureDetail: []byte(`{"reserve":true}`), ReadAt: 6_000_000})
 	src = source()
-	if src.Reach != 3_000_000 || src.Failure != "GitHub rate limit reached" || src.FailedAt != 6_000_000 || src.ReadAt != 6_000_000 {
+	if src.Reach != 3_000_000 || src.Failure != "GitHub rate limit reached" || string(src.FailureDetail) != `{"reserve":true}` ||
+		src.FailedAt != 6_000_000 || src.ReadAt != 6_000_000 {
 		t.Fatalf("after a failure: %+v", src)
 	}
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, Walk: []byte(`{"at":2}`), Reach: 0, Walked: true, ReadAt: 7_000_000})
 	src = source()
 	switch {
-	case src.Failure != "" || src.FailedAt != 0 || !src.Walked || src.Reach != 0:
+	case src.Failure != "" || src.FailureDetail != nil || src.FailedAt != 0 || !src.Walked || src.Reach != 0:
 		t.Fatalf("after a full read: %+v", src)
 	case !src.Covers(testWindow, testWindow) || src.Covers(testWindow-1, testWindow):
 		t.Fatal("a full read covers every ticket created inside the window, and none before it")

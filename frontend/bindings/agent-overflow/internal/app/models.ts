@@ -10445,13 +10445,16 @@ export class TicketBranch {
 }
 
 /**
- * TicketForgeProblem is a repository whose forge search failed, with the
- * fields a Pull requests page project carries for a failed read
- * (ProjectPRList): the caller-safe sentence, its kind, the rate limit's
- * reserve and resume time, and the detail behind it. ProjectID is the
- * first project of Work's that clones the repository. Repo is zero for a
+ * TicketForgeProblem is a repository whose pull request history read or
+ * forge search failed, with the fields a Pull requests page project
+ * carries for a failed read (ProjectPRList): the caller-safe sentence,
+ * its kind, the rate limit's reserve and resume time, and the detail
+ * behind it. ProjectID is the first project of Work's that clones the
+ * repository, or of a fork's parent the fork's. Repo is zero for a
  * project whose origin git could not read, whose Error is that failure's
- * own text.
+ * own text. History marks the last read of the repository's stored pull
+ * request history, which Work's rows of it come from, at FailedAt (Unix
+ * ms); otherwise the failure is this answer's search.
  */
 export class TicketForgeProblem {
     "projectId": string;
@@ -10461,6 +10464,8 @@ export class TicketForgeProblem {
     "errorDetails"?: ForgeErrorDetail | null;
     "reserve"?: boolean;
     "resumeAt"?: string;
+    "history"?: boolean;
+    "failedAt"?: number;
 
     /** Creates a new TicketForgeProblem instance. */
     constructor($$source: Partial<TicketForgeProblem> = {}) {
@@ -10500,8 +10505,9 @@ export class TicketForgeProblem {
 /**
  * TicketPullRequest is a pull request of a ticket's Work. An open one of
  * the stored Pull requests list carries its title, author and CI. One
- * the forge's search found (SearchTicketWork) carries its title, author
- * and state as the forge answered them, and no CI. One a thread linked to
+ * the stored pull request history holds, or the forge's search found
+ * (SearchTicketWork), carries its title, author and state as the forge
+ * answered them, and no CI. One a thread linked to
  * the ticket was last seen with, that none of those holds, records no
  * title, author or CI.
  */
@@ -10586,10 +10592,10 @@ export class TicketWork {
     "problems": TicketWorkProblem[];
 
     /**
-     * ForgeProblems are the repositories whose forge search failed
+     * ForgeProblems are the repositories whose last pull request history
+     * read failed (History), and those whose forge search failed
      * (SearchTicketWork), each with why in the Pull requests page's
-     * terms; the rest of the answer stands beside them. Empty in
-     * GetTicketWork's answer, which searches nothing.
+     * terms; the rest of the answer stands beside them.
      */
     "forgeProblems": TicketForgeProblem[];
 

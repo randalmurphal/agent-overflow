@@ -141,8 +141,9 @@ func (a *App) initTrackers() error {
 			return bus != nil && bus.SubscriberCount() > 0
 		},
 		// The service logs each failure of its linked-issues loop itself.
-		LoopFailed:   func(error) {},
-		LinksChanged: a.announceThreadLinks,
+		LoopFailed:       func(error) {},
+		LinksChanged:     a.announceThreadLinks,
+		ReadForgeHistory: a.readForgeHistory,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialise tracker connections: %w", err)
@@ -245,14 +246,19 @@ func (a *App) RenameTrackerConnection(ctx context.Context, connectionID, label s
 }
 
 // SetTrackerConnectionEnabled turns a connection on or off. Off keeps its
-// row and key file and closes its client.
+// row and key file and closes its client. The forge pull request history
+// the app keeps follows at once (followForgeHistorySources).
 //
 //ao:scope tracker:operate
 //ao:route home
 func (a *App) SetTrackerConnectionEnabled(ctx context.Context, connectionID string, enabled bool) (TrackerConnection, error) {
-	return a.trackerCall(func(svc *trackerapp.Service) (trackerapp.Connection, error) {
+	conn, err := a.trackerCall(func(svc *trackerapp.Service) (trackerapp.Connection, error) {
 		return svc.SetEnabled(connectionID, enabled)
 	})
+	if err != nil {
+		return conn, err
+	}
+	return conn, a.followForgeHistorySources(ctx)
 }
 
 // SetTrackerConnectionTokenExpiry records when a connection's token
@@ -268,7 +274,8 @@ func (a *App) SetTrackerConnectionTokenExpiry(ctx context.Context, connectionID 
 }
 
 // RemoveTrackerConnection removes a connection, the Tempo connection that
-// belongs to it, their key files and their rows.
+// belongs to it, their key files and their rows, and the forge pull
+// request history the app kept only for it (followForgeHistorySources).
 //
 //ao:scope tracker:operate
 //ao:route home
@@ -277,7 +284,10 @@ func (a *App) RemoveTrackerConnection(ctx context.Context, connectionID string) 
 	if err != nil {
 		return err
 	}
-	return trackerError(svc.Remove(connectionID))
+	if err := svc.Remove(connectionID); err != nil {
+		return trackerError(err)
+	}
+	return a.followForgeHistorySources(ctx)
 }
 
 // VerifyTrackerConnection checks a connection's token with one identity

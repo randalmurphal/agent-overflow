@@ -148,6 +148,29 @@ describe('Work', () => {
     view.unmount();
   });
 
+  it('says a failed read of a repository\'s pull request history beside the rows that history holds, from the stored answer on', async () => {
+    const resumeAt = '2026-11-26T18:30:00Z';
+    const history = [
+      { projectId: 'p1', repo: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'widgets' }, error: 'failed to refresh from the forge (id: h1)', errorKind: 'rate_limited', resumeAt, history: true, failedAt: 1 },
+      { projectId: 'p1', repo: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'grp', Repo: 'app' }, error: 'The GitLab login cannot see grp/app.', errorKind: 'forbidden', history: true, failedAt: 1 },
+    ];
+    const view = await mountWork({
+      work: async () => ({ ...WORK, forgeProblems: history }),
+      search: () => new Promise(() => {}),
+    });
+    const problems = await waitFor(() => {
+      const shown = view.getAllByTestId('pulls-project-error');
+      expect(shown).toHaveLength(2);
+      return shown;
+    });
+    const at = formatTimeOfDay(Date.parse(resumeAt));
+    const sentence = (problem: HTMLElement) => problem.textContent?.replace(/\s*Retry\s*$/, '').trim();
+    expect(sentence(problems[0])).toBe(`GitHub rate limit reached, so the read of example/widgets's pull requests did not finish. Retry after ${at}.`);
+    expect(problems[1].textContent).toContain('Could not read the pull requests of grp/app, so these may not be all of them: The GitLab login cannot see grp/app.');
+    expect(view.getAllByTestId('ticket-work-pull')).toHaveLength(1);
+    view.unmount();
+  });
+
   it('lists the threads linked to the ticket by the tracker its subscription named, and what its computer found, reading no connections', async () => {
     const connections = setBindingMock('TrackerConnections', async () => []);
     const view = await mountWork();
