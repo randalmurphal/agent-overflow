@@ -292,7 +292,7 @@ func TestMirrorExportSearchesByTheBoard(t *testing.T) {
 	}
 	plans := append([]mirrorExportFill{{name: "board state", sql: mirrorExportBoardSQL}}, mirrorExportFills...)
 	for _, fill := range plans {
-		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.text(everyExportColumn()), mirrorExportArgs(1, "10", MirrorRegroup{}, 0, true, 0, CardShapeForTest)...)
+		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.text(everyExportColumn()), mirrorExportArgs(1, "10", MirrorRegroup{}, 0, true, 0, 0, CardShapeForTest)...)
 		if err != nil {
 			t.Fatalf("plan %s: %v", fill.name, err)
 		}
@@ -511,7 +511,7 @@ func TestMirrorExportReadsEachRowOnce(t *testing.T) {
 	t.Parallel()
 	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: 400, parents: true})
 	ctx := context.Background()
-	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, 0, CardShapeForTest))
+	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, 0, 0, CardShapeForTest))
 	rows := 400
 	steps := map[string]int{}
 	var fills []mirrorExportFill
@@ -593,7 +593,7 @@ func exportFillsAtScale(t *testing.T, n, recent int) {
 		}
 	}
 	wantEpics := fmt.Sprintf("%d|%d", under, len(epics))
-	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, window, CardShapeForTest))
+	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, window, window, CardShapeForTest))
 	// Each fill with no column of MirrorExportColumns asked for, with one,
 	// and with every one, as a count whose query reads them asks; each in
 	// an export of every relation and in one without the changes, whose

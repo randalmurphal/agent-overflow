@@ -17,11 +17,20 @@ const MirrorPaceSprints = 5
 // the estimate definition last changed, adds nothing). A sprint none of
 // whose members the board holds finished nothing: the mirror keeps a
 // board's closed sprints with their members for the history window.
+//
+// With credit (MirrorRegroup.WithCredit) it also holds the sprint's credit
+// (mirrorCreditRowsSQL) beside what it finished: the estimate its review
+// and support credit add (Review, Support) and the same in tickets
+// (ReviewShares, SupportShares), and Unread, the tickets whose review or
+// support credit is not counted.
 type MirrorSprintFinished struct {
-	SprintID string
-	Members  int
-	Done     int
-	Estimate float64
+	SprintID               string
+	Members                int
+	Done                   int
+	Estimate               float64
+	Review, ReviewShares   float64
+	Support, SupportShares float64
+	Unread                 int
 }
 
 // The pace of a board, what must hold:
@@ -53,10 +62,7 @@ type MirrorSprintFinished struct {
 // mirrorRegroupedNotDone's is. Each change is read in the changes' key
 // order, which is each kind's oldest first (MirrorHistory). ?3 is the
 // board's estimate reset.
-var mirrorPaceSQL = `WITH last AS MATERIALIZED (
-	  SELECT sprint_id, completed_at FROM tracker_cache_sprints
-	   WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND state = ` + strconv.Itoa(MirrorSprintClosed) + ` AND completed_at > 0
-	   ORDER BY completed_at DESC, position DESC LIMIT ` + strconv.Itoa(MirrorPaceSprints) + `),
+var mirrorPaceSQL = `WITH ` + mirrorPaceLastSQL + `,
 	members AS (
 	  SELECT l.sprint_id, ` + mirrorRowEstimate("?3") + ` AS estimate, ` + mirrorStatusAtCompletionSQL + ` AS status
 	  FROM last l
@@ -70,6 +76,33 @@ var mirrorPaceSQL = `WITH last AS MATERIALIZED (
 	  GROUP BY sprint_id)
 	SELECT l.sprint_id, coalesce(f.members, 0), coalesce(f.done, 0), coalesce(f.estimate, 0)
 	FROM last l LEFT JOIN finished f ON f.sprint_id = l.sprint_id`
+
+// mirrorPaceLastSQL is the CTE last of the pace's sprints: board ?2 of
+// root ?1's last MirrorPaceSprints closed sprints by completion.
+var mirrorPaceLastSQL = `last AS MATERIALIZED (
+	  SELECT sprint_id, completed_at FROM tracker_cache_sprints
+	   WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND state = ` + strconv.Itoa(MirrorSprintClosed) + ` AND completed_at > 0
+	   ORDER BY completed_at DESC, position DESC LIMIT ` + strconv.Itoa(MirrorPaceSprints) + `)`
+
+// mirrorPaceCreditSQL is mirrorPaceSQL with credit: each of the sprints
+// of last, what it finished as mirrorPaceSQL counts it (its members' done
+// by the pace's rule, cr_m), and its credit rows' sums (cr_rows), ?5 the
+// support rule and ?6 the credit rules.
+var mirrorPaceCreditSQL = func() string {
+	p := mirrorCreditParams{groups: "?4", reset: "?3", support: "?5", rules: "?6", from: "0"}
+	with, rows := mirrorCreditSQL(p, mirrorPaceLastSQL, "l.sprint_id IN (SELECT sprint_id FROM last)", false)
+	return with + `,
+	  cr_rows(` + mirrorCreditColumns + `) AS (` + rows + `)
+	SELECT l.sprint_id, coalesce(f.members, 0), coalesce(f.done, 0), coalesce(f.estimate, 0), coalesce(c.review, 0), coalesce(c.review_shares, 0),
+	  coalesce(c.support, 0), coalesce(c.support_shares, 0), coalesce(c.unread, 0)
+	FROM last l
+	LEFT JOIN (SELECT sprint_id, count(*) AS members, total(done = 1) AS done, total(iif(done = 1, points, 0)) AS estimate FROM cr_m GROUP BY sprint_id) f
+	  ON f.sprint_id = l.sprint_id
+	LEFT JOIN (SELECT sprint, total(iif(kind = 'review', value, 0)) AS review, total(iif(kind = 'review', share, 0)) AS review_shares,
+	    total(iif(kind = 'support', value, 0)) AS support, total(iif(kind = 'support', share, 0)) AS support_shares,
+	    count(DISTINCT iif(value IS NULL AND kind <> 'finished', ticket, NULL)) AS unread
+	  FROM cr_rows GROUP BY sprint) c ON c.sprint = l.sprint_id`
+}()
 
 // mirrorStatusAtCompletionSQL is the status issue i had when sprint l
 // (its sprint_id and completed_at) of board ?2 was completed, by the
@@ -133,23 +166,33 @@ func advanceMirrorPaceTx(tx *sql.Tx, rootID int64, issues string) error {
 }
 
 // readMirrorPaceTx reads what each of the last finished sprints of a board
-// finished (mirrorPaceSQL), in no order.
+// finished (mirrorPaceSQL), with its credit when the regrouping counts
+// credit (mirrorPaceCreditSQL), in no order. A board without estimates
+// adds no estimate.
 func readMirrorPaceTx(tx sqlQueryer, rootID int64, boardID string, board mirrorShownBoard, regroup MirrorRegroup) ([]MirrorSprintFinished, error) {
 	groups := regroup.statuses
 	if groups == "" {
 		groups = "{}"
 	}
 	estimated := board.unit != MirrorEstimateNone
+	query, args := mirrorPaceSQL, []any{rootID, boardID, board.estimateResetAt, groups}
+	if regroup.credit != "" {
+		query, args = mirrorPaceCreditSQL, append(args, regroup.supportArg(), regroup.credit)
+	}
 	var out []MirrorSprintFinished
-	err := scanMirrorRows(tx, mirrorPaceSQL, []any{rootID, boardID, board.estimateResetAt, groups}, func(r rowScanner) error {
+	err := scanMirrorRows(tx, query, args, func(r rowScanner) error {
 		var f MirrorSprintFinished
 		var done float64
-		if err := r.Scan(&f.SprintID, &f.Members, &done, &f.Estimate); err != nil {
+		dest := []any{&f.SprintID, &f.Members, &done, &f.Estimate}
+		if regroup.credit != "" {
+			dest = append(dest, &f.Review, &f.ReviewShares, &f.Support, &f.SupportShares, &f.Unread)
+		}
+		if err := r.Scan(dest...); err != nil {
 			return err
 		}
 		f.Done = int(done)
 		if !estimated {
-			f.Estimate = 0
+			f.Estimate, f.Review, f.Support = 0, 0, 0
 		}
 		out = append(out, f)
 		return nil
