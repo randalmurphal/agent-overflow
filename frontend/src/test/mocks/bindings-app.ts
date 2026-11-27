@@ -407,6 +407,7 @@ export const ThreadsForTicket = dispatch('ThreadsForTicket');
 export const GetTicketWork = dispatch('GetTicketWork');
 export const SearchTicketWork = dispatch('SearchTicketWork');
 export const RecordActivity = dispatch('RecordActivity');
+export const GetActivityRecording = dispatch('GetActivityRecording');
 export const StartTicketThread = dispatch('StartTicketThread');
 export const SwitchThread = dispatch('SwitchThread');
 
