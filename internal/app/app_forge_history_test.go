@@ -68,8 +68,8 @@ func sourceKeys(sources []store.ForgeHistorySource) []string {
 
 // The linked loop's round reads the history of each repository a project
 // of an enabled connection clones, on both forges, and again only once
-// its last read is 15 minutes old; turning the connection off drops the
-// history at once.
+// its last read is 15 minutes old; turning the connection off, or
+// removing it, drops the history at once.
 func TestForgeHistoryReadsTheRepositoriesOfEnabledConnections(t *testing.T) {
 	t.Parallel()
 	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
@@ -123,6 +123,18 @@ func TestForgeHistoryReadsTheRepositoriesOfEnabledConnections(t *testing.T) {
 	}
 	if rows, err := f.a.store.ForgeHistoryByKey("WEB-1"); err != nil || len(rows) != 0 {
 		t.Fatalf("turning the connection off left WEB-1's history %+v, %v", rows, err)
+	}
+	if _, err := f.a.SetTrackerConnectionEnabled(f.ctx, f.conn.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := sourceKeys(f.sources(t)); len(got) != 2 {
+		t.Fatalf("turning the connection on made sources %v", got)
+	}
+	if err := f.a.RemoveTrackerConnection(f.ctx, f.conn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.sources(t); len(got) != 0 {
+		t.Fatalf("removing the connection left sources %v", sourceKeys(got))
 	}
 }
 
