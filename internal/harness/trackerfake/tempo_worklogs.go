@@ -28,6 +28,9 @@ func (c *tempoCall) worklogJSON(w *TempoWorklog) map[string]any {
 	if w.Billable != nil {
 		out["billableSeconds"] = *w.Billable
 	}
+	if w.OmitsUTCStart {
+		delete(out, "startDateTimeUtc")
+	}
 	return out
 }
 
