@@ -483,9 +483,12 @@ no step runs at root creation, restore or start.
   credit) and is decided in one SQL fragment (`mirrorSupportSQL`), which
   reads the row's estimate first and the issue's `type_id` and `labels`
   columns only for a row with none. A row says it (`RowView.support`),
-  and every total, the client's too (`trackerBoardModel.ts` `sumOf`,
-  `withRow`), counts a support row as no estimate but not as without
-  one. The rule is part of the site's counting version, so a save that
+  and every total, the client's too (`trackerBoardModel.ts`
+  `withoutEstimate`), counts a support row as no estimate but not as
+  without one. Every issue column the totals read advances the board's
+  `totals_revision` when it changes (the `labels` and `type_id` trigger
+  in v175), so a client holding the totals is given them again. The rule
+  is part of the site's counting version, so a save that
   changes it, or turns credit on or off, reads the project's open boards
   on that site again, and a page or patch read with the old rule is
   stale. `ProjectTrackerSupport` answers which of up to 500 issues are
