@@ -78,16 +78,85 @@ func TestASprintTicketsFinishFallsBackToItsResolution(t *testing.T) {
 	}
 }
 
-// Support time after the last closed sprint, before a dated future
-// sprint, counts in the future sprint, the next to start; the future
-// sprint's members are not credited before it starts.
-func TestSupportTimeBeforeADatedFutureSprintCountsInIt(t *testing.T) {
+// Who had a finished ticket when it finished is read only from a history
+// that covers its card: 10007, resolved at 400 under User 1 and
+// reassigned to User 2 at 850, names no person and counts none of its
+// reviews until its history is read, then User 1, with User 3's review
+// counted; an edit of its card past the history makes it not known again
+// until the history is read for the edit. Each step moves the board's
+// totals revision, so the Backlog's pace counts it again on its own.
+func TestWhoHadAFinishedTicketIsReadFromAHistoryThatCoversIt(t *testing.T) {
+	t.Parallel()
+	s, root := creditFixture(t)
+	regroup := creditRegroup(t, creditRules(false))
+	card := func(updated int64) {
+		r := sectionRow("10007", "10007", "10001", 3, "20")
+		r.Card.UpdatedAt, r.Card.ResolvedAt, r.Card.AssigneeID = updated, 400, "acc-user2"
+		r.Card.Data = []byte(`{"summary":"edited ` + strconv.FormatInt(updated, 10) + `"}`)
+		mustWriteRowPage(t, s, root, webPage("10", r), nil)
+	}
+	card(900)
+	replaceActs(t, s, root, 30, nil,
+		MirrorIssueActs{IssueID: "10007", Source: MirrorActComment, ReadFor: 900, Acts: []MirrorAct{act("c7", "acc-user3", 600, 0)}},
+		MirrorIssueActs{IssueID: "10007", Source: MirrorActWorklog, ReadFor: 900, Acts: []MirrorAct{act("w7", "acc-user3", 650, 3600)}})
+	history := func(gen int64) {
+		h := MirrorHistory{IssueID: "10007", Changes: []MirrorChange{{Kind: MirrorChangeAssignee, At: 850, From: "acc-user1", To: "acc-user2"}}}
+		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h}), MirrorCatalog{},
+			mirrorReadOf(root, gen)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const unread = "who had it when it finished is not read yet"
+	notRead := []string{
+		"20 400 10007 finished - 3.0 1.0 3.0 - - - - - - " + unread,
+		"20 400 10007 review - - - 3.0 10 2 - - - - " + unread,
+	}
+	read := []string{
+		"20 400 10007 finished acc-user1 3.0 1.0 3.0 - - - - - - -",
+		"20 400 10007 review acc-user3 0.3 0.1 3.0 10 2 commented, logged time 1 - - -",
+	}
+	revision := currentTotalsRevision(s, root, "10")
+	for _, step := range []struct {
+		name  string
+		write func()
+		want  []string
+	}{
+		{"before its history is read", func() {}, notRead},
+		{"its history read", func() { history(40) }, read},
+		{"its card edited past the history", func() {
+			card(1000)
+			replaceActs(t, s, root, 50, nil, MirrorIssueActs{IssueID: "10007", Source: MirrorActComment, ReadFor: 1000, Acts: []MirrorAct{act("c7", "acc-user3", 600, 0)}},
+				MirrorIssueActs{IssueID: "10007", Source: MirrorActWorklog, ReadFor: 1000, Acts: []MirrorAct{act("w7", "acc-user3", 650, 3600)}})
+		}, notRead},
+		{"its history read for the edit", func() { history(60) }, read},
+	} {
+		step.write()
+		rows, _ := creditOf(t, s, root, regroup)
+		if got := creditRowsOf(rows, "10007"); !reflect.DeepEqual(got, step.want) {
+			t.Errorf("%s: credit\n%s\nwant\n%s", step.name, strings.Join(got, "\n"), strings.Join(step.want, "\n"))
+		}
+		if now := currentTotalsRevision(s, root, "10"); step.name != "before its history is read" && now == revision {
+			t.Errorf("%s: the totals revision stayed %d", step.name, now)
+		}
+		revision = currentTotalsRevision(s, root, "10")
+	}
+}
+
+// Support time after the last completion, while no sprint is active,
+// counts in no sprint: two dated sprints still to start take none of it,
+// and none of their members' finish. Once the next starts, it is that
+// sprint's (TestASupportTicketIsCreditedOnlyByItsTime).
+func TestSupportTimeBeforeTheNextSprintStartsCountsInNoneYet(t *testing.T) {
 	t.Parallel()
 	s, root := creditFixture(t)
 	st := webStructure()
+	later := time.Now().Add(24 * time.Hour).UnixMilli()
 	for i, sp := range st.Sprints {
-		if sp.ID == "21" {
-			st.Sprints[i].State = MirrorSprintFuture
+		switch sp.ID {
+		case "21":
+			st.Sprints[i].State, st.Sprints[i].StartAt, st.Sprints[i].EndAt = MirrorSprintFuture, later, later+1000
+		case "22":
+			st.Sprints[i].StartAt, st.Sprints[i].EndAt = later+2000, later+3000
 		}
 	}
 	st.ReadAt = mirrorReadAt(40)
@@ -95,18 +164,10 @@ func TestSupportTimeBeforeADatedFutureSprintCountsInIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, _ := creditOf(t, s, root, creditRegroup(t, creditRules(false)))
-	var later []string
 	for _, r := range rows {
-		if strings.HasPrefix(r, "21 ") {
-			later = append(later, r)
+		if !strings.HasPrefix(r, "20 ") {
+			t.Errorf("credit lists %q; want only sprint 20's", r)
 		}
-	}
-	want := []string{
-		"21 - 10003 support acc-user2 0.5 0.5 - - - - - 2.0 4 -",
-		"21 990 10004 support - - - - - - - - - - who worked on it is not read yet",
-	}
-	if !reflect.DeepEqual(later, want) {
-		t.Fatalf("the future sprint's credit\n%s\nwant\n%s", strings.Join(later, "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -185,9 +246,11 @@ func TestWorkDatedInTheFutureDoesNotCount(t *testing.T) {
 
 // Every write that changes what credit reads moves the totals revision of
 // the boards holding its ticket: a card edit that moves the card past its
-// evidence read (the ticket's credit is not read until read again), and
-// a change of the time source, which drops every worklog. A card edit
-// that leaves the read current, and one of a ticket with no read, do not.
+// evidence read (the ticket's credit is not read until read again) or
+// past the history of a closed sprint's member (who had it is not known
+// until read again), a history write, and a change of the time source,
+// which drops every worklog. A card edit that leaves the reads current,
+// and a second edit past them, do not.
 func TestWritesThatChangeWhatCreditReadsMoveTheTotals(t *testing.T) {
 	t.Parallel()
 	s, root := creditFixture(t)
@@ -215,8 +278,15 @@ func TestWritesThatChangeWhatCreditReadsMoveTheTotals(t *testing.T) {
 		moves  bool
 		unread int
 	}{
-		{"an edit the read covers", edit("10001", 900), false, 1},
-		{"an edit of a ticket with no read", edit("10002", 905), false, 1},
+		{"an edit the reads cover", edit("10001", 900), false, 1},
+		{"an edit of a ticket with no evidence read past its history", edit("10002", 905), true, 1},
+		{"another edit past it", edit("10002", 910), false, 1},
+		{"its history read again", func() {
+			if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10002"}}), MirrorCatalog{},
+				mirrorReadOf(root, 50)); err != nil {
+				t.Fatal(err)
+			}
+		}, true, 1},
 		{"an edit past the read", edit("10001", 1000), true, 2},
 		{"another edit past it", edit("10001", 1100), false, 2},
 		{"the time source changes", func() {

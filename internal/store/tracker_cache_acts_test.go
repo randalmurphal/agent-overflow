@@ -481,6 +481,32 @@ func TestMirrorActsDueRetryAFailedSourceAfterADay(t *testing.T) {
 	}
 }
 
+// A closed sprint's member whose source a read failed for alone, after
+// a read that stored, is due again a day after the failure though its
+// card never moves: credit does not count the source while the failure
+// stands, so the due rule must not either.
+func TestAFailedSourceOfAClosedSprintsMemberIsDueAgainAfterADay(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	done := func(r MirrorRow) MirrorRow { r.Card.StatusID = "10001"; return r }
+	mustWriteRowPage(t, s, root, webPage("10", done(webRow("10003", 5, "c", "20"))), []byte("c1"))
+	mustReplaceHistory(t, s, root, MirrorHistory{IssueID: "10003", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 900, From: "1", To: "10001"}}},
+		MirrorWrite{Changed: true})
+	replaceActs(t, s, root, 1_000, nil, commentsOf("10003", 5, 2), worklogsOf("10003", 5, 0, 2))
+	const tried = 2_000
+	replaceActs(t, s, root, tried, []MirrorActsAttempt{{IssueID: "10003", Source: MirrorActWorklog, Reason: "Jira is busy"}})
+	day := mirrorActsRetry.Milliseconds()
+	for _, c := range []struct {
+		now  int64
+		want string
+	}{{tried + day, ""}, {tried + day + 1, "10003:w"}, {tried + 2*day, "10003:w"}} {
+		if got, _ := actsDue(t, s, root, 0, c.now); got != c.want {
+			t.Errorf("due at %d = %q; want %q", c.now, got, c.want)
+		}
+	}
+}
+
 // supportBoard is board 10 with every row with no estimate a support
 // ticket.
 func supportBoard(t *testing.T) MirrorActsBoard {

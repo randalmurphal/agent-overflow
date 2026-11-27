@@ -265,9 +265,10 @@ func creditScaleSetup(t *testing.T, s *Store, root int64, size benchMirrorSize) 
 // the first sync writes them: with every card's evidence receipts for its
 // card before the read, so the credit card trigger
 // (trg_tracker_cache_credit_card_moved) advances the board's totals for
-// each; with no receipts, its probe alone; and both with the trigger
-// dropped.
-// It restores the trigger and leaves no receipts.
+// each; with every card's history final for it instead, which advances
+// them for each member of a closed sprint; with neither, its probe alone;
+// and each with the trigger dropped. It restores the trigger and leaves
+// no receipts and no history read for a card.
 func cardsMovedAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *mirrorWriteRecorder) {
 	t.Helper()
 	board := benchBoardID(0)
@@ -295,7 +296,14 @@ func cardsMovedAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize,
 			CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id, json_each('[1,2]') src
 			WHERE b.root_id = ? AND b.board_id = ?`, testNow, root, board)
 	}
-	none := func(int) { mustExec(t, s.db, `DELETE FROM tracker_cache_issue_act_reads WHERE root_id = ?`, root) }
+	none := func(int) {
+		mustExec(t, s.db, `DELETE FROM tracker_cache_issue_act_reads WHERE root_id = ?`, root)
+		mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_for = 0, history_wait = 0 WHERE root_id = ?`, root)
+	}
+	histories := func(int) {
+		none(0)
+		mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_for = updated_at WHERE root_id = ?`, root)
+	}
 	revision := func() (n int64) {
 		if err := s.db.QueryRow(`SELECT totals_revision FROM tracker_cache_boards WHERE root_id = ? AND board_id = ?`, root, board).Scan(&n); err != nil {
 			t.Fatal(err)
@@ -307,6 +315,7 @@ func cardsMovedAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize,
 		prepare func(int)
 		drop    bool
 	}{{"trigger dropped, every receipt passed", receipts, true}, {"every receipt passed", receipts, false},
+		{"trigger dropped, every history passed", histories, true}, {"every history passed", histories, false},
 		{"trigger dropped, no receipts", none, true}, {"no receipts", none, false}} {
 		mustExec(t, s.db, `DROP TRIGGER IF EXISTS trg_tracker_cache_credit_card_moved`)
 		if !c.drop {

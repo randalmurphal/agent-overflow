@@ -240,7 +240,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"RecordMirrorEvidenceOutcome": func(root int64) error {
-			_, err := s.RecordMirrorEvidenceOutcome(root, "Jira answered 503", 9)
+			_, err := s.RecordMirrorEvidenceOutcome(root, "Jira answered 503")
 			return err
 		},
 		"ReplaceMirrorActs": func(root int64) error {

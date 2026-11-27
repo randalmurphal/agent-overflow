@@ -77,6 +77,13 @@ func mirrorHistoryCovers(i string) string {
 	return i + `.history_for > 0 AND NOT ` + mirrorHistoryDue(i, "0")[2].where + ` AND ` + i + `.history_wait = 0`
 }
 
+// mirrorHistoryReadForCardSQL is mirrorHistoryCovers of issue i but for
+// its boards: its history is final for its card's version, so its
+// changes of the fields every board shares (status, assignee) are every
+// change to the card. A board added to the issue reads its estimates
+// again, and changes none of those.
+const mirrorHistoryReadForCardSQL = `i.history_for > 0 AND i.history_for >= i.updated_at AND i.history_wait = 0`
+
 // mirrorHistoryDueSQL lists the kept issues of root ?1 due at ?2: first
 // those of the JSON list ?3 due by any arm, each found by key; then each arm of the rule a walk of its index of at most a
 // page and one, passing the listed issues, the version arm passing too

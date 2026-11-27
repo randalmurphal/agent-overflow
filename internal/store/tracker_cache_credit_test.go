@@ -48,6 +48,8 @@ func act(id, person string, at, seconds int64) MirrorAct {
 //     in 20's dates, and 2 at 960, between the sprints.
 //   - 10004, a support ticket updated at 990 whose worklogs are not read.
 //   - 10005, 2 points, done now in 21, User 3 only commented.
+//
+// Each ticket's history is read for its card.
 func creditFixture(t *testing.T) (*Store, int64) {
 	t.Helper()
 	s, _, root := newMirror(t)
@@ -67,7 +69,7 @@ func creditFixture(t *testing.T) (*Store, int64) {
 	histories := []MirrorHistory{{IssueID: "10001", Changes: []MirrorChange{
 		{Kind: MirrorChangeStatus, At: 800, From: "1", To: "10001"},
 		{Kind: MirrorChangeAssignee, At: 850, From: "acc-user1", To: "acc-user2"},
-	}}}
+	}}, {IssueID: "10002"}, {IssueID: "10003"}, {IssueID: "10004"}, {IssueID: "10005"}}
 	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, histories), MirrorCatalog{},
 		mirrorReadOf(root, 10)); err != nil {
 		t.Fatal(err)
@@ -287,7 +289,8 @@ func TestMirrorEvidenceMovesTheTotalsWhenItChanges(t *testing.T) {
 // and the active sprint by the newest; a rule that counts approvals says
 // on each review row that they are not read, and they keep no ticket
 // unread. A ticket whose evidence read failed for it alone says why, and
-// one whose card moved since its read says so.
+// one whose card moved since its evidence read (its history read again)
+// says so.
 func TestMirrorCreditReadsTheRulesAndSaysWhyItIsNotRead(t *testing.T) {
 	t.Parallel()
 	s, root := creditFixture(t)
@@ -297,6 +300,10 @@ func TestMirrorCreditReadsTheRulesAndSaysWhyItIsNotRead(t *testing.T) {
 	moved := sectionRow("10005", "10005", "10001", 2, "21")
 	moved.Card.UpdatedAt = 1600
 	mustWriteRowPage(t, s, root, webPage("10", moved), nil)
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10005"}}), MirrorCatalog{},
+		mirrorReadOf(root, 40)); err != nil {
+		t.Fatal(err)
+	}
 	rows, _ := creditOf(t, s, root, creditRegroup(t, rules))
 	want := []string{
 		"20 800 10001 finished acc-user1 5.0 1.0 5.0 - - - - - - -",
@@ -398,7 +405,7 @@ func TestMirrorCreditOnABoardWithoutSprints(t *testing.T) {
 	histories := []MirrorHistory{{IssueID: "10001", Changes: []MirrorChange{
 		{Kind: MirrorChangeStatus, At: 800, From: "1", To: "10001"},
 		{Kind: MirrorChangeAssignee, At: 850, From: "acc-user1", To: "acc-user2"},
-	}}}
+	}}, {IssueID: "10002"}, {IssueID: "10003"}, {IssueID: "10004"}, {IssueID: "10005"}}
 	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, histories), MirrorCatalog{},
 		mirrorReadOf(root, 10)); err != nil {
 		t.Fatal(err)

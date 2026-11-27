@@ -90,7 +90,6 @@ func (s *fakeScenario) upgradedFrom171(t *testing.T) {
 			s.sqlOnStore(t, `CREATE TRIGGER `+trigger+` ON tracker_connections BEGIN SELECT 1; END`)
 		}
 		s.sqlOnStore(t, `DROP TRIGGER trg_tracker_cache_credit_card_moved`)
-		s.sqlOnStore(t, `ALTER TABLE tracker_cache_roots DROP COLUMN evidence_failed_wall`)
 		s.sqlOnStore(t, `ALTER TABLE tracker_cache_roots DROP COLUMN evidence_failure`)
 		s.sqlOnStore(t, `DROP TABLE tracker_cache_issue_acts`)
 		s.sqlOnStore(t, `DROP TABLE tracker_cache_issue_act_reads`)

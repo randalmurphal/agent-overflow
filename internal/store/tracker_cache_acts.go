@@ -302,7 +302,7 @@ func checkMirrorIssueActs(issues []MirrorIssueActs, tried []MirrorActsAttempt) e
 // when it is the first, for another card update or worklogs' start, or
 // after a failed attempt, or when an act was added, changed or removed;
 // an attempt when it is the first to fail since the source's read
-// (mirrorCreditCurrentSQL counts a source a read failed for since as not
+// (mirrorActsCurrentSQL counts a source a read failed for since as not
 // read).
 func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTimes, keys []mirrorActsKeyRow, issues []MirrorIssueActs) (refused bool, credited []string, _ error) {
 	if len(keys) == 0 {
@@ -433,19 +433,14 @@ func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen int64, times mirrorReadTi
 
 // RecordMirrorEvidenceOutcome records how the evidence unit's last read
 // of root rootID's connection ended: failure, why it failed as a whole,
-// at wall (Unix ms on the wall clock), or "" for a read that did not, which
-// clears it. A failure of one ticket's source alone is its attempt
+// or "" for a read that did not, which clears it. A failure of one ticket's source alone is its attempt
 // (MirrorActsAttempt), not this. changed reports that the outcome the root
 // holds changed: a failure that started, changed or cleared. A detached
 // root fails with ErrTrackerCacheGone. Its one writer is the evidence
 // unit, and its one reader the credit sentence (GetMirrorEvidenceFailure).
-func (s *Store) RecordMirrorEvidenceOutcome(rootID int64, failure string, wall int64) (changed bool, err error) {
-	if failure != "" && wall <= 0 {
-		return false, fmt.Errorf("%w: an evidence failure with no time", ErrInvalidTrackerCache)
-	}
+func (s *Store) RecordMirrorEvidenceOutcome(rootID int64, failure string) (changed bool, err error) {
 	err = s.mirrorWrite(rootID, fmt.Sprintf("store: record tracker mirror %d evidence outcome", rootID), func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE tracker_cache_roots SET evidence_failure = ?2, evidence_failed_wall = iif(?2 = '', 0, ?3)
-		  WHERE id = ?1 AND evidence_failure IS NOT ?2`, rootID, failure, wall)
+		res, err := tx.Exec(`UPDATE tracker_cache_roots SET evidence_failure = ?2 WHERE id = ?1 AND evidence_failure IS NOT ?2`, rootID, failure)
 		if err != nil {
 			return err
 		}

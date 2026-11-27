@@ -44,27 +44,47 @@ type MirrorActsDue struct {
 	WorklogsFrom       int64
 }
 
-// The due rule of an issue i's sources, its receipts r1 (comments) and
-// r2 (worklogs) joined by key. A source is due when it has no receipt, a
-// receipt for an earlier card update (or for none, 0, since a changed
-// worklog made it due), or, for worklogs, a receipt that starts later
-// than the need or, on an arm that revalidates, one read before ?7; and
-// no read of it failed since ?8. ?7 and ?8 are wall times.
-var (
-	mirrorActsReceiptsSQL = `
+// mirrorActsReceiptsSQL joins an issue i's receipts by key: r1 its
+// comments', r2 its worklogs'.
+var mirrorActsReceiptsSQL = `
 	  LEFT JOIN tracker_cache_issue_act_reads r1 ON r1.root_id = i.root_id AND r1.issue_id = i.issue_id AND r1.source = ` + strconv.Itoa(MirrorActComment) + `
 	  LEFT JOIN tracker_cache_issue_act_reads r2 ON r2.root_id = i.root_id AND r2.issue_id = i.issue_id AND r2.source = ` + strconv.Itoa(MirrorActWorklog)
-	mirrorCommentsDueSQL = `((coalesce(r1.read_for, 0) = 0 OR r1.read_for < i.updated_at) AND (coalesce(r1.tried_at, 0) = 0 OR r1.tried_at < ` + intParam("?8") + `))`
-)
 
-// mirrorWorklogsDueSQL is the worklogs' due rule for the need from need
-// (an SQL expression), revalidated when revalidate.
-func mirrorWorklogsDueSQL(need string, revalidate bool) string {
-	stale := `coalesce(r2.read_for, 0) = 0 OR r2.read_for < i.updated_at OR r2.read_at > 0 AND r2.read_from > ` + need
-	if revalidate {
-		stale += ` OR r2.read_at > 0 AND r2.read_wall < ` + intParam("?7")
+// mirrorActsCurrentSQL holds for a source whose receipt (its column of
+// each name, col: read_at, read_for, read_from, tried_at; NULL for no
+// receipt) is current for its issue's card now (updated): read for that
+// update, from need or earlier (need "", wherever the read began), and
+// no read of it failed since (a failed read's tried_at, which a read
+// that stores clears). It is the one rule of what is read: credit counts
+// a source exactly while it holds (mirrorCreditFinishedSQL,
+// mirrorCreditRowsSQL), and the due rule lists one while it does not
+// (mirrorActsDueOfSQL).
+func mirrorActsCurrentSQL(col func(name string) string, updated, need string) string {
+	current := `coalesce(` + col("read_at") + `, 0) > 0 AND ` + col("read_for") + ` > 0 AND ` + col("read_for") + ` >= ` + updated + ` AND ` + col("tried_at") + ` = 0`
+	if need != "" {
+		current += ` AND ` + col("read_from") + ` <= ` + need
 	}
-	return `((` + stale + `) AND (coalesce(r2.tried_at, 0) = 0 OR r2.tried_at < ` + intParam("?8") + `))`
+	return `(` + current + `)`
+}
+
+// receipt is the columns of a receipt, each its name after prefix: "r2."
+// for a table alias, "cm.w_" for cr_m's.
+func receipt(prefix string) func(string) string {
+	return func(name string) string { return prefix + name }
+}
+
+// mirrorActsDueOfSQL is the due rule of a source of issue i whose
+// receipt is alias r, needed from need ("" for the read as it began): it
+// is not current (mirrorActsCurrentSQL), or with revalidate (worklogs a
+// live ticket's reviews count, mirrorActsRevalidate) its read was before
+// ?7, and no read of it failed since ?8 (mirrorActsRetry). ?7 and ?8 are
+// wall times.
+func mirrorActsDueOfSQL(r, need string, revalidate bool) string {
+	stale := `NOT ` + mirrorActsCurrentSQL(receipt(r+"."), "i.updated_at", need)
+	if revalidate {
+		stale += ` OR ` + r + `.read_at > 0 AND ` + r + `.read_wall < ` + intParam("?7")
+	}
+	return `((` + stale + `) AND (coalesce(` + r + `.tried_at, 0) = 0 OR ` + r + `.tried_at < ` + intParam("?8") + `))`
 }
 
 // mirrorWorklogsFromSQL is where a read of the worklogs of an issue
@@ -108,8 +128,8 @@ var mirrorActsDueSQL = func() (out struct{ active, sprints, closed, weeks, suppo
 		  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id` + mirrorActsReceiptsSQL
 	}
 	member := func(revalidate bool) (columns, due string) {
-		worklogs := mirrorWorklogsDueSQL("0", revalidate)
-		return `SELECT i.issue_id, ` + mirrorCommentsDueSQL + `, ` + worklogs + `, 0`, `(` + mirrorCommentsDueSQL + ` OR ` + worklogs + `)`
+		comments, worklogs := mirrorActsDueOfSQL("r1", "", false), mirrorActsDueOfSQL("r2", "0", revalidate)
+		return `SELECT i.issue_id, ` + comments + `, ` + worklogs + `, 0`, `(` + comments + ` OR ` + worklogs + `)`
 	}
 	columns, due := member(true)
 	out.active = columns + ` FROM tracker_cache_sprints sp` + members("sp") + `
@@ -128,7 +148,7 @@ var mirrorActsDueSQL = func() (out struct{ active, sprints, closed, weeks, suppo
 	out.support = `SELECT i.issue_id, 0, 1, ` + mirrorWorklogsFromSQL(window) + ` FROM tracker_cache_issues i
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = i.root_id AND b.board_id = ?2 AND b.issue_id = i.issue_id` + mirrorActsReceiptsSQL + `
 		 WHERE ` + mirrorUpdatedSinceSQL("i", ">=", window) + `
-		   AND ` + mirrorWorklogsDueSQL(window, true) + ` AND ` + support + limit
+		   AND ` + mirrorActsDueOfSQL("r2", window, true) + ` AND ` + support + limit
 	return out
 }()
 

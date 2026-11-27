@@ -36,16 +36,19 @@ package store
 // ReplaceMirrorActs, as ReplaceMirrorWorklogs refuses one.
 //
 // trg_tracker_cache_credit_card_moved advances the totals revision of the
-// boards holding an issue whose update time moves past a receipt that was
-// for it: its credit is not read from then until a read for the new
-// update (mirrorCreditCurrentSQL). A card write that moves no receipt out
-// of date, the steady state of a board read, runs one probe of the
-// issue's receipts by key.
+// boards holding an issue whose update time moves past what credit read
+// of it: a receipt that was for it, whose source is not read from then
+// until a read for the new update (mirrorActsCurrentSQL), or, for a
+// member of a closed sprint (the pace's), a history final for it, whose
+// person is not known from then until the history is read again
+// (mirrorHistoryReadForCardSQL; that history write advances them again,
+// advanceMirrorPaceTx). A card write that moves neither out of date, the
+// steady state of a board read, runs one probe of the issue's receipts by
+// key.
 //
 // tracker_cache_roots.evidence_failure is why the evidence unit's last
-// read of the root's connection failed as a whole, at evidence_failed_wall
-// on the wall clock; empty and 0 while its last read did not
-// (RecordMirrorEvidenceOutcome).
+// read of the root's connection failed as a whole; empty while its last
+// read did not (RecordMirrorEvidenceOutcome).
 const trackerActsV177SQL = `
 CREATE TABLE tracker_cache_issue_acts (
  root_id INTEGER NOT NULL,
@@ -82,11 +85,15 @@ CREATE TABLE tracker_cache_issue_act_reads (
  PRIMARY KEY (root_id, issue_id, source),
  FOREIGN KEY (root_id, issue_id) REFERENCES tracker_cache_issues(root_id, issue_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
-ALTER TABLE tracker_cache_roots ADD COLUMN evidence_failed_wall INTEGER NOT NULL DEFAULT 0 CHECK(evidence_failed_wall >= 0);
 ALTER TABLE tracker_cache_roots ADD COLUMN evidence_failure TEXT NOT NULL DEFAULT '';
 CREATE TRIGGER trg_tracker_cache_credit_card_moved AFTER UPDATE OF updated_at ON tracker_cache_issues
 WHEN EXISTS (SELECT 1 FROM tracker_cache_issue_act_reads r WHERE r.root_id = NEW.root_id AND r.issue_id = NEW.issue_id
   AND r.read_at > 0 AND r.read_for >= OLD.updated_at AND r.read_for < NEW.updated_at)
+ OR NEW.history_for > 0 AND NEW.history_wait = 0 AND NEW.history_for >= OLD.updated_at AND NEW.history_for < NEW.updated_at
+  AND EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
+   CROSS JOIN tracker_cache_board_issues b ON b.root_id = m.root_id AND b.issue_id = m.issue_id
+   CROSS JOIN tracker_cache_sprints sp ON sp.root_id = m.root_id AND sp.board_id = b.board_id AND sp.sprint_id = m.sprint_id
+   WHERE m.root_id = NEW.root_id AND m.issue_id = NEW.issue_id AND sp.state = 3)
 BEGIN
  UPDATE tracker_cache_boards SET totals_revision = totals_revision + 1 WHERE root_id = NEW.root_id
   AND board_id IN (SELECT board_id FROM tracker_cache_board_issues WHERE root_id = NEW.root_id AND issue_id = NEW.issue_id);

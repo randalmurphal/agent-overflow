@@ -97,7 +97,7 @@ type MirrorStore interface {
 	ReadMirrorRefreshTargets(rootID int64, cardIDs, detailIDs, boardIDs []string) (store.MirrorRefreshTargets, error)
 
 	ListMirrorActsDue(rootID int64, boards []store.MirrorActsBoard, from, now int64) ([]store.MirrorActsDue, bool, error)
-	RecordMirrorEvidenceOutcome(rootID int64, failure string, wall int64) (bool, error)
+	RecordMirrorEvidenceOutcome(rootID int64, failure string) (bool, error)
 	GetMirrorEvidenceFailure(rootID int64) (string, error)
 	ReplaceMirrorActs(rootID, sourceGen int64, read store.MirrorRead, issues []store.MirrorIssueActs, tried []store.MirrorActsAttempt, catalog store.MirrorCatalog) (store.MirrorActsWrite, error)
 
