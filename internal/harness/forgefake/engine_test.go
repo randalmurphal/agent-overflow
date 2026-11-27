@@ -140,11 +140,18 @@ func TestSeedRejectsMalformedFixtures(t *testing.T) {
 		"event time":          `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","events":[{"kind":"reopened","at":"yesterday"}]}]}]}`,
 		"event without ref":   `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","events":[{"kind":"base_changed"}]}]}]}`,
 		"gitlab event method": `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","events":[{"kind":"auto_merge_set","method":"squash"}]}]}]}`,
+		"review of no review": `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","threads":[{"path":"f","side":"file","comments":[{"author":"a","body":"b","review":7}]}]}]}]}`,
+		"another's review":    `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","reviews":[{"id":7,"author":"b","state":"APPROVED"}],"threads":[{"path":"f","side":"file","comments":[{"author":"a","body":"b","review":7}]}]}]}]}`,
+		"gitlab review":       `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","reviews":[{"id":7,"author":"a","state":"APPROVED"}],"threads":[{"path":"f","side":"file","comments":[{"author":"a","body":"b","review":7}]}]}]}]}`,
 	}
 	for name, raw := range cases {
 		if _, err := seedJSON(New(Options{}), raw); err == nil {
 			t.Errorf("%s: seeded without error", name)
 		}
+	}
+	// The line comment of its author's own review seeds.
+	if _, err := seedJSON(New(Options{}), `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","reviews":[{"id":7,"author":"a","state":"APPROVED"}],"threads":[{"path":"f","side":"file","comments":[{"author":"a","body":"b","review":7}]}]}]}]}`); err != nil {
+		t.Errorf("a line comment of its author's review: %v", err)
 	}
 }
 

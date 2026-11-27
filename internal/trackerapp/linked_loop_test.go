@@ -19,8 +19,12 @@ type loopStore struct {
 	lists, linked, cleanups int
 	asked                   int
 	cleanupErr, listErr     error
-	changed                 chan struct{}
-	connected               bool
+	// forgeReads counts the loop's reads of the forge history, each of
+	// which fails with forgeErr.
+	forgeReads int
+	forgeErr   error
+	changed    chan struct{}
+	connected  bool
 }
 
 func newLoopStore(st *store.Store) *loopStore {
@@ -56,6 +60,20 @@ func (l *loopStore) FinishMirrorCleanup(ctx context.Context, pause store.ChunkPa
 		return err
 	}
 	return l.Store.FinishMirrorCleanup(ctx, pause)
+}
+
+// readForgeHistory is the service's Deps.ReadForgeHistory, counting its
+// calls.
+func (l *loopStore) readForgeHistory(context.Context) error {
+	var err error
+	l.count(func() { l.forgeReads++; err = l.forgeErr })
+	return err
+}
+
+func (l *loopStore) forgeReadCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.forgeReads
 }
 
 // clientConnected is the service's ClientConnected, counting its asks.
@@ -107,6 +125,7 @@ func newLoopFixture(t *testing.T) (*fixture, *loopStore) {
 	ls := newLoopStore(f.st)
 	f.svc.store = ls
 	f.svc.clientConnected = ls.clientConnected
+	f.svc.readForgeHist = ls.readForgeHistory
 	p := &scripted{t: t}
 	f.svc.makeProvider = func(store.TrackerConnection, *clients, *clients) (tracker.Provider, error) { return p, nil }
 	return f, ls
@@ -221,9 +240,9 @@ func TestLinkedLoopWaitsForTheSettle(t *testing.T) {
 	ls.waitFor(t, "the first round", func(_, linked, cleanups, _ int) bool { return linked >= 1 && cleanups >= 1 })
 }
 
-// With no client connected the loop skips its rounds and their
-// cleanups, the start's included, which is the app's; a client
-// connecting resumes them.
+// With no client connected the loop skips its rounds, their cleanups and
+// their forge history reads, the start's cleanup included, which is the
+// app's; a client connecting resumes them.
 func TestLinkedLoopSkipsWithNoClient(t *testing.T) {
 	t.Parallel()
 	f, ls := newLoopFixture(t)
@@ -233,11 +252,31 @@ func TestLinkedLoopSkipsWithNoClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	ls.waitFor(t, "five skipped rounds", func(_, _, _, asked int) bool { return asked >= 5 })
-	if _, linked, cleanups, _ := ls.snapshot(); linked != 0 || cleanups != 0 {
-		t.Fatalf("with no client the loop made %d linked reads and %d cleanups; want none", linked, cleanups)
+	if _, linked, cleanups, _ := ls.snapshot(); linked != 0 || cleanups != 0 || ls.forgeReadCount() != 0 {
+		t.Fatalf("with no client the loop made %d linked reads, %d cleanups and %d forge history reads; want none", linked, cleanups, ls.forgeReadCount())
 	}
 	ls.count(func() { ls.connected = true })
-	ls.waitFor(t, "a round", func(_, linked, cleanups, _ int) bool { return linked >= 1 && cleanups >= 1 })
+	ls.waitFor(t, "a round", func(_, linked, cleanups, _ int) bool { return linked >= 1 && cleanups >= 1 && ls.forgeReads >= 1 })
+}
+
+// A forge history read that fails is reported, and the loop goes on.
+func TestLinkedLoopSurvivesAForgeHistoryFailure(t *testing.T) {
+	t.Parallel()
+	f, ls := newLoopFixture(t)
+	failed := errors.New("test: the forge history read failed")
+	ls.forgeErr = failed
+	f.addJira()
+	if err := f.svc.StartLinkedSync(); err != nil {
+		t.Fatal(err)
+	}
+	f.events.waitFor(t, "three failures", func(_ []BoardEvent, _ []IssueEvent, errs []error) bool { return len(errs) >= 3 })
+	_, _, errs := f.events.snapshot()
+	for _, err := range errs {
+		if !errors.Is(err, failed) {
+			t.Fatalf("the loop reported %v", err)
+		}
+	}
+	ls.waitFor(t, "rounds after the failures", func(_, linked, _, _ int) bool { return linked >= 3 })
 }
 
 // A cleanup that fails is reported, and the loop goes on.

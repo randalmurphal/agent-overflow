@@ -530,42 +530,29 @@ holding the template text.
 
 Status: built: every bullet below. A key
 matches when this computer's copy of an enabled connection holds an issue
-of its project. A ticket's Work reads the stored list of open pull
-requests, the pull requests its linked threads were last seen with
-(merged and closed among them) and the branches of the projects that list
-its connection's boards, and searches the forge of each of those
-projects' repositories once. It is read when Work shows and on the
-ticket's Refresh, never on a timer. The rows Work stores show at once,
-with "Searching the forge…" until the search answers; a search that fails
-is said in Work in the Pull requests page's words, beside the rest. A pull
-request found by the search shows its state and author and no CI.
-
-On a Jira ticket the same read takes the pull requests Jira's development
-data links to the ticket from the site's forge integrations, the case
-below among them (a merged merge request whose key was only in a branch
-since deleted). It is read beside the forge's search, and Work waits for
-it at most 10 seconds. Such a row shows its state, title and author as
-Jira reports them, opens on the forge like the others and is listed once:
-a pull request the stored list or the search lists stays as they list
-it. Jira's link is the evidence, so its rows need not name the key. A
-status Jira reports that is not open, merged or declined shows as Jira's
-own word. A link to an address the app cannot open as a pull request, or
-with no address, is not listed; Work says how many there are. Each
-integration is read on its own: one whose read fails leaves the others'
-rows, and each failed read is said under the pull requests with its
-endpoint, beside the rest; errors Jira reports from an integration are
-counted, not quoted. A read that does not answer within its wait is
-said beside the other failures, and Refresh reads it again. A ticket the
-data links nothing to
-says nothing, and so does a site whose summary answers 404 or has no
-pull request part (unmeasured: what a site with no forge integration
-answers). On a success it costs one request to Jira for a ticket with no
-pull request and one more per forge integration that links one; a
-refused or limited answer can add the transport's retries within the
-wait, a credential replaced during the read runs it again once, and a
-404 that names no account adds a sign-in check. A Linear ticket costs
-none. These endpoints are undocumented and can change without notice
-([measured](../references/tracker-api-measurements.md#development-data)).
+of its project. The app keeps the pull request history of the
+repositories its tracker projects clone: every pull request updated in
+the last 180 days, in any state, with who approved and commented on it,
+read in the background every 15 minutes while a client is connected and
+the connection is on. A fork's parent is read for the fork's pull
+requests. A ticket's Work reads that history, the stored list of open
+pull requests, the pull requests its linked threads were last seen with
+and the branches of the projects that list its connection's boards. When
+Work shows and on the ticket's Refresh, it reads a repository's history
+again when the last read is more than a minute old, and searches the
+forge by the key only a repository whose history has not yet read back
+to the ticket's creation, or one the app keeps no history of (a linked
+thread's project that lists no board). The rows Work stores show at
+once, with "Searching the forge…" until the search answers. A
+repository whose last history read failed says so in Work in the Pull
+requests page's words, beside the rows its history holds, and is not
+searched; a search that fails is said the same way. A pull request from
+the history or the search shows its state and author and no CI. A
+repository's first full read runs at most 30 forge requests a read, and
+the next background round, 5 minutes later, reads on while it owes more:
+on GitHub a read covers up to 1,500 pull requests without long
+discussions, so 30,000 take about 20 reads (about 100 minutes), and
+older tickets are searched until it reaches them.
 
 The search finds a pull request in any state by its title, and by a
 branch name that holds the key: a branch the searched repository still has, a branch
@@ -573,8 +560,7 @@ this computer has (local or fetched), and on GitHub any branch whose name
 begins with the key. The search misses a merge request whose key is only
 in its branch name once that branch is deleted on the forge, unless this
 computer still has the branch; on GitHub that holds only when the key is
-not at the branch name's start. On Jira the development data lists such
-a merge request when the site's integration links it. A fork's parent is searched only for the
+not at the branch name's start. A fork's parent is searched only for the
 branches of the ticket, not by title. Each repository's search reads at
 most 500 matches of each kind and says so when there were more.
 
@@ -596,13 +582,9 @@ most 500 matches of each kind and says so when there were more.
   its origin: a fork's checkout cannot show its parent's pull request,
   since the review fetches it from origin. The row's menu opens it on the
   forge either way.
-- The forge is searched by key for a pull request outside the stored list,
-  and a match counts only when its title or branch names the key by the
-  same rule. Jira's own
-  [development data](../references/tracker-api-measurements.md#development-data)
-  is a fallback only, because its endpoints are undocumented: it is read
-  beside the forge's search, and never replaces a row the forge's search
-  or the stored list gives.
+- The forge is searched by key for a pull request the history cannot
+  answer for, and a match counts only when its title or branch names the
+  key by the same rule.
 
 ### Thread link
 

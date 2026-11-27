@@ -11,11 +11,6 @@ import (
 // the connection's tracker cannot serve (see Capabilities).
 var ErrUnsupported = errors.New("tracker: not supported by this tracker")
 
-// ErrNoDevelopmentData is matched, through errors.Is, by the failure of
-// Provider.PullRequests on a site that keeps no development data: one
-// with no forge integration may answer so (unmeasured).
-var ErrNoDevelopmentData = errors.New("tracker: the site keeps no development data")
-
 // MaxLookupKeys is the most keys one Lookup takes. A provider accepts any
 // number up to it and splits them into the requests its tracker takes.
 const MaxLookupKeys = 500

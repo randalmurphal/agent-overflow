@@ -4,9 +4,7 @@
   // client's catalog, each with its state and who started it; the pull
   // requests and branches whose title or name holds its key, as its
   // computer reads them and its forge's search finds them, each failed
-  // search in the Pull requests page's words, and the pull requests Jira's
-  // development data links to it, with its failure, and the count of those
-  // the app cannot open (`stores/ticketWork.svelte.ts`); Ask and Start
+  // search in the Pull requests page's words (`stores/ticketWork.svelte.ts`); Ask and Start
   // work, and a Start work run's steps until it ends. Each row opens what
   // it names and has its menu on a right-click or long press: a pull
   // request its review in the ticket's place when the ticket's computer
@@ -17,7 +15,7 @@
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import StartWorkForm from './StartWorkForm.svelte';
-  import type { TicketBranch, TicketPullRequest } from '../../stores/bindings';
+  import type { TicketBranch, TicketForgeProblem, TicketPullRequest } from '../../stores/bindings';
   import { assistantCurrentThread, getThreadById, getThreads } from '../../stores/threads.svelte';
   import { assistantDisplayName } from '../../stores/assistants.svelte';
   import { attachedBackendEntry, backendDisplayName, hasMultipleBackends, unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
@@ -53,10 +51,10 @@
   import { ciStatusDotClass, ciStatusText } from '../../utils/ciStatus';
   import { pathBasename } from '../../utils/pathDisplay';
   import { lastKnownThreadStatusPill, resolveThreadStatusPill } from '../../utils/threadStatusPill';
-  import { asSentence, userFacingError } from '../../utils/userFacingError';
+  import { userFacingError } from '../../utils/userFacingError';
   import { pullNumberLabel } from '../pulls/pullRowView';
   import PullsProjectError from '../pulls/PullsProjectError.svelte';
-  import { forgeFailureFrom, forgeReadFailureCause, rateLimitRetryMessage } from '../../utils/forgeFailure';
+  import { forgeFailureFrom, forgeReadFailureCause, rateLimitRetryMessage, type ForgeFailure } from '../../utils/forgeFailure';
   import { prRefFromWire } from '../../utils/prReference';
   import type { TicketPullRequestOpen } from '../../stores/issuesPane.svelte';
   import { openPullOnForge } from './ticketPullOnForge';
@@ -156,6 +154,18 @@
   function reviewOf(pr: TicketPullRequest): TicketPullRequestOpen | null {
     const ref = pr.reviewProjectId ? prRefFromWire(pr.ref) : null;
     return ref && pr.reviewProjectId ? { pr: ref, projectId: pr.reviewProjectId, url: pr.url } : null;
+  }
+
+  /** What a failed read of Work's says: the last read of a repository's
+   * stored pull request history, whose rows Work lists, the search of a
+   * repository, or a project whose origin git could not read, which was
+   * not searched. */
+  function forgeProblemSentence(problem: TicketForgeProblem, what: string, failure: ForgeFailure | null): string {
+    if (failure?.kind === 'rate_limited') {
+      return rateLimitRetryMessage(problem.repo.Forge, problem.history ? `the read of ${what}'s pull requests` : `the search of ${what}`, failure);
+    }
+    if (problem.history) return `Could not read the pull requests of ${what}, so these may not be all of them: ${problem.error}`;
+    return problem.repo.Repo ? `Could not finish searching ${what}: ${problem.error}` : `Could not search ${what}: ${problem.error}`;
   }
 
   function openPull(pr: TicketPullRequest): void {
@@ -382,10 +392,12 @@
       {@const failure = forgeFailureFrom(problem)}
       {@const what = problem.repo.Repo ? `${problem.repo.Namespace}/${problem.repo.Repo}` : getProjectLabelText(problem.projectId)}
       <!-- A repository's search may have read rows before it failed; a
-        project whose origin git could not read was not searched. -->
+        project whose origin git could not read was not searched; a
+        repository whose stored pull request history's last read failed
+        lists what that history holds. -->
       <div data-testid="ticket-work-forge-problem">
         <PullsProjectError
-          message={failure?.kind === 'rate_limited' ? rateLimitRetryMessage(problem.repo.Forge, what, failure) : problem.repo.Repo ? `Could not finish searching ${what}: ${problem.error}` : `Could not search ${what}: ${problem.error}`}
+          message={forgeProblemSentence(problem, what, failure)}
           {failure}
           polled={false}
           forge={problem.repo.Forge}
@@ -395,14 +407,6 @@
         />
       </div>
     {/each}
-    {#if work?.developmentUnlisted}
-      <p class="px-1 text-xs text-fg-muted" data-testid="ticket-work-development-unlisted">
-        Jira links {work.developmentUnlisted === 1 ? 'one more pull request' : `${work.developmentUnlisted} more pull requests`} to this ticket at an address Agent Overflow cannot open; the ticket's development panel in Jira lists {work.developmentUnlisted === 1 ? 'it' : 'them'}.
-      </p>
-    {/if}
-    {#if work?.developmentProblem}
-      <p class="px-1 text-xs text-error" role="alert" data-testid="ticket-work-development-problem">{asSentence(work.developmentProblem)}</p>
-    {/if}
     {#if read?.searchError && !read.error}
       <p class="px-1 text-xs text-error" role="alert" data-testid="ticket-work-search-error">Could not search the forge: {userFacingError(read.searchError)}</p>
     {/if}

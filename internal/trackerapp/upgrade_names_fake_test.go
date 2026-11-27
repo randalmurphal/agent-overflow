@@ -80,6 +80,10 @@ func (f *fixture) reopen(t *testing.T, between func()) {
 func (s *fakeScenario) upgradedFrom171(t *testing.T) {
 	t.Helper()
 	s.reopen(t, func() {
+		for _, table := range []string{"forge_history_keys", "forge_history_acts", "forge_history_prs", "forge_history_sources"} {
+			s.sqlOnStore(t, `DROP TABLE `+table)
+		}
+		s.sqlOnStore(t, `DELETE FROM migration_versions WHERE version = 178`)
 		// v177 rewrote the three Tempo triggers to delete from its tables;
 		// stand-ins of the same names keep the drops below valid, and v177
 		// replaces them on the reopen.

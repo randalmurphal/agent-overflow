@@ -799,14 +799,148 @@ list sizes past it is refused before its request) within a 10-minute
 timeout, and the answer names the directory and files. Downloads are not
 pipeline actions and do not take the pending slot.
 
+### Pull request history
+
+`Core.ReadPRHistory(ctx, repo, in)` (`internal/git/pr_history*.go`) reads
+the next part of a repository's pull requests updated inside a window,
+each with who approved it and who commented on it, for the history the
+app keeps ([tracker backend](tracker-backend.md#forge-pull-request-history)).
+The caller stores the walk the read returns and hands it to the next
+read. A GitHub read makes at most `PRHistoryRequests` (30) requests,
+nested and follow-up pages included, and a GitLab read at most
+`gitlabHistoryMaxRequests` (229, below). A read says `Owed` when its walk
+has work left; a read that fails answers what it read, with its walk
+moved to it, beside the error. Each pull request carries the start of
+the request that read it (`PRHistoryPR.Seen`), the time Work compares
+with its other records. Acts are only added: a read never removes a
+stored act, and the store keeps the earliest time and a stored name over
+an empty one, so a dismissed approval or a deleted comment stays.
+
+The budget is one rule on both forges: a request starts only while the
+read has requests left, and a unit that cannot be split, once started,
+finishes. The list reads from the newest down to the newest update the
+last read read, and what a read cannot reach joins one gap that later
+reads walk on, newest first. `Reach` is the forge time back to which
+every stream has read every update, zero back to the window's start; a
+read has one (`HasReach`) only when every stream proved one, so a first
+read that failed before its first page claims none.
+
+- **GitHub** reads one stream, the list, one GraphQL `PullHistory` a
+  page: the repository's node id (a pull request's head identity) and
+  parent, and `pullRequests(first: 50, orderBy: UPDATED_AT DESC)` with
+  each one's head repository and its acts: its newest 50 `COMMENTED` and
+  `CHANGES_REQUESTED` reviews (`reviews(last: 50, states: ...)`), its
+  first 3 `APPROVED` reviews with the count of their line comments
+  (`approvals: reviews(first: 3, states: [APPROVED]) { ... comments(first:
+  1) { totalCount } }`), and its newest 50 conversation comments, under
+  an 8 MiB body bound (`WithMaxBody`). By GitHub's documented cost
+  formula a page costs 3 points (1 + 50 + 50 + 50 + 150 connection
+  requests, over 100) and a follow-up page 1, so one read spends at most
+  90 points. The list walks by cursor, which moves only toward older
+  updates, so one never skips a pull request: one updated since is above
+  it, which the next read reads first. A commenting review and a
+  conversation comment are comments; an approval is an approval, and a
+  comment at its submit time when its line comment count is above zero;
+  a dismissed or pending review counts for nothing, and an author that
+  is not a `User` (a bot, a deleted account) is left out. A pull request
+  the list finds with the update time the store holds
+  (`PRHistoryInput.Stored`) is unchanged and costs no follow-up page. One
+  that changed, or that the store does not hold, reads what its page
+  could not hold with `PullHistoryMore`, 100 a page: its reviews and
+  conversation comments newest first, down to 5 minutes before the read
+  that last saw it or to the start; its approvals to their end. A
+  follow-up the read cannot afford stays in the walk (`githubMoreWalk`)
+  and leaves it only as its pages are read; one of a pull request the
+  store no longer holds, which the read did not read, is dropped. A
+  read reads the follow-ups its walk holds before it walks the gap on,
+  so the walk holds no more than the follow-ups one read's pages left. A
+  review started long ago and submitted later sits at its old place in
+  the reviews, so on a pull request with more than 50 commenting reviews
+  since the last read it can be missed.
+
+  Two GitHub behaviors carry the comments on the code. GitHub documents
+  neither, and the app relies on both:
+
+  1. A line comment outside an approval belongs to a review by its
+     writer, a reply included, so the commenting reviews name everyone
+     who commented on the code. The schema leaves
+     `PullRequestReviewComment.pullRequestReview` nullable
+     (`internal/git/forgeschema/github.graphql`). If a line comment can
+     stand without such a review, its writer gets no comment act on that
+     pull request.
+  2. A review or a reply moves the pull request's `updatedAt`, so the
+     list reads it again. If one does not, its act waits until the pull
+     request next changes, and is missed if it never does inside the
+     window.
+
+  Neither failure removes a stored act or touches an approval. The
+  forge fake models both (`Comment.Review`), and
+  `TestGitHubHistoryReadsCommentsOnTheCodeFromTheReviews` pins the
+  first at the fake.
+- **GitLab**: the list is
+  `projects/P/merge_requests?state=all&order_by=updated_at&sort=desc`,
+  100 a page, from `updated_after` (the newest update read) and before
+  `updated_before` (the oldest update of the page before, a keyset that a
+  deletion cannot shift); more than 100 merge requests sharing one update
+  time stop the read with a failure that says so. The acts are the
+  project's events, `projects/P/events?action=approved` and
+  `action=commented`, each its own feed: an approval does not reliably
+  move a merge request's update time, so acts come from the events by
+  their own time; the feed has no event for a withdrawn approval or a
+  deleted comment. The commented feed holds every kind of note on a
+  merge request, `Note`, `DiscussionNote` and `DiffNote`, by GitLab's
+  source ([measurements](../references/forge-api-measurements.md#pull-request-history)),
+  though GitLab's discussions page says a `DiscussionNote` is not
+  available through the events API; if that page holds on an
+  installation, a person who only replied in a discussion gets no
+  comment act there.
+  The feed is sorted by event id, not time, filtered only by whole dates
+  in the server's time zone (`after` and `before`, each exclusive,
+  padded by 2 days here), and paged by number with its count capped at
+  10,000, so no read keeps a page number. Reading on reads the feed
+  newest first, page numbers within the read only, and stops at a page
+  that holds an id at or below the highest the last read read
+  (`gitlabFeedWalk.TopID`) and is wholly older than an hour
+  (`gitlabEventsLate`) before the last read's start, which covers an
+  event whose row committed late and a forge clock behind this
+  computer's; the first read reads the newest page for that id. Walking
+  back reads each band of whole days (7 at first, doubling up to 56
+  after a band of a page or less, halving after one past 20 pages) whole,
+  and a band a read cannot finish is read again by the next read, half
+  as wide; the walk never goes below where the list has reached. A band
+  starts only while the read has requests left, and a band of one day
+  (5 calendar days with the padding) is read whole once started, up to
+  the 100 pages GitLab counts, past which the read fails: a project of
+  more than about 2,000 comment events a day fails loudly. An event
+  naming a merge request neither the read nor the store holds fetches it
+  by `iids[]`, 100 at once, and the feed moves past the event only once
+  it is. A read's worst case is 30 requests, then a band's other 99
+  pages and 100 fetches: 229. An event imported with a time before a
+  band already walked is not read. `projects/P` (cached) gives the head
+  identity, the project ID, and `forked_from_project`.
+
+The forge fake's counts (`internal/git/pr_history_test.go`; a fake's
+counts, not a measurement of a forge):
+
+| History read | GitHub | GitLab |
+|---|---|---|
+| First read of 2,000 pull requests, no acts | 30 `PullHistory`, 90 points | |
+| First full read of 2,000 pull requests, no acts | 2 reads: 41 `PullHistory`, 123 points | |
+| First full read of 3,000 pull requests, no acts | 3 reads: 62 `PullHistory`, 186 points | 2 reads: 32 list pages, 18 event pages, 1 `projects/P` |
+| First full read of 50 pull requests of 51 to 1,051 comments each | 4 reads: 4 `PullHistory`, 60 `PullHistoryMore`, 72 points | |
+| First full read of 1 merge request and 1,330 comment events | | 34 event pages, 3 list pages, 1 `projects/P` |
+| First full read of 1 merge request and 9,000 comment events over 12 days | | 13 reads: 425 event pages, 14 list pages, 1 `projects/P` |
+| Steady read | 1 `PullHistory`, 3 points | 1 list page, 1 page of approvals, 1 or 2 pages of comments, + `projects/P` when its cache expired |
+
 ### Ticket Work search
 
 A ticket's Work (`SearchTicketWork`,
 [tracker backend](tracker-backend.md#ticket-keys-work-ask-and-start-work))
-asks the forge for the pull requests of the ticket's key that the stored
-list and its linked threads do not hold. It runs when Work shows and on
-the ticket's Refresh (and after a Start work run, when Work reads again),
-never on a timer, and is interactive. It reads in two rounds, each over
+asks the forge for the pull requests of the ticket's key in each
+repository whose stored history cannot answer for the ticket
+([tracker backend](tracker-backend.md#forge-pull-request-history)). It
+runs when Work shows and on the ticket's Refresh (and after a Start work
+run, when Work reads again), never on a timer, and is interactive. It reads in two rounds, each over
 at most `prListReadConcurrency` (4) repositories or lookups at a time
 (GitLab's two searches of a repository run at once, so up to 8 requests,
 the host's limit), every request within the method's budget:

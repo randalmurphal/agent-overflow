@@ -116,10 +116,6 @@ func (f *probedProvider) Projects(ctx context.Context) ([]Project, error) {
 	f.see(ctx)
 	return nil, nil
 }
-func (f *probedProvider) PullRequests(ctx context.Context, _ IssueID) ([]LinkedPullRequest, error) {
-	f.see(ctx)
-	return nil, nil
-}
 func (f *probedProvider) LinkTypes(ctx context.Context) ([]LinkType, error) {
 	f.see(ctx)
 	return nil, nil

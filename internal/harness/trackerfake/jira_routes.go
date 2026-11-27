@@ -2,10 +2,9 @@ package trackerfake
 
 // The Jira roots: the platform API, and Jira Software's.
 const (
-	api       = "rest/api/3/"
-	agile     = "rest/agile/1.0/"
-	software  = "rest/software/1.0/"
-	devStatus = "rest/dev-status/latest/"
+	api      = "rest/api/3/"
+	agile    = "rest/agile/1.0/"
+	software = "rest/software/1.0/"
 )
 
 // Query parameter sets shared by routes.
@@ -81,10 +80,6 @@ var jiraRoutes = []jiraRoute{
 	{method: "GET", pattern: api + "worklog/updated", query: []string{"since"}, reads: true, handle: updatedWorklogs},
 	{method: "GET", pattern: api + "worklog/deleted", query: []string{"since"}, reads: true, handle: deletedWorklogs},
 	{method: "POST", pattern: api + "worklog/list", reads: true, handle: worklogsByID},
-
-	// The development panel (jira_devstatus.go), undocumented.
-	{method: "GET", pattern: devStatus + "issue/summary", query: []string{"issueId"}, reads: true, handle: devSummary},
-	{method: "GET", pattern: devStatus + "issue/detail", query: []string{"issueId", "applicationType", "dataType"}, reads: true, handle: devDetail},
 
 	{method: "GET", pattern: agile + "board", query: with(window, "projectKeyOrId", "type", "name"), reads: true, handle: listBoards},
 	{method: "GET", pattern: agile + "board/{board}", reads: true, handle: getBoard},

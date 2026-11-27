@@ -12,7 +12,6 @@ import (
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
-	"agent-overflow/internal/tracker/jira"
 	"agent-overflow/internal/tracker/linear"
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -215,8 +214,6 @@ func ClassifyFailure(kind string, err error) Failure {
 	var notSent *trackerapi.NotSentError
 	var source *trackerapi.SourceError
 	var cut *trackerapi.CutError
-	var devShape *jira.DevShapeError
-	var devErrors *jira.DevStatusError
 	switch {
 	case pokerOwn(err):
 		return pokerFailure(err)
@@ -244,11 +241,6 @@ func ClassifyFailure(kind string, err error) Failure {
 			"Refresh to try again now. Agent Overflow tries again by itself later while the board is open", answered(status.Tracker), status.Status)}
 	case errors.As(err, &status):
 		return Failure{Kind: FailureTracker, Message: fmt.Sprintf("%s answered HTTP %d", answered(status.Tracker), status.Status)}
-	case errors.As(err, &devShape):
-		return Failure{Kind: FailureTracker, Message: "Jira answered in a form Agent Overflow does not know (" + devShape.Why +
-			"); Jira does not document these endpoints, and they may have changed"}
-	case errors.As(err, &devErrors):
-		return Failure{Kind: FailureTracker, Message: devStatusMessage(devErrors.Errors, devErrors.ConfigErrors)}
 	case errors.As(err, &tooLarge):
 		return Failure{Kind: FailureTracker, Message: answered(tooLarge.Tracker) + " sent an answer larger than Agent Overflow reads"}
 	case errors.Is(err, trackerapi.ErrCredentialChanged):
@@ -410,23 +402,4 @@ func keyFileLabel(kind string) keyfile.Label {
 		return keyfile.Label{Service: "Linear", Kind: keyfile.APIKey}
 	}
 	return keyfile.Label{Service: trackerName(kind), Kind: keyfile.APIToken}
-}
-
-// devStatusMessage says a development panel answer that named errors, by
-// their count alone: the classifier's sentences hold no tracker text.
-func devStatusMessage(errs, configErrs int) string {
-	count := func(n int, one, many string) string {
-		if n == 1 {
-			return "1 " + one
-		}
-		return fmt.Sprintf("%d %s", n, many)
-	}
-	var parts []string
-	if errs > 0 {
-		parts = append(parts, count(errs, "error reading the site's forge integration", "errors reading the site's forge integration"))
-	}
-	if configErrs > 0 {
-		parts = append(parts, count(configErrs, "error in its configuration", "errors in its configuration"))
-	}
-	return "Jira reported " + strings.Join(parts, " and ") + "; the ticket's development panel in Jira may say more"
 }

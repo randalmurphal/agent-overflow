@@ -19,8 +19,6 @@ func tempoReq(method, path, body string) call {
 var readRows = map[string]call{
 	"GET _edge/tenant_info":                                         jiraReq("GET", "/_edge/tenant_info", ""),
 	"GET rest/api/3/myself":                                         jiraReq("GET", "/rest/api/3/myself", ""),
-	"GET rest/dev-status/latest/issue/summary":                      jiraReq("GET", "/rest/dev-status/latest/issue/summary?issueId=10101", ""),
-	"GET rest/dev-status/latest/issue/detail":                       jiraReq("GET", "/rest/dev-status/latest/issue/detail?issueId=10101&applicationType=oAuth-gitlab-jira-connect-gitlab.com&dataType=pullrequest", ""),
 	"GET rest/api/3/user":                                           jiraReq("GET", "/rest/api/3/user?accountId=acc-user1", ""),
 	"GET rest/api/3/user/search":                                    jiraReq("GET", "/rest/api/3/user/search?query=user", ""),
 	"GET rest/api/3/user/assignable/search":                         jiraReq("GET", "/rest/api/3/user/assignable/search?project=WEB", ""),
@@ -131,7 +129,6 @@ func TestReadRoutesChangeNothing(t *testing.T) {
 	slices.Sort(names)
 	f := pagingFixture()
 	f.Jira[0].Issues[0].Attachments = []JiraAttachment{{ID: "60001", Filename: "a.txt", MimeType: "text/plain", Content: []byte("a"), Author: "acc-user1"}}
-	f.Jira[0].Issues[0].PullRequests = []JiraPullRequest{{InstanceType: "oAuth-gitlab-jira-connect-gitlab.com", ID: "example/web!7", Name: "Fix", URL: "https://gitlab.com/example/web/-/merge_requests/7", Status: "MERGED"}}
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			c, ok := readRows[name]

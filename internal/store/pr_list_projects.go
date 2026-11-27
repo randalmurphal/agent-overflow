@@ -8,8 +8,8 @@ import (
 
 // PRListProject is one repository's last project read on the Pull
 // requests page (migration v146): its key (git.RepoReference.Key), the
-// published ProjectPRList as JSON, and when the read landed (unix
-// milliseconds).
+// published ProjectPRList as JSON, and when the read's request started
+// (unix milliseconds), the time its rows were observed at.
 type PRListProject struct {
 	RepoKey     string
 	ProjectJSON []byte
@@ -27,7 +27,7 @@ func (s *Store) PutPRListProject(project PRListProject) error {
 	case project.RepoKey == "" || len(project.RepoKey) > MaxDiffReviewSourceKeyBytes || hasControlCharacter(project.RepoKey):
 		return fmt.Errorf("store: PR list repository key %q is invalid", project.RepoKey)
 	case project.ReadAt <= 0:
-		return fmt.Errorf("store: PR list read of %s needs the time it landed", project.RepoKey)
+		return fmt.Errorf("store: PR list read of %s needs the time it started", project.RepoKey)
 	case !json.Valid(project.ProjectJSON):
 		return fmt.Errorf("store: PR list read of %s is not JSON", project.RepoKey)
 	case len(project.ProjectJSON) > maxPRListProjectBytes:
@@ -49,7 +49,7 @@ func (s *Store) TouchPRListProjectReadAt(repoKey string, readAt int64) (bool, er
 	case repoKey == "" || len(repoKey) > MaxDiffReviewSourceKeyBytes || hasControlCharacter(repoKey):
 		return false, fmt.Errorf("store: PR list repository key %q is invalid", repoKey)
 	case readAt <= 0:
-		return false, fmt.Errorf("store: PR list read of %s needs the time it landed", repoKey)
+		return false, fmt.Errorf("store: PR list read of %s needs the time it started", repoKey)
 	}
 	result, err := s.db.Exec(`UPDATE pr_list_projects SET read_at = ? WHERE repo_key = ?`, readAt, repoKey)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"slices"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 )
@@ -31,8 +32,9 @@ type ticketHeadLookup struct {
 }
 
 // searchTicketForge adds to read what the forge holds for the ticket's
-// key, in two rounds of concurrent requests, at most
-// prListReadConcurrency at a time:
+// key in the repositories of origins, Work's origins whose pull request
+// history cannot answer for the ticket (addTicketHistory), in two rounds
+// of concurrent requests, at most prListReadConcurrency at a time:
 //
 //   - one key search per distinct repository Work's projects clone
 //     (gitops.Core.SearchPRsByKey), however many projects clone it: the
@@ -44,16 +46,19 @@ type ticketHeadLookup struct {
 //     hold a branch's pull requests (a fork's parent too), and what Work
 //     lists proves nothing, since a branch can have several.
 //
-// A found row or branch counts only when it names the key
-// (namesTicketKey), since the forge's search is looser than the key rule.
+// A found row or branch adds a pull request only when it names the key
+// (namesTicketKey), since the forge's search is looser than the key rule;
+// a found row of one listed is observed whatever it names, at the time
+// it landed, after every stored observation Work read. The stored open rows of the pull requests found are
+// observed too (observeListedRows).
 // A repository's failure is its one ForgeProblem, beside the rows its
 // search and lookups read before they failed; a failed search gets no
 // lookups. A project whose origin
 // names no forge repository is not searched.
-func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) {
+func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead, origins []ForgeProject) error {
 	var repos []*ticketSearchRepo
 	byKey := map[string]*ticketSearchRepo{}
-	for _, origin := range read.origins {
+	for _, origin := range origins {
 		if origin.Error != "" {
 			read.work.ForgeProblems = append(read.work.ForgeProblems, TicketForgeProblem{ProjectID: origin.ProjectID, Error: origin.Error, ErrorKind: forgeFailureForge})
 			continue
@@ -132,35 +137,35 @@ func (a *App) searchTicketForge(ctx context.Context, read *ticketWorkRead) {
 			Reserve: fail.reserve, ResumeAt: fail.resumeAt,
 		})
 	}
+	return read.observeListedRows()
 }
 
-// addFound lists a pull request the forge found for the key, of
-// projectID, once, and reports whether it names the key. The forge's row
-// is the newest read of it: it replaces a row listed already, which keeps
-// only what the forge's row lacks, the stored list's CI and the project it
-// was listed under.
+// addFound observes a pull request the forge's search found, of
+// projectID, now (observeFound), and reports whether it names the key.
 func (r *ticketWorkRead) addFound(found gitops.PRFound, projectID string) bool {
-	if !namesTicketKey(found.Title, found.HeadRefName, r.work.Key) {
+	return r.observeFound(found, projectID, time.Now().UnixMilli(), "")
+}
+
+// observeFound observes found, observed at at (wall Unix ms), with its
+// head repository when it is known, under projectID (observe), when it
+// names the key or is listed, and reports whether it names the key.
+func (r *ticketWorkRead) observeFound(found gitops.PRFound, projectID string, at int64, headRepo string) bool {
+	names := namesTicketKey(found.Title, found.HeadRefName, r.work.Key)
+	if !names && !r.listed(found.Ref.Identity()) {
 		return false
 	}
 	row := TicketPullRequest{
 		Ref: found.Ref, URL: found.URL, Title: found.Title, Author: cmp.Or(found.Author.Name, found.Author.Login),
 		State: ticketPRState(found.State, found.Draft), Branch: found.HeadRefName, ProjectID: projectID,
 	}
-	id := row.Ref.Identity()
-	at := slices.IndexFunc(r.work.PullRequests, func(p TicketPullRequest) bool { return p.Ref.Identity() == id })
-	if at < 0 {
-		r.work.PullRequests = append(r.work.PullRequests, row)
-		return true
+	r.observe(row, at)
+	if headRepo != "" {
+		if r.prHeads == nil {
+			r.prHeads = map[string]string{}
+		}
+		r.prHeads[row.Ref.Identity()] = headRepo
 	}
-	delete(r.recorded, id)
-	listed := r.work.PullRequests[at]
-	row.CI = listed.CI
-	if listed.ProjectID != "" {
-		row.ProjectID = listed.ProjectID
-	}
-	r.work.PullRequests[at] = row
-	return true
+	return names
 }
 
 // ticketPRState is a found pull request's state as Work names it.

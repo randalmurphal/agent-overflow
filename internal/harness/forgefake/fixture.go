@@ -470,6 +470,10 @@ type Comment struct {
 	// it again (suggestions.go).
 	suggestionsFrom []string
 	suggestionsBody string
+	// Review is the id of the GitHub review a thread comment was submitted
+	// in (its pullRequestReview), a review of the pull by the comment's
+	// author; 0 is none.
+	Review int64 `json:"review,omitempty"`
 	// Replies are the further notes of a GitLab conversation comment's
 	// discussion; a reply to one adds them. GitHub conversation comments
 	// have none.
@@ -943,6 +947,16 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 		}
 		p.Reviews[i].SubmittedAt = defaultString(review.SubmittedAt, "2026-01-01T00:00:00Z")
 		p.Reviews[i].CommitSHA = defaultString(review.CommitSHA, p.HeadSHA)
+	}
+	for i, thread := range p.Threads {
+		for j, comment := range thread.Comments {
+			if comment.Review == 0 {
+				continue
+			}
+			if forge != "github" || !slices.ContainsFunc(p.Reviews, func(r Review) bool { return r.ID == comment.Review && r.Author == comment.Author }) {
+				return fmt.Errorf("threads[%d].comments[%d]: review %d is no GitHub review of the pull by %s", i, j, comment.Review, comment.Author)
+			}
+		}
 	}
 	for i := range p.DraftNotes {
 		draft := &p.DraftNotes[i]

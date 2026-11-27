@@ -203,6 +203,62 @@ likewise `STABLE` and `stable`, so it matches a substring and ignores
 case. A self-managed GitLab of another version was not measured, nor
 which rate-limit pool these searches use.
 
+## Pull request history
+
+The reads of a repository's history
+([forge transport](../architecture/forge-transport.md#pull-request-history))
+rest on these documented behaviors, read on 2026-11-27; none was measured
+against a live forge.
+
+- GitLab's Events API documentation (`docs.gitlab.com/api/events/`): a
+  project's events (`GET /projects/:id/events`) filter by `action`
+  (`approved` and `commented` are among the listed actions), by `after`
+  and `before`, each a date (`YYYY-MM-DD`), and sort by `sort` (`asc` or
+  `desc`). The page names no GitLab version for these parameters, and
+  says events older than 3 years are removed. GitLab's source
+  (`app/finders/events_finder.rb`) orders the events by `id`, not by
+  time, and keeps those created after the end of the `after` day and
+  before the start of the `before` day, in the server's time zone, so
+  each date is exclusive; the reader pads each by 2 days. Its offset
+  pagination (`lib/gitlab/pagination/offset_pagination.rb`) counts at most
+  10,000 rows, past which it names no next page; the reader reads a band
+  of a day whole up to 100 pages and fails past them.
+- A note on a merge request is an event whose target is a `Note`, a
+  `DiffNote` (a comment on the code) or a `DiscussionNote` (a reply);
+  both are kinds of `Note` (`app/models/discussion_note.rb`), and
+  GitLab's event entity (`lib/api/entities/event.rb`) answers an event
+  whose target is a note with its `note` (`noteable_type`,
+  `noteable_iid`, `system`), so by the source the `commented` feed holds
+  all three. GitLab's discussions documentation
+  (`docs.gitlab.com/api/discussions/`, its note types) says a
+  `DiscussionNote` is not available through the events API; the reader
+  follows the source, and the viewer's feed measured above carried
+  `DiscussionNote` targets.
+- GitLab's merge requests API documentation: `updated_after` and
+  `updated_before` return merge requests updated on or after, and on or
+  before, the given time; `order_by=updated_at` with `sort`; a filter by
+  `source_project_id` exists only on the group list, so the project list
+  is read and each row's `source_project_id` names its head.
+- GitHub's GraphQL rate limit documentation: `first` and `last` are 1 to
+  100; a query's cost is the requests it needs (each connection and each
+  nested connection by its `first`) divided by 100, rounded, at least 1;
+  5,000 points an hour for a user; a query that runs past 10 seconds is
+  stopped. `PullHistory` (50 pull requests, each with 50 reviews, 3
+  approvals with their comment counts and 50 comments) is 1 + 50 + 50 +
+  50 + 150 = 301 requests, 3 points a page; `PullHistoryMore` is at most
+  103 requests, 1 point.
+- GitHub's GraphQL schema (`internal/git/forgeschema/github.graphql`)
+  leaves `PullRequestReviewComment.pullRequestReview` nullable and
+  documents neither that every line comment belongs to a review by its
+  writer nor that a review or a reply moves the pull request's
+  `updatedAt`; the reader relies on both
+  ([forge transport](../architecture/forge-transport.md#pull-request-history)).
+- A `PullHistory` page's size was not measured; its body bound is 8 MiB
+  (`WithMaxBody`), as the GitLab merge request list's is: 50 pull
+  requests with 103 nested items each fit it at up to 1.6 KB an item.
+  A project events page uses `gitlabEventsMaxBody` (4 MiB), sized from
+  the user events pages measured below.
+
 ## List page sizes
 
 Read-only GETs on 2026-11-11 (`gh api` on randalmurphal/agent-overflow,

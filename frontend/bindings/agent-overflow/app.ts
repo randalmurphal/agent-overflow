@@ -2789,10 +2789,11 @@ export function GetThreadWorktreeSetup(threadID: string): $CancellablePromise<ap
  * GetTicketWork lists the pull requests and branches of the ticket issueID
  * that connectionID reads, from what this computer stores and from git's
  * refs, with no forge or tracker request: the stored Pull requests list
- * (open pull requests), the pull requests its linked threads were last
- * seen with (merged and closed ones too), and the branches of the projects
- * that list a board of the connection, hold one of those pull requests or
- * hold a thread linked to the ticket.
+ * (open pull requests), the stored pull request history (addTicketHistory)
+ * with each repository's failed read, the pull requests its linked
+ * threads were last seen with (merged and closed ones too), and the
+ * branches of the projects that list a board of the connection, hold one
+ * of those pull requests or hold a thread linked to the ticket.
  * The ticket's key is the one its mirror holds, so the ticket must have
  * been read on this computer, as an open ticket has.
  */
@@ -5277,7 +5278,8 @@ export function RemoveProviderAccount(providerName: string, accountID: string): 
 
 /**
  * RemoveTrackerConnection removes a connection, the Tempo connection that
- * belongs to it, their key files and their rows.
+ * belongs to it, their key files and their rows, and the forge pull
+ * request history the app kept only for it (followForgeHistorySources).
  */
 export function RemoveTrackerConnection(connectionID: string): $CancellablePromise<void> {
     return $Call.ByID(21628411, connectionID);
@@ -5967,15 +5969,14 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
 }
 
 /**
- * SearchTicketWork is GetTicketWork's answer with the forge searched by
- * the ticket's key, for the pull requests the stored sources do not hold
- * (a merged one, one opened where this computer never read the list):
- * once per repository the Work's projects clone, and once per branch of
- * the ticket (searchTicketForge); and with the pull requests the
- * tracker's development data links to the ticket, read at the same time
- * (addDevelopment). Each repository's failure is its ForgeProblem, the
- * development data's its DevelopmentProblem, and the rest of the answer
- * stands beside them. A client
+ * SearchTicketWork is GetTicketWork's answer with each pull request
+ * history of Work's repositories read again when its last read is
+ * forgeHistoryCatchUp old (catchUpTicketHistory), and the forge searched
+ * by the ticket's key in each repository whose history cannot answer for
+ * the ticket (addTicketHistory): once per such repository, and once per
+ * branch of the ticket in it (searchTicketForge). Each repository's
+ * failure is its ForgeProblem, and the rest of the answer stands beside
+ * them. A client
  * shows GetTicketWork's answer first and this one when it lands, so a slow
  * forge holds no row of the stored sources back. The budget runs from
  * entry: every forge request runs within it, and no project's local read
@@ -6468,7 +6469,8 @@ export function SetThreadTicket(threadID: string, ticket: app$0.ThreadTicketRef)
 
 /**
  * SetTrackerConnectionEnabled turns a connection on or off. Off keeps its
- * row and key file and closes its client.
+ * row and key file and closes its client. The forge pull request history
+ * the app keeps follows at once (followForgeHistorySources).
  */
 export function SetTrackerConnectionEnabled(connectionID: string, enabled: boolean): $CancellablePromise<app$0.TrackerConnection> {
     return $Call.ByID(3921109066, connectionID, enabled).then(($result: any) => {

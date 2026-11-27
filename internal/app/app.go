@@ -1134,6 +1134,9 @@ type App struct {
 	// trackers owns the tracker connections; built by initTrackers during
 	// Start and stopped by Shutdown before the store closes.
 	trackers *trackerapp.Service
+	// forgeHistory serializes the forge pull request history's source
+	// set and reads (app_forge_history.go).
+	forgeHistory forgeHistoryState
 	// activity records when the person was active and on which thread;
 	// built by initActivity during Start, its flushes started with the
 	// boot's unattended work and closed by Shutdown before the store.

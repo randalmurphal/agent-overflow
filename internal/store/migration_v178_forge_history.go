@@ -1,0 +1,97 @@
+package store
+
+// Migration v178 adds the pull request history of the forge repositories
+// the tracker connections' projects clone and of their forks' parents,
+// which a ticket's Work lists (ApplyForgeHistory, ForgeHistoryForWork):
+//
+//   - forge_history_sources: one row per forge repository read. Its id is
+//     never reused (AUTOINCREMENT), so a read that began before its source
+//     was removed cannot land in one made again. It holds the reader's
+//     walk (walk, JSON only the reader reads), how far back every update
+//     is read (reach, the forge's Unix ms; 0 is back to the window's
+//     start; NULL until every stream of the walk has proved one), whether
+//     the walk has work left that
+//     the next round reads at once (owed), the repository's own head
+//     identity in the forge's terms (own_head), the parent the forge names
+//     when it is a fork (its repository key and path), the last read's
+//     wall time (read_at) and its failure (failure_kind, the sentence a
+//     person reads as failure, the app's JSON detail of it as
+//     failure_detail, failed_at), which a read that lands clears.
+//   - forge_history_prs: one row per pull request updated inside the
+//     window, whatever its head: its number, address, title, source branch
+//     and head repository, state, author and times, and the wall time the
+//     request that last read it started (seen_at): Work compares it with
+//     other records' own observation times, and the source's read_at would
+//     claim an observation nobody made.
+//   - forge_history_acts: one row per pull request, kind (1 approved, 2
+//     commented) and login, with the person's name (empty when no read
+//     has named them) and the earliest time. A read only adds acts.
+//   - forge_history_keys: the ticket keys each pull request names, by its
+//     title and source branch (trackerapp.TicketKeys).
+//
+// Acts and keys belong to their pull request and pull requests to their
+// source (ON DELETE CASCADE). Every row is cache content: a lost one costs
+// a forge read.
+const forgeHistoryV178SQL = `
+CREATE TABLE forge_history_sources (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ repo_key TEXT NOT NULL UNIQUE CHECK(repo_key <> ''),
+ forge TEXT NOT NULL CHECK(forge IN ('github', 'gitlab')),
+ host TEXT NOT NULL CHECK(host <> ''),
+ namespace TEXT NOT NULL CHECK(namespace <> ''),
+ repo TEXT NOT NULL CHECK(repo <> ''),
+ own_head TEXT NOT NULL DEFAULT '',
+ parent_key TEXT NOT NULL DEFAULT '',
+ parent_namespace TEXT NOT NULL DEFAULT '',
+ parent_repo TEXT NOT NULL DEFAULT '',
+ walk TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(walk)),
+ reach INTEGER CHECK(reach >= 0),
+ owed INTEGER NOT NULL DEFAULT 1 CHECK(owed IN (0, 1)),
+ read_at INTEGER NOT NULL DEFAULT 0 CHECK(read_at >= 0),
+ failure_kind TEXT NOT NULL DEFAULT '',
+ failure TEXT NOT NULL DEFAULT '',
+ failure_detail TEXT NOT NULL DEFAULT '' CHECK(failure_detail = '' OR json_valid(failure_detail)),
+ failed_at INTEGER NOT NULL DEFAULT 0 CHECK(failed_at >= 0),
+ CHECK((failure_kind = '') = (failure = '') AND (failure = '') = (failed_at = 0) AND (failure <> '' OR failure_detail = '')),
+ CHECK((parent_key = '') = (parent_namespace = '') AND (parent_namespace = '') = (parent_repo = ''))
+);
+CREATE TABLE forge_history_prs (
+ source_id INTEGER NOT NULL,
+ number INTEGER NOT NULL CHECK(number > 0),
+ url TEXT NOT NULL CHECK(url <> ''),
+ title TEXT NOT NULL,
+ head_ref TEXT NOT NULL,
+ head_repo TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('open', 'draft', 'merged', 'closed')),
+ author TEXT NOT NULL,
+ author_name TEXT NOT NULL,
+ created_at INTEGER NOT NULL CHECK(created_at >= 0),
+ updated_at INTEGER NOT NULL CHECK(updated_at > 0),
+ merged_at INTEGER NOT NULL CHECK(merged_at >= 0),
+ closed_at INTEGER NOT NULL CHECK(closed_at >= 0),
+ seen_at INTEGER NOT NULL CHECK(seen_at > 0),
+ PRIMARY KEY (source_id, number),
+ FOREIGN KEY (source_id) REFERENCES forge_history_sources(id) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE INDEX forge_history_prs_updated ON forge_history_prs(source_id, updated_at);
+CREATE TABLE forge_history_acts (
+ source_id INTEGER NOT NULL,
+ number INTEGER NOT NULL,
+ kind INTEGER NOT NULL CHECK(kind IN (1, 2)),
+ login TEXT NOT NULL CHECK(login <> ''),
+ name TEXT NOT NULL,
+ at INTEGER NOT NULL CHECK(at > 0),
+ PRIMARY KEY (source_id, number, kind, login),
+ FOREIGN KEY (source_id, number) REFERENCES forge_history_prs(source_id, number) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE TABLE forge_history_keys (
+ key TEXT NOT NULL CHECK(key <> ''),
+ source_id INTEGER NOT NULL,
+ number INTEGER NOT NULL,
+ PRIMARY KEY (key, source_id, number),
+ FOREIGN KEY (source_id, number) REFERENCES forge_history_prs(source_id, number) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE INDEX forge_history_keys_pr ON forge_history_keys(source_id, number);
+`
+
+const forgeHistoryMigrationVersion = 178

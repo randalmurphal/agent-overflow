@@ -108,31 +108,6 @@ describe('Work', () => {
     view.unmount();
   });
 
-  it('lists a merge request Jira\'s development data links, its unknown status as Jira\'s word, counts one it cannot open, and says a failed read', async () => {
-    const view = await mountWork({
-      search: async () => ({ ...WORK, problems: [], forgeProblems: [], searchFull: [], developmentUnlisted: 2, pullRequests: [...WORK.pullRequests,
-        { ref: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'example', Repo: 'ops', Number: 4 }, url: 'https://gitlab.com/example/ops/-/merge_requests/4', title: 'Rework the cache', author: 'User 1', state: 'merged', branch: 'web-1-cache' },
-        { ref: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'example', Repo: 'ops', Number: 5 }, url: 'https://gitlab.com/example/ops/-/merge_requests/5', title: 'Spike', state: 'UNKNOWN', branch: '' }] }),
-    });
-    await waitFor(() => expect(view.getAllByTestId('ticket-work-pull')).toHaveLength(3));
-    expect(view.getAllByTestId('ticket-work-pull-state').map((s) => s.textContent)).toEqual(['Open', 'Merged', 'UNKNOWN']);
-    expect(view.getByTestId('ticket-work-development-unlisted').textContent?.trim()).toBe(
-      "Jira links 2 more pull requests to this ticket at an address Agent Overflow cannot open; the ticket's development panel in Jira lists them.");
-    expect(view.queryByTestId('ticket-work-development-problem')).toBeNull();
-    view.unmount();
-    ticket?.release();
-    ticket = null;
-
-    const failed = await mountWork({
-      search: async () => ({ ...WORK, problems: [], forgeProblems: [], searchFull: [],
-        developmentProblem: "Jira's development data could not be read (rest/dev-status/latest/issue/summary): Jira refused access (HTTP 403): the token may not make this request" }),
-    });
-    await waitFor(() => expect(failed.getByTestId('ticket-work-development-problem').textContent).toBe(
-      "Jira's development data could not be read (rest/dev-status/latest/issue/summary): Jira refused access (HTTP 403): the token may not make this request."));
-    expect(failed.getAllByTestId('ticket-work-pull')).toHaveLength(1);
-    failed.unmount();
-  });
-
   it('says each failed search in the Pull requests page\'s words beside the rows, a rate limit with when to retry, and Retry reads again', async () => {
     const resumeAt = '2026-11-26T18:30:00Z';
     const view = await mountWork({
@@ -170,6 +145,29 @@ describe('Work', () => {
     const before = view.reads.mock.calls.length;
     await fireEvent.click(problems[3].querySelector('[data-testid="pulls-project-retry"]')!);
     await waitFor(() => expect(view.reads.mock.calls.length).toBe(before + 1));
+    view.unmount();
+  });
+
+  it('says a failed read of a repository\'s pull request history beside the rows that history holds, from the stored answer on', async () => {
+    const resumeAt = '2026-11-26T18:30:00Z';
+    const history = [
+      { projectId: 'p1', repo: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'widgets' }, error: 'failed to refresh from the forge (id: h1)', errorKind: 'rate_limited', resumeAt, history: true, failedAt: 1 },
+      { projectId: 'p1', repo: { Forge: 'gitlab', Host: 'gitlab.com', Namespace: 'grp', Repo: 'app' }, error: 'The GitLab login cannot see grp/app.', errorKind: 'forbidden', history: true, failedAt: 1 },
+    ];
+    const view = await mountWork({
+      work: async () => ({ ...WORK, forgeProblems: history }),
+      search: () => new Promise(() => {}),
+    });
+    const problems = await waitFor(() => {
+      const shown = view.getAllByTestId('pulls-project-error');
+      expect(shown).toHaveLength(2);
+      return shown;
+    });
+    const at = formatTimeOfDay(Date.parse(resumeAt));
+    const sentence = (problem: HTMLElement) => problem.textContent?.replace(/\s*Retry\s*$/, '').trim();
+    expect(sentence(problems[0])).toBe(`GitHub rate limit reached, so the read of example/widgets's pull requests did not finish. Retry after ${at}.`);
+    expect(problems[1].textContent).toContain('Could not read the pull requests of grp/app, so these may not be all of them: The GitLab login cannot see grp/app.');
+    expect(view.getAllByTestId('ticket-work-pull')).toHaveLength(1);
     view.unmount();
   });
 

@@ -16,7 +16,8 @@ import (
 // (Deps.ClientConnected), each connection that is on syncs its linked
 // issues' cards, the names its mirror owes, the history due and the
 // evidence credit counts that is due (SyncLinked) until no unit reports
-// More, and then the mirror's cleanup runs (FinishMirrorCleanup). A round
+// More, then the mirror's cleanup runs (FinishMirrorCleanup), and then the
+// forge pull request history that is due is read (Deps.ReadForgeHistory). A round
 // with no client connected is skipped whole, its cleanup included. Every read of the connections, a
 // round's included, decides whether the loop runs (followLoopLocked). A
 // failure is reported to Deps.LoopFailed and logged, and the loop goes on.
@@ -155,6 +156,9 @@ func (s *Service) runLinkedLoop(ctx context.Context, done chan struct{}) {
 		if connected {
 			if err := s.FinishMirrorCleanup(); err != nil && !errors.Is(err, ErrStopped) {
 				s.loopFailure(err)
+			}
+			if err := s.readForgeHist(ctx); err != nil && ctx.Err() == nil {
+				s.loopFailure(fmt.Errorf("trackerapp: read the forge pull request history: %w", err))
 			}
 		}
 		next.Reset(s.cadence.Linked)
