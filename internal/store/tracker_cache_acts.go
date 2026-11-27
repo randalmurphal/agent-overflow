@@ -233,7 +233,7 @@ func replaceMirrorActsTx(tx *sql.Tx, rootID, sourceGen, readAt int64, issues []M
 		return fmt.Errorf("read the issues' acts state: %w", err)
 	}
 	keys = keys[:0]
-	var acts []mirrorActRow
+	acts := []mirrorActRow{}
 	for i, in := range issues {
 		if !admitted[i] {
 			continue

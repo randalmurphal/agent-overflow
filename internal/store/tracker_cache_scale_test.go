@@ -500,6 +500,39 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	out["Jira round of 100, 10 changed"] = measureScale(t, rec, roundInputs(10, 1_000_000), jira)
 	out["Linear round of 100, idle"] = measureScale(t, rec, roundInputs(0, 0), linear)
 	out["Linear round of 100, 10 changed"] = measureScale(t, rec, roundInputs(10, 2_000_000), linear)
+	// Credit's listing of the acts due on every board of the root: with
+	// the board's own groups, under which no sprint member is done, and
+	// with the status every member holds at its completion regrouped as
+	// done, so each is a candidate; with no receipt stored (first use) and
+	// with a receipt of each source for every issue (the steady state).
+	everyDone, err := NewMirrorRegroup(map[string]int{"5": MirrorGroupDone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, credit := range []struct {
+		name    string
+		regroup MirrorRegroup
+	}{{"", MirrorRegroup{}}, {", every member done", everyDone}} {
+		boards := make([]MirrorActsBoard, size.boards)
+		for b := range boards {
+			boards[b] = MirrorActsBoard{BoardID: benchBoardID(b), Regroup: credit.regroup}
+		}
+		listed := 0
+		list := func(int) error {
+			due, _, err := s.ListMirrorActsDue(root, boards, true, 0)
+			listed = len(due)
+			return err
+		}
+		out["acts due, none read"+credit.name] = measureScale(t, rec, func(int) {
+			mustExec(t, s.db, `DELETE FROM tracker_cache_issue_act_reads`)
+		}, list)
+		t.Logf("acts due, none read%s: %d listed", credit.name, listed)
+		out["acts due, every one read"+credit.name] = measureScale(t, rec, func(int) {
+			mustExec(t, s.db, `INSERT OR REPLACE INTO tracker_cache_issue_act_reads(root_id, issue_id, source, read_for, read_at)
+				SELECT root_id, issue_id, src.value, updated_at, 1 FROM tracker_cache_issues, json_each('[1,2]') src WHERE root_id = ?`, root)
+		}, list)
+		t.Logf("acts due, every one read%s: %d listed", credit.name, listed)
+	}
 	out["cleanup pass, nothing pending"] = measureScale(t, rec, nil, func(int) error { return s.FinishMirrorCleanup(context.Background(), nil) })
 	// A complete listing that leaves out a quarter of the board, whose rows
 	// a delta page reads back before each run (untimed), so a listing has

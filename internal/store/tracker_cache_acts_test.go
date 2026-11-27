@@ -184,12 +184,12 @@ func TestMirrorActsSplitAcrossTransactions(t *testing.T) {
 		}
 		return in
 	}
-	recorder := recordMirrorWrites(t, s)
+	before := s.CommitCount()
 	results, _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 10), []MirrorIssueActs{many("10001"), many("10002")}, MirrorCatalog{})
 	if err != nil || !results[0].Stored || !results[1].Stored {
 		t.Fatalf("results %+v, %v", results, err)
 	}
-	if n := recorder.transactions(); n != 2 {
+	if n := s.CommitCount() - before; n != 2 {
 		t.Fatalf("%d transactions; want 2", n)
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_acts`, "3000")
@@ -217,15 +217,17 @@ func actsDue(t *testing.T, s *Store, root int64, worklogs bool, from int64) (str
 }
 
 // The acts due on a board: its active sprints' members done now, first,
-// then its closed sprints' members done at the completion, whose sprint
-// completed in the window, each once, until a read for their update
+// then its closed sprints' members done at the completion, newest
+// completion first, whose sprint completed in the window, each once, until a read for their update
 // stored a receipt of each source read. A member carried on from a closed
 // sprint whose history is unread is not done there yet, and a board the
 // mirror does not show (11) lists nothing.
 func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
-	mustReplaceStructure(t, s, root, webStructure(), true)
+	st := webStructure()
+	st.Sprints = append(st.Sprints, MirrorSprint{ID: "19", OriginBoardID: "10", Name: "WEB Sprint 0", State: MirrorSprintClosed, StartAt: 10, EndAt: 500, CompletedAt: 500})
+	mustReplaceStructure(t, s, root, st, true)
 	done := func(r MirrorRow) MirrorRow { r.Card.StatusID = "10001"; return r }
 	mustWriteRowPage(t, s, root, webPage("10",
 		done(webRow("10001", 5, "a", "21")),       // active, done now
@@ -233,6 +235,7 @@ func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
 		webRow("10003", 5, "c", "20"),             // closed, done at the completion by its history
 		done(webRow("10004", 5, "d", "20", "22")), // closed and carried on, history unread
 		done(webRow("10005", 5, "e", "20")),       // closed, not done at the completion by its history
+		done(webRow("10006", 5, "f", "19")),       // closed earlier, done now and at the completion
 	), []byte("c1"))
 	mustReplaceHistory(t, s, root, MirrorHistory{IssueID: "10003", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 900, From: "1", To: "10001"}}},
 		MirrorWrite{Changed: true})
@@ -244,7 +247,8 @@ func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
 			t.Fatalf("due (worklogs %v, from %d) = %q, more %v; want %q", worklogs, from, got, more, want)
 		}
 	}
-	check(false, 0, "10001,10003")
+	check(false, 0, "10001,10003,10006")
+	check(false, 501, "10001,10003")
 	check(false, 951, "10001")
 	replace := func(at int64, in ...MirrorIssueActs) {
 		t.Helper()
@@ -252,6 +256,7 @@ func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	replace(9, commentsOf("10006", 5, 2), MirrorIssueActs{IssueID: "10006", Source: MirrorActWorklog, ReadFor: 5})
 	replace(10, commentsOf("10001", 5, 2), commentsOf("10003", 4, 2))
 	check(false, 0, "10003")
 	check(true, 0, "10001,10003")
