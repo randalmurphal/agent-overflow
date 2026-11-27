@@ -835,3 +835,72 @@ describe('what a form or a confirmation acts on', () => {
     expect(within(form).queryByTestId('time-draft-form-moved')).toBeNull();
   });
 });
+
+// A write that finishes changes the screen only from the form that sent
+// it, while that form shows: never another entry's form opened since, and
+// never another board.
+describe('a write that finishes after the screen moved on', () => {
+  const OTHER_BOARD = { ...BASE, backend: 'peer-2', connection: 'c2', computerName: 'Desktop' };
+  // The write's answer settles through a few promise steps.
+  const settle = async () => { for (let i = 0; i < 5; i += 1) await tick(); };
+
+  it('leaves the next draft entry\'s form and what was typed in it', async () => {
+    answerDraft([], [drafted(11, '2026-11-11', 60), drafted(22, '2026-11-11', 180, { issue: '10002', key: 'WEB-2', title: 'Second story' })]);
+    let changed!: (e: TimeEntryView) => void;
+    setBindingMock('EditTrackerTimeEntry', () => new Promise<TimeEntryView>((r) => { changed = r; }));
+    const view = render(TimeScreen, BASE);
+    await view.findAllByTestId('time-draft-entry');
+    await fireEvent.click(view.getAllByTestId('time-draft-entry-hours')[0]);
+    const first = await body().findByTestId('time-draft-form');
+    await fireEvent.input(within(first).getByTestId('time-draft-form-time'), { target: { value: '2h' } });
+    await fireEvent.click(within(first).getByTestId('time-draft-form-keep'));
+    await fireEvent.click(view.getAllByTestId('time-draft-entry-hours')[1]);
+    await fireEvent.input(within(body().getByTestId('time-draft-form')).getByTestId('time-draft-form-time'), { target: { value: '4h' } });
+    changed(drafted(11, '2026-11-11', 120, { revision: 3 }));
+    await settle();
+    expect(within(body().getByTestId('time-draft-form')).getByTestId('time-draft-form-time')).toHaveValue('4h');
+  });
+
+  it('leaves the next worklog\'s form and what was typed in it', async () => {
+    answerWeek(WEEK);
+    let saved!: (v: WriteView) => void;
+    setBindingMock('EditTrackerWorklog', () => new Promise<WriteView>((r) => { saved = r; }));
+    const view = render(TimeScreen, BASE);
+    const entries = await view.findAllByTestId('time-entry');
+    await fireEvent.click(within(entries[0]).getByTestId('time-entry-hours'));
+    const first = await body().findByTestId('worklog-form');
+    await fireEvent.input(within(first).getByTestId('worklog-form-time'), { target: { value: '2h' } });
+    await fireEvent.click(within(first).getByTestId('worklog-form-save'));
+    await fireEvent.click(within(entries[1]).getByTestId('time-entry-hours'));
+    await fireEvent.input(within(body().getByTestId('worklog-form')).getByTestId('worklog-form-description'), { target: { value: 'Paired on it' } });
+    saved(APPLIED);
+    await settle();
+    expect(within(body().getByTestId('worklog-form')).getByTestId('worklog-form-description')).toHaveValue('Paired on it');
+  });
+
+  it('says nothing on another board of where a write on the first landed', async () => {
+    answerWeek(WEEK);
+    let saved!: (v: WriteView) => void;
+    setBindingMock('EditTrackerWorklog', () => new Promise<WriteView>((r) => { saved = r; }));
+    const view = render(TimeScreen, BASE);
+    const form = await changeFirst(view);
+    await fireEvent.input(within(form).getByTestId('worklog-form-day'), { target: { value: '2026-11-17' } });
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    await view.rerender(OTHER_BOARD);
+    saved(APPLIED);
+    await settle();
+    expect(view.queryByTestId('time-saved-elsewhere')).toBeNull();
+  });
+
+  it('leaves the first board\'s note of where a write landed on that board', async () => {
+    answerWeek(WEEK);
+    setBindingMock('EditTrackerWorklog', async () => APPLIED);
+    const view = render(TimeScreen, BASE);
+    const form = await changeFirst(view);
+    await fireEvent.input(within(form).getByTestId('worklog-form-day'), { target: { value: '2026-11-17' } });
+    await fireEvent.click(within(form).getByTestId('worklog-form-save'));
+    expect(await view.findByTestId('time-saved-elsewhere')).toHaveTextContent('Logged on');
+    await view.rerender(OTHER_BOARD);
+    expect(view.queryByTestId('time-saved-elsewhere')).toBeNull();
+  });
+});

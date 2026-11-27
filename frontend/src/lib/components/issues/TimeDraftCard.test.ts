@@ -4,7 +4,7 @@
 // Time.
 
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
-import type { ComponentProps } from 'svelte';
+import { tick, type ComponentProps } from 'svelte';
 import { describe, expect, it, vi } from 'vitest';
 import type { PostTimeView, TimeEntryView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import TimeDraftCard from './TimeDraftCard.svelte';
@@ -110,5 +110,25 @@ describe('a time draft card', () => {
     const view = render(TimeDraftCard, { ...BASE, backend: null });
     expect(view.getByTestId('time-draft-card-unowned')).toBeInTheDocument();
     expect(getBindingMock('ThreadTimeEntries')?.mock.calls ?? []).toHaveLength(0);
+  });
+});
+
+describe('a write that finishes after the person opened another entry', () => {
+  it('leaves the next entry\'s form and what was typed in it', async () => {
+    setBindingMock('ThreadTimeEntries', async () => [drafted(11, '2026-11-11', 60), drafted(22, '2026-11-11', 180, { issue: '10002', key: 'WEB-2', title: 'Second story' })]);
+    let changed!: (e: TimeEntryView) => void;
+    setBindingMock('EditTrackerTimeEntry', () => new Promise<TimeEntryView>((r) => { changed = r; }));
+    const view = render(TimeDraftCard, BASE);
+    await view.findAllByTestId('time-draft-entry');
+    const body = within(document.body);
+    await fireEvent.click(view.getAllByTestId('time-draft-entry-hours')[0]);
+    const first = await body.findByTestId('time-draft-form');
+    await fireEvent.input(within(first).getByTestId('time-draft-form-time'), { target: { value: '2h' } });
+    await fireEvent.click(within(first).getByTestId('time-draft-form-keep'));
+    await fireEvent.click(view.getAllByTestId('time-draft-entry-hours')[1]);
+    await fireEvent.input(within(body.getByTestId('time-draft-form')).getByTestId('time-draft-form-time'), { target: { value: '4h' } });
+    changed(drafted(11, '2026-11-11', 120, { revision: 3 }));
+    for (let i = 0; i < 5; i += 1) await tick();
+    expect(within(body.getByTestId('time-draft-form')).getByTestId('time-draft-form-time')).toHaveValue('4h');
   });
 });

@@ -520,3 +520,41 @@ describe('a stored read owed behind the refreshes', () => {
     week.release();
   });
 });
+
+// The showing's stored read is owed like any other, and an owed read
+// belongs to a week that shows: hiding the week settles what waits on it.
+describe('a week shown or hidden with a refresh out', () => {
+  it('reads the stored copy on showing again only after the refresh out, so the refresh never lands over it', async () => {
+    const stored = held('TrackerWorklogs');
+    const refresh = held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    await flush();
+    setTrackerWeekShown(week.key, false);
+    // An agent drafts while the week is hidden; then it shows again.
+    setTrackerWeekShown(week.key, true);
+    expect(stored.calls).toHaveLength(1);
+    refresh.answer({ worklogs: [] });
+    await flush();
+    expect(stored.calls).toHaveLength(2);
+    stored.answer({ worklogs: [log('4')] });
+    await flush();
+    expect(week.current.days?.worklogs.map((w) => w.id)).toEqual(['4']);
+    week.release();
+  });
+
+  it('settles a gap\'s recovery when the week stops showing, before the refresh answers', async () => {
+    const stored = held('TrackerWorklogs');
+    held('RefreshTrackerWorklogs');
+    const week = attachTrackerWeek(REF, true);
+    stored.answer({ worklogs: [] });
+    await flush();
+    let settled = false;
+    void trackerTimeEntriesGap('peer-1')!.then(() => { settled = true; });
+    setTrackerWeekShown(week.key, false);
+    await flush();
+    expect(settled).toBe(true);
+    expect(stored.calls).toHaveLength(1);
+    week.release();
+  });
+});
