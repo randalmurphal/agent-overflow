@@ -685,20 +685,31 @@ number tile's limit.
   board's tickets; How this is counted says so, since a ticket's Work
   lists the linked threads of every attached computer.
 - A query of logged time reads your own, the connection's account's, in
-  hours. A day whose time was never read is not zero: the number, period,
-  bar or cell it falls in reads "Not known" and says how many days were
-  not read ("Not known, 3 days not read"), on the tile, a hover, and a
-  drill's header. While the widget shows, the page reads those days from
-  the tracker, of the range and of the range before a number compares
-  with, at most 31 days a request and one request at a time, saying
-  "Reading your logged time…" meanwhile, and counts again: at most 6
-  requests for a first show (1 for This sprint on two-week sprints, 5 for
-  Last 5 sprints, 6 for Last 10 sprints or Last 12 weeks) and 1 for a
-  later day. A day more than 180 days ago is not read, so a number that
-  counts one stays "Not known"; How this is counted says so. A day is not read again on
-  its own: after a failed read the widget says how many days were not
-  read and why, with Read again. A page narrowed to another person says
-  "Only your own logged time is read."; a Linear board says it has no
+  hours, and each row of it counts for you. Its numbers are known only
+  once every day of the last 180 up to today is read, since a row can
+  count in a period other than its own day's (a sprint's tickets, a total
+  so far). Until then the number, period, bar or cell reads "Not known"
+  and says how many days were not read ("Not known, 3 days not read"),
+  on the tile, a hover, and a drill's header, and a comparison it cannot
+  make says "Not compared: 3 days of the range before are not read." A
+  widget counted by sprint over a range with no sprint reads nothing.
+- While such a widget shows, the board's computer reads the days not read
+  from the tracker, newest first, 31 days a refresh call and one call at
+  a time for the account, while the page says "Reading your logged
+  time…", and the dashboard counts again: a first show is at most 6
+  refresh calls to the board's computer, each one tracker read of up to 31
+  days (182 days), and later shows read only days not read yet. A day the
+  computer read on its own is not read on its own again, so after a
+  failed read the widget says how many days were not read and why, with
+  Read again. Time logged outside the app on one of the newest 31 days
+  shows once the board changes: the computer reads those days again at
+  most once every 5 minutes for the account while the widget shows, so
+  within the board's sync interval plus 5 minutes; a number already known
+  stays shown meanwhile. Older days read again on the dashboard's Refresh
+  or Read again, which read all 180 days again (6 calls). A day more than
+  180 days ago is not read, so a number that counts one stays "Not
+  known"; How this is counted says so. A page narrowed to another person
+  says "Only your own logged time is read."; a Linear board says it has no
   time tracking, and a connection whose account is not verified says to
   check the connection.
 - A number, bar or table cell opens the tickets behind it. Each widget

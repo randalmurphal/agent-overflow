@@ -2558,7 +2558,8 @@ Their costs at 2,000 and 20,000 issues are in
 ### Thread links and logged time
 
 The rules are the comments at the top of
-`store/tracker_cache_export_relations.go` and `trackerdash/worklogs.go`.
+`store/tracker_cache_export_relations.go`, `trackerdash/worklogs.go` and
+`trackerapp/worklog_reads.go`.
 
 - `threads(id, ticket, origin, linked_at, created_at, archived,
   last_turn_at)` is the threads of the board's computer linked to one of
@@ -2569,7 +2570,8 @@ The rules are the comments at the top of
   which threads it counts.
 - `worklogs(id, ticket, day, seconds)` is the logged time on the board's
   tickets of one person, the connection's verified account (the viewer,
-  `Answer.Viewer`), and `worklog_days(day)` the days of that person's
+  `MirrorExport.Viewer`, read in the export's own snapshot), and
+  `worklog_days(day)` the days of that person's
   the mirror read, whatever was logged on them. Both start the day before
   the history window (`MirrorExport.Window`, 180 days), where the page's
   reads stop, not at the earliest instant a count can ask: a sprint that
@@ -2577,9 +2579,85 @@ The rules are the comments at the top of
   also copies `worklog_days`. A metric of it counts in the unit `time`,
   seconds that the screen shows as hours.
 - `day_start(day)` is the instant a row of a day is placed at: the first
-  millisecond of that date in the request's time zone, whatever zone the
-  person logged it in, so a period that begins at midnight holds its
-  first day and not the day before (`trackerdash.placed`).
+  millisecond after that date's first instant in the request's time zone,
+  whatever zone the person logged it in, so a period that begins at
+  midnight holds its first day and not the day before. A date whose
+  midnight a zone change skips begins where the change lands
+  (`trackerdash.placed`, the one conversion the days not read use too).
+- A row of logged time is the viewer's: its person is the viewer unless
+  the metric returns `person`, so Mine keeps it all. A page narrowed to
+  another person says "Only your own logged time is read." in the
+  widget's place, a Linear board that it has no time tracking, and a
+  connection whose account is not verified to check the connection; the
+  drill refuses with the same sentence.
+- A day with no read is not zero hours, and a row of logged time can
+  count in a period other than its day's (a sprint's tickets, a state that
+  holds from its day on). So a widget of logged time is known only once
+  every day of the history window up to now is read: each number, period,
+  bar or cell and total, and drill value carries the window's days not
+  read, with those of its periods before the window, which are never read,
+  in `Num.UR`, and is not known while it carries any. A weekend's day is a
+  day like any other; days after now are not counted. The widget lists
+  the window's days not read for the page (`WidgetValue.Unread`); the
+  evaluator makes no tracker request. A metric counted by period over a
+  range with no period lists and marks nothing; one that counts now needs
+  the window like any other.
+- The reads have one owner on the board's computer
+  (`trackerapp/worklog_reads.go`): per connection, one read at a time of
+  its verified account's logged time, shared with `RefreshWorklogs` (the
+  Time screen, the agents' time tools), which waits its turn and always
+  reads. The page asks with `ReadTrackerWorklogDays(connection, today,
+  reason)`, which answers status alone (read, more, failure, how long
+  until a change may read again), and calls again while more is
+  answered and its demand holds (the store alive, the screen shown, a
+  widget of logged time on the dashboard, the same computer and
+  connection). Each call reads at most 31 days, newest first: days the
+  person asked for, else days of the window never read and not tried. A
+  day read on its own is tried and not read on its own again until the
+  person asks, so a failed read stops the reads and the widget offers
+  Read again. `changed`, sent after an answer when the board's changes
+  moved since the newest days were last read, reads the newest 31 days
+  again at most once per `worklogRereadEvery` (5 minutes) per account;
+  `person` (Refresh, Read again) reads all of the window again. What a
+  connection tried and owes is bounded by the window and dropped with
+  the connection (`stopUsing`) or when its account or time source
+  changes. A first show of nothing read is 6 calls (182 days); one with
+  everything read is 1 call, the newest days read again. While days not
+  read are being read the widget says it is reading; a read of days
+  already read leaves the numbers shown.
+
+Their costs at 2,000 and 20,000 issues are in
+[Tracker API measurements](../references/tracker-api-measurements.md#sprint-history).
+
+### Thread links and logged time
+
+The rules are the comments at the top of
+`store/tracker_cache_export_relations.go`, `trackerdash/worklogs.go` and
+`trackerapp/worklog_reads.go`.
+
+- `threads(id, ticket, origin, linked_at, created_at, archived,
+  last_turn_at)` is the threads of the board's computer linked to one of
+  the board's tickets on the board's site, as that computer's Ticket
+  screen lists them (no hidden mode, none being deleted), with no title.
+  A ticket's Work lists the linked threads of every attached computer, so
+  it can show more than a dashboard counts; How this is counted says
+  which threads it counts.
+- `worklogs(id, ticket, day, seconds)` is the logged time on the board's
+  tickets of one person, the connection's verified account (the viewer,
+  `MirrorExport.Viewer`, read in the export's own snapshot), and
+  `worklog_days(day)` the days of that person's
+  the mirror read, whatever was logged on them. Both start the day before
+  the history window (`MirrorExport.Window`, 180 days), where the page's
+  reads stop, not at the earliest instant a count can ask: a sprint that
+  began before the window has days the copy never holds. A count that reads `worklogs`
+  also copies `worklog_days`. A metric of it counts in the unit `time`,
+  seconds that the screen shows as hours.
+- `day_start(day)` is the instant a row of a day is placed at: the first
+  millisecond after that date's first instant in the request's time zone,
+  whatever zone the person logged it in, so a period that begins at
+  midnight holds its first day and not the day before. A date whose
+  midnight a zone change skips begins where the change lands
+  (`trackerdash.placed`, the one conversion the days not read use too).
 - A row of logged time is the viewer's: its person is the viewer unless
   the metric returns `person`, so Mine keeps it all. A page narrowed to
   another person says "Only your own logged time is read." in the

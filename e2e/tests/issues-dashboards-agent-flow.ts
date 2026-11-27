@@ -17,9 +17,10 @@
 // dashboards it lists. A count whose unit is estimate draws, and drills,
 // as tickets on a board estimated in points. With neither Claude nor Codex
 // turned on, Ask your agent is disabled and says why. A proposal of the
-// person's logged time over This sprint reads the days of the sprint and
-// the sprint before from the tracker, then shows their hours and the
-// change from the sprint before. A board on a paired computer takes a
+// person's logged time over This sprint reads every day of the last 180
+// from the tracker, then shows their hours and the change from the sprint
+// before; time logged in Jira since shows after the dashboard's Refresh. A
+// board on a paired computer takes a
 // widget its agent proposed from this computer's screen, the kept
 // dashboard is still there after that computer restarts, and Ask your
 // agent from this computer's screen opens its thread on that computer.
@@ -312,7 +313,7 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     await expect(screen.getByTestId('dashboard-ask')).toHaveAttribute('title', 'Ask your agent needs a provider whose agents get the tracker tools, turned on in Settings and installed on this computer.');
   });
 
-  test('a proposal of your logged time reads the days of the sprint and the sprint before from the tracker, then shows your hours and their change', async ({ harness, page }) => {
+  test('a proposal of your logged time reads the window\'s days from the tracker, shows your hours and their change, and Refresh reads time logged in Jira since', async ({ harness, page }) => {
     test.setTimeout(180_000);
     const provider: ProviderName = 'claude';
     // Sprint 0 ran from 16 days ago until Sprint 1 began, two days ago.
@@ -339,13 +340,18 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     await harness.send(project.threadIds[0], 'my hours this sprint');
     const event = await harness.awaitMcpResult({ server: SERVER, tool: 'dashboard_widget', cwd: project.path, timeoutMs: 60_000 });
     expect(event.report.isError, event.report.result).toBeFalsy();
-    // None of the two sprints' days was read until the page showed the
-    // widget, and the page read them.
+    // No day was read until the page showed the widget, and the page read
+    // the window's.
     const hours = proposal(screen, 'Your hours');
     await expect(hours.getByTestId('dashboard-number-value')).toHaveText('2h', { timeout: 30_000 });
     await expect(hours.getByTestId('dashboard-change')).toContainText('Up 1h from 1h, the last sprint', { timeout: 30_000 });
     await expect(hours.getByTestId('dashboard-number-not-read')).toHaveCount(0);
     await expect(hours.getByTestId('dashboard-widget-unread')).toHaveCount(0);
+    // Half an hour logged in Jira today, on a day already read, shows once
+    // the dashboard's Refresh reads it again.
+    await logJiraWork(project.jiraURL, 'WEB-2', day(new Date()), 1800);
+    await press(page.getByTestId('issues-refresh'), compact);
+    await expect(hours.getByTestId('dashboard-number-value')).toHaveText('2.5h', { timeout: 30_000 });
   });
 
   test('a paired computer\'s board takes the widget its agent proposed, and keeps it through that computer\'s restart', async ({ page }) => {
