@@ -249,7 +249,7 @@ func TestMirrorParentNamesAreReadByKey(t *testing.T) {
 		if wants[fill.name] == nil {
 			continue
 		}
-		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.sql, 1, "10", "{}", 0, 1)
+		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.sql, mirrorExportArgs(1, "10", MirrorRegroup{}, 0, true, everyExportColumn(), CardShapeForTest)...)
 		if err != nil {
 			t.Fatalf("plan %s: %v", fill.name, err)
 		}
