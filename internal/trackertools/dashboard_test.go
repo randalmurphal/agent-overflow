@@ -299,4 +299,19 @@ func TestDashboardWidgetSaysTheDaysNotReadAndItsNote(t *testing.T) {
 	if !strings.Contains(answer, `"note":"Only your own logged time is read."`) {
 		t.Errorf("answer %s lacks the note", answer)
 	}
+	// A ranked chart with no rows yet, its days not read, says how many.
+	f = &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
+		days := make([]string, 24)
+		for i := range days {
+			days[i] = fmt.Sprintf("2026-11-%02d", i+1)
+		}
+		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{Unread: days}}, nil
+	}}
+	answer, err = widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": openWidget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(answer, `"not_read":24`) || !strings.Contains(answer, `"rows":0`) {
+		t.Errorf("answer %s lacks the 24 days not read of a chart with no rows", answer)
+	}
 }

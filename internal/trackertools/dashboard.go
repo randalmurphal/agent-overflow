@@ -63,7 +63,8 @@ type widgetAnswer struct {
 	Previous *float64 `json:"previous,omitempty"`
 	// PreviousNotCounted is the range before's tickets not counted.
 	PreviousNotCounted int `json:"previous_not_counted,omitempty"`
-	// NotRead and PreviousNotRead are the days of logged time not read.
+	// NotRead and PreviousNotRead are the days of logged time not read: a
+	// number's, else the widget's (a chart or list of no rows yet).
 	NotRead         int             `json:"not_read,omitempty"`
 	PreviousNotRead int             `json:"previous_not_read,omitempty"`
 	Note            string          `json:"note,omitempty"`
@@ -145,6 +146,8 @@ func (s *Server) dashboardWidget(ctx context.Context, caller Caller, raw json.Ra
 			out.NotCounted = v.NC
 		}
 		out.NotRead = v.UR
+	} else {
+		out.NotRead = len(tried.Value.Unread)
 	}
 	if p := tried.Value.Previous; p != nil {
 		out.PreviousNotCounted, out.PreviousNotRead = p.NC, p.UR
