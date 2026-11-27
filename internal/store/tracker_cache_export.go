@@ -408,6 +408,10 @@ type MirrorExport struct {
 	// FirstReadDone is whether the board's first read has finished: until
 	// then the export holds the tickets read so far.
 	FirstReadDone bool
+	// Earliest is the earliest instant a count can ask of the history
+	// (mirrorExportEarliest): no interval and no day of logged time before
+	// it is in the export.
+	Earliest int64
 }
 
 // ErrMirrorExportUnsupported is an export from a store with no database
@@ -487,8 +491,8 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	if err := tx.QueryRowContext(ctx, mirrorExportEarliestSprintSQL, rootID, boardID).Scan(&earliestSprint); err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: read board %s's earliest sprint to export it: %w", boardID, err)
 	}
-	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone,
-		mirrorExportEarliest(window, earliestSprint), card)
+	export.Earliest = mirrorExportEarliest(window, earliestSprint)
+	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, export.Earliest, card)
 	for _, fill := range mirrorExportFills {
 		if !fill.runs(relations) {
 			continue

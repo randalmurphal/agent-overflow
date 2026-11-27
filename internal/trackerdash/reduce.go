@@ -10,13 +10,15 @@ import (
 
 // Num is one number a widget shows: a value, none (nothing to reduce:
 // the median of no rows), not known (no row counted and NC rows not
-// counted), or a gap (the mirror cannot answer: a previous range it holds
-// too few sprints for). NC is the tickets the metric could not count
-// beside the value. On the wire: {"v":3}, {"v":3,"nc":2}, {}, {"nc":2}
+// counted, or UR days of the viewer's logged time it counts not read), or
+// a gap (the mirror cannot answer: a previous range it holds too few
+// sprints for). NC is the tickets the metric could not count beside the
+// value. On the wire: {"v":3}, {"v":3,"nc":2}, {}, {"nc":2}, {"ur":4}
 // or {"gap":true}.
 type Num struct {
 	V   *float64 `json:"v,omitempty"`
 	NC  int      `json:"nc,omitempty"`
+	UR  int      `json:"ur,omitempty"`
 	Gap bool     `json:"gap,omitempty"`
 }
 
