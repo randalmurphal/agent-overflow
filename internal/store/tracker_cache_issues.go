@@ -72,7 +72,9 @@ type MirrorCard struct {
 	// same labels in its writer's shape, and the write stores both from
 	// this card in one statement, so a card whose labels changed differs
 	// in its data and the comparison of a card's content
-	// (mirrorCardContent) needs no term for them.
+	// (mirrorCardContent) needs no term for them. Only the write takes
+	// them: a card read leaves them nil, and its reader takes the labels
+	// from the data.
 	Labels []string
 	// Title is the issue's title (tracker_cache_issues.title), part of
 	// the card's content.

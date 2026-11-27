@@ -503,14 +503,15 @@ type MirrorSectionCounts struct {
 // from idx_tracker_cache_issues_status, tests it against the open sprints'
 // members (read once), and returns a row per board row, which
 // countMirrorSectionsTx sums: a GROUP BY would sort every row, in memory
-// that grows with the board. Its last column is the issue of a row the
-// support rule ?5 names, NULL for every other. mirrorRegroupedCountRowsSQL
+// that grows with the board. Its last column is NULL for a row the
+// support rule ?5 does not name, and for one it names the row's issue
+// when the issue is a member of a sprint, else empty. mirrorRegroupedCountRowsSQL
 // does the same under the regrouping ?4 (its list built once), with one
 // more column before it: the issue of a row left out of counts, NULL for
 // every other. mirrorCountSprintsSQL totals each sprint of the board from
 // its members, in the sprints' key order, a member in the JSON list ?5
-// (the support rows the first statement found) not counting as without an
-// estimate; mirrorCountSprintsLeftOutSQL does the same without the issues
+// (the support rows in a sprint the first statement found) not counting as
+// without an estimate; mirrorCountSprintsLeftOutSQL does the same without the issues
 // of the JSON list ?4, the rows the first statement found left out, so a
 // sprint member's status and support are read once a board, not once a
 // member.
@@ -519,8 +520,9 @@ var (
 		FROM tracker_cache_board_issues b
 		CROSS JOIN tracker_cache_issues i INDEXED BY idx_tracker_cache_issues_status ON i.root_id = b.root_id AND i.issue_id = b.issue_id
 		WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`
-	mirrorCountSupportSQL = `iif(` + mirrorSupportSQL("?5", "?2", mirrorRowEstimate("?3")) + `, b.issue_id, NULL)`
-	mirrorCountRowsSQL    = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, mirrorNotDoneSQL) + `, i.status_id, ` + mirrorRowEstimate("?3") + `, ` +
+	mirrorCountSupportSQL = `iif(` + mirrorSupportSQL("?5", "?2", mirrorRowEstimate("?3")) + `, iif(EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
+		WHERE m.root_id = b.root_id AND m.issue_id = b.issue_id), b.issue_id, ''), NULL)`
+	mirrorCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, mirrorNotDoneSQL) + `, i.status_id, ` + mirrorRowEstimate("?3") + `, ` +
 		mirrorCountSupportSQL + mirrorCountRowsFromSQL
 	mirrorRegroupedCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, mirrorRegroupedNotDone("?4")) + `, i.status_id, ` +
 		mirrorRowEstimate("?3") + `, iif(` + mirrorLeftOut("?4") + `, b.issue_id, NULL), ` + mirrorCountSupportSQL + mirrorCountRowsFromSQL
@@ -584,13 +586,14 @@ func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mi
 	counts := MirrorSectionCounts{Revision: board.revision, TotalsRevision: board.totalsRevision,
 		Sprints: map[string]MirrorSectionTotal{}, Columns: map[int]MirrorSectionTotal{}}
 	estimated := board.unit != MirrorEstimateNone
-	var status, leftOut, support sql.RawBytes
+	var status, leftOut sql.RawBytes
+	var support sql.NullString
 	var estimate sql.NullFloat64
 	add := func(t MirrorSectionTotal) MirrorSectionTotal {
 		t.Rows++
 		if estimated {
 			t.Estimate += estimate.Float64
-			if !estimate.Valid && support == nil {
+			if !estimate.Valid && !support.Valid {
 				t.Unestimated++
 			}
 		}
@@ -611,8 +614,8 @@ func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mi
 			leftOutIssues = append(leftOutIssues, string(leftOut))
 			return nil
 		}
-		if support != nil && estimated {
-			supportIssues = append(supportIssues, string(support))
+		if support.String != "" && estimated {
+			supportIssues = append(supportIssues, support.String)
 		}
 		counts.All = add(counts.All)
 		if backlog {

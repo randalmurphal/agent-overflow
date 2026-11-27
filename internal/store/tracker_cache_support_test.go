@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"regexp"
 	"slices"
@@ -267,5 +268,42 @@ func TestEveryIssueColumnTheTotalsReadMovesThem(t *testing.T) {
 		if !moved[column] {
 			t.Errorf("the totals read tracker_cache_issues.%s, which no trigger that advances the totals revision names", column)
 		}
+	}
+}
+
+// The board pass of the section totals hands the sprint pass the support
+// rows that are members of a sprint and no other: a support row outside
+// every sprint is not part of the sprint pass.
+func TestTheSprintPassIsGivenOnlySupportSprintMembers(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	typed := sectionRow("10001", "a", "1", -1)
+	typed.Card.TypeID = "10004"
+	labeled := sectionRow("10002", "b", "1", -1, "21")
+	labeled.Card.Labels = []string{"support"}
+	mustWriteRowPage(t, s, root, webPage("10", typed, labeled, sectionRow("10003", "c", "1", -1, "21")), nil)
+	rule, err := MirrorRegroup{}.WithSupport(MirrorSupportRule{Types: []string{"10004"}, Labels: []string{"support"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	err = scanMirrorRows(s.db, mirrorCountRowsSQL, []any{root, "10", int64(0), nil, rule.supportArg()}, func(r rowScanner) error {
+		var backlog bool
+		var status sql.RawBytes
+		var estimate sql.NullFloat64
+		var support sql.NullString
+		if err := r.Scan(&backlog, &status, &estimate, &support); err != nil {
+			return err
+		}
+		got = append(got, fmt.Sprintf("%v %q", support.Valid, support.String))
+		return nil
+	})
+	if want := []string{`true ""`, `true "10002"`, `false ""`}; err != nil || !slices.Equal(got, want) {
+		t.Fatalf("the board pass's support column %q, %v; want %q", got, err, want)
+	}
+	c, err := s.CountMirrorSections(root, "10", rule)
+	if err != nil || c.All.Unestimated != 1 || c.Sprints["21"].Unestimated != 1 || c.Backlog.Unestimated != 0 {
+		t.Fatalf("counts %+v, %v; want one without an estimate, in sprint 21", c, err)
 	}
 }
