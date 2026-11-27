@@ -277,9 +277,11 @@ func TestForgeHistoryWriterPlans(t *testing.T) {
 	} {
 		plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+query, 1, "[]")
 		t.Logf("%s:\n%s", name, plan)
+		// A walk of the source's rows: a scan, or a search by the source
+		// alone.
 		for _, line := range strings.Split(plan, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "SCAN forge_history") {
-				t.Errorf("%s scans a table: %s", name, line)
+			if line = strings.TrimSpace(line); strings.HasPrefix(line, "SCAN forge_history") || strings.HasSuffix(line, "(source_id=?)") {
+				t.Errorf("%s walks the source's rows: %s", name, line)
 			}
 		}
 	}
