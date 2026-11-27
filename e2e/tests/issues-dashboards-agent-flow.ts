@@ -17,8 +17,9 @@
 // dashboards it lists. A count whose unit is estimate draws, and drills,
 // as tickets on a board estimated in points. With neither Claude nor Codex
 // turned on, Ask your agent is disabled and says why. A proposal of the
-// person's logged time over This sprint reads the sprint's days from the
-// tracker and then shows their hours. A board on a paired computer takes a
+// person's logged time over This sprint reads the days of the sprint and
+// the sprint before from the tracker, then shows their hours and the
+// change from the sprint before. A board on a paired computer takes a
 // widget its agent proposed from this computer's screen, the kept
 // dashboard is still there after that computer restarts, and Ask your
 // agent from this computer's screen opens its thread on that computer.
@@ -311,14 +312,21 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     await expect(screen.getByTestId('dashboard-ask')).toHaveAttribute('title', 'Ask your agent needs a provider whose agents get the tracker tools, turned on in Settings and installed on this computer.');
   });
 
-  test('a proposal of your logged time reads the sprint\'s days from the tracker and then shows your hours', async ({ harness, page }) => {
+  test('a proposal of your logged time reads the days of the sprint and the sprint before from the tracker, then shows your hours and their change', async ({ harness, page }) => {
     test.setTimeout(180_000);
     const provider: ProviderName = 'claude';
-    const project = await boardProject(harness, name('logged'), [{ title: 'Board questions', provider }]);
-    // Two hours on WEB-2 today, this machine's day, which the page shares.
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    await logJiraWork(project.jiraURL, 'WEB-2', today, 7200);
+    // Sprint 0 ran from 16 days ago until Sprint 1 began, two days ago.
+    const at = (days: number) => new Date(Date.now() - days * 24 * 3600_000);
+    const closed: ExtraJira = {
+      projects: [], boards: [],
+      sprints: [{ id: 2, name: 'Sprint 0', state: 'closed', start: at(16).toISOString(), end: at(2).toISOString(), complete: at(2).toISOString() }],
+    };
+    const project = await boardProject(harness, name('logged'), [{ title: 'Board questions', provider }], closed);
+    // Two hours on WEB-2 today and one in Sprint 0, nine days ago, each on
+    // this machine's day, which the page shares.
+    const day = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    await logJiraWork(project.jiraURL, 'WEB-2', day(new Date()), 7200);
+    await logJiraWork(project.jiraURL, 'WEB-2', day(at(9)), 3600);
     await setScenario(harness, project.path, threadToolsScenario({
       name: name('logged'),
       provider,
@@ -331,10 +339,11 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     await harness.send(project.threadIds[0], 'my hours this sprint');
     const event = await harness.awaitMcpResult({ server: SERVER, tool: 'dashboard_widget', cwd: project.path, timeoutMs: 60_000 });
     expect(event.report.isError, event.report.result).toBeFalsy();
-    // The sprint began two days ago; none of its days was read until the
-    // page showed the widget, and the page read them.
+    // None of the two sprints' days was read until the page showed the
+    // widget, and the page read them.
     const hours = proposal(screen, 'Your hours');
     await expect(hours.getByTestId('dashboard-number-value')).toHaveText('2h', { timeout: 30_000 });
+    await expect(hours.getByTestId('dashboard-change')).toContainText('Up 1h from 1h, the last sprint', { timeout: 30_000 });
     await expect(hours.getByTestId('dashboard-number-not-read')).toHaveCount(0);
     await expect(hours.getByTestId('dashboard-widget-unread')).toHaveCount(0);
   });
