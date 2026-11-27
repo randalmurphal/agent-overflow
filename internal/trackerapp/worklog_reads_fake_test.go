@@ -560,7 +560,22 @@ func TestStoppingTheServiceMidRunJoinsItsReads(t *testing.T) {
 		t.Fatal("Stop returned while the run's read was in flight")
 	case <-time.After(time.Second):
 	}
+	// Once its read returns, the run waits on the reads' lock, which the
+	// test holds: Stop returns only after the run's goroutine has.
+	r := &s.svc.worklogs
+	r.mu.Lock()
+	if !r.halted {
+		r.mu.Unlock()
+		t.Fatal("Stop did not halt the reads first")
+	}
 	let()
+	select {
+	case <-stopped:
+		r.mu.Unlock()
+		t.Fatal("Stop returned while the run's goroutine had not")
+	case <-time.After(time.Second):
+	}
+	r.mu.Unlock()
 	select {
 	case <-stopped:
 	case <-time.After(gateWait):
