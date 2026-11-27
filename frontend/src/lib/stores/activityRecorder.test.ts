@@ -137,7 +137,7 @@ describe('activity recorder', () => {
     add.mockRestore();
   });
 
-  it('reports at once a thread the screen moved to after input, and not one it moved to unattended', async () => {
+  it('reports at once a thread the screen moved to, with how long ago its last input was, however long', async () => {
     input();
     await settle();
     input('pointerdown');
@@ -145,22 +145,49 @@ describe('activity recorder', () => {
     noteActivityFocus();
     await settle();
     expect(record.mock.calls).toEqual([['t-a', false, 0], ['t-b', false, 0]]);
-    await vi.advanceTimersByTimeAsync(REPORT_EVERY_MS);
+    // Another screen archives t-b 90 seconds later: this one shows t-c,
+    // with no input here.
+    await vi.advanceTimersByTimeAsync(90_000);
     show('t-c');
     noteActivityFocus();
     await settle();
-    expect(record).toHaveBeenCalledTimes(2);
+    expect(record.mock.calls.at(-1)).toEqual(['t-c', false, 90_000]);
+    await vi.advanceTimersByTimeAsync(60 * REPORT_EVERY_MS);
+    show('t-d');
+    noteActivityFocus();
+    await settle();
+    expect(record.mock.calls.at(-1)).toEqual(['t-d', false, 90_000 + 60 * REPORT_EVERY_MS]);
   });
 
-  it('reports a thread the screen moved to with no input of its own as of the move', async () => {
+  it('reports a change of the layout alone with how long ago its last input was', async () => {
+    input('touchstart');
+    await settle();
+    await vi.advanceTimersByTimeAsync(50_000);
+    // The screen rotates across the compact breakpoint, t-a still shown.
+    layout.compact = true;
+    layout.screen = 'thread';
+    noteActivityFocus();
+    await settle();
+    expect(record.mock.calls).toEqual([['t-a', false, 0], ['t-a', true, 50_000]]);
+  });
+
+  it('reports a change whose report a suspended page held with the age it has when it goes out', async () => {
     input();
     await settle();
     await vi.advanceTimersByTimeAsync(50_000);
-    // Another screen archives t-a: this one shows t-b, with no input here.
+    show('t-b');
+    noteActivityFocus();
+    // The page is suspended before the report runs and wakes an hour later.
+    vi.setSystemTime(Date.now() + 60 * REPORT_EVERY_MS);
+    await settle();
+    expect(record.mock.calls).toEqual([['t-a', false, 0], ['t-b', false, 50_000 + 60 * REPORT_EVERY_MS]]);
+  });
+
+  it('reports no change of the thread shown before any input', async () => {
     show('t-b');
     noteActivityFocus();
     await settle();
-    expect(record.mock.calls).toEqual([['t-a', false, 0], ['t-b', false, 0]]);
+    expect(record).not.toHaveBeenCalled();
   });
 
   it('reports the compact layout as the phone, and its list as no thread', async () => {

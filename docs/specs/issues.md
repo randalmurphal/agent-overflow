@@ -776,9 +776,10 @@ the worklog's description once posted.
   included. Moving the pointer is not input. A screen asleep or in the
   background adds nothing when it wakes.
 - The thread is the one the screen shows: on the phone, an agent thread
-  opened from the Agents rail counts on that thread. When the thread the
-  screen shows changes, the time up to the change stays with the thread
-  shown before it, and the time after goes to the thread shown now.
+  opened from the Agents rail counts on that thread. When the thread or
+  the layout the screen shows changes, the time up to the change stays
+  with what was shown before it, and the time after goes to what is
+  shown now. A change adds no time of its own.
 - `phone` time is time in the compact layout: the phone shell, or a
   browser on a narrow touch screen.
 - A computer counts the screens attached to it, and only those of its

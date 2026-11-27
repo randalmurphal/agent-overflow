@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 	_ "time/tzdata"
@@ -666,6 +665,50 @@ func TestAnExpiredInputRecordsNothing(t *testing.T) {
 	}
 }
 
+// A report of another thread or layout than the open span's is a change
+// of what the screen shows: the time up to its arrival stays with the
+// span, and the time after goes to what it names, until its input plus the
+// window. Nothing renews the window but input, and a span's last input
+// never goes back.
+func TestAChangeOfWhatIsShownSplitsTheTimeAtTheReport(t *testing.T) {
+	t.Parallel()
+	at := func(d time.Duration) int64 { return ms(nine.Add(d)) }
+	for _, tc := range []struct {
+		name string
+		// first is the age of the first report, at 09:00 plus wait; second
+		// comes after another wait, with its thread, layout and age.
+		wait, wait2 time.Duration
+		thread      string
+		phone       bool
+		age         time.Duration
+		want        []store.ActivitySpan
+	}{
+		{name: "another screen archives the thread shown, 90s after input", wait2: 90 * time.Second, thread: "t2", age: 90 * time.Second,
+			want: []store.ActivitySpan{{ID: 1, ThreadID: "t1", StartMs: at(0), EndMs: at(90 * time.Second)},
+				{ID: 2, ThreadID: "t2", StartMs: at(90 * time.Second), EndMs: at(Window)}}},
+		{name: "a rotation into the compact layout, 50s after input", wait2: 50 * time.Second, thread: "t1", phone: true, age: 50 * time.Second,
+			want: []store.ActivitySpan{{ID: 1, ThreadID: "t1", StartMs: at(0), EndMs: at(50 * time.Second)},
+				{ID: 2, ThreadID: "t1", Phone: true, StartMs: at(50 * time.Second), EndMs: at(Window)}}},
+		{name: "a change whose input arrives older than the last input held", wait: 10 * time.Second, wait2: 50 * time.Second, thread: "t2", age: 55 * time.Second,
+			want: []store.ActivitySpan{{ID: 1, ThreadID: "t1", StartMs: at(10 * time.Second), EndMs: at(time.Minute)},
+				{ID: 2, ThreadID: "t2", StartMs: at(time.Minute), EndMs: at(10*time.Second + Window)}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r, f, c, _ := recorder(t)
+			c.add(tc.wait)
+			r.Report("c1", "t1", false, 0, nil)
+			c.add(tc.wait2)
+			r.Report("c1", tc.thread, tc.phone, tc.age, nil)
+			c.add(10 * time.Minute)
+			r.Flush()
+			if got := f.stored(); !slices.Equal(got, tc.want) {
+				t.Fatalf("stored %+v\nwant   %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 // Recording starts when it turns on: an input from before, reported after,
 // records nothing.
 func TestAnInputFromBeforeRecordingTurnedOnRecordsNothing(t *testing.T) {
@@ -683,44 +726,42 @@ func TestAnInputFromBeforeRecordingTurnedOnRecordsNothing(t *testing.T) {
 	}
 }
 
-// Follow applies the latest read: a read taken before a change and held
-// past a later read of the change is never applied after it, so the
-// recorder ends off when the last read says off.
-func TestFollowNeverAppliesAnOlderRead(t *testing.T) {
+// Follow holds its lock from before its read of whether to record to after
+// that read's application, so a read is never applied after a later one:
+// the read and the application, which reads the clock as it turns the
+// recorder on and off, each find the lock held. This does not see a
+// release of the lock between the two.
+func TestFollowHoldsItsLockFromTheReadToItsApplication(t *testing.T) {
 	t.Parallel()
 	f := newFakeStore()
 	c := &clock{t: nine}
-	var reads atomic.Int32
-	firstRead := make(chan struct{})
-	secondRead := make(chan struct{}, 1)
-	r := New(f, Config{Now: c.now, On: func() (bool, error) {
-		if reads.Add(1) == 1 {
-			// The first read answers on, as before the last Jira connection
-			// is turned off, and is held until the second read has run, or
-			// for 200ms when the second cannot run until this one is applied.
-			close(firstRead)
-			select {
-			case <-secondRead:
-			case <-time.After(200 * time.Millisecond):
-			}
-			return true, nil
+	var r *Recorder
+	var following bool
+	var free []string
+	held := func(where string) {
+		if r.followMu.TryLock() {
+			r.followMu.Unlock()
+			free = append(free, where)
 		}
-		secondRead <- struct{}{}
-		return false, nil
-	}})
+	}
+	r = New(f, Config{
+		Now: func() time.Time {
+			if following {
+				held("the application")
+			}
+			return c.now()
+		},
+		On: func() (bool, error) {
+			held("the read")
+			return f.jiraOn()
+		},
+	})
 	t.Cleanup(func() { _ = r.Close() })
-	done := make(chan struct{})
-	go func() {
-		r.Follow()
-		close(done)
-	}()
-	<-firstRead
-	r.Follow()
-	<-done
-	r.Report("c1", "t1", false, 0, nil)
-	r.Ran("t1", ms(nine))
-	r.Flush()
-	if got := f.stored(); len(got) != 0 || len(f.days) != 0 {
-		t.Fatalf("after the read of off, recorded %+v and %+v; want nothing", got, f.days)
+	following = true
+	r.Follow() // on
+	turn(r, f, false)
+	following = false
+	if !slices.Equal(free, nil) || r.on {
+		t.Fatalf("Follow did not hold its lock at %q; recording on is %v, want false", free, r.on)
 	}
 }

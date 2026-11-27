@@ -3,16 +3,26 @@
 //
 // What it keeps true:
 //
-//   - A minute counts when there was input in the Window before it. A
-//     screen reports its input at most once a minute, with how long ago
-//     its last input was, and at once when the thread it shows changes
-//     (Report); an input older than Window when it is reported covers
-//     nothing and records nothing; the recorder keeps one open span per connection in memory,
-//     and input on the same thread within Window of the last extends it. A
-//     span ends at its last input plus Window, or sooner: at input on
-//     another thread, at the connection's end (End), or at the flush that
-//     finds it idle. Each open span is tied to its connection, and its end
-//     unties it.
+//   - An instant counts as active only when the screen had real input in
+//     the Window before it. Neither a report nor a change of what the
+//     screen shows starts or extends that time.
+//   - Each active instant goes to the thread and layout the screen showed
+//     then, give or take a report's time in transit.
+//   - Input older than Window when it arrives, or from before recording
+//     last turned on, records nothing and leaves the open span as it was.
+//   - A screen calls at most once a minute for its input, plus once per
+//     change of what it shows.
+//
+// A screen reports two facts (Report): the thread and layout it shows now
+// and how long ago its last input was; every time rule is here. The
+// recorder keeps one open span per connection in memory. A report on the
+// same thread and layout within Window of the span's last input extends
+// it. A report that names another thread or layout ends the span at the
+// report, and the next starts there, or at its input when that is later;
+// a span's last input never goes back. A span ends at its last input plus
+// Window, or sooner: at a change of what is shown, at the connection's
+// end (End), or at the flush that finds it idle. Each open span is tied
+// to its connection, and its end unties it.
 //   - The recorder records only while it is on: while a Jira connection
 //     is on, which it reads (Config.On) at the app's start and after each
 //     change of the connections (Follow), the read and its application
@@ -238,11 +248,13 @@ func (r *Recorder) setOn(on bool) {
 	}
 }
 
-// Report is input on connection conn's screen sinceInput ago (0 when
-// negative), on thread (empty when the screen shows none), in the compact
-// layout when phone. An input older than Window covers nothing, and one
-// from before the recorder last turned on is not recorded: either records
-// nothing and leaves the connection's open span as it was. A span it opens
+// Report is connection conn's screen showing thread (empty for none), in
+// the compact layout when phone, with its last input sinceInput ago (0
+// when negative). An input older than Window covers nothing, and one from
+// before the recorder last turned on is not recorded: either records
+// nothing and leaves the connection's open span as it was. A report of
+// another thread or layout than the open span's ends that span now (the
+// package comment has the rule). A span it opens
 // is first tied to the connection's end: tie, when set, binds end (End of
 // conn) to run then, inside the recorder's lock, so an end that runs at
 // once finds the span, and answers what unties it; a tie that fails opens
@@ -251,22 +263,26 @@ func (r *Recorder) Report(conn, thread string, phone bool, sinceInput time.Durat
 	if sinceInput > Window {
 		return nil
 	}
-	at := r.now().Add(-max(sinceInput, 0)).UnixMilli()
+	now := r.now()
+	at := now.Add(-max(sinceInput, 0)).UnixMilli()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.stopped || !r.on || at < r.onSince {
 		return nil
 	}
-	s := r.open[conn]
-	if s != nil {
+	start := at
+	if s := r.open[conn]; s != nil {
 		at = max(at, s.last)
 		if s.ThreadID == thread && s.Phone == phone && at-s.last <= r.window && at-s.StartMs < store.MaxActivitySpanMs-r.window {
 			s.last = at
 			return nil
 		}
+		// What the screen shows changed, or the span lapsed or reached
+		// its longest: it ends now, or at its last input plus the window
+		// when sooner, and the next starts there or at its input, if later.
+		start = max(at, r.endLocked(conn, now.UnixMilli()))
 	}
-	r.endLocked(conn, at)
-	next := &span{ActivitySpan: store.ActivitySpan{ThreadID: thread, Phone: phone, StartMs: at, EndMs: at}, last: at}
+	next := &span{ActivitySpan: store.ActivitySpan{ThreadID: thread, Phone: phone, StartMs: start, EndMs: start}, last: at}
 	if tie != nil {
 		untie, err := tie(func() { r.End(conn) })
 		if err != nil {
@@ -303,11 +319,12 @@ func (r *Recorder) End(conn string) {
 }
 
 // endLocked closes conn's open span at now, or at its last input plus
-// the window when that is sooner, and unties it from its connection.
-func (r *Recorder) endLocked(conn string, now int64) {
+// the window when that is sooner, unties it from its connection, and
+// answers its end (0 for no open span).
+func (r *Recorder) endLocked(conn string, now int64) int64 {
 	s := r.open[conn]
 	if s == nil {
-		return
+		return 0
 	}
 	delete(r.open, conn)
 	if s.untie != nil {
@@ -318,6 +335,7 @@ func (r *Recorder) endLocked(conn string, now int64) {
 	if over := len(r.closed) - maxUnwritten; over > 0 {
 		r.closed = slices.Delete(r.closed, 0, over)
 	}
+	return s.EndMs
 }
 
 // OpenSpans is how many connections have a span open.

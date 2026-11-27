@@ -4878,12 +4878,12 @@ export function ReconnectSession(threadID: string): $CancellablePromise<void> {
 }
 
 /**
- * RecordActivity is input on the calling screen sinceInputMs ago, with
- * the thread the screen shows (focused, "" for none) and whether it is in
- * the compact layout (phone). A screen calls it at most once a minute,
- * for its last input since its last call, and at once, aged 0, when the
- * thread it shows changes, on every computer it is attached to. An input
- * older than the recorder's window records nothing. Only a screen of
+ * RecordActivity is the calling screen's report: the thread it shows
+ * (focused, "" for none), whether it is in the compact layout (phone),
+ * and how long ago its last input was (sinceInputMs). A screen calls it
+ * at most once a minute for its input, and at once for each change of
+ * what it shows, on every computer it is attached to; the recorder owns
+ * what the report counts (activity.Recorder.Report). Only a screen of
  * this computer's person is recorded (ownScreen): another's call records
  * nothing. The span it opens ends with the call's connection.
  */

@@ -3158,15 +3158,17 @@ every computer it is attached to through `RecordActivity(focused, phone,
 sinceInputMs)` (`stores/activityRecorder.ts`): a key, a press, a wheel
 turn or a touch, seen by passive capture-phase listeners whose handler
 compares a timestamp; pointer movement is never listened to. A screen
-reports its first input a minute after its last report at once; input
-within the minute is reported when the minute is up, once, with how long
-ago the last of it was (`sinceInputMs`), so a burst's last input counts;
-and the screen reports at once, aged 0, when the thread it shows changes
-after input, so the press that opens a thread counts on it. That report
-stands for the moment of the change: the time up to it stays with the
-thread shown before, and the time after goes to the thread shown now,
-even when another screen moved it (an archive). Steady input is 60
-reports an hour per screen and computer, plus one per thread change.
+reports two facts, the thread and layout it shows now and how long ago
+its last input was (`sinceInputMs`, measured as the call is made), and
+the recorder owns every rule about time. A screen reports its first
+input a minute after its last report at once; input within the minute
+when the minute is up, once, so a burst's last input counts; and every
+change of the thread or layout it shows at once, whenever its last input
+was, once it has had input since it loaded, so the press that opens a
+thread counts on it and so does a change another screen made (an
+archive). Steady input is 60 reports an hour per screen and computer,
+plus one per change of what the screen shows; on an idle screen such a
+report is a call the recorder drops.
 `focused` is the thread of the pane the screen shows (`paneCommandTarget`):
 on the compact thread screen the pane it shows, an agent thread opened
 from the Agents rail included, none on the compact list, and on the
@@ -3194,8 +3196,13 @@ Input on the same thread and layout within 3 minutes of the last extends
 it, at the input's time (the report's time less `sinceInputMs`, or the
 report's time when that is negative); an input more than 3 minutes old
 covers nothing and records nothing, so a page suspended with a report
-pending adds nothing when it resumes. Any other ends it at its last input plus 3 minutes,
-or at the new input when that is sooner, and opens the next. A span also
+pending adds nothing when it resumes. A report of another thread or
+layout ends the span at the report, or at its last input plus 3 minutes
+when that is sooner, and opens the next there, or at its input when that
+is later: the time up to the change stays with what was shown before,
+the time after goes to what is shown now until the input plus 3
+minutes, and a change renews nothing. A span's last input never goes
+back. A span also
 ends with its connection (`conn.Bind`), at a flush that finds it idle,
 and at a day's length; each span's end unties it from its connection.
 Nothing is written per report or per turn start: one flush every 5
