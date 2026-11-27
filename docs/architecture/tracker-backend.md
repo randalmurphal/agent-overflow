@@ -2471,9 +2471,10 @@ lists its pull requests without searching the forge
   rows. The catch-up reads the sources alone
   (`ForgeHistorySourcesForWork`).
 - **Costs**: storing a read of 500 pull requests, each with 2 keys and 4
-  acts, took at most 21 ms into a source of 4,500 and 34 ms into one of
-  45,000; a steady read of one 0.5 ms and 0.6 ms, a key's read 0.5 ms and
-  0.3 ms, and the prune of every row 64 ms and 726 ms
+  acts, took at most 23 ms into a source of 4,500 and 32 ms into one of
+  45,000; a steady read of one 0.2 ms and 0.3 ms, a page's lookup of 50
+  stored pull requests 0.1 ms, a key's read with 20 listed numbers 0.4
+  ms, and the prune of every row 61 ms and 765 ms
   (`TestForgeHistoryAtScale`, `AO_TRACKER_SCALE=4500,45000`, on a
   developer's machine). Each statement reaches the stored rows by key
   from its read's list (`TestForgeHistoryWriterPlans`). The forge
