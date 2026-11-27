@@ -476,3 +476,25 @@ func waitBlockedIn[T any](t *testing.T, fn string, ended chan T) {
 	}
 	t.Fatalf("no goroutine blocked on a mutex in %s", fn)
 }
+
+// A project that counts tickets lays its dashboards out in tickets: a
+// widget that adds up the board's points says it adds up tickets.
+func TestADashboardOfAProjectCountingTicketsIsLaidOutInTickets(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	counts := func() []string {
+		var out []string
+		for _, w := range m.list(t, sub).Dashboards[0].Widgets {
+			out = append(out, w.How.Counts)
+		}
+		return out
+	}
+	before := counts()
+	if !slices.ContainsFunc(before, func(c string) bool { return strings.Contains(c, "points") }) {
+		t.Fatalf("the built-in dashboard counts no points: %q", before)
+	}
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
+	if after := counts(); slices.ContainsFunc(after, func(c string) bool { return strings.Contains(c, "points") }) {
+		t.Fatalf("the dashboard of a project counting tickets: %q", after)
+	}
+}
