@@ -1188,7 +1188,7 @@ The pace alone, credit off and on:
 | 5 boards of 4,000, none estimated | 26,491 steps | 88,354 steps, 3.0 ms |
 
 Reading whether each member's history covers its card, which decides
-whether its person is known, adds 2% to 5% to the pace: 25,694 steps at
+whether its person is known, adds 1.5% to 5% to the pace: 25,694 steps at
 20,000, estimated.
 
 Of the pace with credit at 20,000, estimated (1,000 finished members in
