@@ -64,6 +64,9 @@
         {#if valueWords?.notCounted}
           <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-value-not-counted">{valueWords.notCounted}</span>
         {/if}
+        {#if valueWords?.notRead}
+          <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-value-not-read">{valueWords.notRead}</span>
+        {/if}
         <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-count">{drillCountWords(answer.count, answer.tickets)}</span>
       </div>
       {#if answer.reading}

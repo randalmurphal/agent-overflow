@@ -91,12 +91,12 @@ func TestLoggedTimeCountsOnlyWhereItsDaysWereRead(t *testing.T) {
 		t.Fatalf("viewer = %q", a.Viewer)
 	}
 	d := mustDrill(t, loggedTime(worklogBoard(read...)), DrillRequest{Request: r, Widget: "bars", Cell: &DrillCell{Bucket: "week:2026-11-16"}})
-	if d.Unread != 0 || num(&d.Value) != "3600" {
-		t.Fatalf("week 1's drill = %s, %d days not read", num(&d.Value), d.Unread)
+	if num(&d.Value) != "3600" {
+		t.Fatalf("week 1's drill = %s", num(&d.Value))
 	}
 	d = mustDrill(t, loggedTime(worklogBoard(read...)), DrillRequest{Request: r, Widget: "n"})
-	if d.Unread != 1 || num(&d.Value) != "not known, 1 days not read" || len(d.Rows) != 2 {
-		t.Fatalf("the number's drill = %s, %d days not read, %d rows", num(&d.Value), d.Unread, len(d.Rows))
+	if num(&d.Value) != "not known, 1 days not read" || len(d.Rows) != 2 {
+		t.Fatalf("the number's drill = %s, %d rows", num(&d.Value), len(d.Rows))
 	}
 	a = mustEvaluate(t, evaluator(), loggedTime(worklogBoard(append(read, "2026-11-25")...)), r)
 	if n := widgetOf(t, a, "n"); num(n.Value) != "5400" || n.Unread != nil {

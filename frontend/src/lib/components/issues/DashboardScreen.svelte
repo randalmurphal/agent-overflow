@@ -220,6 +220,8 @@
       onEpic={(e) => store.narrowEpic(e)}
       onTicket={openTicket}
       {tickets}
+      logged={store.logged}
+      computer={computerName}
       {actions}
     />
   </div>

@@ -21,6 +21,12 @@ export class Answer {
     "at": number;
     "widgets": WidgetValue[];
 
+    /**
+     * Viewer is the account whose logged time the copy holds, whose days
+     * not read (WidgetValue.Unread) the page reads; "" before one.
+     */
+    "viewer"?: string;
+
     /** Creates a new Answer instance. */
     constructor($$source: Partial<Answer> = {}) {
         if (!("range" in $$source)) {
@@ -221,6 +227,12 @@ export class DrillAnswer {
     "restarted"?: boolean;
     "rows": TicketRow[];
     "at": number;
+
+    /**
+     * Unread is how many working days of the viewer's logged time the
+     * drilled number counts were not read (worklogs.go).
+     */
+    "unread"?: number;
 
     /** Creates a new DrillAnswer instance. */
     constructor($$source: Partial<DrillAnswer> = {}) {
@@ -479,9 +491,10 @@ export class Name {
 /**
  * Num is one number a widget shows: a value, none (nothing to reduce:
  * the median of no rows), not known (no row counted and NC rows not
- * counted), or a gap (the mirror cannot answer: a previous range it holds
- * too few sprints for). NC is the tickets the metric could not count
- * beside the value. On the wire: {"v":3}, {"v":3,"nc":2}, {}, {"nc":2}
+ * counted, or UR days of the viewer's logged time it counts not read), or
+ * a gap (the mirror cannot answer: a previous range it holds too few
+ * sprints for). NC is the tickets the metric could not count beside the
+ * value. On the wire: {"v":3}, {"v":3,"nc":2}, {}, {"nc":2}, {"ur":4}
  * or {"gap":true}.
  */
 export type Num = any;
@@ -729,6 +742,11 @@ export enum Unit {
      */
     UnitEstimate = "estimate",
     UnitDays = "days",
+
+    /**
+     * UnitTime is logged time, in seconds.
+     */
+    UnitTime = "time",
 };
 
 /**
@@ -770,6 +788,12 @@ export class WidgetValue {
      */
     "not_counted"?: number;
 
+    /**
+     * Unread is the range's working days of the viewer's logged time the
+     * copy holds no read of, for a metric that reads it (worklogs.go).
+     */
+    "unread"?: string[];
+
     /** Creates a new WidgetValue instance. */
     constructor($$source: Partial<WidgetValue> = {}) {
         if (!("id" in $$source)) {
@@ -787,6 +811,7 @@ export class WidgetValue {
         const $$createField7_0 = $$createType14;
         const $$createField8_0 = $$createType18;
         const $$createField9_0 = $$createType11;
+        const $$createField12_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("trend" in $$parsedSource) {
             $$parsedSource["trend"] = $$createField6_0($$parsedSource["trend"]);
@@ -799,6 +824,9 @@ export class WidgetValue {
         }
         if ("tickets" in $$parsedSource) {
             $$parsedSource["tickets"] = $$createField9_0($$parsedSource["tickets"]);
+        }
+        if ("unread" in $$parsedSource) {
+            $$parsedSource["unread"] = $$createField12_0($$parsedSource["unread"]);
         }
         return new WidgetValue($$parsedSource as Partial<WidgetValue>);
     }

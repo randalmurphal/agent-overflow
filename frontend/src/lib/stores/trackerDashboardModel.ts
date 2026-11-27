@@ -5,15 +5,37 @@
 // evaluation per answer.
 
 import { formatAmount, unitWord, type DashboardUnit } from '../utils/dashboardAmount';
+import { addDays } from './trackerTimeModel';
 
 /** One number of a dashboard (trackerdash.Num, which the bindings type
  * as any for its own JSON form): a value, none ({}), not known (no `v`
- * and `nc` tickets not counted), or a gap; `nc` beside a value is the
- * tickets the metric could not count. */
+ * and `nc` tickets not counted, or `ur` days of your logged time not
+ * read), or a gap; `nc` beside a value is the tickets the metric could
+ * not count. */
 export interface Num {
   readonly v?: number;
   readonly nc?: number;
+  readonly ur?: number;
   readonly gap?: boolean;
+}
+
+/** What a number of days of logged time not read says: "3 days not
+ * read"; empty for none. */
+export function notReadWords(ur: number | null | undefined): string {
+  return ur ? `${ur} ${ur === 1 ? 'day' : 'days'} not read` : '';
+}
+
+/** The reads (RefreshTrackerWorklogs, at most 31 days each) that cover
+ * `days` (YYYY-MM-DD, sorted): each from the first day not yet covered to
+ * the last of them within 31 days of it. 180 days are at most 6 reads. */
+export function worklogReads(days: readonly string[]): { from: string; to: string }[] {
+  const out: { from: string; to: string }[] = [];
+  for (const d of days) {
+    const last = out.at(-1);
+    if (last && d <= addDays(last.from, 30)) last.to = d;
+    else out.push({ from: d, to: d });
+  }
+  return out;
 }
 
 /** What the screen and the drill say while the board's first read has
@@ -43,6 +65,8 @@ export interface NumWords {
   readonly word: string;
   readonly value: string;
   readonly notCounted: string;
+  /** Its days of logged time not read: "3 days not read", or ''. */
+  readonly notRead: string;
 }
 
 /** The one reading of a number into words; every surface that shows a
@@ -53,19 +77,21 @@ export function numWords(n: Num | null | undefined, unit: DashboardUnit, estimat
     word,
     value: word ? `${amount} ${word}` : amount,
     notCounted: n?.gap ? '' : notCountedWords(n?.nc),
+    notRead: n?.gap ? '' : notReadWords(n?.ur),
   });
   if (!n) return words('None');
   if (n.gap) return words(GAP_TEXT);
   const v = numValue(n);
-  if (v === null) return words(n.nc ? 'Not known' : 'None');
+  if (v === null) return words(n.nc || n.ur ? 'Not known' : 'None');
   return words(formatAmount(v, unit, estimates), unitWord(v, unit, estimates));
 }
 
 /** A number as one line of words: "3 points", "3 points, 2 not counted",
- * "Not known, 2 not counted", "None" or GAP_TEXT. */
+ * "Not known, 2 not counted", "Not known, 3 days not read", "None" or
+ * GAP_TEXT. */
 export function formatNum(n: Num | null | undefined, unit: DashboardUnit, estimates: string): string {
   const w = numWords(n, unit, estimates);
-  return w.notCounted ? `${w.value}, ${w.notCounted}` : w.value;
+  return [w.value, w.notCounted, w.notRead].filter(Boolean).join(', ');
 }
 
 /** What a drill's header says of its rows: "5 tickets", or "6 rows, 5

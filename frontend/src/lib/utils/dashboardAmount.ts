@@ -6,7 +6,7 @@
 import { formatEstimate } from '../components/issues/boardFormat';
 
 /** A metric's unit, as trackerdash.Unit. */
-export type DashboardUnit = 'tickets' | 'estimate' | 'days';
+export type DashboardUnit = 'tickets' | 'estimate' | 'days' | 'time';
 
 function trim(n: number): string {
   const rounded = Math.round(n * 10) / 10;
@@ -14,9 +14,10 @@ function trim(n: number): string {
 }
 
 /** A value in its unit, without the unit's word: points and days to one
- * place, time as hours or minutes, tickets whole unless averaged. */
+ * place, time (a time board's estimates, logged time) as hours or minutes,
+ * tickets whole unless averaged. */
 export function formatAmount(v: number, unit: DashboardUnit, estimates: string): string {
-  if (unit === 'estimate' && estimates === 'time') return formatEstimate(v, 'time') ?? '0m';
+  if (unit === 'time' || (unit === 'estimate' && estimates === 'time')) return formatEstimate(v, 'time') ?? '0m';
   return trim(v);
 }
 
@@ -26,6 +27,6 @@ export function unitWord(v: number, unit: DashboardUnit, estimates: string): str
   const counting = unit === 'tickets' || (unit === 'estimate' && estimates === 'none');
   if (counting) return v === 1 ? 'ticket' : 'tickets';
   if (unit === 'days') return v === 1 ? 'day' : 'days';
-  if (estimates === 'time') return '';
+  if (unit === 'time' || estimates === 'time') return '';
   return v === 1 ? 'point' : 'points';
 }

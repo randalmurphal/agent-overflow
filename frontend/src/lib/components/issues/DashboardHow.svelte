@@ -3,14 +3,18 @@
   // as the board's computer words it from the metric's definition: the
   // metric's own words, what it adds up and for whom, what the range does
   // to it, the rules it reads, the tables it reads and its query. Shown in
-  // the widget's place, so it reads the same under compact.
+  // the widget's place, so it reads the same under compact. A count of
+  // threads reads the board's computer's (`computer`), which the Ticket
+  // screen's list, of every attached computer, can exceed: it says so.
   import type { How } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
 
   interface Props {
     how: How;
+    /** The name of the computer that counts the board. */
+    computer: string;
   }
 
-  let { how }: Props = $props();
+  let { how, computer }: Props = $props();
 </script>
 
 <div class="flex flex-col gap-1.5 text-[0.75rem] text-fg-muted" data-testid="dashboard-how">
@@ -22,6 +26,9 @@
   <p>Rules it reads: {how.rules}.</p>
   {#if how.reads.length > 0}
     <p>It reads {how.reads.join(', ')}.</p>
+  {/if}
+  {#if how.reads.includes('threads')}
+    <p data-testid="dashboard-how-threads">It counts the threads on {computer} linked to these tickets; a ticket's Work lists those of every attached computer.</p>
   {/if}
   <details class="mt-1">
     <summary class="cursor-pointer select-none text-fg-muted hover:text-fg">The query</summary>

@@ -64,12 +64,15 @@ import {
   DismissTrackerWidget,
   EvaluateTrackerDashboard,
   KeepTrackerWidget,
+  RefreshTrackerWorklogs,
   RemoveTrackerWidget,
   StartTrackerDashboardThread,
   TrackerDashboardDrill,
   TrackerDashboards,
 } from './bindings';
 import { readFrontendValue, writeFrontendValue } from './frontendStorage';
+import { worklogReads } from './trackerDashboardModel';
+import { errString } from '../utils/errors';
 import { getSettings } from './settings.svelte';
 import { openTicketThread } from './ticketWork.svelte';
 import { prependThreadReply } from './threads.svelte';
@@ -116,6 +119,18 @@ export interface DrillState {
   readonly error: unknown;
 }
 
+/** The page's read of the days of your logged time a shown widget counts
+ * and the board's computer has not read (WidgetValue.unread). */
+export interface LoggedTimeRead {
+  /** A read is out: the widgets that wait on it say so. */
+  readonly reading: boolean;
+  /** Why the last read failed or read part of the days, '' when none
+   * failed. Its days are not asked again until the person retries. */
+  readonly failure: string;
+  /** Asks again for every day not read. */
+  retry(): void;
+}
+
 export interface TrackerDashboard {
   /** The dashboards the board offers; null until read; 'older' for a
    * computer whose release has none. Reactive. */
@@ -152,6 +167,8 @@ export interface TrackerDashboard {
   /** The last evaluation failed; null after one succeeds. */
   readonly error: unknown;
   readonly drill: DrillState | null;
+  /** The read of your logged time's days not read. Reactive. */
+  readonly logged: LoggedTimeRead;
   pick(dashboard: string): void;
   /** Keeps a proposed widget on `to`, and shows that dashboard. */
   keep(proposal: string, to: KeepTarget): Promise<void>;
@@ -218,6 +235,16 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
   let error = $state.raw<unknown>(null);
   let drill = $state.raw<DrillState | null>(null);
   let drillGen = 0;
+  // Your logged time (trackerdash worklogs.go): the days a shown widget
+  // counts that the board's computer has not read are read here, through
+  // RefreshTrackerWorklogs on that computer, while the screen shows, and
+  // the dashboard counts again after. A day asked for is not asked again
+  // without the person: asked holds them, for the account and connection
+  // askedFor names, until a retry.
+  let worklogReading = $state(false);
+  let worklogFailure = $state('');
+  const asked = new Set<string>();
+  let askedFor = '';
 
   const dashboard: DashboardView | null = $derived.by(() => {
     if (dashboards === null || dashboards === 'older') return null;
@@ -265,6 +292,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
         answered = { source: s, request: r };
         settledKey = key;
         error = null;
+        if (opts.shown()) void readWorklogs(s, a);
         // An open drill of this dashboard counted in another unit (the
         // project changed what it counts in) reads its first page again
         // in this answer's: its numbers would be in the old one.
@@ -339,6 +367,48 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
       return () => clearInterval(timer);
     });
   });
+
+  async function readWorklogs(s: DashboardSource, a: Answer): Promise<void> {
+    const viewer = a.viewer ?? '';
+    const key = `${s.backend}\n${s.board.connection}\n${viewer}`;
+    if (key !== askedFor) {
+      asked.clear();
+      askedFor = key;
+      worklogFailure = '';
+    }
+    if (!viewer || worklogReading || worklogFailure) return;
+    const days = [...new Set(a.widgets.flatMap((w) => w.unread ?? []))].filter((d) => !asked.has(d)).sort();
+    if (days.length === 0) return;
+    for (const d of days) asked.add(d);
+    worklogReading = true;
+    try {
+      for (const { from, to } of worklogReads(days)) {
+        const read = await withBackendTarget(s.backend, () => RefreshTrackerWorklogs(s.board.connection, viewer, from, to));
+        if (askedFor !== key) return;
+        if (read.failure) {
+          worklogFailure = read.failure.message;
+          return;
+        }
+      }
+    } catch (err) {
+      if (askedFor === key) worklogFailure = errString(err);
+    } finally {
+      if (askedFor === key) {
+        worklogReading = false;
+        scheduler.request({ immediate: true });
+      }
+    }
+  }
+
+  const logged: LoggedTimeRead = {
+    get reading() { return worklogReading; },
+    get failure() { return worklogFailure; },
+    retry() {
+      asked.clear();
+      worklogFailure = '';
+      scheduler.request({ immediate: true });
+    },
+  };
 
   function list(s: DashboardSource, key: string): Promise<void> {
     listedFor = key;
@@ -441,6 +511,7 @@ export function createTrackerDashboard(opts: { source: () => DashboardSource | n
     get stale() { return shownAnswer !== null && answerKey !== requestKey; },
     get error() { return error; },
     get drill() { return drill; },
+    logged,
     setRange(next) {
       const d = dashboard;
       if (!d) return;

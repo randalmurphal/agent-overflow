@@ -30,12 +30,13 @@
     changeMark,
     formatNum,
     notCountedWords,
+    notReadWords,
     numValue,
     numWords,
     type Num,
   } from '../../stores/trackerDashboardModel';
   import { formatAmount, type DashboardUnit } from '../../utils/dashboardAmount';
-  import type { DrillTarget } from '../../stores/trackerDashboard.svelte';
+  import type { DrillTarget, LoggedTimeRead } from '../../stores/trackerDashboard.svelte';
   import BarChart from './charts/BarChart.svelte';
   import LineChart from './charts/LineChart.svelte';
   import Sparkline from './charts/Sparkline.svelte';
@@ -58,10 +59,17 @@
     onTicket: (row: TicketRow) => void;
     /** Where a ticket list's selection is written. */
     tickets: TicketListSource;
+    /** The page's read of your logged time's days not read, which a
+     * widget whose answer lists such days (`unread`) shows. */
+    logged?: LoggedTimeRead;
+    /** The name of the computer that counts the board (How this is
+     * counted). */
+    computer?: string;
     actions?: Snippet;
   }
 
-  let { view, value, counting = false, range, estimates, stale = false, onDrill, onPerson, onEpic, onTicket, tickets, actions }: Props = $props();
+  let { view, value, counting = false, range, estimates, stale = false, onDrill, onPerson, onEpic, onTicket, tickets, logged, computer = '', actions }: Props = $props();
+  const unread = $derived(value?.unread?.length ?? 0);
 
   let showHow = $state(false);
   const unit = $derived(view.unit as DashboardUnit);
@@ -129,7 +137,7 @@
   {/if}
 
   {#if showHow}
-    <DashboardHow {how} />
+    <DashboardHow {how} {computer} />
   {:else}
     <div class="flex min-w-0 flex-col gap-2 transition-opacity {stale ? 'opacity-60' : ''}" inert={stale} data-testid="dashboard-widget-body" data-stale={stale}>
       {#if !value}
@@ -138,6 +146,8 @@
         <p class="text-[0.75rem] text-error" role="alert" data-testid="dashboard-widget-error">{value.error}</p>
       {:else if value.note}
         <p class="text-[0.75rem] text-fg-muted" data-testid="dashboard-widget-note">{value.note}</p>
+      {:else if unread > 0 && logged?.reading}
+        <p class="text-[0.75rem] text-fg-muted" role="status" data-testid="dashboard-widget-reading">Reading your logged time…</p>
       {:else if view.form === 'number'}
         <button
           type="button"
@@ -152,6 +162,9 @@
           </span>
           {#if amount.notCounted}
             <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-number-not-counted">{amount.notCounted}</span>
+          {/if}
+          {#if amount.notRead}
+            <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-number-not-read">{amount.notRead}</span>
           {/if}
           {#if mark?.kind === 'change'}
             <span
@@ -237,6 +250,12 @@
         {/if}
       {/if}
 
+      {#if value && !value.error && !value.note && unread > 0 && logged?.failure && !logged.reading}
+        <p class="flex flex-wrap items-baseline gap-x-2 text-[0.6875rem] text-fg-muted" data-testid="dashboard-widget-unread">
+          <span>Not known: {notReadWords(unread)} of your logged time. {logged.failure}</span>
+          <button type="button" class="text-accent hover:underline" data-testid="dashboard-widget-unread-retry" onclick={() => logged?.retry()}>Read again</button>
+        </p>
+      {/if}
       {#if value && !value.error && view.form !== 'number' && (value.more || value.not_counted)}
         <div class="flex flex-wrap gap-3 text-[0.6875rem]">
           {#if value.more}

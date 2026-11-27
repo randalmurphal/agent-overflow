@@ -1549,9 +1549,6 @@ type DrillAnswer struct {
 	Restarted bool        `json:"restarted,omitempty"`
 	Rows      []TicketRow `json:"rows"`
 	At        int64       `json:"at"`
-	// Unread is how many working days of the viewer's logged time the
-	// drilled number counts were not read (worklogs.go).
-	Unread int `json:"unread,omitempty"`
 }
 
 // drillReads is where drill r of widget w reads metric m's states: at
@@ -1675,8 +1672,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 		if cellPeriod != nil {
 			days = ev.unreadOf(cellPeriod, sp.now)
 		}
-		out.Unread = len(days)
-		markUnread(&out.Value, out.Unread)
+		markUnread(&out.Value, len(days))
 	}
 	rows = slices.Clone(rows)
 	sortDrill(rows, ev.keyOf)
