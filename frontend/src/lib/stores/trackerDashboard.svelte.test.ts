@@ -703,6 +703,29 @@ describe('your logged time', () => {
     expect(refresh.calls).toHaveLength(1);
   });
 
+  it('runs one read at a time: a day an answer adds while a read is out is read after it', async () => {
+    const { s, evaluate } = await opened();
+    const refresh = held<unknown>('RefreshTrackerWorklogs');
+    s.refresh();
+    await flush();
+    evaluate.answer(unreadAnswer(['2026-11-24']));
+    await flush();
+    source = { ...source!, changes: 1 };
+    await flush();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    evaluate.answer(unreadAnswer(['2026-11-24', '2026-11-25'], 3));
+    await flush();
+    expect(refresh.calls).toHaveLength(1);
+    refresh.answer(read);
+    await flush();
+    vi.advanceTimersByTime(DASHBOARD_CHANGE_INTERVAL_MS);
+    await flush();
+    evaluate.answer(unreadAnswer(['2026-11-25'], 4));
+    await flush();
+    expect(refresh.calls.map((c) => c.slice(2))).toEqual([['2026-11-24', '2026-11-24'], ['2026-11-25', '2026-11-25']]);
+  });
+
   it('after a failure reads no further days, those of the same read or a later answer, until the retry', async () => {
     const { s, evaluate } = await opened();
     const refresh = held<unknown>('RefreshTrackerWorklogs');
