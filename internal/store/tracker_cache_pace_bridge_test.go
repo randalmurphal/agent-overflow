@@ -22,8 +22,13 @@ func PaceForTest(t *testing.T, s *Store, root int64, board string, regroup Mirro
 // benchParented), its root and its board, to the
 // external test that measures a dashboard over it
 // (tracker_cache_dashboard_scale_test.go).
-func ScaleMirrorForTest(tb testing.TB, issues int) (*Store, int64, string) {
-	s, root, _ := openSizedMirror(tb, benchMirrorSize{boards: 1, issues: issues, parents: true})
+//
+// With recent above zero it is the fixture with real times instead
+// (benchRecentBoard), that percentage of its issues changed inside the
+// window that starts at BenchWindowForTest, the others long before it; a
+// count over it runs at BenchNowForTest.
+func ScaleMirrorForTest(tb testing.TB, issues, recent int) (*Store, int64, string) {
+	s, root, _ := openSizedMirror(tb, benchMirrorSize{boards: 1, issues: issues, parents: true, recent: recent})
 	return s, root, benchBoardID(0)
 }
 

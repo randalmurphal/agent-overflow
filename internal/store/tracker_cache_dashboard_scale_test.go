@@ -39,21 +39,31 @@ func TestDashboardAtScale(t *testing.T) {
 		if err != nil || n < 100 {
 			t.Fatalf("AO_TRACKER_SCALE=%q: each size is a whole number of at least 100", env)
 		}
-		t.Run(fmt.Sprint(n), func(t *testing.T) { dashboardAtScale(t, n) })
+		t.Run(fmt.Sprint(n), func(t *testing.T) { dashboardAtScale(t, n, 0) })
+		t.Run(fmt.Sprint(n, " recent 10%"), func(t *testing.T) { dashboardAtScale(t, n, 10) })
 	}
 }
 
-func dashboardAtScale(t *testing.T, n int) {
-	s, root, board := store.ScaleMirrorForTest(t, n)
+// dashboardAtScale measures a board of n issues: the scale fixture, every
+// change inside the window (the export binds none, so every change is
+// one a count can ask about), or with recent above zero the fixture with
+// real times, that percentage of the issues changed inside the window,
+// counted at its now.
+func dashboardAtScale(t *testing.T, n, recent int) {
+	s, root, board := store.ScaleMirrorForTest(t, n, recent)
+	window, now := int64(0), time.Now
+	if recent > 0 {
+		window, now = store.BenchWindowForTest, func() time.Time { return time.UnixMilli(store.BenchNowForTest) }
+	}
 	var fills []time.Duration
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
 		start := time.Now()
-		export, ok, err := s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, 0, store.CardShapeForTest)
+		export, ok, err := s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, window, store.CardShapeForTest)
 		fills = append(fills, time.Since(start))
 		return export, ok, err
 	}
 	b := trackerdash.Board{Fill: fill, Epics: true, Viewer: "acc-user1"}
-	e := trackerdash.NewEvaluator(time.Now)
+	e := trackerdash.NewEvaluator(now)
 	ctx := context.Background()
 	spread := func(ds []time.Duration) string {
 		sorted := slices.Sorted(slices.Values(ds))
@@ -65,7 +75,7 @@ func dashboardAtScale(t *testing.T, n int) {
 	var asked []string
 	b.Fill = func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
 		asked = slices.Clone(relations)
-		return s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, 0, store.CardShapeForTest)
+		return s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, window, store.CardShapeForTest)
 	}
 	if _, err := e.Evaluate(ctx, b, trackerdash.Request{Dashboard: "overview_sprints", Range: trackerdash.RangeSprints5, TimeZone: "UTC"}); err != nil {
 		t.Fatal(err)
@@ -79,13 +89,13 @@ func dashboardAtScale(t *testing.T, n int) {
 		{"with both intervals", append(slices.Clone(withoutIntervals), "status_intervals", "sprint_intervals")}, {"as the Overview asks", asked}} {
 		var times []time.Duration
 		for range 5 {
-			d, err := timedExport(ctx, s, root, board, copied.relations)
+			d, err := timedExport(ctx, s, root, board, copied.relations, window)
 			if err != nil {
 				t.Fatal(err)
 			}
 			times = append(times, d)
 		}
-		t.Logf("%d issues, the Overview's copy %s (%s): %s", n, copied.label, strings.Join(copied.relations, ", "), spread(times))
+		t.Logf("%d issues, %d%% recent, the Overview's copy %s (%s): %s", n, recent, copied.label, strings.Join(copied.relations, ", "), spread(times))
 	}
 	for _, rng := range []string{trackerdash.RangeSprints5, trackerdash.RangeThisSprint} {
 		fills = nil
@@ -115,8 +125,8 @@ func dashboardAtScale(t *testing.T, n int) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("%d issues, %s: evaluation %s, of which the fill %s; answer %d bytes as JSON; %.1f MB allocated in %d allocations",
-			n, rng, spread(times), spread(fills), len(body), float64(after.TotalAlloc-before.TotalAlloc)/(1<<20), after.Mallocs-before.Mallocs)
+		t.Logf("%d issues, %d%% recent, %s: evaluation %s, of which the fill %s; answer %d bytes as JSON; %.1f MB allocated in %d allocations",
+			n, recent, rng, spread(times), spread(fills), len(body), float64(after.TotalAlloc-before.TotalAlloc)/(1<<20), after.Mallocs-before.Mallocs)
 	}
 	// A drill of the stuck tickets, the widget with the most rows on this
 	// fixture: its first page of 100.
@@ -135,12 +145,12 @@ func dashboardAtScale(t *testing.T, n int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("%d issues, drill of the stuck tickets (%d rows, %d on the page): %s; answer %d bytes as JSON", n, drill.Count, len(drill.Rows), spread(times), len(body))
+	t.Logf("%d issues, %d%% recent, drill of the stuck tickets (%d rows, %d on the page): %s; answer %d bytes as JSON", n, recent, drill.Count, len(drill.Rows), spread(times), len(body))
 }
 
 // timedExport is how long one export of relations of board takes, on a
 // new private in-memory database as an evaluation's.
-func timedExport(ctx context.Context, s *store.Store, root int64, board string, relations []string) (_ time.Duration, err error) {
+func timedExport(ctx context.Context, s *store.Store, root int64, board string, relations []string, window int64) (_ time.Duration, err error) {
 	db, err := sql.Open("sqlite", "file::memory:")
 	if err != nil {
 		return 0, err
@@ -153,7 +163,7 @@ func timedExport(ctx context.Context, s *store.Store, root int64, board string, 
 	}
 	defer func() { err = errors.Join(err, conn.Close()) }()
 	start := time.Now()
-	if _, ok, err := s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, 0, store.CardShapeForTest); err != nil || !ok {
+	if _, ok, err := s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, window, store.CardShapeForTest); err != nil || !ok {
 		return 0, fmt.Errorf("export %v: %v, %w", relations, ok, err)
 	}
 	return time.Since(start), nil
@@ -189,7 +199,7 @@ func TestDashboardMemoryAfterClose(t *testing.T) {
 }
 
 func dashboardMemory(t *testing.T, n int) {
-	s, root, board := store.ScaleMirrorForTest(t, n)
+	s, root, board := store.ScaleMirrorForTest(t, n, 0)
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
 		return s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, 0, store.CardShapeForTest)
 	}

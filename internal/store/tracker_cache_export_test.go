@@ -286,7 +286,7 @@ func TestMirrorExportSearchesByTheBoard(t *testing.T) {
 	}
 	// The copy's tables, and the subqueries and rows of the fills' own
 	// CTEs and json_each, which are not the file's.
-	snapshot := map[string]bool{"l": true, "x": true, "o": true, "c": true, "v": true, "s": true, "g": true, "e": true, "j": true, "p": true}
+	snapshot := map[string]bool{"l": true, "x": true, "o": true, "c": true, "v": true, "s": true, "g": true, "e": true, "j": true, "p": true, "ri": true, "pick": true, "pk": true, "sp": true}
 	for _, table := range MirrorExportTables {
 		snapshot[table] = true
 	}
@@ -320,6 +320,14 @@ func TestMirrorExportSearchesByTheBoard(t *testing.T) {
 		}
 		if !slices.ContainsFunc(plan, func(step string) bool { return strings.HasPrefix(step, "SEARCH") }) {
 			t.Errorf("the export of %s searches nothing:\n%s", fill.name, strings.Join(plan, "\n"))
+		}
+		// The sprint intervals read the histories of a sprint's members now
+		// and of the issues updated since the earliest instant, each by its
+		// index, never a board's others.
+		for _, index := range map[string][]string{"sprint_intervals": {"idx_tracker_cache_issue_sprints_sprint", "idx_tracker_cache_issues_updated"}}[fill.relation] {
+			if !slices.ContainsFunc(plan, func(step string) bool { return strings.Contains(step, index) }) {
+				t.Errorf("the export of %s does not read %s:\n%s", fill.name, index, strings.Join(plan, "\n"))
+			}
 		}
 	}
 }
@@ -556,12 +564,20 @@ func TestMirrorExportFillsAtScale(t *testing.T) {
 		if err != nil || n < 100 {
 			t.Fatalf("AO_TRACKER_SCALE=%q: each size is a whole number of at least 100", env)
 		}
-		t.Run(fmt.Sprint(n), func(t *testing.T) { exportFillsAtScale(t, n) })
+		t.Run(fmt.Sprint(n), func(t *testing.T) { exportFillsAtScale(t, n, 0) })
+		t.Run(fmt.Sprint(n, " recent 10%"), func(t *testing.T) { exportFillsAtScale(t, n, 10) })
 	}
 }
 
-func exportFillsAtScale(t *testing.T, n int) {
-	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: n, parents: true})
+// exportFillsAtScale measures the fills of the scale fixture of n issues,
+// every change inside the window, or with recent above zero of the
+// fixture with real times, that percentage of them changed inside it.
+func exportFillsAtScale(t *testing.T, n, recent int) {
+	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: n, parents: true, recent: recent})
+	window := int64(0)
+	if recent > 0 {
+		window = BenchWindowForTest
+	}
 	ctx := context.Background()
 	// A ticket's epic is its parent when the fixture names the parent an
 	// epic, else its parent's epic: a sub-task counts under its story's.
@@ -580,7 +596,7 @@ func exportFillsAtScale(t *testing.T, n int) {
 		}
 	}
 	wantEpics := fmt.Sprintf("%d|%d", under, len(epics))
-	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, 0, CardShapeForTest))
+	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, window, CardShapeForTest))
 	// Each fill with no column of MirrorExportColumns asked for, with one,
 	// and with every one, as a count whose query reads them asks; each in
 	// an export of every relation and in one without the changes, whose
@@ -645,9 +661,9 @@ func exportFillsAtScale(t *testing.T, n int) {
 					t.Fatal(err)
 				}
 			}
-			t.Logf("%d issues, %s, export %d: %s", n, asked.label, pass+1, intervals)
+			t.Logf("%d issues, %d%% recent, %s, export %d: %s", n, recent, asked.label, pass+1, intervals)
 			for _, fill := range fills {
-				t.Logf("%d issues, %-12s %-42s %10d steps, %5d a row, best %v", n, asked.label, fill.name, steps[fill.name], steps[fill.name]/n, best[fill.name].Round(time.Microsecond))
+				t.Logf("%d issues, %d%% recent, %-12s %-42s %10d steps, %5d a row, best %v", n, recent, asked.label, fill.name, steps[fill.name], steps[fill.name]/n, best[fill.name].Round(time.Microsecond))
 			}
 		}
 	}

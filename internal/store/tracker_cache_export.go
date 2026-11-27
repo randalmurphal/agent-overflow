@@ -92,8 +92,9 @@ type MirrorCardShape struct {
 // mirrorExportCardColumns, the others following in order (args).
 const mirrorExportCardArg = 11
 
-// mirrorExportWindowArg is the parameter of the history window's start,
-// after the card blob's shape.
+// mirrorExportWindowArg is the parameter of the earliest instant a count
+// can ask of the intervals (mirrorExportEarliest), after the card blob's
+// shape.
 var mirrorExportWindowArg = mirrorExportCardArg + len(mirrorExportCardColumns)
 
 // args is the shape as the fills bind it, ?6 to ?10 and then a member
@@ -473,7 +474,12 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	if err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: read board %s to export it: %w", boardID, err)
 	}
-	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, window, card)
+	var earliestSprint sql.NullInt64
+	if err := tx.QueryRowContext(ctx, mirrorExportEarliestSprintSQL, rootID, boardID).Scan(&earliestSprint); err != nil {
+		return MirrorExport{}, false, fmt.Errorf("store: read board %s's earliest sprint to export it: %w", boardID, err)
+	}
+	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone,
+		mirrorExportEarliest(window, earliestSprint), card)
 	for _, fill := range mirrorExportFills {
 		if !fill.runs(relations) {
 			continue
@@ -490,7 +496,9 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 }
 
 // mirrorExportArgs is what the fills bind (mirrorExportFills).
-func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, window int64, card MirrorCardShape) []any {
+// from is the earliest instant a count can ask of the intervals
+// (mirrorExportEarliest).
+func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, from int64, card MirrorCardShape) []any {
 	groups := regroup.statuses
 	if groups == "" {
 		groups = "{}"
@@ -499,7 +507,7 @@ func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, reset
 	if estimated {
 		hasEstimate = 1
 	}
-	return append(append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...), window)
+	return append(append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...), from)
 }
 
 // mirrorExportURI is the read-only URI of the database file at path.

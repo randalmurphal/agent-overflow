@@ -25,15 +25,22 @@ const (
 // benchMirrorSize is a bench mirror's shape: how many boards, each with
 // how many issues of its own, and whether its issues have parents
 // (benchParented) and a scrum board's sprint history (benchSprintHistory).
+// recent, when above zero, gives a parented board real times instead
+// (benchRecentBoard): that percentage of its issues changed inside the
+// history window, the rest long before it.
 type benchMirrorSize struct {
 	boards, issues int
 	parents        bool
+	recent         int
 }
 
 // benchDefaultSize is the mirror the benchmarks run against.
 var benchDefaultSize = benchMirrorSize{boards: benchBoards, issues: benchBoardIssues}
 
 func (z benchMirrorSize) String() string {
+	if z.recent > 0 {
+		return fmt.Sprintf("%dx%d-parents-recent%d", z.boards, z.issues, z.recent)
+	}
 	if z.parents {
 		return fmt.Sprintf("%dx%d-parents", z.boards, z.issues)
 	}
@@ -126,17 +133,65 @@ func benchHistory(id string, at int64, n int) MirrorHistory {
 }
 
 // benchSprintHistory is h with what a scrum board's issue i records after
-// its benchChanges: its move into its sprint and its first estimate, the
+// its benchChanges: its move into sprint and its first estimate, the
 // changes its sprint intervals are rebuilt from.
-func benchSprintHistory(h MirrorHistory, board, i int) MirrorHistory {
+func benchSprintHistory(h MirrorHistory, board, i int, sprint string) MirrorHistory {
 	estimate := float64(i % 8)
 	at := h.Changes[len(h.Changes)-1].At
 	h.Changes = append(h.Changes,
-		MirrorChange{Kind: MirrorChangeSprint, At: at + 1, AuthorID: "acc-user1", FromSprints: []string{},
-			ToSprints: []string{strconv.Itoa(board*benchBoardSprints + i%benchBoardSprints)}},
+		MirrorChange{Kind: MirrorChangeSprint, At: at + 1, AuthorID: "acc-user1", FromSprints: []string{}, ToSprints: []string{sprint}},
 		MirrorChange{Kind: MirrorChangeEstimate, At: at + 2, AuthorID: "acc-user1", BoardID: benchBoardID(board), ToNumber: &estimate})
 	h.AnsweredAt = at + 2
 	return answeredHistory(h)
+}
+
+// The real times of a recent fixture (benchRecentBoard): its now, a day,
+// and the start of the history window it is exported with.
+const (
+	BenchNowForTest    = int64(1_767_225_600_000) // 2026-01-01 UTC
+	benchDay           = int64(86_400_000)
+	BenchWindowForTest = BenchNowForTest - 180*benchDay
+	benchRecentSprints = 13
+)
+
+// benchRecentStructure is board's structure as a recent fixture keeps it:
+// 12 closed two-week sprints inside the window and an active one.
+func benchRecentStructure(board int) MirrorStructure {
+	st := benchStructure(board)
+	st.Sprints = nil
+	for k := range benchRecentSprints {
+		start := BenchWindowForTest + 5*benchDay + int64(k)*14*benchDay
+		sp := MirrorSprint{ID: strconv.Itoa(board*benchBoardSprints + k), OriginBoardID: benchBoardID(board), Name: fmt.Sprint("WEB Sprint ", k),
+			State: MirrorSprintClosed, StartAt: start, EndAt: start + 14*benchDay, CompletedAt: start + 14*benchDay}
+		if k == benchRecentSprints-1 {
+			sp.State, sp.CompletedAt = MirrorSprintActive, 0
+		}
+		st.Sprints = append(st.Sprints, sp)
+	}
+	return st
+}
+
+// benchRecentBoard is issue i of board in a recent fixture of percent
+// recent issues: its row and its history, each change benchHistory's and
+// benchSprintHistory's, its card in the status its history ends in. A
+// recent issue (every one whose i mod 100 is below the percentage)
+// changed inside the window and is in one of its sprints; the others
+// changed long before it, in a sprint the board no longer keeps.
+func benchRecentBoard(board, i, recent int) (MirrorRow, MirrorHistory) {
+	id := benchIssueID(board, i)
+	base := BenchWindowForTest - int64(30+i%300)*benchDay
+	sprint, sprints := "closed-before-the-window", []string(nil)
+	if i%100 < recent {
+		base = BenchWindowForTest + int64(5+i%170)*benchDay
+		sprint = strconv.Itoa(board*benchBoardSprints + (i/100)%benchRecentSprints)
+		sprints = []string{sprint}
+	}
+	h := benchSprintHistory(benchHistory(id, base, benchChanges), board, i, sprint)
+	h.For = 0 // read for the card's version (dueHistories), so its status time is final
+	row := benchParented(benchRow(board, i, base+benchChanges+2), board, i)
+	row.Card.CreatedAt, row.Card.Sprints = base-benchDay, sprints
+	row.Card.StatusID = h.Changes[benchChanges-2].To
+	return row, h
 }
 
 // buildBenchMirror writes a fixture of size through the store's own
@@ -173,31 +228,33 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 		return err
 	}
 	for board := range size.boards {
-		if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, benchStructure(board))); err != nil {
+		structure := benchStructure(board)
+		if size.recent > 0 {
+			structure = benchRecentStructure(board)
+		}
+		if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, structure)); err != nil {
 			return err
 		}
 		rows := make([]MirrorRow, 0, size.issues)
+		histories := make([]MirrorHistory, 0, size.issues)
 		for i := range size.issues {
 			row := benchRow(board, i, 1000)
-			if size.parents {
+			h := benchHistory(benchIssueID(board, i), 100, benchChanges)
+			switch {
+			case size.recent > 0:
+				row, h = benchRecentBoard(board, i, size.recent)
+			case size.parents:
 				row = benchParented(row, board, i)
+				h = benchSprintHistory(h, board, i, strconv.Itoa(board*benchBoardSprints+i%benchBoardSprints))
 			}
-			rows = append(rows, row)
+			rows, histories = append(rows, row), append(histories, h)
 		}
 		for page := range slices.Chunk(rows, 100) {
 			if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: benchBoardID(board), Rows: page, ReadAt: mirrorReadAt(1)}), []byte("cursor")); err != nil {
 				return err
 			}
 		}
-		for first := 0; first < size.issues; first += mirrorHistoryBatch {
-			batch := make([]MirrorHistory, 0, mirrorHistoryBatch)
-			for i := first; i < min(first+mirrorHistoryBatch, size.issues); i++ {
-				h := benchHistory(benchIssueID(board, i), 100, benchChanges)
-				if size.parents {
-					h = benchSprintHistory(h, board, i)
-				}
-				batch = append(batch, h)
-			}
+		for batch := range slices.Chunk(histories, mirrorHistoryBatch) {
 			if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch), MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
 				return err
 			}
