@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -106,8 +107,8 @@ func TestDashboardAskMakesADraftNamingTheBoard(t *testing.T) {
 	if _, err := f.a.StartTrackerDashboardThread(f.ctx, f.sub, ""); err == nil || !strings.Contains(err.Error(), "injected failure") {
 		t.Fatalf("an Ask whose draft fails = %v", err)
 	}
-	if threads, err := f.a.store.ListThreadsByProject(f.project); err != nil || len(threads) != 1 || threads[0].ID != made.ID {
-		t.Fatalf("threads after a failed Ask = %+v, %v; want the first alone", threads, err)
+	if threads, err := f.a.store.ListThreadsByProject(f.project); err != nil || len(threads) != 2 || !slices.ContainsFunc(threads, func(th store.Thread) bool { return th.ID == made.ID }) || !slices.ContainsFunc(threads, func(th store.Thread) bool { return th.ID == row.ID }) {
+		t.Fatalf("threads after a failed Ask = %+v, %v; want the two made before it", threads, err)
 	}
 }
 
@@ -119,7 +120,7 @@ func TestDashboardAskNeedsTrackerRead(t *testing.T) {
 	limited := pairSessionWithScopes(t, app, "thumb-ask", []identity.Scope{identity.ScopeThreadsRead, identity.ScopeThreadsOperate})
 	_, err := app.StartTrackerDashboardThread(callFrom(limited.ID, false), "no-such-subscription", "")
 	wantScopeRefusal(t, err, transport.ScopeTrackerRead)
-	if _, err := app.StartTrackerDashboardThread(context.Background(), "no-such-subscription"); err == nil {
+	if _, err := app.StartTrackerDashboardThread(context.Background(), "no-such-subscription", ""); err == nil {
 		t.Fatal("an Ask of no subscription was admitted")
 	}
 }
