@@ -1,0 +1,151 @@
+package trackerdash
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// creditBoard is the sprint board of a project that counts credit, with
+// its credit in sprint 6:
+//
+//	WEB-1  finished, 5 points, for User 1; User 2 reviewed it (10%: 0.5)
+//	WEB-2  finished, 3 points, for User 2; who reviewed it is not read
+//	WEB-3  support, User 2 logged 2 hours (a point a 4 hours: 0.5)
+//
+// and, with estimates none, a board that counts tickets.
+func creditBoard(estimates string) *fixture {
+	f := sprintBoard()
+	f.estimates = estimates
+	f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", assignee: "u1", points: "5", created: ago(20)}).member("s6", "t1", true)
+	f.ticket(ticket{id: "t2", key: "WEB-2", status: "5", group: "done", assignee: "u2", points: "3", created: ago(20)}).member("s6", "t2", true)
+	f.ticket(ticket{id: "t3", key: "WEB-3", status: "1", group: "todo", created: ago(20)})
+	row := func(ticket, kind, person, value, share, did string, qualified, hours, note string) {
+		f.exec(`INSERT INTO credit(sprint, at, ticket, kind, person, value, share, points, review_share, review_need, did, qualified, hours, hours_per_point, note)
+			VALUES ('s6', %d, '%s', '%s', %s, %s, %s, NULL, 10, 2, %s, %s, %s, 4, %s)`, ago(2), ticket, kind, quote(person), value, share, quote(did), qualified, hours, quote(note))
+	}
+	row("t1", "finished", "u1", "5", "1", "", "NULL", "NULL", "")
+	row("t1", "review", "u2", "0.5", "0.1", "commented, logged time", "1", "NULL", "")
+	row("t2", "finished", "u2", "3", "1", "", "NULL", "NULL", "")
+	row("t2", "review", "", "NULL", "NULL", "", "NULL", "NULL", "who worked on it is not read yet")
+	row("t3", "support", "u2", "0.5", "0.5", "", "NULL", "2", "")
+	return f
+}
+
+// creditOn is f's board of a project that counts credit.
+func creditOn(f *fixture) Board {
+	b := f.board()
+	b.Credit = true
+	return b
+}
+
+var utcSprints5 = Request{Dashboard: builtinSprintsID, Range: RangeSprints5, TimeZone: "UTC"}
+
+// The pace of a project that counts credit is each sprint's finished
+// tickets, review credit and support credit, each row for its person: the
+// team's, Mine's and a person's, a ticket whose review is not read not
+// counted in each of them, and on a board that counts tickets each row's
+// share of a ticket.
+func TestThePaceCountsCreditInThreeSeries(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name      string
+		estimates string
+		r         Request
+		pace, bar string
+	}{
+		{"team", "points", utcSprints5, "1.8, 1 not counted", "8 0.5, 1 not counted 0.5"},
+		{"mine", "points", Request{Dashboard: builtinSprintsID, Range: RangeSprints5, TimeZone: "UTC", Mine: true}, "1, 1 not counted", "5 not known, 1 not counted 0"},
+		{"User 2", "points", Request{Dashboard: builtinSprintsID, Range: RangeSprints5, TimeZone: "UTC", Person: "u2"}, "0.8, 1 not counted", "3 0.5, 1 not counted 0.5"},
+		{"tickets", "none", utcSprints5, "0.52, 1 not counted", "2 0.1, 1 not counted 0.5"},
+	} {
+		a := mustEvaluate(t, evaluator(), creditOn(creditBoard(c.estimates)), c.r)
+		pace := widgetOf(t, a, "pace")
+		bars := widgetOf(t, a, "finished")
+		last := bars.Buckets[len(bars.Buckets)-1]
+		var cells []string
+		for i := range last.Cells {
+			cells = append(cells, num(&last.Cells[i]))
+		}
+		if num(pace.Value) != c.pace || strings.Join(cells, " ") != c.bar || !reflect.DeepEqual(bars.Series, []string{seriesFinished, seriesReview, seriesSupport}) {
+			t.Errorf("%s: pace %s, sprint 6's cells %v of %v; want %s and %s", c.name, num(pace.Value), cells, bars.Series, c.pace, c.bar)
+		}
+	}
+}
+
+// The pace's drill lists each credit row with the person it counts for,
+// its series and how it was counted; the row not read names no person.
+func TestThePacesDrillSaysHowCreditWasCounted(t *testing.T) {
+	t.Parallel()
+	d, err := evaluator().Drill(context.Background(), creditOn(creditBoard("points")), DrillRequest{Request: utcSprints5, Widget: "pace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []string
+	for _, r := range d.Rows {
+		value := "-"
+		if r.Value != nil {
+			value = fmt.Sprint(*r.Value)
+		}
+		rows = append(rows, strings.Join([]string{r.Key, r.Series, r.Assignee, value, fmt.Sprint(r.Counted), r.Note}, " | "))
+	}
+	want := []string{
+		"WEB-1 | Finished tickets | User 1 | 5 | true | ",
+		"WEB-2 | Finished tickets | User 2 | 3 | true | ",
+		"WEB-1 | Review credit | User 2 | 0.5 | true | 10% for commented, logged time",
+		"WEB-3 | Support credit | User 2 | 0.5 | true | 2h ÷ 4 = 0.5",
+		"WEB-2 | Review credit |  | - | false | who worked on it is not read yet",
+	}
+	if !reflect.DeepEqual(rows, want) {
+		t.Fatalf("drill\n%s\nwant\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// While credit is not read for a ticket, an answer says the last read of
+// who worked on the tickets failed and why; with all of it read, or no
+// failure, it says nothing.
+func TestAnAnswerSaysWhyCreditIsNotRead(t *testing.T) {
+	t.Parallel()
+	failing := func(f *fixture) Board {
+		b := creditOn(f)
+		b.EvidenceFailure = "Jira refused the request: 401 Unauthorized."
+		return b
+	}
+	read := creditBoard("points").exec(`DELETE FROM credit WHERE value IS NULL`)
+	for _, c := range []struct {
+		name string
+		b    Board
+		want string
+	}{
+		{"failing, not read", failing(creditBoard("points")),
+			"Some tickets' credit is not counted: the last read of who worked on them failed. Jira refused the request: 401 Unauthorized."},
+		{"failing, all read", failing(read), ""},
+		{"not failing", creditOn(creditBoard("points")), ""},
+	} {
+		if a := mustEvaluate(t, evaluator(), c.b, utcSprints5); a.Evidence != c.want {
+			t.Errorf("%s: evidence %q; want %q", c.name, a.Evidence, c.want)
+		}
+	}
+}
+
+// A row of a metric with a person column that is not counted and names
+// no person could be anyone's, so a person's page keeps it, not counted;
+// a counted row that names no person, and one that names another, are
+// not kept.
+func TestAPersonsPageKeepsARowThatCouldBeAnyones(t *testing.T) {
+	t.Parallel()
+	f := sprintBoard()
+	f.ticket(ticket{id: "t1", key: "WEB-1", status: "5", group: "done", assignee: "u1", created: ago(20)})
+	f.ticket(ticket{id: "t2", key: "WEB-2", status: "5", group: "done", assignee: "u1", created: ago(20)})
+	f.ticket(ticket{id: "t3", key: "WEB-3", status: "5", group: "done", assignee: "u1", created: ago(20)})
+	b := f.board()
+	b.Own = Own{Metrics: map[string]Metric{"m": {Name: "m", Title: "By person", Words: []string{"Rows by person."}, Reduce: ReduceSum, Unit: UnitTickets,
+		SQL: `SELECT 't1' AS ticket, NULL AS value, NULL AS person UNION ALL SELECT 't2', 1, NULL UNION ALL SELECT 't3', 1, 'u2'`}},
+		Dashboards: []Dashboard{{ID: "own", Title: "Own", Widgets: []Widget{{ID: "w", Metric: "m", Form: FormNumber, Width: 3}}}}}
+	a := mustEvaluate(t, evaluator(), b, Request{Dashboard: "own", TimeZone: "UTC", Person: "u1"})
+	if got := num(widgetOf(t, a, "w").Value); got != "not known, 1 not counted" {
+		t.Fatalf("User 1's number = %s; want WEB-1 alone, not counted", got)
+	}
+}
