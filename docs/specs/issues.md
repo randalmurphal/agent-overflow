@@ -646,9 +646,10 @@ dismisses; a number, bar or cell's tickets, a number's change and trend, narrowi
 an epic, and selecting rows in a ticket list or a drill to move, assign
 or start a thread on them; a sprint board's burndown and its table of
 what each finished sprint committed, added, removed and completed; and
-Stuck's value where the range began. A query reads the board's tickets
-only: pull requests, threads and logged time are not built, nor the
-credit rules in How this is counted, or a number tile's limit.
+Stuck's value where the range began; a query over the threads linked to
+the board's tickets and over your own logged time. Pull requests in a
+query are not built, nor the credit rules in How this is counted, or a
+number tile's limit.
 
 - Every board has a built-in dashboard, Overview: its usual pace, days
   from start to done, the tickets stuck now, what was finished per sprint
@@ -681,6 +682,22 @@ credit rules in How this is counted, or a number tile's limit.
   picker, Team or Mine, the range, Ask your agent, and an edit mode that
   removes widgets.
 - A query may read tickets, pull requests, threads and logged time.
+- A query of threads counts those on the board's computer linked to the
+  board's tickets; How this is counted says so, since a ticket's Work
+  lists the linked threads of every attached computer.
+- A query of logged time reads your own, the connection's account's, in
+  hours. A day whose time was never read is not zero: the number, period,
+  bar or cell it falls in reads "Not known" and says how many days were
+  not read ("Not known, 3 days not read"), on the tile, a hover, and a
+  drill's header. While the widget shows, the page reads those days from
+  the tracker, at most 31 days a request and one request at a time (6
+  for a first show of 180 days, 1 for a later day), saying "Reading your
+  logged time…" meanwhile, and counts again. A day is not read again on
+  its own: after a failed read the widget says how many days were not
+  read and why, with Read again. A page narrowed to another person says
+  "Only your own logged time is read."; a Linear board says it has no
+  time tracking, and a connection whose account is not verified says to
+  check the connection.
 - A number, bar or table cell opens the tickets behind it. Each widget
   shows how it is counted: the rule in plain words, the credit rules it
   reads, the query, and its sources.

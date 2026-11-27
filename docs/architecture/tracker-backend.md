@@ -2304,7 +2304,8 @@ closes a database of its own.
 | The board, its status groups and the viewer of an evaluation | `trackerapp` |
 | The dashboards a project keeps (the setup file's `dashboards` section) and the widgets agents proposed | `trackerapp` (`dashboard_setup.go`, `dashboards.go`) |
 | Bound methods, scopes and the older-computer surface | `app` (`app_tracker_dashboards.go`) |
-| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine and the drill | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+| The answer on screen, when it is counted again, the dashboard picked, the range, Team or Mine, the drill, and the reads of the days of your logged time a shown widget counts | `frontend/src/lib/stores/trackerDashboard.svelte.ts` |
+| Where logged time counts and where it is not known, and the sentences of a widget that cannot count it | `trackerdash/worklogs.go` |
 
 ### Own dashboards and proposals
 
@@ -2358,8 +2359,9 @@ whether it is open and whether it counts, by the project's status
 groups), the statuses its columns, tickets and copied changes name,
 people (the assignees, and the people the changes name when those are
 copied), epics, sprints and their members, the tickets' changes, what
-each sprint finished, the tickets' labels, and two relations rebuilt from
-the stored history ([Sprint history](#sprint-history)). A ticket's type and
+each sprint finished, the tickets' labels, two relations rebuilt from
+the stored history ([Sprint history](#sprint-history)), and three of
+this computer's own ([Thread links and logged time](#thread-links-and-logged-time)). A ticket's type and
 priority names (`MirrorExportColumns`) and its labels come from its card
 blob, whose shape trackerapp passes (`MirrorCardShape`, from the json
 tags of `cardBlob`); the tickets fill decodes a name only when a count
@@ -2505,6 +2507,55 @@ board's Overview counts three widgets from them:
 Their costs at 2,000 and 20,000 issues are in
 [Tracker API measurements](../references/tracker-api-measurements.md#sprint-history).
 
+### Thread links and logged time
+
+The rules are the comments at the top of
+`store/tracker_cache_export_relations.go` and `trackerdash/worklogs.go`.
+
+- `threads(id, ticket, origin, linked_at, created_at, archived,
+  last_turn_at)` is the threads of the board's computer linked to one of
+  the board's tickets on the board's site, as that computer's Ticket
+  screen lists them (no hidden mode, none being deleted), with no title.
+  A ticket's Work lists the linked threads of every attached computer, so
+  it can show more than a dashboard counts; How this is counted says
+  which threads it counts.
+- `worklogs(id, ticket, day, seconds)` is the logged time on the board's
+  tickets of one person, the connection's verified account (the viewer,
+  `Answer.Viewer`), and `worklog_days(day)` the days of that person's
+  the mirror read, whatever was logged on them. Both start the day before
+  the earliest instant a count can ask. A count that reads `worklogs`
+  also copies `worklog_days`. A metric of it counts in the unit `time`,
+  seconds that the screen shows as hours.
+- `day_start(day)` is the instant a row of a day is placed at: the first
+  millisecond of that date in the request's time zone, whatever zone the
+  person logged it in, so a period that begins at midnight holds its
+  first day and not the day before (`trackerdash.placed`).
+- A row of logged time is the viewer's: its person is the viewer unless
+  the metric returns `person`, so Mine keeps it all. A page narrowed to
+  another person says "Only your own logged time is read." in the
+  widget's place, a Linear board that it has no time tracking, and a
+  connection whose account is not verified to check the connection; the
+  drill refuses with the same sentence.
+- A day with no read is not zero hours. A number, a period's value, a
+  bar's or cell's value and its total, and a drill's value that a day not
+  read falls in are not known, carrying the days not read (`Num.UR`); a
+  ranked bar counts the range's days. A weekend's day is a day like any
+  other; days after now are not counted. The widget lists the range's
+  days not read (`WidgetValue.Unread`), and the evaluator makes no
+  tracker request.
+- The Dashboards screen reads those days, while a widget that lists
+  them is shown, through `RefreshTrackerWorklogs` on the board's
+  computer: one read at a time, each of at most 31 consecutive days, then
+  it counts again. A first show of 180 days not read is 6 reads, and a
+  later day 1. A day asked for is not asked again without the person:
+  after a failed read the widget says "Not known" with the days not read
+  and the reason, and Read again asks for them. While a read runs the
+  widget says it is reading. Another connection or account starts over,
+  and a read for the last one changes nothing when it returns.
+
+Their costs at 2,000 and 20,000 issues are in
+[Tracker API measurements](../references/tracker-api-measurements.md#thread-links-and-logged-time).
+
 ### Metrics
 
 A metric is one SELECT over the export whose rows are contributions:
@@ -2594,8 +2645,8 @@ statement.
   run at once on a computer; a third waits up to 2 s and is refused as
   busy. A count with proposals takes at most 12 s (two waits and two
   evaluations) against its method's 45 s.
-- The app's functions (`days`, `working_days`, `day` and the wrapper's
-  `bounded_rows`) are registered once per time zone a count names, on a
+- The app's functions (`days`, `working_days`, `day`, `day_start` and
+  the wrapper's `bounded_rows`) are registered once per time zone a count names, on a
   driver of that zone the process keeps (`trackerdash/funcs.go`): one
   per zone name the computer's time zone database loads, as the request
   spells it, and at most 32 per process; a count that names a 33rd is
@@ -2791,12 +2842,14 @@ guide says so once.
 one; a name or ID that more than one board answers to is refused naming
 each by its site/ID) as the board's dashboards count it, over the
 board's default range, and answers its numbers in their unit (`unit`:
-tickets, points, seconds for a time board's estimates, or days), the
-tickets each number could not count, how many rows its query returned
-and the first 5.
+tickets, points, seconds for logged time or a time board's estimates,
+or days), the tickets each number could not count, the days of logged
+time each could not read (`not_read`), why the widget counts nothing on
+the page when it does not (`note`), how many rows its query returned and
+the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 6,184 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 6,998 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a
