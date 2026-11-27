@@ -76,7 +76,7 @@ func (e *Evaluator) Try(ctx context.Context, b Board, w Widget, m Metric, timeZo
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	c, err := o.count(m)
+	c, err := o.count(m, widgetReads(w, m, o.sp).and(reads{now: true}))
 	if err != nil {
 		return Tried{}, err
 	}

@@ -18,13 +18,6 @@ func weightOf(points string) string {
 
 var weight = weightOf("t.points")
 
-// openStatus holds for a status row g (statuses) the board counts not
-// done, as tickets.open does for a ticket's status now: not done,
-// canceled or left out of counts, an unclassified status included.
-func openStatus(g string) string {
-	return `coalesce(` + g + `.status_group, '') NOT IN ('done', 'canceled', 'left_out')`
-}
-
 // never stands for an open end where a query compares ends.
 const never = `9223372036854775807`
 
@@ -92,15 +85,21 @@ var stuckMetric = Metric{
 		"The tickets in an in-progress status that have been in that status for more than 3 days, now and where the range begins.",
 		"A ticket whose time in its status is not known, or whose status then is not known, is listed and not counted.",
 	},
-	// Each stay in an in-progress status is stuck from 3 days in until it
-	// ends; a stretch whose status is not known is not counted while it
-	// lasts, and one that lasts until now only for a ticket in progress
-	// now (its status now is known otherwise).
+	// Each stay in an in-progress status is stuck from 3 days after it
+	// began until it ends; a stay whose start is not known (began), and a
+	// stretch whose status is not known, is not counted while it lasts, and
+	// one that lasts until now only for a ticket in progress now (its
+	// status now is known otherwise).
 	SQL: `WITH ` + statusUnknown + `
-SELECT si.ticket AS ticket, days(si.from_at, coalesce(si.to_at, :now)) AS value, si.from_at + ` + stuckAfter + ` + 1 AS at, si.to_at AS until,
-  'in ' || coalesce(s.name, si.status) || ' for ' || CAST(days(si.from_at, coalesce(si.to_at, :now)) AS INTEGER) || ' days' AS note
+SELECT si.ticket AS ticket, days(si.began, coalesce(si.to_at, :now)) AS value, si.began + ` + stuckAfter + ` + 1 AS at, si.to_at AS until,
+  'in ' || coalesce(s.name, si.status) || ' for ' || CAST(days(si.began, coalesce(si.to_at, :now)) AS INTEGER) || ' days' AS note
 FROM status_intervals si JOIN statuses s ON s.id = si.status
-WHERE s.status_group = 'in_progress' AND coalesce(si.to_at, ` + never + `) > max(si.from_at + ` + stuckAfter + ` + 1, :since)
+WHERE s.status_group = 'in_progress' AND si.began IS NOT NULL AND coalesce(si.to_at, ` + never + `) > max(si.began + ` + stuckAfter + ` + 1, :since)
+UNION ALL
+SELECT si.ticket, NULL, si.from_at, si.to_at,
+  'how long it ' || iif(si.to_at IS NULL, 'has been', 'had been') || ' in ' || coalesce(s.name, si.status) || ' is not known'
+FROM status_intervals si JOIN statuses s ON s.id = si.status
+WHERE s.status_group = 'in_progress' AND si.began IS NULL AND coalesce(si.to_at, ` + never + `) > :since
 UNION ALL
 SELECT u.ticket, NULL, u.from_at, iif(u.to_at IS NULL AND t.status_group IS NOT 'in_progress', :now, u.to_at),
   iif(u.to_at IS NULL AND t.status_group = 'in_progress', 'how long it has been in ' || coalesce(s.name, t.status) || ' is not known',
@@ -129,30 +128,39 @@ var burndownMetric = Metric{
 	Title: "Burndown",
 	Words: []string{
 		"The estimate of the active sprint's tickets not yet done or canceled, at its start and at the end of each working day, each by its estimate then. The dashed line is an even pace to zero on its last day.",
-		"A ticket whose status, sprint or estimate then is not known is listed and not counted.",
+		"A ticket whose status, sprint or estimate then is not known is listed and not counted; so is one changed since its history was last read, until that is read again.",
 	},
 	// Each stretch in an active sprint (sprint_intervals) is remaining
 	// work while its ticket's status is open; while the status is not
-	// known, or the history does not reach back to the sprint's start (or
-	// to the ticket's creation, after it), it is not counted.
+	// known it is not counted. A ticket of the sprint, a member now or one
+	// with a stretch in it, is not counted where its sprint history is not
+	// known: from the sprint's start, or its creation after it, until its
+	// history begins, or the whole sprint while its history is not read or
+	// is behind its card.
 	SQL: `WITH ` + statusUnknown + `,
 a AS (SELECT si.ticket, si.points, si.from_at, si.to_at FROM sprint_intervals si JOIN sprints s ON s.id = si.sprint WHERE s.state = 'active')
 SELECT a.ticket AS ticket, ` + weightOf("a.points") + ` AS value, max(a.from_at, o.from_at) AS at,
   nullif(min(coalesce(a.to_at, ` + never + `), coalesce(o.to_at, ` + never + `)), ` + never + `) AS until, NULL AS note
-FROM a JOIN status_intervals o ON o.ticket = a.ticket LEFT JOIN statuses g ON g.id = o.status
-WHERE ` + openStatus("g") + ` AND o.from_at < coalesce(a.to_at, ` + never + `) AND a.from_at < coalesce(o.to_at, ` + never + `)
+FROM a JOIN status_intervals o ON o.ticket = a.ticket
+WHERE o.open = 1 AND o.from_at < coalesce(a.to_at, ` + never + `) AND a.from_at < coalesce(o.to_at, ` + never + `)
 UNION ALL
 SELECT a.ticket, NULL, max(a.from_at, coalesce(u.from_at, 0)), nullif(min(coalesce(a.to_at, ` + never + `), coalesce(u.to_at, ` + never + `)), ` + never + `),
   'its status then is not known'
 FROM a JOIN unknown u ON u.ticket = a.ticket
 WHERE coalesce(u.from_at, 0) < coalesce(a.to_at, ` + never + `) AND a.from_at < coalesce(u.to_at, ` + never + `)
 UNION ALL
-SELECT m.ticket, NULL, iif(t.history_from IS NULL, NULL, max(s.start_at, coalesce(t.created_at, 0))), t.history_from,
-  iif(t.history_from IS NULL, 'its history is not read yet', 'its history begins after the sprint started')
-FROM sprint_tickets m JOIN sprints s ON s.id = m.sprint JOIN tickets t ON t.id = m.ticket
-WHERE s.state = 'active' AND (t.history_from IS NULL OR t.history_from > max(s.start_at, coalesce(t.created_at, 0)))`,
-	Reduce: ReduceSum, Unit: UnitEstimate, Good: GoodDown, Bucket: BucketDay,
+SELECT t.id, NULL, max(s.start_at, coalesce(t.created_at, 0)), iif(t.history_from IS NULL OR t.history_behind = 1, NULL, t.history_from),
+  CASE WHEN t.history_from IS NULL THEN 'its history is not read yet' WHEN t.history_behind = 1 THEN ` + behindNote + `
+       ELSE 'its history begins after the sprint started' END
+FROM sprints s JOIN (SELECT sprint, ticket FROM sprint_tickets UNION SELECT sprint, ticket FROM sprint_intervals) m ON m.sprint = s.id
+  JOIN tickets t ON t.id = m.ticket
+WHERE s.state = 'active' AND (t.history_from IS NULL OR t.history_behind = 1 OR t.history_from > max(s.start_at, coalesce(t.created_at, 0)))`,
+	Reduce: ReduceSum, Unit: UnitEstimate, Good: GoodDown, Bucket: BucketDay, Pace: true,
 }
+
+// behindNote is a ticket's note while it changed since its history was
+// last read (tickets.history_behind): its sprint history is not known.
+const behindNote = `'its latest change is not read yet'`
 
 // The series of the sprint scope table.
 const (
@@ -167,41 +175,47 @@ var sprintScopeMetric = Metric{
 	Title: "Committed, added, removed and completed",
 	Words: []string{
 		"Each sprint's estimate in it at its start (committed), of the tickets that entered it after (added) or left it before its end (removed), each at that moment, and of those done at its end by the pace's rule (completed).",
-		"A ticket counts once in each. One whose history does not reach back to the sprint's start, or to its creation after it, is listed and not counted in committed and added.",
+		"A ticket counts once in each. One whose history does not reach the sprint's start (made before it), or that changed since its history was last read, is listed and not counted in committed and added; one whose status at the end is not known, in completed.",
 	},
 	// A sprint's stretches (sprint_intervals) end at its end: its
 	// completion, or now for the active one. A ticket is committed when a
 	// stretch holds at the start, added at its first entry after it when
 	// not committed, and removed at its last exit before the end when no
-	// stretch holds at the end. A ticket made after the start was not in
-	// the sprint at it, so a history from its creation is enough.
+	// stretch holds at the end. Whether it was committed is known when its
+	// history reaches the start or it was made after it, and its history
+	// is current; added needs that too, its entry being a stretch's start.
+	// A removal is a stretch's end, which only a current history gives. The
+	// sprint's tickets, those any cell can count, are its members at its
+	// end (sprint_finished) and those with a stretch in it.
 	SQL: `WITH s AS (SELECT id, start_at, iif(state = 'active', :now, completed_at) AS end_at FROM sprints
     WHERE state IN ('active', 'closed') AND coalesce(iif(state = 'active', :now, completed_at), 0) > :since),
   x AS (SELECT si.sprint, si.ticket, si.points, si.from_at, coalesce(si.to_at, ` + never + `) AS to_at, s.start_at, s.end_at
     FROM sprint_intervals si JOIN s ON s.id = si.sprint),
   committed AS (SELECT * FROM x WHERE x.from_at <= x.start_at AND x.to_at > x.start_at),
   entered AS (SELECT sprint, ticket, min(from_at) AS at FROM x WHERE from_at > start_at AND from_at <= end_at GROUP BY sprint, ticket),
-  exited AS (SELECT sprint, ticket, max(to_at) AS at FROM x WHERE to_at > coalesce(start_at, 0) AND to_at <= end_at GROUP BY sprint, ticket)
+  exited AS (SELECT sprint, ticket, max(to_at) AS at FROM x WHERE to_at > coalesce(start_at, 0) AND to_at <= end_at GROUP BY sprint, ticket),
+  k AS (SELECT f.sprint, f.ticket FROM sprint_finished f JOIN s ON s.id = f.sprint UNION SELECT sprint, ticket FROM x)
 SELECT c.ticket AS ticket, ` + weightOf("c.points") + ` AS value, c.sprint AS bucket, '` + seriesCommitted + `' AS series, NULL AS note FROM committed c
 UNION ALL
 SELECT e.ticket, ` + weightOf("x.points") + `, e.sprint, '` + seriesAdded + `', NULL
 FROM entered e JOIN x ON x.sprint = e.sprint AND x.ticket = e.ticket AND x.from_at = e.at JOIN tickets t ON t.id = e.ticket
-WHERE t.history_from <= max(x.start_at, coalesce(t.created_at, 0)) AND NOT EXISTS (SELECT 1 FROM committed c WHERE c.sprint = e.sprint AND c.ticket = e.ticket)
+WHERE (t.history_from <= x.start_at OR t.created_at > x.start_at) AND NOT EXISTS (SELECT 1 FROM committed c WHERE c.sprint = e.sprint AND c.ticket = e.ticket)
 UNION ALL
 SELECT l.ticket, ` + weightOf("x.points") + `, l.sprint, '` + seriesRemoved + `', NULL
 FROM exited l JOIN x ON x.sprint = l.sprint AND x.ticket = l.ticket AND x.to_at = l.at
 WHERE NOT EXISTS (SELECT 1 FROM x h WHERE h.sprint = l.sprint AND h.ticket = l.ticket AND h.from_at <= h.end_at AND h.to_at > h.end_at)
 UNION ALL
-SELECT f.ticket, ` + weight + `, f.sprint, '` + seriesCompleted + `', NULL
-FROM sprint_finished f JOIN s ON s.id = f.sprint JOIN tickets t ON t.id = f.ticket WHERE f.done = 1
+SELECT f.ticket, iif(f.done IS NULL, NULL, ` + weight + `), f.sprint, '` + seriesCompleted + `', iif(f.done IS NULL, 'its status when the sprint ended is not known', NULL)
+FROM sprint_finished f JOIN s ON s.id = f.sprint JOIN tickets t ON t.id = f.ticket WHERE f.done IS NOT 0
 UNION ALL
-SELECT f.ticket, NULL, f.sprint, n.series,
+SELECT k.ticket, NULL, k.sprint, n.series,
   CASE WHEN s.start_at IS NULL THEN 'the sprint has no start date' WHEN t.history_from IS NULL THEN 'its history is not read yet'
-       ELSE 'its history begins after the sprint started' END
-FROM sprint_finished f JOIN s ON s.id = f.sprint JOIN tickets t ON t.id = f.ticket
+       WHEN t.history_behind = 1 THEN ` + behindNote + ` ELSE 'its history begins after the sprint started' END
+FROM k JOIN s ON s.id = k.sprint JOIN tickets t ON t.id = k.ticket
   CROSS JOIN (SELECT '` + seriesCommitted + `' AS series UNION ALL SELECT '` + seriesAdded + `') n
-WHERE s.start_at IS NULL OR t.history_from IS NULL OR t.history_from > max(s.start_at, coalesce(t.created_at, 0))`,
+WHERE s.start_at IS NULL OR t.history_from IS NULL OR t.history_behind = 1 OR (t.history_from > s.start_at AND coalesce(t.created_at, 0) <= s.start_at)`,
 	Reduce: ReduceSum, Unit: UnitEstimate, Bucket: BucketSprint, Series: []string{seriesCommitted, seriesAdded, seriesRemoved, seriesCompleted},
+	Overlap: true,
 }
 
 // builtin is the built-in dashboard of a board of kind k and its metrics
