@@ -174,6 +174,14 @@ func TestAStatusKnownOverAStretchHasItsInterval(t *testing.T) {
 	if want := []string{"10001|1|1180|-|-|1"}; !reflect.DeepEqual(status, want) || !reflect.DeepEqual(sprint, []string{"41|10001|1|1180|-"}) {
 		t.Fatalf("status intervals = %v, sprint %v; want %v", status, sprint, want)
 	}
+	// A move out of it later: the stay before it began before the history,
+	// at a time not known; the one after began at the move.
+	versionCard(t, s, root, 6_000, "3", 1, "41")
+	versionHistory(t, s, root, MirrorHistory{IssueID: "10001", CompleteFrom: 1_180,
+		Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 3_000, From: "1", To: "3"}}})
+	if status, _, _ = exportIntervals(t, s, root, 500); !reflect.DeepEqual(status, []string{"10001|1|1180|3000|-|1", "10001|3|3000|-|3000|1"}) {
+		t.Fatalf("after a move, status intervals = %v", status)
+	}
 }
 
 // truthEvent is one change of the issue in versionTruth.
@@ -388,6 +396,9 @@ func checkVersionIntervals(fail func(string, ...any), truth versionTruth, card i
 		var prev *stretch
 		for _, row := range rows {
 			s := parse(row, value, key, fromAt)
+			if s.from > card {
+				fail("%s %v starts after the card's version %d", what, row, card)
+			}
 			if prev != nil && prev.key == s.key && (prev.open || prev.to > s.from) {
 				fail("%s %v overlaps the one before it in %v", what, row, rows)
 			}
@@ -432,6 +443,30 @@ func checkVersionIntervals(fail func(string, ...any), truth versionTruth, card i
 			}
 			return strconv.Itoa(int(h.estimate))
 		}, nil)
+	}
+	// A ticket with a sprint interval has its history current: some
+	// interval holds each instant up to the card's version, the issue's
+	// changes and the version itself, at which it was in the sprint.
+	if len(sprint) > 0 {
+		instants := []int64{card}
+		for _, e := range truth.events {
+			if e.at <= card {
+				instants = append(instants, e.at)
+			}
+		}
+		for _, sp := range []string{"40", "41"} {
+			for _, at := range instants {
+				if !slices.Contains(truth.at(at).sprints, sp) {
+					continue
+				}
+				if !slices.ContainsFunc(sprint, func(r string) bool {
+					s := parse(r, sprintValue, sprintKey, 3)
+					return strings.HasPrefix(r, sp+"|") && s.from <= at && (s.open || at < s.to)
+				}) {
+					fail("the issue was in sprint %s at %d and no interval of %v holds it", sp, at, sprint)
+				}
+			}
+		}
 	}
 	if len(sprint) > 0 && !reflect.DeepEqual(behind, []string{"10001|0"}) {
 		fail("sprint intervals %v of a ticket behind its card (%v)", sprint, behind)
