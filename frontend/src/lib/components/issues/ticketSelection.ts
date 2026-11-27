@@ -62,7 +62,7 @@ export function eachBounded<T, R>(items: readonly T[], step: (item: T) => Promis
   }));
 }
 
-export function resetTicketListActionsForTest(): void {
+export function resetTicketSelectionForTest(): void {
   out = 0;
   waiting.length = 0;
 }

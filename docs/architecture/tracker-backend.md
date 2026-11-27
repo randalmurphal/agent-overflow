@@ -2238,6 +2238,15 @@ delete is refused and the links the delete read are the ones it ends.
   holds the ticket's facts, long texts and newest 10 comments, and is cut
   at 200 KB at a line saying where the rest is: about 125 tokens for a
   typical ticket, about 51,000 at the bound.
+- **`StartTicketsThread`** (project route, `threads:operate`, plus
+  `tracker:read`) makes one thread on the tickets a dashboard list's
+  selection names, at most `MaxThreadTickets` (8, the attachments one
+  message carries), each once, through the same helper and rollback as
+  an Ask: every ticket read first, the thread in the project's checkout,
+  each ticket's file attached in the order named, and the request's text
+  on the unsent draft. A thread of one ticket is titled and linked as its
+  Ask; one of several is linked to none and titled with the keys, the
+  first three named ("WEB-1, WEB-2, WEB-3 and 2 more").
 - **The move and the assignment** of Start work are the ticket screen's
   writes (`stores/trackerTicketWrites.svelte.ts`); the run's order (the
   move, then the assignment decided from the ticket as the move left it),
@@ -3221,7 +3230,10 @@ keeps and the widgets agents propose, with the wrappers of
 `TrackerDashboards`, `EvaluateTrackerDashboard`, `TrackerDashboardDrill`,
 `KeepTrackerWidget`, `DismissTrackerWidget`, `RemoveTrackerWidget`,
 `StartTrackerDashboardThread` and `tracker:dashboards_updated`
-(`stores/trackerDashboard.svelte.ts`).
+(`stores/trackerDashboard.svelte.ts`), and a ticket list's selection
+(`components/issues/TicketListActions.svelte`), whose moves and
+assignments are the ticket write store's, at most 4 of a page's batch
+calls out at once, and whose thread is `StartTicketsThread`'s.
 A failure of the linked-issues
 loop after boot reaches only the log (`Deps.LoopFailed`): its failures
 are outside the tracker (a store error, the cleanup), and a tracker

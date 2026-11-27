@@ -639,10 +639,11 @@ Status: built: Overview, the dashboards a project keeps and the picker,
 Team or Mine, the range, Ask your agent, edit mode, which removes
 widgets and removes the dashboard with its last one (there is no
 Delete), and the widget an agent proposes, which the person keeps or
-dismisses; a number, bar or cell's tickets, a number's change and trend, and narrowing to a person or
-an epic. A query reads the board's tickets only: pull requests, threads
-and logged time are not built, nor the credit rules in How this is
-counted, selecting rows in a ticket list, or a number tile's limit.
+dismisses; a number, bar or cell's tickets, a number's change and trend, narrowing to a person or
+an epic, and selecting rows in a ticket list or a drill to move, assign
+or start a thread on them. A query reads the board's tickets only: pull
+requests, threads and logged time are not built, nor the credit rules in
+How this is counted, or a number tile's limit.
 
 - Every board has a built-in dashboard, Overview: its usual pace, days
   from start to done, the tickets stuck now, what was finished per sprint
@@ -686,8 +687,23 @@ counted, selecting rows in a ticket list, or a number tile's limit.
   board's computer, Ask is disabled and says why.
 - Clicking a person or an epic narrows every widget on the page to it. A
   chip in the toolbar clears it.
-- Rows in a ticket-list widget can be selected, then moved, assigned or
-  given to a new thread.
+- Rows in a ticket-list widget or a drill can be selected: a row's box
+  shows on hover, and on every row once one is selected. The bar says how
+  many are selected and offers Move to, Assign and Start a thread. A count
+  again keeps the selected rows it still lists.
+- Move to lists the statuses the selected tickets can move to. A ticket
+  already in the status is left as it is ("3 tickets moved to Done, 1
+  already in Done"). A status that a ticket cannot reach, or reaches only
+  by a move that asks for fields, is off and names the ticket. Assign
+  lists the people every selected ticket's project may assign, and
+  Unassigned. Each ticket is its own write, at most four sent at a time,
+  and what the tracker refused shows under that ticket's row ("2 of 3
+  tickets moved to Done"). The bar's note says what came of it for 5 s.
+- Start a thread makes one new thread in the board's project on up to 8
+  tickets, one file each on its unsent draft with the text typed, and
+  opens it. It is linked to a ticket only when there is one; several are
+  named in its title ("WEB-1, WEB-2, WEB-3 and 2 more"). Nothing on the
+  tickets changes.
 - An answer to a one-off question appears as a provisional widget. It joins
   the dashboard only when kept.
 - A number tile can carry a limit. Over the limit, the tile is marked on

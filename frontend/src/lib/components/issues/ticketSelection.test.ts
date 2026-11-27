@@ -8,7 +8,7 @@ import type { MoveView } from '../../../../bindings/agent-overflow/internal/trac
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { ticketWrite } from '../../stores/trackerTicketWrites.svelte';
-import { assignablePeople, BULK_AT_ONCE, commonMoves, eachBounded, moveTickets, type ListTicket } from './ticketListActions';
+import { assignablePeople, BULK_AT_ONCE, commonMoves, eachBounded, moveTickets, type ListTicket } from './ticketSelection';
 
 function ticket(key: string, issue: string, status: string): ListTicket {
   return { ctx: { key: `k-${issue}`, ref: { backend: HOME_BACKEND, connection: 'c1', issue }, label: key }, status };

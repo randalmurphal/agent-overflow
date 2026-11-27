@@ -58,7 +58,7 @@
     type BatchOutcome,
     type ListStatus,
     type ListTicket,
-  } from './ticketListActions';
+  } from './ticketSelection';
 
   interface Props {
     rows: readonly TicketRow[];

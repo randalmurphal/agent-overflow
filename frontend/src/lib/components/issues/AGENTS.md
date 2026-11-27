@@ -207,7 +207,11 @@ board methods, events and the patch read in
   minutes; its rules are at the top of the store.
   `stores/trackerDashboardModel.ts` is the pure part: how a number reads
   and its change mark. The charts (`charts/`) draw to their measured
-  width from `charts/chartScale.ts`.
+  width from `charts/chartScale.ts`. A widget's ticket list and the
+  drill's rows are one `TicketListActions.svelte`, which holds the
+  selection by ticket ID and acts on it through `ticketSelection.ts`:
+  the statuses every ticket can reach, the people every project may
+  assign, and the bound of 4 calls out at once over all its batches.
 - `stores/ticketOpen.ts` is the one opener of a ticket from outside the
   pane (a thread's linked ticket, a pull request's ticket chip), and of
   the Time screen at a week (a draft card's Review in Time); it is in
