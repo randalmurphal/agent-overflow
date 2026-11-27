@@ -323,11 +323,12 @@ export function registerIssuesTimeDraftFlow({ compact }: TimeDraftSurface): void
     await press(cardDay(card, D2).getByTestId('time-draft-question-leave-out'), compact);
     await expect(cardDay(card, D2).getByTestId('time-draft-question')).toHaveCount(0, { timeout: 30_000 });
 
-    // WEB-1's entry changed in its form: another ticket, its time and reason.
+    // WEB-1's entry changed in its form: another ticket, found by its
+    // title, its time and reason.
     await press(cardDay(card, D1).getByTestId('time-draft-entry-hours'), compact);
     const form = page.getByTestId('time-draft-form');
     await press(form.getByTestId('time-draft-form-find'), compact);
-    await page.getByTestId('ticket-picker-find').pressSequentially('WEB-3');
+    await page.getByTestId('ticket-picker-find').pressSequentially('Backlog task');
     await press(page.getByTestId('ticket-picker-item').filter({ hasText: 'WEB-3' }), compact);
     await expect(form.getByTestId('time-draft-form-ticket')).toContainText('WEB-3');
     await retype(form.getByTestId('time-draft-form-time'), '2h');
