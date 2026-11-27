@@ -329,7 +329,7 @@ dropped, dimmed, until its write settles, and is not moved again until
 then. A refusal shows under the card or the ticket when one is in view,
 else in a toast. The summary row: the widgets pinned from the
 dashboards, as chips or tiles, each tile amber past its limit; a tile
-of a widget that counts now, a number or a list, filters the board to
+of what holds now, a number or a list, filters the board to
 its tickets with a "Showing only" chip that clears, kept on the Backlog
 and following the tile's count, and any other tile opens its dashboard
 at that widget; the row edited in place (take a tile off, add one from

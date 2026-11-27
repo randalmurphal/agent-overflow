@@ -2407,9 +2407,10 @@ proposals, counted again by the dashboards' rule (the board's changes,
 at most once every 5 s, and every 10 minutes); a change of its pins
 changes that request. A change of a limit lists again and counts
 nothing. A screen steps a limit from the value its last accepted write
-stored until a list begun after that write lands. A tile of a widget
-that counts now and is a
-number or a list filters the board to its tickets: a drill of it asked
+stored until a list begun after that write lands. A tile whose
+value is a set of tickets now (a number or a list of a widget that
+counts now, or a state's number with no bucket, `WidgetView.State`)
+filters the board to its tickets: a drill of it asked
 for `IDs` answers every ticket of its rows, in the drill's order, and no
 page. The set follows the tile's count: it is read again by the same
 rule while the Board or the Backlog shows, and on each dashboards
