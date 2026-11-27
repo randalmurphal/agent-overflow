@@ -194,7 +194,17 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d")}, ReadAt: mirrorReadAt(62)}, nil)
 	assertRows(t, s.db, fmt.Sprintf(`SELECT read_at FROM tracker_cache_issues WHERE root_id = %d AND issue_id = '10004'`, root), "62")
 	mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_dirty = 1 WHERE issue_id = '10002'`)
+	// A board that plans no sprints, whose done tickets credit lists.
+	weeks := webStructure()
+	weeks.Board.ID, weeks.Board.PlansSprints, weeks.Sprints, weeks.ReadAt = "12", false, nil, mirrorReadAt(63)
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, weeks)); err != nil {
+		t.Fatal(err)
+	}
 	reads := []func() error{
+		func() error {
+			_, _, err := s.ListMirrorActsDue(root, []MirrorActsBoard{{BoardID: "12"}}, 0, testNow)
+			return err
+		},
 		func() error { _, _, err := s.GetMirrorRoot(jira.ID); return err },
 		func() error { _, _, err := s.GetMirrorSync(root, "10", testNow); return err },
 		func() error { _, _, err := s.GetMirrorSync(root, "", testNow); return err },

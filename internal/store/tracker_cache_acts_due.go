@@ -89,10 +89,14 @@ func mirrorWorklogsFromSQL(need string) string {
 //     counted as done (mirrorStatusAtCompletionSQL: one whose history is
 //     unread and was carried on is not done yet), their comments and
 //     every worklog;
+//   - weeks: of a board that plans no sprints, its rows done now whose
+//     card moved at or after ?6 (a ticket's finish is one of its
+//     updates), walked by the update index, their comments and every
+//     worklog;
 //   - support: the board's rows the support rule names whose card moved
 //     at or after ?6, walked by the update index (a worklog written moves
 //     its card), their worklogs from ?6, revalidated.
-var mirrorActsDueSQL = func() (out struct{ active, sprints, closed, support string }) {
+var mirrorActsDueSQL = func() (out struct{ active, sprints, closed, weeks, support string }) {
 	limit := ` LIMIT ` + strconv.Itoa(mirrorActsDuePage+1)
 	support := mirrorSupportSQL("?4", "?2", mirrorRowEstimate("?5"))
 	window := intParam("?6")
@@ -115,6 +119,10 @@ var mirrorActsDueSQL = func() (out struct{ active, sprints, closed, support stri
 	out.closed = columns + ` FROM tracker_cache_sprints l` + members("l") + `
 		 WHERE l.root_id = CAST(?1 AS INTEGER) AND l.board_id = ?2 AND l.sprint_id = ?9
 		   AND ` + due + ` AND coalesce(` + mirrorStatusAtCompletionSQL + ` IN (` + mirrorDoneStatusesSQL("?3") + `), 0)` + limit
+	out.weeks = columns + ` FROM tracker_cache_issues i
+		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = i.root_id AND b.board_id = ?2 AND b.issue_id = i.issue_id` + mirrorActsReceiptsSQL + `
+		 WHERE i.root_id = CAST(?1 AS INTEGER) AND i.updated_at > 0 AND i.updated_at >= ` + window + `
+		   AND ` + due + ` AND i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `)` + limit
 	out.support = `SELECT i.issue_id, 0, 1, ` + mirrorWorklogsFromSQL(window) + ` FROM tracker_cache_issues i
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = i.root_id AND b.board_id = ?2 AND b.issue_id = i.issue_id` + mirrorActsReceiptsSQL + `
 		 WHERE i.root_id = CAST(?1 AS INTEGER) AND i.updated_at > 0 AND i.updated_at >= ` + window + `
@@ -127,7 +135,8 @@ var mirrorActsDueSQL = func() (out struct{ active, sprints, closed, support stri
 // listed by the regrouping its project counts it by; from is the start of
 // the window and now the wall clock (Unix ms). They are listed by arm,
 // the active sprints' members first, then the closed sprints' by newest
-// completion, then support tickets, each issue once at its first place
+// completion, then the done tickets of each board that plans no sprints,
+// then support tickets, each issue once at its first place
 // with every arm's need merged: a source due on any, the earliest start
 // of worklogs any needs. The arms that need comments and every worklog
 // come before the support arm, so an issue the support arm lists was
@@ -141,8 +150,9 @@ func (s *Store) ListMirrorActsDue(rootID int64, boards []MirrorActsBoard, from, 
 	label := fmt.Sprintf("list tracker mirror %d acts due", rootID)
 	type shown struct {
 		MirrorActsBoard
-		groups string
-		reset  int64
+		groups       string
+		reset        int64
+		plansSprints bool
 	}
 	revalidate, retry := now-mirrorActsRevalidate.Milliseconds(), now-mirrorActsRetry.Milliseconds()
 	at := map[string]int{}
@@ -158,7 +168,7 @@ func (s *Store) ListMirrorActsDue(rootID int64, boards []MirrorActsBoard, from, 
 				if groups == "" {
 					groups = "{}"
 				}
-				listed = append(listed, shown{b, groups, board.estimateResetAt})
+				listed = append(listed, shown{b, groups, board.estimateResetAt, board.plansSprints})
 			}
 		}
 		// add lists the rows of one arm's statement; full reports that
@@ -213,6 +223,14 @@ func (s *Store) ListMirrorActsDue(rootID int64, boards []MirrorActsBoard, from, 
 		slices.SortStableFunc(sprints, func(a, b closed) int { return cmp.Compare(b.completedAt, a.completedAt) })
 		for _, c := range sprints {
 			if full, err := add(c.board, mirrorActsDueSQL.closed, c.sprint); full || err != nil {
+				return struct{}{}, err
+			}
+		}
+		for _, b := range listed {
+			if b.plansSprints {
+				continue
+			}
+			if full, err := add(b, mirrorActsDueSQL.weeks); full || err != nil {
 				return struct{}{}, err
 			}
 		}

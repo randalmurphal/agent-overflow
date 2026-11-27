@@ -396,6 +396,38 @@ func TestMirrorActsDueFollowTheSprintsAndTheReceipts(t *testing.T) {
 	check(0, "10001:cw")
 }
 
+// On a board that plans no sprints, the tickets due are its rows done now
+// whose card moved in the window, their comments and every worklog, each
+// source until a read for its update stored its receipt; a row not done,
+// one that did not move in the window, and a sprint board's done row in no
+// sprint are not.
+func TestMirrorActsDueOnABoardWithoutSprints(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	weeks := webStructure()
+	weeks.Board.ID, weeks.Board.PlansSprints, weeks.Sprints = "11", false, nil
+	mustReplaceStructure(t, s, root, weeks, true)
+	done := func(r MirrorRow) MirrorRow { r.Card.StatusID = "10001"; return r }
+	mustWriteRowPage(t, s, root, webPage("11",
+		done(webRow("10001", 500, "a")), // done, moved in the window
+		done(webRow("10002", 50, "b")),  // done, moved before it
+		webRow("10003", 500, "c"),       // to do
+	), nil)
+	mustWriteRowPage(t, s, root, webPage("10", done(webRow("10004", 500, "d"))), nil)
+	check := func(want string) {
+		t.Helper()
+		if got, more := actsDue(t, s, root, 100, 20); got != want || more {
+			t.Fatalf("due = %q, more %v; want %q", got, more, want)
+		}
+	}
+	check("10001:cw")
+	replaceActs(t, s, root, 10, nil, commentsOf("10001", 500, 2))
+	check("10001:w")
+	replaceActs(t, s, root, 11, nil, worklogsOf("10001", 500, 0, 2))
+	check("")
+}
+
 // A worklog receipt of a ticket the active-sprint arm lists is due again
 // a day after its read, its comments not; a closed sprint's member is not
 // read again until its card moves.
