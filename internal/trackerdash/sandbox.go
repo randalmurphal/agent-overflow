@@ -93,6 +93,16 @@ var exportTables = func() map[string]bool {
 	return m
 }()
 
+// exportColumns is the columns the copy holds only when a count asks for
+// them (store.MirrorExportColumns), by relation.column.
+var exportColumns = func() map[string]bool {
+	m := map[string]bool{}
+	for _, c := range store.MirrorExportColumns {
+		m[c] = true
+	}
+	return m
+}()
+
 // session is one evaluation's connection: opened, filled, gated, run and
 // closed by one goroutine.
 type session struct {
@@ -103,12 +113,14 @@ type session struct {
 	key string
 	// denied is what the authorizer refused last, for the sentence of the
 	// error SQLite reports as "not authorized"; reads is what it allowed
-	// the statement to read. The authorizer runs while the statement
+	// the statement to read, and columns the columns of exportColumns
+	// among them. The authorizer runs while the statement
 	// prepares, on the goroutine that prepares it; mu is for the race
 	// detector's sake and for a reprepare SQLite may run on a step.
-	mu     sync.Mutex
-	denied string
-	reads  []string
+	mu      sync.Mutex
+	denied  string
+	reads   []string
+	columns []string
 	// wrapping is whether the wrapper prepares, the one statement that may
 	// call bounded_rows. A metric's own text is prepared first without it,
 	// so a metric that calls bounded_rows never runs.
@@ -238,6 +250,9 @@ func (s *session) authorize(action sqlite.AuthorizerActionCode, arg1, arg2, data
 		if !slices.Contains(s.reads, arg1) {
 			s.reads = append(s.reads, arg1)
 		}
+		if c := arg1 + "." + arg2; exportColumns[c] && !slices.Contains(s.columns, c) {
+			s.columns = append(s.columns, c)
+		}
 		return sqlite.AuthorizerOK
 	}
 	if action == sqlite.AuthFunction {
@@ -281,12 +296,12 @@ func (s *session) setWrapping(on bool) {
 }
 
 // take clears and returns what the authorizer recorded.
-func (s *session) take() (denied string, reads []string) {
+func (s *session) take() (denied string, reads, columns []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	denied, reads = s.denied, s.reads
-	s.denied, s.reads = "", nil
-	return denied, reads
+	denied, reads, columns = s.denied, s.reads, s.columns
+	s.denied, s.reads, s.columns = "", nil, nil
+	return denied, reads, columns
 }
 
 // prepared is a metric's statement checked against the contract.
@@ -295,6 +310,9 @@ type prepared struct {
 	names []string
 	cols  columns
 	reads []string
+	// columns is the columns of exportColumns it reads, which the copy
+	// fills only for a count that asks for them.
+	columns []string
 	// series is the metric's declared series (Metric.Series).
 	series []string
 	// took is how long the prepare took, which the metric's deadline
@@ -325,7 +343,7 @@ func (s *session) prepare(m Metric) (prepared, error) {
 		info, err = ci.ColumnInfo(text)
 		return err
 	})
-	denied, reads := s.take()
+	denied, reads, columns := s.take()
 	if err != nil {
 		return prepared{}, sqlError(err, denied)
 	}
@@ -341,8 +359,13 @@ func (s *session) prepare(m Metric) (prepared, error) {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + strings.TrimPrefix(err.Error(), "the query ") + "; change its query."}
 	}
 	slices.Sort(reads)
-	return prepared{sql: text, names: names, cols: cols, reads: reads, series: m.Series, took: time.Since(start)}, nil
+	slices.Sort(columns)
+	return prepared{sql: text, names: names, cols: cols, reads: reads, columns: columns, series: m.Series, took: time.Since(start)}, nil
 }
+
+// fills is what a count that runs p asks the copy for: the relations it
+// reads and the columns of them filled only when asked for.
+func (p prepared) fills() []string { return slices.Concat(p.reads, p.columns) }
 
 // run runs a prepared metric under its deadline, which began when its
 // prepare did, wrapped so SQLite
@@ -371,7 +394,7 @@ func (s *session) run(ctx context.Context, p prepared, now, since int64) ([]cont
 	var n int64
 	err := s.conn.QueryRowContext(ctx, b.String(), sql.Named("now", now), sql.Named("since", since)).Scan(&n)
 	s.setWrapping(false)
-	denied, _ := s.take()
+	denied, _, _ := s.take()
 	switch {
 	case s.sink.err != nil:
 		return nil, s.sink.err

@@ -88,7 +88,7 @@ func TestMirrorExportHoldsTheBoardAlone(t *testing.T) {
 	times := [][]string{{"10001|-|-", "10002|-|650", "10009|100|-"}, {"10001|550|-", "10002|650|-", "10009|100|-"}}
 	for i, g := range []MirrorRegroup{{}, regroup} {
 		conn := exportConn(t)
-		export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", g, MirrorExportTables)
+		export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", g, MirrorExportTables, CardShapeForTest)
 		if err != nil || !ok {
 			t.Fatalf("export board 10: %v, %v", ok, err)
 		}
@@ -146,7 +146,7 @@ func TestMirrorExportHoldsTheBoardAlone(t *testing.T) {
 
 	conn := exportConn(t)
 	listMirrorBoards(t, s, defaultTestProjectID, mustConnectionOfRoot(t, s, root), "11")
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, MirrorExportTables); err != nil || ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, MirrorExportTables, CardShapeForTest); err != nil || ok {
 		t.Fatalf("export of a board no project lists = %v, %v; want nothing", ok, err)
 	}
 	if got := exportRows(t, conn, `SELECT count(*) FROM tickets`); got[0] != "0" {
@@ -155,6 +155,28 @@ func TestMirrorExportHoldsTheBoardAlone(t *testing.T) {
 	if got := exportRows(t, conn, `SELECT name FROM pragma_database_list ORDER BY seq`); !reflect.DeepEqual(got, []string{"main"}) {
 		t.Fatalf("databases after an export of nothing = %v; want main alone", got)
 	}
+}
+
+// everyExportColumn is an export's set of relations asking for every
+// column of MirrorExportColumns.
+func everyExportColumn() map[string]bool {
+	set := map[string]bool{}
+	for _, c := range MirrorExportColumns {
+		set[c] = true
+	}
+	return set
+}
+
+// namedArgs is args as a driver statement binds them, by position.
+func namedArgs(args []any) []driver.NamedValue {
+	out := make([]driver.NamedValue, len(args))
+	for i, a := range args {
+		if n, ok := a.(int); ok {
+			a = int64(n)
+		}
+		out[i] = driver.NamedValue{Ordinal: i + 1, Value: a}
+	}
+	return out
 }
 
 func errorsOf(rows *sql.Rows) error {
@@ -196,7 +218,7 @@ func TestMirrorExportSearchesByTheBoard(t *testing.T) {
 	}
 	plans := append([]mirrorExportFill{{name: "board state", sql: mirrorExportBoardSQL}}, mirrorExportFills...)
 	for _, fill := range plans {
-		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.sql, 1, "10", "{}", 0, 1)
+		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.sql, mirrorExportArgs(1, "10", MirrorRegroup{}, 0, true, everyExportColumn(), CardShapeForTest)...)
 		if err != nil {
 			t.Fatalf("plan %s: %v", fill.name, err)
 		}
@@ -236,7 +258,7 @@ func TestMirrorExportSaysWhenTheFirstReadIsDone(t *testing.T) {
 	s, c, root := newMirror(t)
 	done := func(step string, want bool) {
 		t.Helper()
-		export, ok, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, nil)
+		export, ok, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, nil, CardShapeForTest)
 		if err != nil || !ok || export.FirstReadDone != want {
 			t.Fatalf("%s: export = %+v, %v, %v; want the first read done %v", step, export, ok, err, want)
 		}
@@ -256,7 +278,7 @@ func TestMirrorExportSaysWhenTheFirstReadIsDone(t *testing.T) {
 	done("a reconcile", true)
 
 	listMirrorBoards(t, s, defaultTestProjectID, c.ID, "11")
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, nil); err != nil || ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, nil, CardShapeForTest); err != nil || ok {
 		t.Fatalf("export of the unlisted board = %v, %v; want nothing", ok, err)
 	}
 	listMirrorBoards(t, s, defaultTestProjectID, c.ID, "10")
@@ -306,7 +328,7 @@ func TestMirrorExportCopiesTheStatusesItsBoardNames(t *testing.T) {
 		{"with its changes", []string{"statuses", "people", "changes"}, []string{"1", "10001", "2", "3", "6", "8"}, []string{"acc-user1", "acc-user2"}, "1"},
 	} {
 		conn := exportConn(t)
-		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, c.relations); err != nil || !ok {
+		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, c.relations, CardShapeForTest); err != nil || !ok {
 			t.Fatalf("%s: export = %v, %v", c.name, ok, err)
 		}
 		if got := exportRows(t, conn, `SELECT id FROM statuses ORDER BY id`); !reflect.DeepEqual(got, c.statuses) {
@@ -322,15 +344,60 @@ func TestMirrorExportCopiesTheStatusesItsBoardNames(t *testing.T) {
 	// An export of the epics fills the tickets their fill reads, and no
 	// relation nobody asked for.
 	conn := exportConn(t)
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"epics"}); err != nil || !ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"epics"}, CardShapeForTest); err != nil || !ok {
 		t.Fatalf("export of the epics = %v, %v", ok, err)
 	}
 	if got := exportRows(t, conn, `SELECT (SELECT count(*) FROM tickets) || '|' || (SELECT count(*) FROM statuses) || '|' || (SELECT count(*) FROM sprints)`); got[0] != "1|0|3" {
 		t.Fatalf("an export of the epics holds tickets|statuses|sprints %s; want the one ticket, no status, the board's 3 sprints", got[0])
 	}
-	if _, _, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, []string{"labels"}); err == nil ||
-		!strings.Contains(err.Error(), `"labels" is not one of the export's relations`) {
+	if _, _, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, []string{"components"}, CardShapeForTest); err == nil ||
+		!strings.Contains(err.Error(), `"components" is not one of the export's relations`) {
 		t.Fatalf("an export of an unknown relation = %v", err)
+	}
+}
+
+// An export decodes a ticket's type and priority names only when asked
+// for each by name, and fills its labels only when asked for the
+// relation: a label by its name, else its ID, one row for a name a
+// ticket has twice. A blob of another version than the shape's, or of
+// none, gives no names and no labels; a ticket with none has NULLs and
+// no label rows.
+func TestMirrorExportDecodesTypesPrioritiesAndLabelsWhenAsked(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	withData := func(id, data string) MirrorRow {
+		r := webRow(id, 5, "a"+id)
+		r.Card.Data = []byte(data)
+		return r
+	}
+	mustWriteRowPage(t, s, root, webPage("10",
+		withData("10001", `{"v":2,"type_name":"Bug","priority_name":"High","labels":[{"id":"frontend","name":"frontend"},{"id":"l-9"},{"id":"l-7","name":"frontend"}]}`),
+		withData("10002", `{"v":2}`),
+		withData("10003", `{"v":1,"type_name":"Bug","priority_name":"High","labels":[{"id":"auth","name":"auth"}]}`),
+		webRow("10005", 5, "a10005")), nil)
+	read := func(relations ...string) (tickets, labels []string) {
+		t.Helper()
+		conn := exportConn(t)
+		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, relations, CardShapeForTest); err != nil || !ok {
+			t.Fatalf("export of %v = %v, %v", relations, ok, err)
+		}
+		return exportRows(t, conn, `SELECT id || '|' || coalesce(type, '-') || '|' || coalesce(priority, '-') FROM tickets ORDER BY id`),
+			exportRows(t, conn, `SELECT ticket || '|' || name FROM labels ORDER BY ticket, name`)
+	}
+	none := []string{"10001|-|-", "10002|-|-", "10003|-|-", "10005|-|-"}
+	if tickets, labels := read("tickets"); !reflect.DeepEqual(tickets, none) || labels != nil {
+		t.Errorf("asked for neither: tickets %v, labels %v; want no names and no labels", tickets, labels)
+	}
+	if tickets, _ := read("tickets.type"); !reflect.DeepEqual(tickets, []string{"10001|Bug|-", "10002|-|-", "10003|-|-", "10005|-|-"}) {
+		t.Errorf("asked for the type: tickets %v; want the type alone, of version 2 blobs", tickets)
+	}
+	tickets, labels := read("tickets.type", "tickets.priority", "labels")
+	if want := []string{"10001|Bug|High", "10002|-|-", "10003|-|-", "10005|-|-"}; !reflect.DeepEqual(tickets, want) {
+		t.Errorf("asked for both: tickets %v; want %v", tickets, want)
+	}
+	if want := []string{"10001|frontend", "10001|l-9"}; !reflect.DeepEqual(labels, want) {
+		t.Errorf("labels %v; want %v", labels, want)
 	}
 }
 
@@ -357,7 +424,7 @@ func TestMirrorExportReadsEachRowOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	args := []driver.NamedValue{{Ordinal: 1, Value: root}, {Ordinal: 2, Value: benchBoardID(0)}, {Ordinal: 3, Value: "{}"}, {Ordinal: 4, Value: int64(0)}, {Ordinal: 5, Value: int64(1)}}
+	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, everyExportColumn(), CardShapeForTest))
 	steps := map[string]int{}
 	err := conn.Raw(func(dc any) error {
 		prep := dc.(driver.ConnPrepareContext)
@@ -423,47 +490,55 @@ func TestMirrorExportFillsAtScale(t *testing.T) {
 func exportFillsAtScale(t *testing.T, n int) {
 	s, root, _ := openSizedMirror(t, benchMirrorSize{boards: 1, issues: n, parents: true})
 	ctx := context.Background()
-	args := []driver.NamedValue{{Ordinal: 1, Value: root}, {Ordinal: 2, Value: benchBoardID(0)}, {Ordinal: 3, Value: "{}"}, {Ordinal: 4, Value: int64(0)}, {Ordinal: 5, Value: int64(1)}}
-	steps, best := map[string]int{}, map[string]time.Duration{}
 	var conn *sql.Conn
-	for range 5 {
-		conn = exportConn(t)
-		for _, q := range []string{MirrorExportSchema, `ATTACH '` + mirrorExportURI(s.path) + `' AS ` + mirrorExportSchemaName} {
-			if _, err := conn.ExecContext(ctx, q); err != nil {
+	// Each fill with no column of MirrorExportColumns asked for, then with
+	// every one asked for, as a count whose query reads them asks.
+	for _, asked := range []map[string]bool{{}, everyExportColumn()} {
+		args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, asked, CardShapeForTest))
+		steps, best := map[string]int{}, map[string]time.Duration{}
+		for range 5 {
+			conn = exportConn(t)
+			for _, q := range []string{MirrorExportSchema, `ATTACH '` + mirrorExportURI(s.path) + `' AS ` + mirrorExportSchemaName} {
+				if _, err := conn.ExecContext(ctx, q); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := conn.Raw(func(dc any) error {
+				prep := dc.(driver.ConnPrepareContext)
+				for _, fill := range mirrorExportFills {
+					stmt, err := prep.PrepareContext(ctx, fill.sql)
+					if err != nil {
+						return fmt.Errorf("prepare %s: %w", fill.name, err)
+					}
+					start := time.Now()
+					if _, err := stmt.(driver.StmtExecContext).ExecContext(ctx, args); err != nil {
+						return errors.Join(fmt.Errorf("fill %s: %w", fill.name, err), stmt.Close())
+					}
+					if d := time.Since(start); best[fill.name] == 0 || d < best[fill.name] {
+						best[fill.name] = d
+					}
+					tls, pstmt, err := sqliteStmtHandles(stmt)
+					if err != nil {
+						return errors.Join(err, stmt.Close())
+					}
+					steps[fill.name] = int(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0))
+					if err := stmt.Close(); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			if err != nil {
 				t.Fatal(err)
 			}
 		}
-		err := conn.Raw(func(dc any) error {
-			prep := dc.(driver.ConnPrepareContext)
-			for _, fill := range mirrorExportFills {
-				stmt, err := prep.PrepareContext(ctx, fill.sql)
-				if err != nil {
-					return fmt.Errorf("prepare %s: %w", fill.name, err)
-				}
-				start := time.Now()
-				if _, err := stmt.(driver.StmtExecContext).ExecContext(ctx, args); err != nil {
-					return errors.Join(fmt.Errorf("fill %s: %w", fill.name, err), stmt.Close())
-				}
-				if d := time.Since(start); best[fill.name] == 0 || d < best[fill.name] {
-					best[fill.name] = d
-				}
-				tls, pstmt, err := sqliteStmtHandles(stmt)
-				if err != nil {
-					return errors.Join(err, stmt.Close())
-				}
-				steps[fill.name] = int(sqlite3.Xsqlite3_stmt_status(tls, pstmt, sqlite3.SQLITE_STMTSTATUS_VM_STEP, 0))
-				if err := stmt.Close(); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
+		for _, fill := range mirrorExportFills {
+			t.Logf("%d issues, columns asked %v, %-26s %10d steps, %5d a row, best %v", n, len(asked) > 0, fill.name, steps[fill.name], steps[fill.name]/n, best[fill.name].Round(time.Microsecond))
 		}
-	}
-	for _, fill := range mirrorExportFills {
-		t.Logf("%d issues, %-26s %10d steps, %5d a row, best %v", n, fill.name, steps[fill.name], steps[fill.name]/n, best[fill.name].Round(time.Microsecond))
+		got := exportRows(t, conn, `SELECT count(type) || '|' || count(priority) || '|' || (SELECT count(*) FROM labels) FROM tickets`)
+		if want := map[bool]string{false: "0|0|", true: fmt.Sprintf("%d|%d|", n, n)}[len(asked) > 0] + strconv.Itoa(2*n); got[0] != want {
+			t.Errorf("%d issues, columns asked %v: tickets with a type|with a priority|labels = %s; want %s", n, len(asked) > 0, got[0], want)
+		}
 	}
 	// A ticket's epic is its parent when the fixture names the parent an
 	// epic, else its parent's epic: a sub-task counts under its story's.

@@ -72,14 +72,19 @@ func benchIssueID(board, i int) string { return strconv.Itoa(100000 + board*10_0
 
 func benchBoardID(board int) string { return strconv.Itoa(10 + board) }
 
-// benchCard is a card the size of a real one: its data holds a title,
-// labels and the fields the pane shows that no query reads.
+// CardShapeForTest is the shape of the card blobs these tests write
+// (benchCard), trackerapp's version 2.
+var CardShapeForTest = MirrorCardShape{Version: 2, VersionMember: "v", Type: "type_name", Priority: "priority_name",
+	Labels: "labels", LabelID: "id", LabelName: "name"}
+
+// benchCard is a card whose data blob is of the shape trackerapp writes
+// (CardShapeForTest): its type, priority, two labels and its web address.
 func benchCard(id string, updated int64, board, i int) MirrorCard {
 	return MirrorCard{IssueID: id, Key: "WEB-" + id, ProjectID: "100", TypeID: "10001", TypeLevel: 0,
 		StatusID: strconv.Itoa(1 + i%5), AssigneeID: fmt.Sprint("acc-user", i%20), PriorityID: "3", ParentID: "",
 		CreatedAt: 1_700_000_000_000, UpdatedAt: updated, Sprints: []string{fmt.Sprint(board*benchBoardSprints + i%benchBoardSprints)},
-		Data: []byte(`{"summary":"Make the login page remember the last account used ` + id + `","labels":["frontend","auth"],` +
-			`"components":["web"],"fixVersions":["2026.11"],"flagged":false,"commentCount":3,"attachmentCount":1}`)}
+		Data: []byte(`{"v":2,"type_name":"Story","priority_name":"Medium","labels":[{"id":"frontend","name":"frontend"},{"id":"auth","name":"auth"}],` +
+			`"url":"https://example.atlassian.net/browse/WEB-` + id + `"}`)}
 }
 
 func benchRow(board, i int, updated int64) MirrorRow {

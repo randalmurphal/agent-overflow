@@ -317,8 +317,8 @@ func builtinView(s *session, k Kind, estimates string) (DashboardView, error) {
 	return v, nil
 }
 
-// metricReads is the relations each built-in metric of kind k reads, by
-// metric name, worked out on the kind's first count and kept: the
+// metricReads is what each built-in metric of kind k asks the copy for
+// (prepared.fills), by metric name, worked out on the kind's first count and kept: the
 // built-ins are fixed, so their prepares read the same relations every
 // time. A count fills only these and what the board's labels need
 // (boardRelations).
@@ -336,7 +336,7 @@ func (e *Evaluator) metricReads(ctx context.Context, k Kind) (map[string][]strin
 			if pr.err != nil {
 				return fmt.Errorf("built-in metric %s: %w", name, pr.err)
 			}
-			r[name] = pr.p.reads
+			r[name] = pr.p.fills()
 		}
 		return nil
 	})
@@ -347,7 +347,7 @@ func (e *Evaluator) metricReads(ctx context.Context, k Kind) (map[string][]strin
 	return r, nil
 }
 
-// ownReads is the relations each of metrics reads, by name, from their
+// ownReads is what each of metrics asks the copy for, by name, from their
 // prepares on an empty session; a metric that does not prepare reads
 // none, and its widget shows its failure once the count prepares it again.
 func ownReads(ctx context.Context, metrics []Metric) (map[string][]string, error) {
@@ -361,7 +361,7 @@ func ownReads(ctx context.Context, metrics []Metric) (map[string][]string, error
 				continue
 			}
 			if p, err := s.prepare(m); err == nil {
-				r[m.Name] = p.reads
+				r[m.Name] = p.fills()
 			}
 		}
 		return nil
@@ -860,9 +860,9 @@ func unknownDashboard(id string) *Refusal {
 	return refuse("dashboard_unknown", fmt.Sprintf("this board has no dashboard %q; pick one from the list", truncate(id, 64)), nil)
 }
 
-// relationsOf is what a count fills: boardRelations, the relations the
-// named built-in metrics of kind k read, and those the own metrics read,
-// in order. k is nil when no built-in metric counts.
+// relationsOf is what a count fills: boardRelations, the relations and
+// columns the named built-in metrics of kind k read, and those the own
+// metrics read, in order. k is nil when no built-in metric counts.
 func (e *Evaluator) relationsOf(ctx context.Context, k *Kind, metrics map[string]Metric, builtins []string, own []Metric) ([]string, error) {
 	out := slices.Clone(boardRelations)
 	if k != nil && len(builtins) > 0 {

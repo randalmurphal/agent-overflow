@@ -296,7 +296,7 @@ func TestMirrorExportNamesEpicsFromTheParents(t *testing.T) {
 	feature := namedChildRow("4", 5, "70", "A feature", 0)
 	writeParentPage(t, s, root, 2, story, subtask, loose, feature, webRow("5", 5, "a5"))
 	conn := exportConn(t)
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"tickets", "epics"}); err != nil || !ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"tickets", "epics"}, CardShapeForTest); err != nil || !ok {
 		t.Fatalf("export = %v, %v", ok, err)
 	}
 	if got, want := exportRows(t, conn, `SELECT id || '|' || coalesce(parent, '-') || '|' || coalesce(epic, '-') FROM tickets ORDER BY id`),

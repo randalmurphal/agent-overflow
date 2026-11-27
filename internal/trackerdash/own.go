@@ -120,7 +120,6 @@ unit: tickets, estimate (the board's points, or its time estimates in seconds), 
 bucket: omit for none; period (needs at), sprint (a sprints.id), person (a people.id), epic (an epics.id), text.
 series: up to %d names, the series column's values; a chart draws up to %d.
 form: number, bars, line (bucket period or sprint), table (needs a bucket), list. width: 3, 4, 6, 8 or 12 of 12 columns.
-Ticket types, priorities and labels are not in the copy.
 `, maxWords, metricDeadline, maxRows, maxSeries, maxChartSeries)
 	b.WriteString(store.MirrorExportSchema)
 	return b.String()

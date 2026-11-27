@@ -80,6 +80,12 @@ type cardBlob struct {
 	URL      string       `json:"url,omitempty"`
 }
 
+// cardShape is where cardBlob holds what a dashboard's copy of a board
+// reads from it (store.MirrorCardShape): each member as cardBlob's tags
+// and choiceBlob's name it.
+var cardShape = store.MirrorCardShape{Version: cardBlobVersion, VersionMember: "v", Type: "type_name", Priority: "priority_name",
+	Labels: "labels", LabelID: "id", LabelName: "name"}
+
 // mirrorCard is c as the store holds it. Its sprints are sorted, as the
 // store reads them back.
 func mirrorCard(c tracker.Card) (store.MirrorCard, error) {
