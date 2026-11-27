@@ -147,12 +147,13 @@ func (r *Recorder) Start() {
 }
 
 // Close stops the flushes, ends every open span now and writes what is
-// left. A recorder that was never started is closed as well.
-func (r *Recorder) Close() {
+// left; its error is the activity that last write could not record. A
+// recorder that was never started is closed as well.
+func (r *Recorder) Close() error {
 	r.mu.Lock()
 	if r.stopped {
 		r.mu.Unlock()
-		return
+		return nil
 	}
 	r.stopped = true
 	started := r.started
@@ -166,6 +167,10 @@ func (r *Recorder) Close() {
 		<-r.done
 	}
 	r.Flush()
+	if st := r.Status(); st.Since != 0 {
+		return fmt.Errorf("activity since %s is not recorded: %s", time.UnixMilli(st.Since).Format(time.DateTime), st.Error)
+	}
+	return nil
 }
 
 // Report is input on connection conn's screen at now, on thread (empty
@@ -217,6 +222,13 @@ func (r *Recorder) endLocked(conn string, now int64) {
 	if over := len(r.closed) - maxUnwritten; over > 0 {
 		r.closed = slices.Delete(r.closed, 0, over)
 	}
+}
+
+// OpenSpans is how many connections have a span open.
+func (r *Recorder) OpenSpans() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.open)
 }
 
 // Status is whether the recorder is writing what it measures.

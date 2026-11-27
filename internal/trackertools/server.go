@@ -182,12 +182,14 @@ type Host interface {
 	Activity(ctx context.Context, from, to string) (ActivityDays, error)
 }
 
-// ActivityDays is Host.Activity's answer: the days that hold any, and,
-// while the recorder fails to write, the earliest input it has not
-// written (Gap, Unix ms; 0 while it writes).
+// ActivityDays is Host.Activity's answer: the days that hold any, earliest
+// first; while the recorder fails to write, the earliest input it has not
+// written (Gap, Unix ms; 0 while it writes); and why the commits of a
+// repository could not be read, one line each.
 type ActivityDays struct {
-	Days []ActivityDay
-	Gap  int64
+	Days          []ActivityDay
+	Gap           int64
+	CommitsUnread []string
 }
 
 // ActivityDay is a day the recorder measured (activity.Day) and the

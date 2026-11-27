@@ -3,6 +3,7 @@ package activity
 import (
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -122,7 +123,9 @@ func recorder(t *testing.T) (*Recorder, *fakeStore, *clock, *[]Status) {
 	c := &clock{t: nine}
 	var changes []Status
 	r := New(f, Config{Now: c.now, Changed: func(s Status) { changes = append(changes, s) }})
-	t.Cleanup(r.Close)
+	// The cleanup only stops the recorder; a test that fails its store
+	// checks Close's answer itself.
+	t.Cleanup(func() { _ = r.Close() })
 	return r, f, c, &changes
 }
 
@@ -208,7 +211,9 @@ func TestTheEndOfAConnectionAndOfTheRecorder(t *testing.T) {
 	c.add(time.Minute)
 	r.End("c1")
 	c.add(time.Minute)
-	r.Close()
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
 	r.Report("c3", "t3", false, nil)
 	r.Flush()
 	want := []store.ActivitySpan{
@@ -240,6 +245,13 @@ func TestAFailedFlushIsKeptAndSaid(t *testing.T) {
 	}
 	if len(*changes) != 1 {
 		t.Fatalf("said %d changes; want the failure once", len(*changes))
+	}
+	// A Close whose last write fails says what was not recorded.
+	failing, ff, _, _ := recorder(t)
+	ff.fail = errors.New("disk I/O error")
+	failing.Report("c1", "t1", false, nil)
+	if err := failing.Close(); err == nil || !strings.Contains(err.Error(), "disk I/O error") || !strings.Contains(err.Error(), nine.Format(time.DateTime)) {
+		t.Fatalf("a Close whose write failed answers %v", err)
 	}
 	f.fail = nil
 	r.Flush()

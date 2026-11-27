@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -123,6 +124,34 @@ func (s *Store) GetProjectContext(ctx context.Context, id string) (Project, erro
 		return Project{}, fmt.Errorf("store: get project %s: %w", id, err)
 	}
 	return p, nil
+}
+
+// ThreadProjects is the projects the threads of threadIDs belong to, each
+// once, in one statement. A thread with no project (an assistant's) or
+// no row adds none.
+func (s *Store) ThreadProjects(threadIDs []string) ([]Project, error) {
+	if len(threadIDs) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(threadIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: encode thread ids for their projects: %w", err)
+	}
+	rows, err := s.reader().Query(`SELECT `+projectColumns+` FROM projects WHERE id IN
+	  (SELECT t.project_id FROM json_each(?1) j JOIN threads t ON t.id = j.value) ORDER BY name, id`, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("store: read the projects of %d threads: %w", len(threadIDs), err)
+	}
+	defer rows.Close()
+	var out []Project
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan a thread's project: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // GetProjectByPath looks up a project by its filesystem path. Used during

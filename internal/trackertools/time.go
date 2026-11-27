@@ -106,11 +106,13 @@ type timeUnread struct {
 }
 
 // timeReadAnswer is time_read's answer; ActivityGap says since when the
-// app has not recorded the person's activity, while it cannot.
+// app has not recorded the person's activity, while it cannot, and
+// CommitsUnread why a repository's commits are not in the days.
 type timeReadAnswer struct {
-	Days        []timeDay    `json:"days"`
-	Unread      []timeUnread `json:"unread,omitempty"`
-	ActivityGap string       `json:"activity_gap,omitempty"`
+	Days          []timeDay    `json:"days"`
+	Unread        []timeUnread `json:"unread,omitempty"`
+	ActivityGap   string       `json:"activity_gap,omitempty"`
+	CommitsUnread []string     `json:"commits_unread,omitempty"`
 }
 
 // timeSources are the Jira connections among sources; none is the
@@ -254,6 +256,7 @@ func (s *Server) readActivity(ctx context.Context, sources []trackerapp.TicketSo
 	if act.Gap != 0 {
 		out.ActivityGap = "since " + time.UnixMilli(act.Gap).Format("2006-01-02 15:04")
 	}
+	out.CommitsUnread = act.CommitsUnread
 	var threads []string
 	for _, d := range act.Days {
 		for id := range d.Threads {
@@ -348,7 +351,7 @@ func fitTime(out timeReadAnswer) (timeReadAnswer, error) {
 			n++
 			return shown
 		}
-		cut := timeReadAnswer{Days: make([]timeDay, len(out.Days)), Unread: out.Unread, ActivityGap: out.ActivityGap}
+		cut := timeReadAnswer{Days: make([]timeDay, len(out.Days)), Unread: out.Unread, ActivityGap: out.ActivityGap, CommitsUnread: out.CommitsUnread}
 		for i, d := range out.Days {
 			c := timeDay{Day: d.Day, Logged: make([]loggedTime, len(d.Logged)), Active: d.Active, Phone: d.Phone, Tickets: d.Tickets,
 				CommitsMore: d.CommitsMore}

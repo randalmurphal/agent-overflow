@@ -322,6 +322,8 @@ var harnessTimers = []harnessTimer{
 	{name: "agent-settled-window", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.AgentSettledWindow }},
 	{name: "tracker-poll", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.TrackerPollInterval }},
 	{name: "tracker-approval-wait", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.TrackerApprovalWait }},
+	{name: "activity-window", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ActivityWindow }},
+	{name: "activity-flush", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ActivityFlush }},
 	// Page timers: how long a computer stays unreachable before the screen
 	// says so, and how long a settled Agents row stays.
 	{name: "unreachable-settle", max: pageTimerMax, unit: time.Millisecond},
@@ -439,7 +441,7 @@ func olderComputerSurface() (absent map[string]bool, reshape map[string]func(jso
 		"SetThreadTicket", "ClearThreadTicket", "ThreadsForTicket", "GetTicketWork", "StartTicketThread",
 		"TrackerDashboards", "EvaluateTrackerDashboard", "TrackerDashboardDrill", "StartTrackerDashboardThread",
 		"KeepTrackerWidget", "DismissTrackerWidget", "RemoveTrackerWidget",
-		"ProjectTrackerSiteFields", "SearchTicketWork",
+		"ProjectTrackerSiteFields", "SearchTicketWork", "RecordActivity", "GetActivityRecording",
 	} {
 		absent[name] = true
 	}

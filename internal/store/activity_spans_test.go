@@ -202,3 +202,31 @@ func TestARestoreKeepsTheRecordedActivity(t *testing.T) {
 		t.Fatalf("after the restore the thread days are %+v, %v", got, err)
 	}
 }
+
+// ThreadProjects answers each thread's project once and leaves out a
+// thread with no project or no row.
+func TestThreadProjectsAreEachOnce(t *testing.T) {
+	t.Parallel()
+	s := activityStore(t, false)
+	now := time.Now().UnixMilli()
+	if _, err := s.CreateProject(Project{ID: "p2", Path: "/ws/p2", Name: "Q", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for id, project := range map[string]string{"t3": "p2", "t4": ""} {
+		if err := s.CreateThread(Thread{ID: id, ProjectID: project, Title: id, Provider: "claude", WorkspacePath: "/ws/p2", Mode: "chat",
+			RuntimeMode: "approval-required", CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.ThreadProjects([]string{"t1", "t2", "t3", "t4", "gone"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, p := range got {
+		paths = append(paths, p.Path)
+	}
+	if !slices.Equal(paths, []string{"/ws/p1", "/ws/p2"}) {
+		t.Fatalf("the projects are %v; want /ws/p1 and /ws/p2 once each", paths)
+	}
+}
