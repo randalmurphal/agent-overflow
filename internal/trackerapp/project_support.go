@@ -60,7 +60,7 @@ func (s *Service) ProjectSupport(projectID string, scope Scope, issues []string)
 		return none, nil
 	}
 	row, err := s.get(scope.Connection)
-	if err != nil || row.Kind != store.TrackerKindJira {
+	if err != nil {
 		return none, err
 	}
 	root, ok, err := s.store.GetMirrorRoot(scope.Connection)
