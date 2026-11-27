@@ -44,6 +44,9 @@ func sealedOpen(t *testing.T) *session {
 	if err := s.gate(ctx); err != nil {
 		t.Fatal(errors.Join(err, s.close()))
 	}
+	// The copy holds every relation; what metricOf's metric reads of it is
+	// the probe's, which these tests do not read.
+	s.asked = map[string]asks{"probe": {}}
 	return s
 }
 
@@ -270,7 +273,7 @@ func TestOneStatementReadsStringsAndComments(t *testing.T) {
 		"SELECT 'it''s' AS ticket":                  "SELECT 'it''s' AS ticket",
 		"SELECT (SELECT 1) AS ticket /* end */ ;  ": "SELECT (SELECT 1) AS ticket /* end */ ",
 	} {
-		got, _, err := oneStatement(in)
+		got, err := oneStatement(in)
 		if err != nil || got != want {
 			t.Errorf("oneStatement(%q) = %q, %v; want %q", in, got, err, want)
 		}
@@ -333,9 +336,9 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 	if !hasUTC || !hasYork || registrations != 4*zones {
 		t.Errorf("%d registrations over %d zone drivers (UTC %v, New York %v); want 4 a zone", registrations, zones, hasUTC, hasYork)
 	}
-	sessionSinks.mu.Lock()
-	left := len(sessionSinks.m)
-	sessionSinks.mu.Unlock()
+	sessionsByKey.mu.Lock()
+	left := len(sessionsByKey.m)
+	sessionsByKey.mu.Unlock()
 	if left != 0 {
 		t.Errorf("%d session sinks left in the registry after every session closed", left)
 	}
@@ -432,9 +435,9 @@ func TestASessionThatCannotConnectLeavesNothing(t *testing.T) {
 		if _, err := openSession(ctx, time.UTC); err == nil || !strings.Contains(err.Error(), "open the dashboard's database") {
 			t.Fatalf("a session opened under a canceled context = %v; want its connection's failure", err)
 		}
-		sessionSinks.mu.Lock()
-		left := len(sessionSinks.m)
-		sessionSinks.mu.Unlock()
+		sessionsByKey.mu.Lock()
+		left := len(sessionsByKey.m)
+		sessionsByKey.mu.Unlock()
 		if left != 0 {
 			t.Errorf("%d session sinks left in the registry after the session failed to open", left)
 		}
@@ -452,4 +455,20 @@ func TestASessionThatCannotConnectLeavesNothing(t *testing.T) {
 			t.Errorf("%d database connection openers run after the session failed to open; its database was not closed", n)
 		}
 	})
+}
+
+// A probe table tells a statement's use of each of its columns apart only
+// up to probeColumnsMax columns: every export relation has at most that
+// many, or every probe fails to open.
+func TestEveryRelationFitsTheProbe(t *testing.T) {
+	t.Parallel()
+	columns, err := exportColumns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range store.MirrorExportTables {
+		if n := len(columns[table]); n == 0 || n > probeColumnsMax {
+			t.Errorf("relation %s has %d columns; a probe table reads 1 to %d", table, n, probeColumnsMax)
+		}
+	}
 }

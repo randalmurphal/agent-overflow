@@ -75,6 +75,7 @@ func driverFor(loc *time.Location) (*sqlite.Driver, error) {
 		}})
 	}
 	err := errors.Join(
+		d.RegisterModule(probeModuleName, probeModule{}),
 		register("bounded_rows", &sqlite.FunctionImpl{NArgs: -1, MakeAggregate: func(sqlite.FunctionContext) (sqlite.AggregateFunction, error) {
 			return &sinkStep{}, nil
 		}}),
@@ -111,36 +112,38 @@ func driverFor(loc *time.Location) (*sqlite.Driver, error) {
 	return d, nil
 }
 
-// sessionSinks is the sink of each open session by its key: added when
-// the session opens, removed when it closes or fails to open.
-var sessionSinks = struct {
+// sessionsByKey is each open session by its key: added when the session
+// opens, removed when it closes or fails to open. The wrapper's
+// bounded_rows finds its sink by the key, and a probe table its session
+// (probe.go).
+var sessionsByKey = struct {
 	mu sync.Mutex
-	m  map[string]*rowSink
-}{m: map[string]*rowSink{}}
+	m  map[string]*session
+}{m: map[string]*session{}}
 
-// openSink registers sink under a new random key.
-func openSink(sink *rowSink) (string, error) {
+// registerSession registers s under a new random key.
+func registerSession(s *session) (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", fmt.Errorf("make the dashboard session's key: %w", err)
 	}
 	key := hex.EncodeToString(b[:])
-	sessionSinks.mu.Lock()
-	sessionSinks.m[key] = sink
-	sessionSinks.mu.Unlock()
+	sessionsByKey.mu.Lock()
+	sessionsByKey.m[key] = s
+	sessionsByKey.mu.Unlock()
 	return key, nil
 }
 
-func closeSink(key string) {
-	sessionSinks.mu.Lock()
-	delete(sessionSinks.m, key)
-	sessionSinks.mu.Unlock()
+func unregisterSession(key string) {
+	sessionsByKey.mu.Lock()
+	delete(sessionsByKey.m, key)
+	sessionsByKey.mu.Unlock()
 }
 
-func sinkOf(key string) (*rowSink, bool) {
-	sessionSinks.mu.Lock()
-	defer sessionSinks.mu.Unlock()
-	s, ok := sessionSinks.m[key]
+func sessionOf(key string) (*session, bool) {
+	sessionsByKey.mu.Lock()
+	defer sessionsByKey.mu.Unlock()
+	s, ok := sessionsByKey.m[key]
 	return s, ok
 }
 
@@ -407,11 +410,11 @@ var errSessionClosed = errors.New("bounded_rows names no open dashboard session"
 func (a *sinkStep) Step(_ *sqlite.FunctionContext, args []driver.Value) error {
 	if a.sink == nil {
 		key, _ := args[0].(string)
-		sink, ok := sinkOf(key)
+		s, ok := sessionOf(key)
 		if !ok {
 			return errSessionClosed
 		}
-		a.sink = sink
+		a.sink = s.sink
 	}
 	return a.sink.add(args[1], args[2:])
 }

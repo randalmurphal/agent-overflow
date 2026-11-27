@@ -2324,17 +2324,24 @@ whether the board's first sync has reconciled
 drill carry `reading`, and the range before is not compared. A board
 unlisted and listed again starts over.
 
-The relations a count reads are its metrics': each metric's statement
-reads the relations its text names (`How.Reads`), in any quoted form,
-and a column of `MirrorExportColumns` when the text names it, has a `*`
-or joins NATURAL. The copy has no views or triggers and its catalog is
-denied, so a statement reads nothing its text does not name; a name that
-is an alias, a string or a CTE's asks for more than it reads, never
-less. SQLite's authorizer is not the source: it reports no read of a
-USING or NATURAL join's columns. Built-in metrics are worked out once
-per dashboard kind, and a count asks for those of the widgets it counts
-and the tickets, statuses, people and epics its answer names. No
+The relations a count reads are its metrics', as SQLite resolves each
+statement (`trackerdash/probe.go`): the metric prepares on a probe
+session, whose relations are virtual tables with the export's columns
+and no rows, and SQLite tells each table it plans which of its columns
+the statement uses (`colUsed`), a USING or NATURAL join's condition
+included, a CTE that shadows a relation's name resolved to the CTE, and
+a `*` it never reads left out. The tables planned are what the count
+copies and what "How this is counted" names (`How.Reads`), and a column
+of `MirrorExportColumns` is decoded only when its bit is set. SQLite's
+authorizer is not the source: it reports no read of a USING or NATURAL
+join's columns. The probe can only ask for more than the real copy
+reads: an unread LEFT JOIN on a whole unique key, which SQLite drops
+from the real plan, still names its table. Built-in metrics are probed
+once per dashboard kind, and a count asks for those of the widgets it
+counts and the tickets, statuses, people and epics its answer names. No
 built-in metric reads `changes`, so none copies them.
+`TestADashboardCountCopiesWhatItsQueryReads` in `internal/store` runs
+each kind of read on the copy it asks for and on a copy of everything.
 
 ### Metrics
 

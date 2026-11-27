@@ -6,7 +6,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -99,7 +98,7 @@ type session struct {
 	db   *sql.DB
 	conn *sql.Conn
 	sink *rowSink
-	// key names the sink in the sessions registry (sessionSinks).
+	// key names the session in the sessions registry (sessionsByKey).
 	key string
 	// denied is what the authorizer refused last, for the sentence of the
 	// error SQLite reports as "not authorized". The authorizer runs while
@@ -112,6 +111,13 @@ type session struct {
 	// call bounded_rows. A metric's own text is prepared first without it,
 	// so a metric that calls bounded_rows never runs.
 	wrapping bool
+	// probe is what a probe session's statements use of its probe tables
+	// since the last prepare (probe.go); nil on a session filled with a
+	// copy, whose prepares read asked instead.
+	probe probeUse
+	// asked is what the copy was filled with for each metric, by name,
+	// from the probe: what a filled session's prepare says it reads.
+	asked map[string]asks
 }
 
 // connector opens the snapshot on its zone's driver (driverFor).
@@ -128,14 +134,14 @@ func openSession(ctx context.Context, loc *time.Location) (*session, error) {
 		return nil, err
 	}
 	s := &session{sink: &rowSink{}}
-	if s.key, err = openSink(s.sink); err != nil {
+	if s.key, err = registerSession(s); err != nil {
 		return nil, err
 	}
 	s.db = sql.OpenDB(connector{d})
 	s.db.SetMaxOpenConns(1)
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
-		closeSink(s.key)
+		unregisterSession(s.key)
 		closeErr := s.db.Close()
 		return nil, errors.Join(fmt.Errorf("open the dashboard's database: %w", err), closeErr)
 	}
@@ -146,7 +152,7 @@ func openSession(ctx context.Context, loc *time.Location) (*session, error) {
 // close closes the connection and its database: nothing of the
 // evaluation outlives it.
 func (s *session) close() error {
-	closeSink(s.key)
+	unregisterSession(s.key)
 	err := s.conn.Close()
 	if closeErr := s.db.Close(); closeErr != nil {
 		err = errors.Join(err, closeErr)
@@ -290,10 +296,8 @@ type prepared struct {
 	sql   string
 	names []string
 	cols  columns
-	reads []string
-	// columns is the columns of store.MirrorExportColumns it may read,
-	// which the copy fills only for a count that asks for them.
-	columns []string
+	// asks is what it reads of the copy, as the probe found it.
+	asks asks
 	// series is the metric's declared series (Metric.Series).
 	series []string
 	// took is how long the prepare took, which the metric's deadline
@@ -307,11 +311,16 @@ type prepared struct {
 // and its columns against the contract.
 func (s *session) prepare(m Metric) (prepared, error) {
 	start := time.Now()
-	text, w, err := oneStatement(m.SQL)
+	text, err := oneStatement(m.SQL)
 	if err != nil {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + err.Error() + ". A metric is one SELECT; change its query."}
 	}
 	s.take()
+	if s.probe != nil {
+		if _, err := s.takeAsks(); err != nil {
+			return prepared{}, err
+		}
+	}
 	var info []sqlite.ColumnInfo
 	err = s.conn.Raw(func(dc any) error {
 		ci, ok := dc.(interface {
@@ -338,32 +347,28 @@ func (s *session) prepare(m Metric) (prepared, error) {
 	if err != nil {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + strings.TrimPrefix(err.Error(), "the query ") + "; change its query."}
 	}
-	reads, columns := readsOf(w)
-	return prepared{sql: text, names: names, cols: cols, reads: reads, columns: columns, series: m.Series, took: time.Since(start)}, nil
+	a, err := s.asksOf(m)
+	if err != nil {
+		return prepared{}, err
+	}
+	return prepared{sql: text, names: names, cols: cols, asks: a, series: m.Series, took: time.Since(start)}, nil
 }
 
-// readsOf is what a statement of words w may read of the copy: each
-// relation it names, and each column of store.MirrorExportColumns it
-// names, or every one when it has a * or a NATURAL join (words).
-func readsOf(w words) (reads, columns []string) {
-	for _, t := range store.MirrorExportTables {
-		if w.named(t) {
-			reads = append(reads, t)
-		}
+// asksOf is what metric m, just prepared, reads of the copy: on a probe
+// session what its probe tables recorded, on a filled session what the
+// copy was filled with for it. The probe prepares the metric's own text;
+// the wrapper (run) reads tickets.id beside it, and every count copies
+// the tickets (boardRelations).
+func (s *session) asksOf(m Metric) (asks, error) {
+	if s.probe != nil {
+		return s.takeAsks()
 	}
-	slices.Sort(reads)
-	for _, c := range store.MirrorExportColumns {
-		_, column, _ := strings.Cut(c, ".")
-		if w.star || w.named("natural") || w.named(column) {
-			columns = append(columns, c)
-		}
+	a, ok := s.asked[m.Name]
+	if !ok {
+		return asks{}, fmt.Errorf("metric %s was not probed before its count", m.Name)
 	}
-	return reads, columns
+	return a, nil
 }
-
-// fills is what a count that runs p asks the copy for: the relations it
-// reads and the columns of them filled only when asked for.
-func (p prepared) fills() []string { return slices.Concat(p.reads, p.columns) }
 
 // run runs a prepared metric under its deadline, which began when its
 // prepare did, wrapped so SQLite

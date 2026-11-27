@@ -27,13 +27,13 @@
 //     main, and a list of deterministic functions (allowedFunctions); it
 //     denies everything else, recursion, pragmas, attach and the catalog
 //     included, and records what it denied for the widget's sentence.
-//   - What a count asks the copy for is what its statements' text names
-//     (oneStatement's words, readsOf): each relation named, and each
-//     column the copy fills only when asked (store.MirrorExportColumns)
-//     named, or every one for a * or a NATURAL join. The copy has no
-//     views or triggers and its catalog is denied, so a statement reads
-//     nothing it does not name; a name that is an alias or a string asks
-//     for more than it reads, never less.
+//   - What a count asks the copy for, and what How this is counted names,
+//     is what SQLite resolves its statements to read: each prepares on a
+//     probe session whose relations are virtual tables that record the
+//     columns a plan uses (probe.go), so the copy holds every relation
+//     and every column filled only when asked (store.MirrorExportColumns)
+//     that the statement reads, the columns of a USING or NATURAL join
+//     included, and nothing a shadowing CTE or an unread * names.
 //   - A metric's SQL is one statement (oneStatement): it cannot close the
 //     wrapper's parenthesis or add a statement. The wrapper produces the
 //     whole result in SQLite's first step, which a canceled context

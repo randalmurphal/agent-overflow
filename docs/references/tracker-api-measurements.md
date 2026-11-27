@@ -899,7 +899,7 @@ copies the tickets and their statuses, so the tickets fill is most of
 its 146 ms.
 
 A ticket's type and priority names and its labels are in its card blob,
-which the copy decodes only for a query that names them
+which the copy decodes only for a query that reads them
 (`TestMirrorExportFillsAtScale` in `internal/store`, the same fixture
 with a version 2 blob of about 160 bytes and two labels a ticket; the
 best of 5 runs, two runs each, and the VM steps, which do not vary):
@@ -907,13 +907,15 @@ best of 5 runs, two runs each, and the VM steps, which do not vary):
 | Tickets fill | 2,000 issues | 20,000 issues |
 |---|---|---|
 | Before the columns existed | 621,287 steps; 14.6 and 15.0 ms | 6,208,487 steps; 195.8 and 126.9 ms |
-| A query that names neither column | 629,287 steps; 18.2 and 13.8 ms | 6,288,487 steps; 155.7 and 164.2 ms |
-| A query that names `type` alone | 647,292 steps; 24.1 and 21.1 ms | 6,468,492 steps; 219.3 and 176.8 ms |
-| A query that names `type` and `priority` | 665,295 steps; 17.5 and 19.9 ms | 6,648,495 steps; 186.7 and 243.9 ms |
-| `labels`, filled beside it when a query names it | 134,026 steps; 7.6 and 6.7 ms | 1,340,026 steps; 77.6 and 67.6 ms |
+| A query that reads neither column | 629,287 steps; 18.2 and 13.8 ms | 6,288,487 steps; 155.7 and 164.2 ms |
+| A query that reads `type` alone | 647,292 steps; 24.1 and 21.1 ms | 6,468,492 steps; 219.3 and 176.8 ms |
+| A query that reads `type` and `priority` | 665,295 steps; 17.5 and 19.9 ms | 6,648,495 steps; 186.7 and 243.9 ms |
+| `labels`, filled beside it when a query reads it | 134,026 steps; 7.6 and 6.7 ms | 1,340,026 steps; 77.6 and 67.6 ms |
 
-A query that names neither column decodes no blob: the fill selects NULL
-for both, 4 VM steps a ticket. Each column named costs 9 steps a ticket,
+A query that reads neither column decodes no blob, whatever it
+multiplies or counts with `*`: SQLite reports the columns it reads and
+the fill selects NULL for the rest, 4 VM steps a ticket. Each column read
+costs 9 steps a ticket,
 which is why the fill does not decode them for every count. The times
 of these runs spread more than the columns cost.
 

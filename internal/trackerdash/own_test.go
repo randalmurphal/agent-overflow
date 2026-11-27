@@ -125,13 +125,14 @@ func TestProposalsPastTheDeadlineFailInTheirOwnPlace(t *testing.T) {
 	}
 }
 
-// A count asks the copy for what its query's text names: a relation by
-// any form of its name, and a ticket's type or priority by its name, a *
-// or a NATURAL join, which read columns the query does not name. Every
-// form SQLite reads a relation or a column through asks for it, so a
-// USING join does not count against an empty copy; a query that names
-// none of them asks for none; How this is counted names relations alone.
-func TestACountAsksForWhatItsQueryNames(t *testing.T) {
+// A count asks the copy for what its query reads as SQLite resolves it
+// (probe.go): a relation by any form of its name, a ticket's type or
+// priority read by name, a USING or NATURAL join's condition or a *
+// SQLite reads, and nothing a comment or a * it never reads names; How
+// this is counted names relations alone. The store's
+// TestADashboardCountCopiesWhatItsQueryReads runs each read on a real
+// copy against a copy of everything.
+func TestACountAsksForWhatItsQueryReads(t *testing.T) {
 	t.Parallel()
 	board := newFixture(false, "none").status("3", "In progress", "in_progress").
 		ticket(ticket{id: "t1", key: "WEB-1", status: "3", group: "in_progress", created: ago(3)}).board()
@@ -155,9 +156,10 @@ func TestACountAsksForWhatItsQueryNames(t *testing.T) {
 		{"SELECT id AS ticket FROM main.tickets WHERE main.tickets.type = 'Bug'", []string{"tickets.type"}, nil},
 		{"WITH w(type) AS (VALUES('Bug')) SELECT t.id AS ticket FROM tickets t JOIN w USING(type)", []string{"tickets.type"}, []string{"tickets.priority"}},
 		{"WITH w(priority) AS (VALUES('High')) SELECT t.id AS ticket FROM tickets t JOIN w USING (priority)", []string{"tickets.priority"}, nil},
-		{"WITH w(type) AS (VALUES('Bug')) SELECT t.id AS ticket FROM tickets t NATURAL JOIN w", both, nil},
+		{"WITH w(type) AS (VALUES('Bug')) SELECT t.id AS ticket FROM tickets t NATURAL JOIN w", []string{"tickets.type"}, []string{"tickets.priority"}},
 		{"SELECT a.id AS ticket FROM tickets a NATURAL JOIN tickets b", both, nil},
-		{"SELECT id AS ticket FROM (SELECT * FROM tickets)", both, nil},
+		{"SELECT id AS ticket FROM (SELECT * FROM tickets)", nil, both},
+		{"WITH c AS MATERIALIZED (SELECT * FROM tickets) SELECT id AS ticket FROM c", both, nil},
 		{"SELECT id AS ticket FROM tickets WHERE (type, priority) = ('Bug', 'High')", both, nil},
 		{"SELECT t.id AS ticket FROM tickets t JOIN labels l ON l.ticket = t.id WHERE l.name = 'bug'", []string{"labels"}, both},
 		{"WITH c AS (SELECT id AS ticket FROM tickets) SELECT c.ticket FROM c JOIN labels USING(ticket)", []string{"labels"}, nil},

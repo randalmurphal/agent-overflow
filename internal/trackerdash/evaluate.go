@@ -57,14 +57,14 @@ type Evaluator struct {
 	deadline time.Duration
 
 	readsMu sync.Mutex
-	// reads is, by kind, each built-in metric's relations, from its prepare
-	// on an empty sealed session (metricReads).
-	reads map[Kind]map[string][]string
+	// reads is, by kind, what each built-in metric reads of the copy, from
+	// its prepare on a probe session (metricReads).
+	reads map[Kind]map[string]asks
 }
 
 // NewEvaluator is an evaluator reading the time from now.
 func NewEvaluator(now func() time.Time) *Evaluator {
-	return &Evaluator{slots: make(chan struct{}, maxEvaluations), now: now, deadline: evaluationDeadline, reads: map[Kind]map[string][]string{}}
+	return &Evaluator{slots: make(chan struct{}, maxEvaluations), now: now, deadline: evaluationDeadline, reads: map[Kind]map[string]asks{}}
 }
 
 func (e *Evaluator) acquire(ctx context.Context) (func(), error) {
@@ -281,15 +281,18 @@ func estimatesOf(unit int) string {
 	return "none"
 }
 
-// onEmpty runs f on a session of the export's empty relations, sealed as
-// a count's is, and closes it.
+// onEmpty runs f on a probe session, the export's relations as probe
+// tables with no rows (probe.go), sealed as a count's is, and closes it.
 func onEmpty(ctx context.Context, f func(*session) error) error {
 	s, err := openSession(ctx, time.UTC)
 	if err != nil {
 		return err
 	}
 	err = func() error {
-		if _, err := s.conn.ExecContext(ctx, store.MirrorExportSchema); err != nil {
+		if err := s.createProbeTables(func(q string) error {
+			_, err := s.conn.ExecContext(ctx, q)
+			return err
+		}); err != nil {
 			return fmt.Errorf("create the export's relations: %w", err)
 		}
 		if err := s.gate(ctx); err != nil {
@@ -317,18 +320,18 @@ func builtinView(s *session, k Kind, estimates string) (DashboardView, error) {
 	return v, nil
 }
 
-// metricReads is what each built-in metric of kind k asks the copy for
-// (prepared.fills), by metric name, worked out on the kind's first count and kept: the
+// metricReads is what each built-in metric of kind k reads of the copy,
+// by metric name, worked out on the kind's first count and kept: the
 // built-ins are fixed, so their prepares read the same relations every
 // time. A count fills only these and what the board's labels need
 // (boardRelations).
-func (e *Evaluator) metricReads(ctx context.Context, k Kind) (map[string][]string, error) {
+func (e *Evaluator) metricReads(ctx context.Context, k Kind) (map[string]asks, error) {
 	e.readsMu.Lock()
 	defer e.readsMu.Unlock()
 	if r, ok := e.reads[k]; ok {
 		return r, nil
 	}
-	r := map[string][]string{}
+	r := map[string]asks{}
 	err := onEmpty(ctx, func(s *session) error {
 		d, metrics := builtin(k)
 		_, preps := s.view(d, metrics, k.PlansSprints, "points")
@@ -336,7 +339,7 @@ func (e *Evaluator) metricReads(ctx context.Context, k Kind) (map[string][]strin
 			if pr.err != nil {
 				return fmt.Errorf("built-in metric %s: %w", name, pr.err)
 			}
-			r[name] = pr.p.fills()
+			r[name] = pr.p.asks
 		}
 		return nil
 	})
@@ -347,11 +350,11 @@ func (e *Evaluator) metricReads(ctx context.Context, k Kind) (map[string][]strin
 	return r, nil
 }
 
-// ownReads is what each of metrics asks the copy for, by name, from their
-// prepares on an empty session; a metric that does not prepare reads
+// ownReads is what each of metrics reads of the copy, by name, from their
+// prepares on a probe session; a metric that does not prepare reads
 // none, and its widget shows its failure once the count prepares it again.
-func ownReads(ctx context.Context, metrics []Metric) (map[string][]string, error) {
-	r := map[string][]string{}
+func ownReads(ctx context.Context, metrics []Metric) (map[string]asks, error) {
+	r := map[string]asks{}
 	if len(metrics) == 0 {
 		return r, nil
 	}
@@ -361,7 +364,7 @@ func ownReads(ctx context.Context, metrics []Metric) (map[string][]string, error
 				continue
 			}
 			if p, err := s.prepare(m); err == nil {
-				r[m.Name] = p.fills()
+				r[m.Name] = p.asks
 			}
 		}
 		return nil
@@ -470,7 +473,7 @@ func how(m Metric, p prepared, plansSprints bool, estimates string) How {
 	if p.cols.periodBound(m) {
 		rng = "It counts the range's " + periods + " and compares them with the " + periods + " before."
 	}
-	return How{Words: m.Words, Counts: counts, Range: rng, Rules: "none", SQL: strings.TrimSpace(m.SQL), Reads: p.reads}
+	return How{Words: m.Words, Counts: counts, Range: rng, Rules: "none", SQL: strings.TrimSpace(m.SQL), Reads: p.asks.tables}
 }
 
 // evaluation is one opened, filled and sealed session with the board's
@@ -494,12 +497,14 @@ type ticketRow struct {
 }
 
 // open opens a session, fills it with b's export of relations and seals
-// it, then reads the rows every widget names.
-func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, relations []string) (*evaluation, error) {
+// it, then reads the rows every widget names. asked is what each metric
+// reads of the copy, as the probe found it.
+func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, relations []string, asked map[string]asks) (*evaluation, error) {
 	s, err := openSession(ctx, loc)
 	if err != nil {
 		return nil, err
 	}
+	s.asked = asked
 	ev := &evaluation{s: s}
 	if err := ev.fill(ctx, b, relations); err != nil {
 		if closeErr := s.close(); closeErr != nil {
@@ -783,10 +788,10 @@ func (e *Evaluator) begin(ctx context.Context, b Board, r Request, counts func(w
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, e.deadline)
-	relations, err := e.relationsOf(ctx, o.kind, o.metrics, builtins, own)
+	relations, asked, err := e.relationsOf(ctx, o.kind, o.metrics, builtins, own)
 	var ev *evaluation
 	if err == nil {
-		ev, err = e.open(ctx, b, loc, relations)
+		ev, err = e.open(ctx, b, loc, relations, asked)
 	}
 	if err != nil {
 		cancel()
@@ -860,29 +865,37 @@ func unknownDashboard(id string) *Refusal {
 	return refuse("dashboard_unknown", fmt.Sprintf("this board has no dashboard %q; pick one from the list", truncate(id, 64)), nil)
 }
 
-// relationsOf is what a count fills: boardRelations, the relations and
-// columns the named built-in metrics of kind k read, and those the own
-// metrics read, in order. k is nil when no built-in metric counts.
-func (e *Evaluator) relationsOf(ctx context.Context, k *Kind, metrics map[string]Metric, builtins []string, own []Metric) ([]string, error) {
-	out := slices.Clone(boardRelations)
+// relationsOf is what a count fills, in order: boardRelations and what
+// the named built-in metrics of kind k and the own metrics read, and what
+// each of those metrics reads, by name, which its prepare on the filled
+// copy says (session.asked). k is nil when no built-in metric counts.
+func (e *Evaluator) relationsOf(ctx context.Context, k *Kind, metrics map[string]Metric, builtins []string, own []Metric) ([]string, map[string]asks, error) {
+	asked := map[string]asks{}
 	if k != nil && len(builtins) > 0 {
 		reads, err := e.metricReads(ctx, *k)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, n := range builtins {
-			out = append(out, reads[metrics[n].Name]...)
+			name := metrics[n].Name
+			asked[name] = reads[name]
 		}
 	}
 	reads, err := ownReads(ctx, own)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, m := range own {
-		out = append(out, reads[m.Name]...)
+		if a, ok := reads[m.Name]; ok {
+			asked[m.Name] = a
+		}
+	}
+	out := slices.Clone(boardRelations)
+	for _, a := range asked {
+		out = append(out, a.fills()...)
 	}
 	slices.Sort(out)
-	return slices.Compact(out), nil
+	return slices.Compact(out), asked, nil
 }
 
 // count runs metric m once, its prepared statement from the view.

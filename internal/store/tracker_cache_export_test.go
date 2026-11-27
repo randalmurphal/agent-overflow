@@ -534,7 +534,7 @@ func exportFillsAtScale(t *testing.T, n int) {
 	wantEpics := fmt.Sprintf("%d|%d", under, len(epics))
 	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, CardShapeForTest))
 	// Each fill with no column of MirrorExportColumns asked for, with one,
-	// and with every one, as a count whose query names them asks.
+	// and with every one, as a count whose query reads them asks.
 	for _, asked := range []struct {
 		label   string
 		columns map[string]bool
