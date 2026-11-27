@@ -187,10 +187,13 @@ async function pickRange(page: Page, screen: Locator, id: string, compact: boole
 /**
  * Sprint 1's burndown on the seeded board. At its start WEB-20 (3
  * points), WEB-21 (2) and WEB-22 (5) were open, and WEB-1 and WEB-2 count
- * no estimate: 10 points, the even pace's start. Today WEB-21 is done: on a
- * working day, 8 points so far; on a Saturday or Sunday, which is no
- * sprint day, no point is so far and the last working day's still counts
- * 10. Start opens the tickets it counted.
+ * no estimate: 10 points, the even pace's start. WEB-21 was done a day
+ * before the seed: on a working day today's point is 8 points so far. A
+ * Saturday or Sunday is no sprint day and has no point so far; the last
+ * working day counts 8 when WEB-21 was done on it (today is Saturday) and
+ * 10 when it was done on Saturday (today is Sunday), a weekend's change
+ * counting on the next working day. The days are the browser's. Start
+ * opens the tickets it counted.
  */
 async function expectBurndown(page: Page, screen: Locator, compact: boolean): Promise<void> {
   const burndown = widget(screen, 'burndown');
@@ -202,9 +205,11 @@ async function expectBurndown(page: Page, screen: Locator, compact: boolean): Pr
   await expect(burndown.getByTestId('dashboard-hover')).toContainText('Start, 10 points left');
   await expect(burndown.getByTestId('dashboard-hover-pace')).toHaveText('On pace would be 10 points');
   const today = burndown.locator('[data-testid="dashboard-point"][aria-label$="(so far)"]');
-  if (await page.evaluate(() => [0, 6].includes(new Date().getDay()))) {
+  const [day, doneDay] = await page.evaluate((done) => [new Date().getDay(), new Date(done).getDay()], SEEDED_AT - DAY);
+  if (day === 0 || day === 6) {
+    const left = doneDay === 0 || doneDay === 6 ? 10 : 8;
     await expect(today).toHaveCount(0);
-    await expect(burndown.locator('[data-testid="dashboard-point"][aria-label$=" left"]').last()).toHaveAttribute('aria-label', /, 10 points left$/);
+    await expect(burndown.locator('[data-testid="dashboard-point"][aria-label$=" left"]').last()).toHaveAttribute('aria-label', new RegExp(`, ${left} points left$`));
   } else {
     await expect(today).toHaveAttribute('aria-label', /, 8 points left \(so far\)$/);
   }
