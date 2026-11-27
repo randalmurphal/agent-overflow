@@ -407,6 +407,54 @@ export function registerIssuesTimeDraftFlow({ compact }: TimeDraftSurface): void
     expect(await added(harness, 0)).toEqual(['10101', '10101']);
   });
 
+  test('the week shown is approved whole from Time, across threads, and its Discard asks once', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    await seedFakeJira(harness);
+    const standup = await draftingThread(harness, compact ? 'compact-time-week-standup' : 'time-week-standup', 'Standup notes', [
+      [{ day: D2, key: 'WEB-2', hours: 1, reason: 'Reviewed in standup' }],
+      [{ day: D3, key: 'WEB-3', hours: 2, reason: 'Groomed the backlog' }],
+    ]);
+    const thread = await draftingThread(harness, compact ? 'compact-time-week' : 'time-week', 'Timesheet', [[
+      { day: D1, key: 'WEB-1', hours: 1, reason: 'Built the login form' },
+      { day: D2, hours: 0.5, reason: 'A 30 minute call at 14:05 is not on your calendar.', offer: ['WEB-2'] },
+    ]]);
+    await connectFakeJira(harness, thread.projectId);
+    await draft(harness, standup);
+    await draft(harness, thread);
+    await harness.open(page);
+    const time = await showTime(page, compact);
+    await press(time.getByTestId('time-previous'), compact);
+    const banner = time.getByTestId('time-draft-banner');
+    await expect(banner.getByTestId('time-draft-banner-title')).toHaveText('Your agent drafted 2 days', { timeout: 30_000 });
+    await expect(banner.getByTestId('time-draft-banner-detail')).toHaveText('2 entries · 2h · 1 question · from 2 threads');
+
+    // Discard asks once; Keep keeps the week's draft.
+    await press(banner.getByTestId('time-draft-discard-week'), compact);
+    await expect(banner.getByTestId('time-draft-discard-week-confirm')).toHaveText('Remove the 3 entries of this draft? Nothing is logged.');
+    await press(banner.getByTestId('time-draft-discard-week-confirm-keep'), compact);
+    await expect(banner.getByTestId('time-draft-discard-week')).toBeVisible();
+
+    // The week's approval posts both threads' entries; the question stays open.
+    await press(banner.getByTestId('time-draft-approve-week'), compact);
+    const said = time.getByTestId('time-draft-approve-week-write-outcome');
+    await expect(said).toContainText(`Posted 2 of 2 entries for`, { timeout: 30_000 });
+    await expect(said).toContainText('1 question for');
+    expect((await added(harness, 0)).sort()).toEqual(['10101', '10102']);
+    await expect(banner.getByTestId('time-draft-banner-title')).toHaveText(/^1 question left for /, { timeout: 30_000 });
+
+    // A later draft in the week, discarded from the banner with the open
+    // question: nothing is logged and no draft is left.
+    await draft(harness, standup);
+    await expect(banner.getByTestId('time-draft-banner-detail')).toHaveText('1 entry · 2h · 1 question · from 2 threads', { timeout: 30_000 });
+    await expect(banner.getByTestId('time-draft-banner-title')).toHaveText('Your agent drafted 2 days');
+    await press(banner.getByTestId('time-draft-discard-week'), compact);
+    await expect(banner.getByTestId('time-draft-discard-week-confirm')).toHaveText('Remove the 2 entries of this draft? Nothing is logged.');
+    await press(banner.getByTestId('time-draft-discard-week-confirm-yes'), compact);
+    await expect(time.getByTestId('time-draft-banner')).toHaveCount(0, { timeout: 30_000 });
+    expect(await draftRows(await byDay(time, D3, compact))).toEqual([]);
+    expect(await added(harness, 0)).toHaveLength(2);
+  });
+
   test('a draft on a paired computer is read and approved from this page', async ({ page }) => {
     test.setTimeout(240_000);
     const root = await mkdtemp(join(tmpdir(), 'ao-time-draft-'));
