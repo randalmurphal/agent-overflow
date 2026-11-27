@@ -124,6 +124,7 @@ const MirrorExportSchema = `
 -- estimates: points, time (seconds) or none.
 CREATE TABLE main.board(name TEXT NOT NULL, plans_sprints INTEGER NOT NULL, estimates TEXT NOT NULL);
 -- status_group: backlog, todo, in_progress, done, canceled or left_out, as the project groups statuses; NULL when not known.
+-- A status is open (tickets.open) unless done, canceled or left_out.
 CREATE TABLE main.statuses(id TEXT PRIMARY KEY, name TEXT NOT NULL, status_group TEXT) WITHOUT ROWID;
 -- type_level: 1 an epic, 0 a story, task or bug, -1 a subtask. assignee: a people.id. epic: an epics.id.
 -- points: the board's estimate, in board.estimates. history_from: changes are complete from then; NULL while not read.
@@ -149,10 +150,11 @@ CREATE TABLE main.changes(ticket TEXT NOT NULL, kind TEXT NOT NULL, seq INTEGER 
 -- Each member of a closed or active sprint; done 1 when it counted done at the sprint's completion, or for an active sprint now.
 CREATE TABLE main.sprint_finished(sprint TEXT NOT NULL, ticket TEXT NOT NULL, done INTEGER NOT NULL, PRIMARY KEY (sprint, ticket)) WITHOUT ROWID;
 CREATE TABLE main.people(id TEXT PRIMARY KEY, name TEXT NOT NULL) WITHOUT ROWID;
--- status_intervals: a ticket's status from from_at until to_at (NULL: now). At an instant no row covers, its status is not known.
+-- status_intervals: a ticket's status from from_at until to_at (NULL: now), back to 180 days ago or an older sprint's start.
+-- Where no row covers an instant, the status then is not known.
 CREATE TABLE main.status_intervals(ticket TEXT NOT NULL, status TEXT NOT NULL, from_at INTEGER NOT NULL, to_at INTEGER,
   PRIMARY KEY (ticket, from_at)) WITHOUT ROWID;
--- sprint_intervals: a ticket in a sprint with one estimate (points) from from_at until to_at (NULL: now), known from tickets.history_from.
+-- sprint_intervals: a ticket in a sprint at one estimate (points), likewise.
 CREATE TABLE main.sprint_intervals(sprint TEXT NOT NULL, ticket TEXT NOT NULL, points REAL, from_at INTEGER NOT NULL, to_at INTEGER,
   PRIMARY KEY (sprint, ticket, from_at)) WITHOUT ROWID;
 `

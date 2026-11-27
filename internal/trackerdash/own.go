@@ -112,14 +112,14 @@ func Rules() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `A widget is one SQLite SELECT over a copy of the board, whose rows the app reduces and draws.
 widget fields: title; words (1 to %d sentences saying what it counts, shown to the user); sql; reduce; unit; good; bucket; series; form; width.
-The query returns one row per ticket counted, one per bucket for a ticket in several, with columns named from: ticket (required, a tickets.id); value (the row's number, 1 when absent; NULL lists the row as not counted, with its note); bucket (a bar, table row or sprint); series (one of the widget's series); person (whom the row counts for, else the assignee); epic; at (milliseconds: places the row in the range's periods); note.
-A query with no at column, and no sprint bucket, counts what is true now.
+The query returns one row per ticket counted, one per bucket for a ticket in several, with columns named from: ticket (required, a tickets.id); value (the row's number, 1 when absent; NULL lists the row as not counted, with its note); bucket (a bar, table row or sprint); series (one of the widget's series); person (whom the row counts for, else the assignee); epic; at (milliseconds: places the row in the range's periods); until (makes the row a state from at until until, NULL: still, counted where it holds); note.
+A query with no at or until, and no sprint or day bucket, counts what is true now.
 :now is now and :since where the range's periods begin, in milliseconds. days(a, b) and working_days(a, b) are the days between two instants; day(a) is its date, YYYY-MM-DD. Date functions, random and JSON functions are not available, and only SELECT reads these tables. A count stops at %v or past %d rows.
 reduce: count (distinct tickets), sum, median, average, average_of_period_sums (bucket period or sprint).
 unit: tickets, estimate (the board's points, or its time estimates in seconds), days. good: up or down, the direction that is good news; omit for neither.
-bucket: omit for none; period (needs at), sprint (a sprints.id), person (a people.id), epic (an epics.id), text.
+bucket: omit for none; period (needs at or until), sprint (a sprints.id), day (the active sprint's working days, needs at or until, no bucket column), person (a people.id), epic (an epics.id), text.
 series: up to %d names, the series column's values; a chart draws up to %d.
-form: number, bars, line (bucket period or sprint), table (needs a bucket), list. width: 3, 4, 6, 8 or 12 of 12 columns.
+form: number, bars, line (bucket period, sprint or day), table (needs a bucket), list. width: 3, 4, 6, 8 or 12 of 12 columns.
 `, maxWords, metricDeadline, maxRows, maxSeries, maxChartSeries)
 	b.WriteString(store.MirrorExportSchema)
 	return b.String()
