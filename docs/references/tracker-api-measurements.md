@@ -1123,6 +1123,58 @@ runs' spread. On the release upgrade corpus (a v0.0.16 database at scale
 empties it: migrating from schema 139 and booting took 1,325 ms through
 v175 and 1,158 ms through v174, one run each.
 
+A walk of the issues updated since an instant
+(`store.mirrorUpdatedSinceSQL`) started at the index's own bound, an
+update time above zero, until the bound was written first, so it visited
+every issue of the root. With it fixed, each intervals fill at 10%
+changed takes 9,648 fewer VM steps at 2,000 and 94,248 fewer at 20,000
+than the table's after column (status_intervals 266,742 and 2,666,142,
+sprint_intervals 121,170 and 1,202,970).
+
+### Credit
+
+`TestMirrorAtScale` measures credit on its fixture with 26 weekly
+sprints inside a 182-day window (25 closed and the active one), every
+member done at its completion and changed inside its sprint, and 520
+tickets with evidence (two comments and two worklogs by three people
+each); at 20,000 the other members are read with no evidence. The rules
+are 10% for 2 of commented and logged time, and 4 hours a point. With
+no row estimated, every row is a support ticket. Same machine and
+SQLite as above; times are the median of 5 runs, VM steps exact.
+
+The export's `credit` fill:
+
+| Board | Rows | Bytes | VM steps | Best time |
+|---|---|---|---|---|
+| 2,000, estimated | 520 finished, 1,560 review | 131,072 | 564,534 | 14.3 ms |
+| 2,000, none estimated | 520 finished, 1,560 review, 1,040 support | 192,512 | 760,086 | 20.5 ms |
+| 20,000, estimated | 5,200 finished, 1,560 review | 323,584 | 2,423,574 | 89.9 ms |
+| 20,000, none estimated | 5,200 finished, 1,560 review, 1,040 support | 376,832 | 2,801,646 | 99.9 ms |
+| 20,000, a board without sprints, every done ticket | 8,000 finished, 660 review | 360,448 | 3,471,780 | 113.7 ms |
+
+The tickets fill of the same copy takes 654,994 steps (11.5 ms) at 2,000
+and 6,544,594 (128 ms) at 20,000.
+
+The Backlog's totals (`CountMirrorSections`, the pace's 5 closed sprints
+included), credit off and on:
+
+| Board | Off | On |
+|---|---|---|
+| 2,000, estimated | 207,027 steps, 4.8 ms | 320,129 steps, 7.0 ms |
+| 2,000, none estimated | 274,841 steps, 7.5 ms | 419,561 steps, 10.7 ms |
+| 20,000, estimated | 2,018,727 steps, 65.4 ms | 2,379,329 steps, 92.6 ms |
+| 20,000, none estimated | 2,696,741 steps, 92.4 ms | 3,107,861 steps, 106.0 ms |
+| 5 boards of 4,000, estimated | 408,332 steps, 11.4 ms | 548,935 steps, 16.1 ms |
+
+The pace alone takes 129,290 steps (5.1 ms) off and 489,892 (20.3 ms)
+on at 20,000, estimated.
+
+The evidence listing's arm for a board without sprints walks the root's
+issues updated in the window. With every issue of the root changed in
+it, the upper bound, a listing with every source read takes 1,038,558
+steps (34.2 ms) at 20,000 and 699,360 (24.2 ms) for one board of five
+of 4,000; with none read it stops at its first page, 25,788 steps.
+
 ## Planning poker add-on
 
 Applies only to a site with Easy Agile TeamRhythm installed

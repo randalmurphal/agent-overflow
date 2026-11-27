@@ -2655,7 +2655,9 @@ credit. While such a row is listed and the linked tick's last evidence
 read failed, the answer says why (`Answer.Evidence`). A project that
 counts no credit binds no rules, its `credit` relation is empty, and
 its pace runs the statement it ran before credit
-(`TestAPaceWithoutCreditRunsTodaysStatement`).
+(`TestAPaceWithoutCreditRunsTodaysStatement`). Its costs at 2,000 and
+20,000 issues are in
+[Tracker API measurements](../references/tracker-api-measurements.md#credit).
 
 ### Metrics
 
