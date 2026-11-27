@@ -1,4 +1,4 @@
-.PHONY: help vitest-unit vitest-browser script-tests go-test-noremote ao-harness-docs methodgen forge-schemas linear-schema go-lint go-lint-whole-tree go-lint-host-files go-vet fmt-check go-vuln bindings-check frontend-lint frontend-deadcode install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build e2e-browsers harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help vitest-unit vitest-browser script-tests go-test-noremote ao-harness-docs methodgen older-release forge-schemas linear-schema go-lint go-lint-whole-tree go-lint-host-files go-vet fmt-check go-vuln bindings-check frontend-lint frontend-deadcode install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build e2e-browsers harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -19,7 +19,7 @@ help:
 		'Release: make release-upgrade-check [PREVIOUS_RELEASE=vX.Y.Z] [RELEASE_UPGRADE_BOOTSTRAP=1 RELEASE_UPGRADE_SCALE=0.02] [RELEASE_UPGRADE_ARCHIVE_OUT=FILE] [RELEASE_UPGRADE_CORPUS=/data-root]' \
 		'Import:  make import-corpus-smoke AO_IMPORT_CORPUS_CLAUDE=/copy AO_IMPORT_CORPUS_CODEX=/copy' \
 		'Docs:    make ao-harness-docs' \
-		'Codegen: make methodgen | make forge-schemas | make linear-schema'
+		'Codegen: make methodgen | make older-release TAG=<tag> | make forge-schemas | make linear-schema'
 
 ao-harness-docs:
 	go generate ./cmd/ao-harness
@@ -31,6 +31,12 @@ ao-harness-docs:
 # TestMethodsGen_InSync fails on either being stale and names this target.
 methodgen:
 	go run ./internal/transport/methodgen
+
+# Write internal/olderrelease/methods.txt, the bound App methods of the
+# release a paired computer may still run, from that release's tag.
+older-release:
+	@test -n "$(TAG)" || { echo "usage: make older-release TAG=<tag>" >&2; exit 2; }
+	go run -trimpath ./internal/olderrelease/gen $(TAG)
 
 # Refresh the GitHub and gitlab.com GraphQL schemas that internal/git's
 # documents and the fake forge's answers are checked against
