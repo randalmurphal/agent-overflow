@@ -78,6 +78,7 @@ var tempoPage = []string{"offset", "limit"}
 
 var tempoRoutes = []tempoRoute{
 	{method: "GET", pattern: "4/worklogs/user/{account}", query: with(tempoPage, "from", "to", "updatedFrom"), reads: true, handle: tempoUserWorklogs},
+	{method: "POST", pattern: "4/worklogs/search", query: tempoPage, reads: true, handle: tempoSearchWorklogs},
 	{method: "GET", pattern: "4/worklogs/{id}", reads: true, handle: tempoGetWorklog},
 	{method: "POST", pattern: "4/worklogs", handle: tempoCreateWorklog},
 	{method: "PUT", pattern: "4/worklogs/{id}", handle: tempoUpdateWorklog},

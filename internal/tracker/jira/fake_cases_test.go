@@ -280,6 +280,28 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 			t.Fatalf("changelogs %+v", l)
 		}
 	},
+	"BulkActs": func(t *testing.T, f *fakeEnv) {
+		r, failed, err := f.c.BulkActs(f.ctx, []string{"10101", "99999"}, true, true)
+		check(t, err)
+		if len(failed) != 0 {
+			t.Fatalf("failed %+v", failed)
+		}
+		if len(r) != 1 || r[0].ID != "10101" || r[0].Updated.IsZero() || !r[0].Comments.Complete || len(r[0].Comments.Acts) != 1 ||
+			r[0].Comments.Acts[0].Author.AccountID != "acc-user2" || !r[0].Worklogs.Complete || len(r[0].Worklogs.Acts) != 1 ||
+			r[0].Worklogs.Acts[0].Spent != time.Hour {
+			t.Fatalf("acts %+v", r)
+		}
+	},
+	"CommentActs": func(t *testing.T, f *fakeEnv) {
+		if a := got(f.c.CommentActs(f.ctx, "10101")).must(t); len(a) != 1 || a[0].ID != "40001" || a[0].At.IsZero() {
+			t.Fatalf("comment acts %+v", a)
+		}
+	},
+	"WorklogActs": func(t *testing.T, f *fakeEnv) {
+		if a := got(f.c.WorklogActs(f.ctx, WorklogQuery{Issue: "10101"})).must(t); len(a) != 1 || a[0].ID != "50001" || a[0].Spent != time.Hour {
+			t.Fatalf("worklog acts %+v", a)
+		}
+	},
 	"Comments": func(t *testing.T, f *fakeEnv) {
 		if p := got(f.c.Comments(f.ctx, "WEB-1", 0, 0)).must(t); p.Total != 1 || len(p.Comments) != 1 {
 			t.Fatalf("comments %+v", p)

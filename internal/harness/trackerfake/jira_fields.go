@@ -198,6 +198,9 @@ func (s *jiraSite) userJSON(id string) any {
 	if u.HidesTimeZone {
 		out["timeZone"] = nil
 	}
+	if u.OmitsAccountType {
+		delete(out, "accountType")
+	}
 	return out
 }
 

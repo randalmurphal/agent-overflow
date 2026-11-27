@@ -143,6 +143,13 @@ var conformanceCases = map[string]func(t *testing.T, f *fakeWorld){
 			t.Fatal("a closed client answered")
 		}
 	},
+	"IssueWorklogs": func(t *testing.T, f *fakeWorld) {
+		all := called(f.c.IssueWorklogs(f.ctx, IssueWorklogQuery{Issues: []int64{10101, 10102}})).must(t)
+		later := called(f.c.IssueWorklogs(f.ctx, IssueWorklogQuery{Issues: []int64{10101}, From: dateIn(t, "2026-11-19")})).must(t)
+		if len(all) != 1 || all[0].ID != 7001 || all[0].Author != "acc-user1" || all[0].Spent != time.Hour || len(later) != 0 {
+			t.Fatalf("worklogs %+v, from the 19th %+v", all, later)
+		}
+	},
 	"Accounts": func(t *testing.T, f *fakeWorld) {
 		if as := called(f.c.Accounts(f.ctx, AccountQuery{Statuses: []AccountStatus{AccountOpen}})).must(t); len(as) != 1 || as[0].Key != "ACME" {
 			t.Fatalf("accounts %+v", as)

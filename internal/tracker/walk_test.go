@@ -172,6 +172,10 @@ func (f *probedProvider) History(ctx context.Context, _ HistoryQuery) (History, 
 	f.see(ctx)
 	return History{}, nil
 }
+func (f *probedProvider) Evidence(ctx context.Context, _ EvidenceQuery) (Evidence, error) {
+	f.see(ctx)
+	return Evidence{}, nil
+}
 func (f *probedProvider) Detail(ctx context.Context, _ IssueID) (Detail, error) {
 	f.see(ctx)
 	return Detail{}, nil

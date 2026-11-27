@@ -112,7 +112,7 @@ func IssueURLPrefix(site string) string {
 // (docs/references/tracker-api-measurements.md, Jira Cloud).
 func (p *Provider) Capabilities() tracker.Capabilities {
 	return tracker.Capabilities{IssueTypes: true, CustomFields: true, MoveFields: true, SprintWrites: true, MaxAttachmentBytes: jira.MaxAttachmentBytes,
-		DetailMovesUpdated: true, HistorySettle: historySettle}
+		DetailMovesUpdated: true, HistorySettle: historySettle, Evidence: true}
 }
 
 // Time is Tempo's worklogs when the Provider was built with a Tempo

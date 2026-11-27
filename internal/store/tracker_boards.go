@@ -412,3 +412,32 @@ func (s *Store) ListProjectsForTrackerBoard(board TrackerBoardRef) ([]string, er
 	}
 	return ids, nil
 }
+
+// ConnectionProjectBoard is a board of a connection one project lists,
+// with the project's slug.
+type ConnectionProjectBoard struct {
+	ProjectID, ProjectSlug, BoardID string
+}
+
+// ListConnectionProjectBoards lists, by board and project, each board of
+// connectionID with each project that lists it, through the connection's
+// index: a read whose cost is the connection's listings alone.
+func (s *Store) ListConnectionProjectBoards(connectionID string) ([]ConnectionProjectBoard, error) {
+	rows, err := s.reader().QueryContext(context.Background(), `SELECT t.project_id, p.slug, t.board_id FROM project_tracker_boards t
+		JOIN projects p ON p.id = t.project_id WHERE t.connection_id = ? ORDER BY t.board_id, t.project_id`, connectionID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the project boards of connection %s: %w", connectionID, err)
+	}
+	var out []ConnectionProjectBoard
+	for rows.Next() {
+		var b ConnectionProjectBoard
+		if err := rows.Scan(&b.ProjectID, &b.ProjectSlug, &b.BoardID); err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan a project board of connection %s: %w", connectionID, err), rows.Close())
+		}
+		out = append(out, b)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: list the project boards of connection %s: %w", connectionID, err)
+	}
+	return out, nil
+}

@@ -152,6 +152,7 @@ var refusals = map[string]call{
 	"PUT 4/worklogs/{id}":                             {origin: tempoOrigin, method: "PUT", path: "/4/worklogs/99999", body: `{"timeSpentSeconds":60}`},
 	"DELETE 4/worklogs/{id}":                          {origin: tempoOrigin, method: "DELETE", path: "/4/worklogs/99999"},
 	"POST 4/accounts/search":                          {origin: tempoOrigin, method: "POST", path: "/4/accounts/search", body: `{"bogus":1}`},
+	"POST 4/worklogs/search":                          {origin: tempoOrigin, method: "POST", path: "/4/worklogs/search", body: `{"issueIds":[10101],"from":"soon"}`},
 	// A Linear mutation's refusal answers 200 with an error at the field.
 	"issueCreate":                  linearReq("M", `mutation M { issueCreate(input: {teamId: "t1", title: "New", stateId: "missing"}) { success } }`),
 	"issueUpdate":                  linearReq("M", `mutation M { issueUpdate(id: "i1", input: {title: "Changed", labelIds: ["missing"]}) { success } }`),
