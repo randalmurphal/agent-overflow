@@ -77,10 +77,6 @@ func benchBoardID(board int) string { return strconv.Itoa(10 + board) }
 var CardShapeForTest = MirrorCardShape{Version: 2, VersionMember: "v", Type: "type_name", Priority: "priority_name",
 	Labels: "labels", LabelID: "id", LabelName: "name"}
 
-// OwnUnitForTest counts an exported board in its own estimate's unit, as
-// trackerapp does for a project that counts estimates.
-func OwnUnitForTest(estimateUnit int) int { return estimateUnit }
-
 // benchCard is a card whose data blob is of the shape trackerapp writes
 // (CardShapeForTest): its type, priority, two labels and its web address.
 func benchCard(id string, updated int64, board, i int) MirrorCard {

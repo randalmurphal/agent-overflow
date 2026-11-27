@@ -442,7 +442,9 @@ no step runs at root creation, restore or start.
   change of the count reads the project's open boards again by the path
   a change of its groups takes (`setupMoved`, `readBoardsAgain`) and
   tells the dashboards changed, since a board's dashboards are laid out
-  and counted in that unit (`Dashboards`, and the export's `counts`). `ProjectTrackerPace` answers each Jira
+  and counted in that unit (`Dashboards`; the copy keeps each ticket's
+  own estimate, and the evaluator counts each counted row of an estimate
+  widget as one ticket). `ProjectTrackerPace` answers each Jira
   board the project lists with its pace read from the mirror by the same
   rule the section totals use (`GetMirrorBoardPace`), in that unit, with
   no tracker request: one query of the board's last 5 closed sprints and
@@ -2340,8 +2342,7 @@ relations of one board a count reads (`MirrorExportSchema`,
 `MirrorExportTables`): the board, its tickets (each one's start and
 finish from its stored changes, whether its history shows its start,
 whether it is open and whether it counts, by the project's status
-groups, and its points in the unit the project counts the board in,
-which trackerapp passes as `counts`), the statuses its columns, tickets and copied changes name,
+groups), the statuses its columns, tickets and copied changes name,
 people (the assignees, and the people the changes name when those are
 copied), epics, sprints and their members, the tickets' changes, what
 each sprint finished and the tickets' labels. A ticket's type and

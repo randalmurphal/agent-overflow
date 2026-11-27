@@ -104,7 +104,7 @@ func TestMirrorExportHoldsTheBoardAlone(t *testing.T) {
 	times := [][]string{{"10001|-|-", "10002|-|650", "10009|100|-"}, {"10001|550|-", "10002|650|-", "10009|100|-"}}
 	for i, g := range []MirrorRegroup{{}, regroup} {
 		conn := exportConn(t)
-		export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", g, OwnUnitForTest, MirrorExportTables, CardShapeForTest)
+		export, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", g, MirrorExportTables, CardShapeForTest)
 		if err != nil || !ok {
 			t.Fatalf("export board 10: %v, %v", ok, err)
 		}
@@ -162,7 +162,7 @@ func TestMirrorExportHoldsTheBoardAlone(t *testing.T) {
 
 	conn := exportConn(t)
 	listMirrorBoards(t, s, defaultTestProjectID, mustConnectionOfRoot(t, s, root), "11")
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, OwnUnitForTest, MirrorExportTables, CardShapeForTest); err != nil || ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, MirrorExportTables, CardShapeForTest); err != nil || ok {
 		t.Fatalf("export of a board no project lists = %v, %v; want nothing", ok, err)
 	}
 	if got := exportRows(t, conn, `SELECT count(*) FROM tickets`); got[0] != "0" {
@@ -234,7 +234,7 @@ func TestMirrorExportSearchesByTheBoard(t *testing.T) {
 	}
 	plans := append([]mirrorExportFill{{name: "board state", sql: mirrorExportBoardSQL}}, mirrorExportFills...)
 	for _, fill := range plans {
-		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.text(everyExportColumn()), mirrorExportArgs(1, "10", MirrorRegroup{}, 0, MirrorEstimatePoints, CardShapeForTest)...)
+		rows, err := conn.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fill.text(everyExportColumn()), mirrorExportArgs(1, "10", MirrorRegroup{}, 0, true, CardShapeForTest)...)
 		if err != nil {
 			t.Fatalf("plan %s: %v", fill.name, err)
 		}
@@ -274,7 +274,7 @@ func TestMirrorExportSaysWhenTheFirstReadIsDone(t *testing.T) {
 	s, c, root := newMirror(t)
 	done := func(step string, want bool) {
 		t.Helper()
-		export, ok, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, OwnUnitForTest, nil, CardShapeForTest)
+		export, ok, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, nil, CardShapeForTest)
 		if err != nil || !ok || export.FirstReadDone != want {
 			t.Fatalf("%s: export = %+v, %v, %v; want the first read done %v", step, export, ok, err, want)
 		}
@@ -294,7 +294,7 @@ func TestMirrorExportSaysWhenTheFirstReadIsDone(t *testing.T) {
 	done("a reconcile", true)
 
 	listMirrorBoards(t, s, defaultTestProjectID, c.ID, "11")
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, OwnUnitForTest, nil, CardShapeForTest); err != nil || ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, nil, CardShapeForTest); err != nil || ok {
 		t.Fatalf("export of the unlisted board = %v, %v; want nothing", ok, err)
 	}
 	listMirrorBoards(t, s, defaultTestProjectID, c.ID, "10")
@@ -344,7 +344,7 @@ func TestMirrorExportCopiesTheStatusesItsBoardNames(t *testing.T) {
 		{"with its changes", []string{"statuses", "people", "changes"}, []string{"1", "10001", "2", "3", "6", "8"}, []string{"acc-user1", "acc-user2"}, "1"},
 	} {
 		conn := exportConn(t)
-		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, OwnUnitForTest, c.relations, CardShapeForTest); err != nil || !ok {
+		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, c.relations, CardShapeForTest); err != nil || !ok {
 			t.Fatalf("%s: export = %v, %v", c.name, ok, err)
 		}
 		if got := exportRows(t, conn, `SELECT id FROM statuses ORDER BY id`); !reflect.DeepEqual(got, c.statuses) {
@@ -360,13 +360,13 @@ func TestMirrorExportCopiesTheStatusesItsBoardNames(t *testing.T) {
 	// An export of the epics fills the tickets their fill reads, and no
 	// relation nobody asked for.
 	conn := exportConn(t)
-	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, OwnUnitForTest, []string{"epics"}, CardShapeForTest); err != nil || !ok {
+	if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, []string{"epics"}, CardShapeForTest); err != nil || !ok {
 		t.Fatalf("export of the epics = %v, %v", ok, err)
 	}
 	if got := exportRows(t, conn, `SELECT (SELECT count(*) FROM tickets) || '|' || (SELECT count(*) FROM statuses) || '|' || (SELECT count(*) FROM sprints)`); got[0] != "1|0|3" {
 		t.Fatalf("an export of the epics holds tickets|statuses|sprints %s; want the one ticket, no status, the board's 3 sprints", got[0])
 	}
-	if _, _, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, OwnUnitForTest, []string{"components"}, CardShapeForTest); err == nil ||
+	if _, _, err := s.ExportMirrorBoard(context.Background(), exportConn(t), root, "10", MirrorRegroup{}, []string{"components"}, CardShapeForTest); err == nil ||
 		!strings.Contains(err.Error(), `"components" is not one of the export's relations`) {
 		t.Fatalf("an export of an unknown relation = %v", err)
 	}
@@ -395,7 +395,7 @@ func TestMirrorExportDecodesTypesPrioritiesAndLabelsWhenAsked(t *testing.T) {
 	read := func(relations ...string) (tickets, labels []string) {
 		t.Helper()
 		conn := exportConn(t)
-		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, OwnUnitForTest, relations, CardShapeForTest); err != nil || !ok {
+		if _, ok, err := s.ExportMirrorBoard(context.Background(), conn, root, "10", MirrorRegroup{}, relations, CardShapeForTest); err != nil || !ok {
 			t.Fatalf("export of %v = %v, %v", relations, ok, err)
 		}
 		return exportRows(t, conn, `SELECT id || '|' || coalesce(type, '-') || '|' || coalesce(priority, '-') FROM tickets ORDER BY id`),
@@ -449,7 +449,7 @@ func TestMirrorExportReadsEachRowOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, MirrorEstimatePoints, CardShapeForTest))
+	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, CardShapeForTest))
 	steps := map[string]int{}
 	err := conn.Raw(func(dc any) error {
 		prep := dc.(driver.ConnPrepareContext)
@@ -532,7 +532,7 @@ func exportFillsAtScale(t *testing.T, n int) {
 		}
 	}
 	wantEpics := fmt.Sprintf("%d|%d", under, len(epics))
-	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, MirrorEstimatePoints, CardShapeForTest))
+	args := namedArgs(mirrorExportArgs(root, benchBoardID(0), MirrorRegroup{}, 0, true, CardShapeForTest))
 	// Each fill with no column of MirrorExportColumns asked for, with one,
 	// and with every one, as a count whose query reads them asks.
 	for _, asked := range []struct {

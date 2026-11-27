@@ -146,8 +146,9 @@ func (s *Service) subscribedBoard(subscription string) (trackerdash.Board, error
 }
 
 // dashboardBoard is board scope as an evaluation reads it: the store's
-// export of its rows with the project's status groups, counted in the
-// project's unit (StatusGroups.unit), whether its
+// export of its rows with the project's status groups, its
+// EstimateUnit the unit the project counts the board in (StatusGroups.unit)
+// while the copy holds the board's own estimates, whether its
 // tracker has epics, and the connection's verified account for Mine. The
 // caller leaves the service when the evaluation returns.
 func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.Board, error) {
@@ -163,9 +164,10 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 		s.leave()
 		return trackerdash.Board{}, fmt.Errorf("trackerapp: read connection %s: %w", scope.Connection, err)
 	}
-	counts := func(estimateUnit int) int { return int(groups.unit(tracker.EstimateUnit(estimateUnit))) }
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-		return s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, counts, relations, cardShape)
+		export, ok, err := s.store.ExportMirrorBoard(ctx, conn, root, string(scope.Board), groups.regroup, relations, cardShape)
+		export.EstimateUnit = int(groups.unit(tracker.EstimateUnit(export.EstimateUnit)))
+		return export, ok, err
 	}
 	return trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), Viewer: row.VerifiedAccountID}, nil
 }

@@ -500,9 +500,13 @@ func TestADashboardOfAProjectCountingTicketsIsLaidOutInTickets(t *testing.T) {
 	}
 }
 
-// A dashboard of a project counting tickets counts a ticket where it
-// counted its points, on every read of the export: the agent's try, the
-// dashboard and its drill. Before, the board's points count.
+// A project counting tickets counts each counted row of a kept estimate
+// widget as one ticket, on every read of the copy: the agent's try, the
+// dashboard and its drill. The copy keeps each ticket's own estimate, so a
+// widget written for points, and one that finds the tickets with no
+// estimate, need no change: of tickets of 3, 5 and no points, the sum is
+// 8 points or 2 tickets, the unestimated one not counted either way, and
+// one ticket has no estimate in both.
 func TestAnEvaluationOfAProjectCountingTicketsCountsTickets(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -513,20 +517,24 @@ func TestAnEvaluationOfAProjectCountingTicketsCountsTickets(t *testing.T) {
 		row("10003", 1_799_000_000_000, "c"),
 	})
 	sub := m.subscribeShown(t, m.project()).ID
-	w := openTickets()
-	w.Metric.Title = "Estimate on the board"
-	w.Metric.SQL = `SELECT t.id AS ticket, iif((SELECT estimates FROM board) = 'none', 1, coalesce(t.points, 0)) AS value FROM tickets t`
-	w.Metric.Reduce, w.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
-	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, "thread-1", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dashboard, err := m.svc.KeepProposal(sub, tried.View.ID, KeepTarget{Title: "Estimates"})
-	if err != nil {
-		t.Fatal(err)
+	sum := openTickets()
+	sum.Metric.Title, sum.Metric.SQL = "Estimate on the board", `SELECT id AS ticket, points AS value FROM tickets`
+	sum.Metric.Reduce, sum.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
+	none := openTickets()
+	none.Metric.Title, none.Metric.SQL = "Tickets with no estimate", `SELECT id AS ticket FROM tickets WHERE points IS NULL`
+	dashboard := ""
+	for _, w := range []KeptWidget{sum, none} {
+		target := KeepTarget{Dashboard: dashboard}
+		if dashboard == "" {
+			target = KeepTarget{Title: "Estimates"}
+		}
+		var err error
+		if dashboard, err = m.svc.KeepProposal(sub, m.propose(t, w), target); err != nil {
+			t.Fatal(err)
+		}
 	}
 	reads := func() string {
-		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, "thread-1", false)
+		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), sum, "thread-1", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -535,14 +543,14 @@ func TestAnEvaluationOfAProjectCountingTicketsCountsTickets(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return fmt.Sprintf("tried %s %s; dashboard %s %s; drill %s %s",
-			numText(t, tried.Value.Value), tried.Unit, numText(t, a.Widgets[0].Value), a.Estimates, numText(t, &d.Value), d.Estimates)
+		return fmt.Sprintf("tried %s %s; dashboard %s %s, no estimate %s; drill %s %s",
+			numText(t, tried.Value.Value), tried.Unit, numText(t, a.Widgets[0].Value), a.Estimates, numText(t, a.Widgets[1].Value), numText(t, &d.Value), d.Estimates)
 	}
-	if got, want := reads(), `tried {"v":8} points; dashboard {"v":8} points; drill {"v":8} points`; got != want {
-		t.Fatalf("counting estimates: %s; want %s", got, want)
+	if got, want := reads(), `tried {"v":8,"nc":1} points; dashboard {"v":8,"nc":1} points, no estimate {"v":1}; drill {"v":8,"nc":1} points`; got != want {
+		t.Fatalf("counting estimates:\n%s\nwant\n%s", got, want)
 	}
 	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
-	if got, want := reads(), `tried {"v":3} tickets; dashboard {"v":3} none; drill {"v":3} none`; got != want {
-		t.Fatalf("counting tickets: %s; want %s", got, want)
+	if got, want := reads(), `tried {"v":2,"nc":1} tickets; dashboard {"v":2,"nc":1} none, no estimate {"v":1}; drill {"v":2,"nc":1} none`; got != want {
+		t.Fatalf("counting tickets:\n%s\nwant\n%s", got, want)
 	}
 }
