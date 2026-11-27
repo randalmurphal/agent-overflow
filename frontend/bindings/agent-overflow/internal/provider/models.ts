@@ -213,6 +213,13 @@ export class ApprovalResponse {
     "occurrence"?: PromptOccurrence;
 
     /**
+     * Shown is set only by the component that drew a tracker write's
+     * changes, from having drawn them for this prompt; the app approves a
+     * tracker write only with it (a deny needs nothing).
+     */
+    "shown"?: boolean;
+
+    /**
      * Codex-native: "accept", "acceptForSession", "decline", "cancel"
      */
     "decision": string;
@@ -269,14 +276,14 @@ export class ApprovalResponse {
      * Creates a new ApprovalResponse instance from a string or object.
      */
     static createFrom($$source: any = {}): ApprovalResponse {
-        const $$createField4_0 = $$createType1;
-        const $$createField6_0 = $$createType9;
+        const $$createField5_0 = $$createType1;
+        const $$createField7_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("permissions" in $$parsedSource) {
-            $$parsedSource["permissions"] = $$createField4_0($$parsedSource["permissions"]);
+            $$parsedSource["permissions"] = $$createField5_0($$parsedSource["permissions"]);
         }
         if ("elicitation" in $$parsedSource) {
-            $$parsedSource["elicitation"] = $$createField6_0($$parsedSource["elicitation"]);
+            $$parsedSource["elicitation"] = $$createField7_0($$parsedSource["elicitation"]);
         }
         return new ApprovalResponse($$parsedSource as Partial<ApprovalResponse>);
     }

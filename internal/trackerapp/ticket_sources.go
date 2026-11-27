@@ -10,12 +10,17 @@ import (
 // turned on: a Jira or Linear connection, never Tempo, which holds none.
 // Site is the site as a person names it, Kind the tracker's kind, and
 // Account the tracker's ID of the account the connection signed in as at
-// its last verification (empty before one).
+// its last verification (empty before one). Label is the name the person
+// gave the connection in the Issues settings, empty when they gave none,
+// and Email a Jira connection's account email, which the settings show
+// beside its site: what tells two connections of one site apart.
 type TicketSource struct {
 	ID      string
 	Site    string
 	Kind    string
 	Account string
+	Label   string
+	Email   string
 }
 
 // TicketSources lists the connections a ticket can be found or read
@@ -36,7 +41,7 @@ func (s *Service) TicketSources() ([]TicketSource, error) {
 		if !row.Enabled || (row.Kind != store.TrackerKindJira && row.Kind != store.TrackerKindLinear) {
 			continue
 		}
-		out = append(out, TicketSource{ID: row.ID, Site: siteName(row.Site), Kind: row.Kind, Account: row.VerifiedAccountID})
+		out = append(out, TicketSource{ID: row.ID, Site: siteName(row.Site), Kind: row.Kind, Account: row.VerifiedAccountID, Label: row.Label, Email: row.Account})
 	}
 	return out, nil
 }

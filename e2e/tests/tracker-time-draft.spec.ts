@@ -11,22 +11,12 @@
 import { test, expect } from './fixtures.js';
 import type { SeedResult } from './fixtures.js';
 import { setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
-import { connectFakeJira, seedFakeJira, trackerRequests } from './tracker-helpers.js';
+import { connectFakeJira, seedFakeJira, trackerRequests, twoDaysAgo } from './tracker-helpers.js';
 import { TRACKER_TOOLS_SERVER, expandActivityRuns } from './tracker-agent-tools-helpers.js';
 
 interface TimeEntry { id: number; day: string; key?: string; minutes: number; reason: string; by: string; state: string; call?: string; offers?: Array<{ key: string }> }
 
 const WORKLOG_ROUTE = 'POST rest/api/3/issue/{issue}/worklog';
-
-/** The day two days back on this computer, YYYY-MM-DD, and how a row's title writes it. */
-function twoDaysAgo(): { day: string; label: string } {
-  const at = new Date(Date.now() - 2 * 24 * 3600_000);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const day = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
-  const noon = new Date(`${day}T12:00:00Z`);
-  const label = `${noon.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })} ${noon.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' })} ${noon.getUTCDate()}`;
-  return { day, label };
-}
 
 const PROVIDERS: ProviderName[] = ['claude', 'codex'];
 

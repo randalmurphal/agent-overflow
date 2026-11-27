@@ -9,8 +9,9 @@ import (
 )
 
 // The ticket sources are the Jira and Linear connections turned on, in
-// the order they were made: never Tempo, which holds no ticket, and never
-// one turned off.
+// the order they were made, each with the label the person gave it and a
+// Jira connection's account email: never Tempo, which holds no ticket,
+// and never one turned off.
 func TestTicketSourcesAreTheConnectionsThatHoldTickets(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -22,14 +23,17 @@ func TestTicketSourcesAreTheConnectionsThatHoldTickets(t *testing.T) {
 	f.addTempo(jira.ID)
 	f.pass(time.Millisecond)
 	linear := f.addLinear()
+	if _, err := f.svc.Rename(linear.ID, "Work"); err != nil {
+		t.Fatal(err)
+	}
 	f.pass(time.Millisecond)
 	off := f.add(NewConnection{Kind: "jira", Site: "other.atlassian.net", Account: "user2@example.com"})
 	if _, err := f.svc.SetEnabled(off.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	want := []TicketSource{
-		{ID: jira.ID, Site: "example.atlassian.net", Kind: "jira"},
-		{ID: linear.ID, Site: "example", Kind: "linear"},
+		{ID: jira.ID, Site: "example.atlassian.net", Kind: "jira", Email: "user1@example.com"},
+		{ID: linear.ID, Site: "example", Kind: "linear", Label: "Work"},
 	}
 	if got := must[[]TicketSource](t)(f.svc.TicketSources()); !slices.Equal(got, want) {
 		t.Fatalf("sources = %+v\nwant %+v", got, want)

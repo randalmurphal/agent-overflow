@@ -283,6 +283,26 @@ func (t trackerToolsAdapter) DraftTime(connection string, in trackerapp.TimeDraf
 	return out, trackerError(err)
 }
 
+// OpenTimeEntries reads the store, with no tracker call; a refusal is
+// worded as DraftTime's.
+func (t trackerToolsAdapter) OpenTimeEntries(connection string, days []string) ([]trackerapp.TimeEntryView, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.OpenTimeEntries(connection, days)
+	if errors.Is(err, trackerapp.ErrInvalidRequest) {
+		return out, errorsx.Public(trackertools.CodeInvalidRequest, refusedInput(err), err)
+	}
+	return out, trackerError(err)
+}
+
+// PostTime is the person's approval of a post, bounded and worded as the
+// Time screen's (PostTrackerTimeEntries).
+func (t trackerToolsAdapter) PostTime(ctx context.Context, connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
+	return t.a.PostTrackerTimeEntries(ctx, connection, in)
+}
+
 func (t trackerToolsAdapter) CreateFields(ctx context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error) {
 	return t.a.TrackerCreateFields(ctx, connection, project, issueType)
 }

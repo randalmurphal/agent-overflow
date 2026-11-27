@@ -133,6 +133,10 @@ type IsolationConfig struct {
 	// issues loop and the retry base are not the poll. Zero keeps the
 	// product interval.
 	TrackerPollInterval time.Duration
+	// TrackerApprovalWait replaces trackerApprovalWait, how long a tracker
+	// write or time post waits for the person, so a spec sees a wait end
+	// without waiting out fifteen minutes. Zero keeps the product wait.
+	TrackerApprovalWait time.Duration
 	// OmitOwnerOps makes this computer answer agent_owner_op as a build
 	// before owner operations does, an unknown write call, so a paired
 	// spawner's archive or delete names it as running an older version.
@@ -190,6 +194,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.remoteWatchPoll = config.RemoteWatchPoll
 	a.wakeRetryBaseOverride = config.ThreadWakeRetryBase
 	a.agentSettledWindowOverride = config.AgentSettledWindow
+	a.trackerMCP.approvals.wait = config.TrackerApprovalWait
 	// Unset keeps what the App has: a test fixture's own budget.
 	if config.ProviderEventDrainStall > 0 {
 		a.providerEvents.drainStall = config.ProviderEventDrainStall

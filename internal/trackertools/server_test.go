@@ -68,6 +68,54 @@ type fakeTracker struct {
 	time   map[string]trackerapp.WorklogDays
 	draft  func(connection string, in trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error)
 	drafts []string
+	// open answers OpenTimeEntries by connection; post answers PostTime,
+	// and posts are the posts asked, by connection.
+	open map[string][]trackerapp.TimeEntryView
+	// openErr refuses a connection's read of its open entries.
+	openErr map[string]error
+	post    func(connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error)
+	posts   []string
+	// postCtx is each post's context error as the post began.
+	postCtx []error
+}
+
+func (f *fakeTracker) OpenTimeEntries(connection string, days []string) ([]trackerapp.TimeEntryView, error) {
+	f.asked = append(f.asked, "open time "+connection+" "+strings.Join(days, " "))
+	if err := f.openErr[connection]; err != nil {
+		return nil, err
+	}
+	got, ok := f.open[connection]
+	if !ok {
+		return nil, errorsx.Public("tracker_connection_unverified", "this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings", nil)
+	}
+	return slices.DeleteFunc(slices.Clone(got), func(e trackerapp.TimeEntryView) bool { return !slices.Contains(days, e.Day) }), nil
+}
+
+func (f *fakeTracker) PostTime(ctx context.Context, connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
+	raw, _ := json.Marshal(in)
+	f.posts = append(f.posts, connection+" "+string(raw))
+	f.postCtx = append(f.postCtx, ctx.Err())
+	if f.post == nil {
+		return postedAsRead(f.open[connection], in), nil
+	}
+	return f.post(connection, in)
+}
+
+// postedAsRead is a post of in that posts each entry of open it names
+// that a post sends, and gives each other one the reason it is not sent.
+func postedAsRead(open []trackerapp.TimeEntryView, in trackerapp.PostTimeRequest) trackerapp.PostTimeView {
+	var out trackerapp.PostTimeView
+	for _, ref := range in.Entries {
+		o := trackerapp.PostOutcome{ID: ref.ID, State: trackerapp.OutcomePosted}
+		if i := slices.IndexFunc(open, func(e trackerapp.TimeEntryView) bool { return e.ID == ref.ID }); i >= 0 && trackerapp.NotSentWhy(open[i]) != "" {
+			o = trackerapp.NotSentOutcome(open[i])
+		}
+		if o.State == trackerapp.OutcomePosted {
+			out.Posted++
+		}
+		out.Outcomes = append(out.Outcomes, o)
+	}
+	return out
 }
 
 func (f *fakeTracker) TryWidget(_ context.Context, project, connection, board string, w trackerapp.KeptWidget, thread string, show bool) (trackerdash.Tried, error) {
@@ -179,6 +227,7 @@ type fakeHost struct {
 	approvals []Approval
 	rows      []WriteRow
 	timeRows  []TimeRow
+	postRows  []TimePostRow
 	// createBoards are the boards a create can go through, by project;
 	// readingProject, when set, runs as a create reads them.
 	createBoards   map[string][]ListedBoard
@@ -197,7 +246,7 @@ func (h *fakeHost) WritePolicy(string) (WritePolicy, error) {
 		h.onPolicy(h.policies)
 	}
 	if h.readOnly {
-		return WritePolicy{}, errorsx.Public("tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
+		return WritePolicy{}, errorsx.Public("tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.", nil)
 	}
 	return WritePolicy{AskSeveral: !h.noAsk}, nil
 }
@@ -213,6 +262,8 @@ func (h *fakeHost) Approve(_ context.Context, _ string, a Approval) error {
 func (h *fakeHost) Wrote(_ string, row WriteRow) { h.rows = append(h.rows, row) }
 
 func (h *fakeHost) Drafted(_ string, row TimeRow) { h.timeRows = append(h.timeRows, row) }
+
+func (h *fakeHost) Posted(_ string, row TimePostRow) { h.postRows = append(h.postRows, row) }
 
 func (h *fakeHost) Boards(string) (string, []ListedBoard, error) {
 	if h.readingProject != nil {

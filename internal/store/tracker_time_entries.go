@@ -306,6 +306,33 @@ func (s *Store) ThreadTimeEntries(thread, call string) ([]TimeEntry, error) {
 	return out, nil
 }
 
+// OpenTimeEntriesShown bounds one read of open entries: one more than a
+// post takes (tracker.MaxWorklogInputs), so a reader sees that it holds
+// too many.
+const OpenTimeEntriesShown = 251
+
+// openTimeEntriesSQL reads connection ?1's entries of author ?2 not yet
+// logged (drafted, sent or unknown) whose day ?3, a JSON array, names, by
+// day and ID.
+var openTimeEntriesSQL = `SELECT ` + timeEntryColumns + ` FROM tracker_time_entries
+ WHERE connection_id = ?1 AND author_id = ?2 AND day IN (SELECT value FROM json_each(?3)) AND state IN ('drafted', 'sent', 'unknown')
+ ORDER BY day, id LIMIT ` + strconv.Itoa(OpenTimeEntriesShown)
+
+// OpenTimeEntries are author's entries on connection not yet logged
+// (drafted, sent or unknown, questions included) whose day is one of
+// days, each YYYY-MM-DD, by day and ID: at most OpenTimeEntriesShown.
+func (s *Store) OpenTimeEntries(connection, author string, days []string) ([]TimeEntry, error) {
+	list, err := json.Marshal(days)
+	if err != nil {
+		return nil, fmt.Errorf("store: open time entries: %w", err)
+	}
+	out, err := scanTimeEntries(s.reader().Query(openTimeEntriesSQL, connection, author, string(list)))
+	if err != nil {
+		return nil, fmt.Errorf("store: open time entries of %s: %w", author, err)
+	}
+	return out, nil
+}
+
 // TimeEntriesByID are the entries ids name on connection that exist, in
 // one read, by ID.
 func (s *Store) TimeEntriesByID(connection string, ids []int64) ([]TimeEntry, error) {
