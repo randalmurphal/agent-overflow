@@ -416,6 +416,9 @@ type StatusGroups struct {
 	version  string
 	statuses map[string]string
 	tickets  bool
+	// credit is whether the project counts credit, whose rules regroup
+	// carries (store MirrorRegroup.WithCredit) and the version covers.
+	credit bool
 }
 
 // unit is the unit the project counts a board of the site whose
@@ -470,8 +473,10 @@ type heldSetup struct {
 	raw map[string]json.RawMessage
 	// dashboards is the dashboards section, which a replace keeps.
 	dashboards []BoardDashboards
-	// groups is each site's status groups.
+	// groups is each site's status groups, and plain a site's that the
+	// setup names nowhere: none, with the credit rules.
 	groups map[siteKey]StatusGroups
+	plain  StatusGroups
 }
 
 // ProjectSetup is projectID's tracker setup as it is stored.
@@ -685,9 +690,10 @@ func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setu
 
 // setupMoved tells what a change of slug's held setup from before to
 // after moves, either nil when none is held: every board subscription of
-// the project on a site whose status groups, support tickets (both in the
-// version) or count of tickets changed reads again, a change of the count has the dashboards read again, and
-// a change of what is stored is told. A side that holds nothing is not
+// the project on a site whose status groups, support tickets, credit
+// rules (all in the version) or count of tickets changed reads again, a
+// change of the count or of whether it counts credit has the dashboards
+// read again, and a change of what is stored is told. A side that holds nothing is not
 // known to agree with the other on any site, so every site counts as
 // moved: a board of the project read with groups that may be stale, or
 // failed to read them, reads again.
@@ -706,8 +712,10 @@ func (s *Service) setupMoved(slug string, before, after *heldSetup) {
 		return was.version != now.version || was.tickets != now.tickets
 	})
 	// A board's dashboards are laid out in the unit the project counts it
-	// in (Dashboards): a change of it has them read again.
-	if before == nil || after == nil || before.view.Setup.Estimates.countsTickets() != after.view.Setup.Estimates.countsTickets() {
+	// in, and with credit while it counts credit (Dashboards): a change of
+	// either has them read again.
+	if before == nil || after == nil || before.view.Setup.Estimates.countsTickets() != after.view.Setup.Estimates.countsTickets() ||
+		(before.credit() == nil) != (after.credit() == nil) {
 		s.dashboardsChanged()
 	}
 	s.setupChanged()
@@ -745,7 +753,10 @@ func (s *Service) boardStatusGroups(key setupKey) (StatusGroups, error) {
 // counting is how the setup counts the boards of site: its status
 // groups, and on a Jira site whether it counts tickets.
 func (h *heldSetup) counting(site siteKey) StatusGroups {
-	g := h.groups[site]
+	g, ok := h.groups[site]
+	if !ok {
+		g = h.plain
+	}
 	g.tickets = site.tracker == store.TrackerKindJira && h.view.Setup.Estimates.countsTickets()
 	return g
 }
@@ -1074,6 +1085,10 @@ func heldOf(setup Setup, dashboards []BoardDashboards, raw map[string]json.RawMe
 		key := siteKey{site.Tracker, site.Site}
 		sites[key] = counted{statuses: site.Statuses}
 	}
+	// rules are the credit rules every site's boards count by, none while
+	// the project counts no credit.
+	var rules []CreditRules
+	var mirrorRules []store.MirrorCreditRule
 	if c := held.credit(); c != nil {
 		for i, site := range c.Support {
 			key := siteKey{site.Tracker, site.Site}
@@ -1081,33 +1096,61 @@ func heldOf(setup Setup, dashboards []BoardDashboards, raw map[string]json.RawMe
 			entry.support = &c.Support[i]
 			sites[key] = entry
 		}
+		rules = c.Rules
+		for _, r := range c.Rules {
+			mirrorRules = append(mirrorRules, store.MirrorCreditRule{From: *r.From, ReviewShare: r.ReviewShare, ReviewNeed: r.ReviewNeed,
+				Commented: slices.Contains(r.ReviewActions, "commented"), Approved: slices.Contains(r.ReviewActions, "approved"),
+				LoggedTime: slices.Contains(r.ReviewActions, "logged_time"), HoursPerPoint: r.HoursPerPoint})
+		}
 	}
-	for key, site := range sites {
+	// counted is how a site's boards are counted: its status groups and
+	// support, and the credit rules.
+	countedAs := func(key siteKey, site counted) (StatusGroups, error) {
 		groups := make(map[string]int, len(site.statuses))
 		for id, name := range site.statuses {
 			groups[id], _ = setupGroup(name)
 		}
 		regroup, err := store.NewMirrorRegroup(groups)
 		if err != nil {
-			return nil, fmt.Errorf("trackerapp: the status groups of %s %s: %w", key.tracker, key.site, err)
+			return StatusGroups{}, fmt.Errorf("trackerapp: the status groups of %s %s: %w", key.tracker, key.site, err)
 		}
 		if site.support != nil {
 			rule := store.MirrorSupportRule{Types: site.support.Types, Labels: site.support.Labels, Boards: site.support.Boards}
 			if regroup, err = regroup.WithSupport(rule); err != nil {
-				return nil, fmt.Errorf("trackerapp: the support tickets of %s %s: %w", key.tracker, key.site, err)
+				return StatusGroups{}, fmt.Errorf("trackerapp: the support tickets of %s %s: %w", key.tracker, key.site, err)
 			}
 		}
-		// json.Marshal writes a map's keys in order, so equal groups and
-		// support have one version.
+		if regroup, err = regroup.WithCredit(mirrorRules); err != nil {
+			return StatusGroups{}, fmt.Errorf("trackerapp: the credit rules: %w", err)
+		}
+		// json.Marshal writes a map's keys in order, so equal groups,
+		// support and credit rules have one version.
 		encoded, err := json.Marshal(struct {
 			Statuses map[string]string `json:"statuses"`
 			Support  *SiteSupport      `json:"support"`
-		}{site.statuses, site.support})
+			Credit   []CreditRules     `json:"credit"`
+		}{site.statuses, site.support, rules})
 		if err != nil {
-			return nil, fmt.Errorf("trackerapp: encode how %s %s is counted: %w", key.tracker, key.site, err)
+			return StatusGroups{}, fmt.Errorf("trackerapp: encode how %s %s is counted: %w", key.tracker, key.site, err)
 		}
 		sum := sha256.Sum256(encoded)
-		held.groups[key] = StatusGroups{regroup: regroup, version: hex.EncodeToString(sum[:8]), statuses: site.statuses}
+		return StatusGroups{regroup: regroup, version: hex.EncodeToString(sum[:8]), statuses: site.statuses, credit: rules != nil}, nil
+	}
+	for key, site := range sites {
+		g, err := countedAs(key, site)
+		if err != nil {
+			return nil, err
+		}
+		held.groups[key] = g
+	}
+	// A site the setup names nowhere counts as the tracker groups it, and
+	// with the credit rules while the project counts credit.
+	if rules != nil {
+		g, err := countedAs(siteKey{}, counted{})
+		if err != nil {
+			return nil, err
+		}
+		held.plain = g
 	}
 	return held, nil
 }

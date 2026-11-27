@@ -67,7 +67,8 @@ func (s *Service) Dashboards(ctx context.Context, subscription string) (trackerd
 	case !ok:
 		return trackerdash.Listing{}, fmt.Errorf("%w: board %s", ErrNotMirrored, scope.Board)
 	}
-	return s.dash.Dashboards(ctx, trackerdash.Kind{PlansSprints: st.Board.PlansSprints, Epics: hasEpics(key.site.tracker)}, int(groups.unit(tracker.EstimateUnit(st.Board.EstimateUnit))), own)
+	return s.dash.Dashboards(ctx, trackerdash.Kind{PlansSprints: st.Board.PlansSprints, Epics: hasEpics(key.site.tracker), Credit: groups.credit},
+		int(groups.unit(tracker.EstimateUnit(st.Board.EstimateUnit))), own)
 }
 
 // DashboardAskBoard is a board as Ask your agent names it: the project
@@ -149,7 +150,9 @@ func (s *Service) subscribedBoard(subscription string) (trackerdash.Board, error
 // export of its rows with the project's status groups, its
 // EstimateUnit the unit the project counts the board in (StatusGroups.unit)
 // while the copy holds the board's own estimates, whether its
-// tracker has epics, and the connection's verified account for Mine. The
+// tracker has epics, the connection's verified account for Mine, and
+// while the project counts credit, the failure of the connection's last
+// linked tick, which reads who worked on the tickets (SyncLinked). The
 // caller leaves the service when the evaluation returns.
 func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.Board, error) {
 	if err := scope.boardOnly(); err != nil {
@@ -169,7 +172,18 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 		export.EstimateUnit = int(groups.unit(tracker.EstimateUnit(export.EstimateUnit)))
 		return export, ok, err
 	}
-	return trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), Viewer: row.VerifiedAccountID}, nil
+	b := trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), Credit: groups.credit, Viewer: row.VerifiedAccountID}
+	if groups.credit {
+		linked, ok, err := s.store.GetMirrorSync(root, "", millis(s.now()))
+		if err != nil {
+			s.leave()
+			return trackerdash.Board{}, fmt.Errorf("trackerapp: read the linked issues' sync state of %s: %w", scope.Connection, err)
+		}
+		if ok && linked.Failure.Kind != "" {
+			b.EvidenceFailure = linked.Failure.Message
+		}
+	}
+	return b, nil
 }
 
 // ownOf is what key's project keeps for board, and with proposals what

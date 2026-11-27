@@ -243,12 +243,15 @@ type contribution struct {
 	ticket  string
 	value   float64
 	counted bool
-	bucket  string
-	series  string
-	person  string
-	epic    string
-	at      int64
-	hasAt   bool
+	// share is the part of a ticket the row counts where the board counts
+	// tickets (ColumnShare).
+	share  float64
+	bucket string
+	series string
+	person string
+	epic   string
+	at     int64
+	hasAt  bool
 	// until is when a state row stops holding (ColumnUntil); hasUntil is
 	// false for one that still holds.
 	until    int64
@@ -373,11 +376,23 @@ func (s *rowSink) read(args []driver.Value) (contribution, error) {
 	if c.ticket, err = text(ColumnTicket, at(ColumnTicket)); err == nil && c.ticket == "" {
 		err = errors.New("a row's ticket is empty or NULL; each row names the ticket it counts")
 	}
-	c.value, c.counted = 1, true
+	c.value, c.counted, c.share = 1, true, 1
 	if err == nil && s.cols.has(ColumnValue) {
 		c.value, c.counted, err = number(ColumnValue, at(ColumnValue))
 		if err == nil && c.counted && (math.IsNaN(c.value) || math.Abs(c.value) > maxValue) {
 			err = fmt.Errorf("ticket %q's value is %g, past %g either way, the most a metric counts", truncate(c.ticket, 64), c.value, maxValue)
+		}
+	}
+	if err == nil && s.cols.has(ColumnShare) {
+		var share float64
+		var ok bool
+		share, ok, err = number(ColumnShare, at(ColumnShare))
+		switch {
+		case err != nil || !ok:
+		case math.IsNaN(share) || math.Abs(share) > maxValue:
+			err = fmt.Errorf("ticket %q's share is %g, past %g either way, the most a metric counts", truncate(c.ticket, 64), share, maxValue)
+		default:
+			c.share = share
 		}
 	}
 	for _, f := range []struct {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -381,10 +382,19 @@ func TestDrillStartsAgainWhenTheCountMoved(t *testing.T) {
 
 // Every kind of board offers its built-in dashboard, every metric valid
 // and prepared, every widget drawable: the epic widget only where the
-// tracker has epics, and the ranges of the board's kind.
+// tracker has epics, the ranges of the board's kind, and its pace read
+// from credit where its project counts credit.
 func TestEveryKindOffersItsBuiltInDashboard(t *testing.T) {
 	t.Parallel()
-	for _, k := range []Kind{{true, true}, {true, false}, {false, true}, {false, false}} {
+	var kinds []Kind
+	for _, sprints := range []bool{true, false} {
+		for _, epics := range []bool{true, false} {
+			for _, credit := range []bool{true, false} {
+				kinds = append(kinds, Kind{PlansSprints: sprints, Epics: epics, Credit: credit})
+			}
+		}
+	}
+	for _, k := range kinds {
 		list, err := evaluator().Dashboards(context.Background(), k, store.MirrorEstimatePoints, Own{})
 		if err != nil {
 			t.Fatalf("%+v: %v", k, err)
@@ -400,6 +410,9 @@ func TestEveryKindOffersItsBuiltInDashboard(t *testing.T) {
 		}
 		if width%12 != 0 || epics != k.Epics || (v.DefaultRange == RangeSprints5) != k.PlansSprints {
 			t.Errorf("%+v: widths add to %d, epics %v, default range %s", k, width, epics, v.DefaultRange)
+		}
+		if pace := v.Widgets[0]; slices.Contains(pace.How.Reads, "credit") != k.Credit || (len(pace.Series) == 3) != k.Credit {
+			t.Errorf("%+v: the pace reads %v, series %v", k, pace.How.Reads, pace.Series)
 		}
 	}
 }

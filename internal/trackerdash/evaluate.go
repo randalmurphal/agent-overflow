@@ -85,17 +85,25 @@ type Kind struct {
 	PlansSprints bool
 	// Epics is whether the board's tracker has epics (Jira).
 	Epics bool
+	// Credit is whether the board's project counts credit, which its pace
+	// counts beside what each period finished (creditMetric).
+	Credit bool
 }
 
-// Board is the board an evaluation reads: Fill exports it, Epics is as
-// Kind has it, Viewer is the connection's verified account, which Mine
-// narrows to ("" before one), and Own is what its project keeps and its
-// agents proposed beside the built-in dashboard.
+// Board is the board an evaluation reads: Fill exports it, Epics and
+// Credit are as Kind has them, Viewer is the connection's verified
+// account, which Mine narrows to ("" before one), and Own is what its
+// project keeps and its agents proposed beside the built-in dashboard.
+// EvidenceFailure is why the last read of who worked on the connection's
+// tickets failed, "" while none did, which an answer says while credit it
+// counts is not read (Answer.Evidence).
 type Board struct {
-	Fill   Fill
-	Epics  bool
-	Viewer string
-	Own    Own
+	Fill            Fill
+	Epics           bool
+	Credit          bool
+	Viewer          string
+	Own             Own
+	EvidenceFailure string
 }
 
 // Request is what one evaluation counts: a dashboard, over a range,
@@ -187,7 +195,9 @@ type BucketValue struct {
 // TicketRow is one row of a metric in a ticket list or a drill: a ticket
 // as one row counts it. Row is the row's place among the answer's rows,
 // unique within it, since a ticket can count more than once (done in two
-// sprints). Period is the sprint or week a row of the range falls in.
+// sprints). Assignee is the person the row counts for: the metric's
+// person column, else the ticket's assignee. Period is the sprint or week
+// a row of the range falls in, Series the metric's series it is in.
 // Value is the row's number in the metric's unit, absent for a metric
 // that counts tickets, whose rows' values are not what it counts.
 type TicketRow struct {
@@ -201,6 +211,7 @@ type TicketRow struct {
 	Value    *float64 `json:"value,omitempty"`
 	Counted  bool     `json:"counted"`
 	Period   string   `json:"period,omitempty"`
+	Series   string   `json:"series,omitempty"`
 	Note     string   `json:"note,omitempty"`
 }
 
@@ -236,8 +247,12 @@ type WidgetValue struct {
 // Listing gives. Reading is whether the board's first read has not
 // finished, so its numbers count the tickets read so far.
 type Answer struct {
-	Range     RangeView     `json:"range"`
-	Reading   bool          `json:"reading,omitempty"`
+	Range   RangeView `json:"range"`
+	Reading bool      `json:"reading,omitempty"`
+	// Evidence says, while credit the dashboard counts is not read for
+	// some ticket, that the read of who worked on the tickets is failing
+	// and why (Board.EvidenceFailure); "" otherwise.
+	Evidence  string        `json:"evidence,omitempty"`
 	Estimates string        `json:"estimates"`
 	Person    *Name         `json:"person,omitempty"`
 	Epic      *Name         `json:"epic,omitempty"`
@@ -501,7 +516,11 @@ func how(m Metric, p prepared, plansSprints bool, estimates string) How {
 	case p.cols.periodBound(m):
 		rng = "It counts the range's " + periods + " and compares them with the " + periods + " before."
 	}
-	return How{Words: m.Words, Counts: counts, Range: rng, Rules: "none", SQL: strings.TrimSpace(m.SQL), Reads: p.asks.tables}
+	rules := "none"
+	if slices.Contains(p.asks.tables, "credit") {
+		rules = "the project's credit rules, in its Issues settings"
+	}
+	return How{Words: m.Words, Counts: counts, Range: rng, Rules: rules, SQL: strings.TrimSpace(m.SQL), Reads: p.asks.tables}
 }
 
 // dayRangeWords is How this is counted's range sentence of a metric
@@ -517,7 +536,9 @@ func dayRangeWords(sprint string) string {
 // and the placement of a row with no instant read for every row; a shown
 // row's title, status and estimate are read with its page (titles).
 type evaluation struct {
-	s         *session
+	s *session
+	// filled is the relations the copy was filled with.
+	filled    map[string]bool
 	export    store.MirrorExport
 	estimates string
 	sprints   []sprintRow
@@ -551,6 +572,10 @@ func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, relat
 }
 
 func (ev *evaluation) fill(ctx context.Context, b Board, relations []string) error {
+	ev.filled = map[string]bool{}
+	for _, r := range relations {
+		ev.filled[r] = true
+	}
 	export, ok, err := b.Fill(ctx, ev.s.conn, relations)
 	switch {
 	case err != nil:
@@ -703,7 +728,10 @@ func (ev *evaluation) narrowing(r Request, viewer string) (narrowing, error) {
 }
 
 // keep is the rows of the narrowed page: a row's person is the metric's
-// person column, else its ticket's assignee; its epic likewise.
+// person column, else its ticket's assignee; its epic likewise. A row of
+// a metric with a person column that is not counted and names no person
+// could be anyone's (credit whose evidence is not read), so every person
+// narrowing keeps it, as not counted.
 func (ev *evaluation) keep(n narrowing, cols columns, rows []contribution) []contribution {
 	if n.person == nil && n.epic == nil {
 		return rows
@@ -712,13 +740,14 @@ func (ev *evaluation) keep(n narrowing, cols columns, rows []contribution) []con
 	for _, c := range rows {
 		t := ev.tickets[c.ticket]
 		person, epic := t.assignee, t.epic
+		anyone := false
 		if cols.has(ColumnPerson) {
-			person = c.person
+			person, anyone = c.person, !c.counted && c.person == ""
 		}
 		if cols.has(ColumnEpic) {
 			epic = c.epic
 		}
-		if (n.person == nil || person == n.person.ID) && (n.epic == nil || epic == n.epic.ID) {
+		if (n.person == nil || person == n.person.ID || anyone) && (n.epic == nil || epic == n.epic.ID) {
 			out = append(out, c)
 		}
 	}
@@ -761,11 +790,12 @@ func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing
 	rows = ev.keep(n, p.cols, rows)
 	if m.numbersUnit() == UnitEstimate && ev.estimates == "none" {
 		// The board counts tickets (it has no estimates, or its project
-		// counts tickets): each counted row is one ticket, whatever value
-		// the query gave it, and a row it did not count stays uncounted.
+		// counts tickets): each counted row is its share of a ticket, one
+		// unless the query says (ColumnShare), whatever value it gave it,
+		// and a row it did not count stays uncounted.
 		for i := range rows {
 			if rows[i].counted {
-				rows[i].value = 1
+				rows[i].value = rows[i].share
 			}
 		}
 	}
@@ -895,7 +925,7 @@ func dashboardOf(r Request, b Board) (Dashboard, map[string]Metric, *Kind, error
 		metrics = map[string]Metric{}
 	}
 	if r.Dashboard == builtinSprintsID || r.Dashboard == builtinWeeksID {
-		k := Kind{PlansSprints: r.Dashboard == builtinSprintsID, Epics: b.Epics}
+		k := Kind{PlansSprints: r.Dashboard == builtinSprintsID, Epics: b.Epics, Credit: b.Credit}
 		d, builtins := builtin(k)
 		maps.Copy(metrics, builtins)
 		return d, metrics, &k, nil
@@ -1010,7 +1040,31 @@ func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer
 	if err := o.ev.titles(o.ctx, listed(a.Widgets)); err != nil {
 		return Answer{}, err
 	}
+	if a.Evidence, err = o.ev.evidence(o.ctx, b.EvidenceFailure); err != nil {
+		return Answer{}, err
+	}
 	return a, nil
+}
+
+// evidence is the sentence an answer gives while the read of who worked
+// on the tickets fails (failure, "" for none) and credit in the copy is
+// not read for some ticket: a review or support row not counted. A copy
+// with no credit says none.
+func (ev *evaluation) evidence(ctx context.Context, failure string) (string, error) {
+	if failure == "" || !ev.filled["credit"] {
+		return "", nil
+	}
+	unread := false
+	err := ev.query(ctx, `SELECT EXISTS (SELECT 1 FROM credit WHERE value IS NULL AND kind <> 'finished')`, func(r *sql.Rows) error {
+		return r.Scan(&unread)
+	})
+	if err != nil {
+		return "", tooSlow(ctx, fmt.Errorf("read whether the copy's credit is read: %w", err))
+	}
+	if !unread {
+		return "", nil
+	}
+	return "Some tickets' credit is not counted: the last read of who worked on them failed. " + failure, nil
 }
 
 // proposals is the values of b's proposals over r's range and narrowing,
@@ -1443,15 +1497,21 @@ func (ev *evaluation) keyOf(ticket string) string {
 	return ticket
 }
 
-// ticket is row c, the answer's row i, as a list or a drill shows it.
+// ticket is row c, the answer's row i, as a list or a drill shows it:
+// with the person the row counts for (its person column, else its
+// ticket's assignee) and its series.
 func (ev *evaluation) ticket(c contribution, m Metric, cols columns, i int) TicketRow {
 	t, ok := ev.tickets[c.ticket]
-	r := TicketRow{Row: i, ID: c.ticket, Key: c.ticket, Counted: c.counted, Period: c.period, Note: c.note}
+	r := TicketRow{Row: i, ID: c.ticket, Key: c.ticket, Counted: c.counted, Period: c.period, Series: c.series, Note: c.note}
+	person := t.assignee
+	if cols.has(ColumnPerson) {
+		person = c.person
+	}
 	if ok {
 		r.Key = t.key
-		if t.assignee != "" {
-			r.Assignee = cmpOr(ev.people[t.assignee], t.assignee)
-		}
+	}
+	if person != "" {
+		r.Assignee = cmpOr(ev.people[person], person)
 	}
 	if c.counted && cols.has(ColumnValue) && m.Reduce != ReduceCount {
 		v := c.value
