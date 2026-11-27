@@ -91,9 +91,9 @@ func TestTryCountsOneWidgetOrRefusesIt(t *testing.T) {
 		t.Fatalf("a line by person: %v", err)
 	}
 	bad := inProgress
-	bad.SQL = "SELECT id AS ticket FROM tickets WHERE priority = 'High'"
+	bad.SQL = "SELECT id AS ticket FROM tickets WHERE severity = 'High'"
 	_, err = e.Try(context.Background(), b, Widget{Form: FormNumber, Width: 3}, bad, "UTC")
-	if r, ok := err.(*Refusal); !ok || r.Code != "dashboard_widget_refused" || !strings.Contains(r.Sentence, "priority") {
+	if r, ok := err.(*Refusal); !ok || r.Code != "dashboard_widget_refused" || !strings.Contains(r.Sentence, "severity") {
 		t.Fatalf("a query on a column the copy lacks: %v", err)
 	}
 }
@@ -122,6 +122,84 @@ func TestProposalsPastTheDeadlineFailInTheirOwnPlace(t *testing.T) {
 		if !strings.Contains(w.Error, "ran out before this widget was counted") {
 			t.Errorf("proposal %s: %+v", w.ID, w)
 		}
+	}
+}
+
+// A count asks the copy for what the plan of its statement reads
+// (plan.go): a relation by any form of its name, a ticket's type or
+// priority read by name, a USING or NATURAL join's condition or a *
+// SQLite reads, and nothing a comment or a * it never reads names; How
+// this is counted names relations alone. The store's
+// TestADashboardCountCopiesWhatItsQueryReads runs each read on a real
+// copy against a copy of everything.
+func TestACountAsksForWhatItsQueryReads(t *testing.T) {
+	t.Parallel()
+	board := newFixture(false, "none").status("3", "In progress", "in_progress").
+		ticket(ticket{id: "t1", key: "WEB-1", status: "3", group: "in_progress", created: ago(3)}).board()
+	var asked [][]string
+	fill := board.Fill
+	board.Fill = func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
+		asked = append(asked, relations)
+		return fill(ctx, conn, relations)
+	}
+	m := Metric{Name: "w_1", Title: "Bugs", Words: []string{"Bugs open now."}, Reduce: ReduceCount, Unit: UnitTickets}
+	both := []string{"tickets.type", "tickets.priority"}
+	for _, c := range []struct {
+		sql       string
+		asks, not []string
+	}{
+		{"SELECT id AS ticket FROM tickets WHERE type = 'Bug'", []string{"tickets.type"}, []string{"tickets.priority", "labels"}},
+		{"SELECT id AS ticket FROM tickets WHERE TYPE = 'Bug'", []string{"tickets.type"}, nil},
+		{`SELECT id AS ticket FROM tickets WHERE "type" = 'Bug'`, []string{"tickets.type"}, nil},
+		{"SELECT id AS ticket FROM tickets WHERE [priority] = 'High'", []string{"tickets.priority"}, []string{"tickets.type"}},
+		{"SELECT id AS ticket FROM tickets WHERE `priority` = 'High'", []string{"tickets.priority"}, nil},
+		{"SELECT id AS ticket FROM main.tickets WHERE main.tickets.type = 'Bug'", []string{"tickets.type"}, nil},
+		{"WITH w(type) AS (VALUES('Bug')) SELECT t.id AS ticket FROM tickets t JOIN w USING(type)", []string{"tickets.type"}, []string{"tickets.priority"}},
+		{"WITH w(priority) AS (VALUES('High')) SELECT t.id AS ticket FROM tickets t JOIN w USING (priority)", []string{"tickets.priority"}, nil},
+		{"WITH w(type) AS (VALUES('Bug')) SELECT t.id AS ticket FROM tickets t NATURAL JOIN w", []string{"tickets.type"}, []string{"tickets.priority"}},
+		{"SELECT a.id AS ticket FROM tickets a NATURAL JOIN tickets b", both, nil},
+		{"SELECT id AS ticket FROM (SELECT * FROM tickets)", nil, both},
+		{"WITH c AS MATERIALIZED (SELECT * FROM tickets) SELECT id AS ticket FROM c", both, nil},
+		{"SELECT id AS ticket FROM tickets WHERE (type, priority) = ('Bug', 'High')", both, nil},
+		{"SELECT t.id AS ticket FROM tickets t JOIN labels l ON l.ticket = t.id WHERE l.name = 'bug'", []string{"labels"}, both},
+		{"WITH c AS (SELECT id AS ticket FROM tickets) SELECT c.ticket FROM c JOIN labels USING(ticket)", []string{"labels"}, nil},
+		{`SELECT t.id AS ticket FROM tickets t JOIN "labels" l ON l.ticket = t.id`, []string{"labels"}, nil},
+		{"SELECT t.id AS ticket FROM tickets t JOIN [LABELS] l ON l.ticket = t.id", []string{"labels"}, nil},
+		{"SELECT t.id AS ticket FROM tickets t JOIN main.labels l ON l.ticket = t.id", []string{"labels"}, nil},
+		{"WITH a AS (WITH b AS (SELECT ticket FROM labels) SELECT ticket FROM b) SELECT ticket AS ticket FROM a", []string{"labels"}, nil},
+		{"WITH c AS (SELECT id AS ticket FROM tickets) SELECT c.ticket FROM c JOIN sprint_tickets USING(ticket)", []string{"sprint_tickets"}, nil},
+		{"WITH c AS (SELECT id AS ticket FROM tickets) SELECT c.ticket FROM c JOIN changes USING(ticket)", []string{"changes"}, nil},
+		{"WITH c AS (SELECT id AS ticket FROM tickets) SELECT c.ticket FROM c JOIN sprint_finished USING(ticket)", []string{"sprint_finished"}, nil},
+		{"SELECT id AS ticket FROM tickets WHERE open = 1 -- type, labels and * in a comment\n", nil, []string{"tickets.type", "tickets.priority", "labels"}},
+		{"SELECT id AS ticket FROM tickets WHERE status_group = 'in_progress' /* NATURAL */", nil, []string{"tickets.type", "tickets.priority", "labels"}},
+	} {
+		asked = nil
+		m.SQL = c.sql
+		got, err := evaluator().Try(context.Background(), board, Widget{Form: FormNumber, Width: 3}, m, "UTC")
+		if err != nil {
+			t.Fatalf("%s: %v", c.sql, err)
+		}
+		if len(asked) != 1 {
+			t.Fatalf("%s: %d fills", c.sql, len(asked))
+		}
+		for _, want := range c.asks {
+			if !slices.Contains(asked[0], want) {
+				t.Errorf("%s: asked %v; want %s", c.sql, asked[0], want)
+			}
+		}
+		for _, not := range c.not {
+			if slices.Contains(asked[0], not) {
+				t.Errorf("%s: asked %v; want no %s", c.sql, asked[0], not)
+			}
+		}
+		if slices.ContainsFunc(got.View.How.Reads, func(r string) bool { return strings.Contains(r, ".") }) {
+			t.Errorf("%s: How this is counted reads %v; want relations alone", c.sql, got.View.How.Reads)
+		}
+	}
+	asked = nil
+	mustEvaluate(t, evaluator(), board, Request{Dashboard: builtinWeeksID, TimeZone: "UTC"})
+	if slices.ContainsFunc(asked[0], func(r string) bool { return slices.Contains(store.MirrorExportColumns, r) || r == "labels" }) {
+		t.Errorf("the built-in dashboard asked %v; want no type, priority or labels", asked[0])
 	}
 }
 
@@ -222,8 +300,8 @@ func TestRulesNameTheFieldsAndTheRelations(t *testing.T) {
 	t.Parallel()
 	rules := Rules()
 	for _, want := range []string{"title;", "words", "sql;", "reduce:", "unit:", "good:", "bucket:", "series:", "form:", "width:",
-		"ticket (required", "CREATE TABLE main.tickets(", "-- status_group:", "Ticket types, priorities and labels are not in the copy.",
-		"A count stops at 1s", "time estimates in seconds"} {
+		"ticket (required", "CREATE TABLE main.tickets(", "-- status_group:", "-- type:", "use labels", "no order",
+		"CREATE TABLE main.labels(", "an unnamed one by its ID", "one per bucket for a ticket in several", "A count stops at 1s", "time estimates in seconds"} {
 		if !strings.Contains(rules, want) {
 			t.Errorf("the rules lack %q", want)
 		}

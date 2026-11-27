@@ -2321,8 +2321,14 @@ finish from its stored changes, whether its history shows its start,
 whether it is open and whether it counts, by the project's status
 groups), the statuses its columns, tickets and copied changes name,
 people (the assignees, and the people the changes name when those are
-copied), epics, sprints and their members, the tickets' changes and what
-each sprint finished. A count names the relations it reads, and each
+copied), epics, sprints and their members, the tickets' changes, what
+each sprint finished and the tickets' labels. A ticket's type and
+priority names (`MirrorExportColumns`) and its labels come from its card
+blob, whose shape trackerapp passes (`MirrorCardShape`, from the json
+tags of `cardBlob`); the tickets fill decodes a name only when a count
+asks for its column and selects NULL otherwise, its text chosen once per
+export, and a blob of another version gives none. Linear has no issue types, so its type is
+NULL. A count names the relations it reads, and each
 fill names the relations it reads from the copy, so a fill's needs are
 filled first; `board` and `sprints` are always filled, since the range
 reads them, and an unknown relation is an error. It attaches the app
@@ -2336,11 +2342,34 @@ whether the board's first sync has reconciled
 drill carry `reading`, and the range before is not compared. A board
 unlisted and listed again starts over.
 
-The relations a count reads are its metrics': each metric's prepare
-records the relations it reads (`How.Reads`), once per dashboard kind
-on an empty sealed session, and a count asks for those of the widgets it
-counts and the tickets, statuses, people and epics its answer names. No
-built-in metric reads `changes`, so none copies them.
+The relations a count reads are what the plan of the statement it runs
+reads (`trackerdash/plan.go`). Each metric's wrapped statement is
+planned on an empty session of the copy's own schema
+(`MirrorExportSchema`), and the program `EXPLAIN` lists says what it
+reads: each relation a cursor opens on (`OpenRead`), and each column of
+it a `Column` reads. The copy has no statistics, so the plan is the one
+the count runs on the filled copy: a join SQLite drops reads nothing,
+a USING or NATURAL join's condition reads its columns, a CTE that
+shadows a relation's name reads what the CTE reads, and a `*` SQLite
+never reads asks for nothing. The reading is exact for the program
+SQLite emits, and that program can hold reads it never runs: a grouped
+join whose only use SQLite removed keeps its materialization, and a
+`CASE WHEN 0` branch its code, so the count asks for those relations
+too. That one result is what the count copies
+and what "How this is counted" names (`How.Reads`); every count lists
+tickets, which the wrapper looks each row's ticket up in. A column of
+`MirrorExportColumns` is decoded only when the plan reads it. Every
+relation is one b-tree with no column of `MirrorExportColumns` in its
+key, so no index or key comparison reads one unseen; the empty session
+refuses a schema where that fails, and a program whose reads the reader
+cannot attribute refuses its widget. SQLite's authorizer is not the
+source: it reports no read of a USING or NATURAL join's columns.
+Built-in metrics are planned once per dashboard kind, and a count asks
+for those of the widgets it counts and the tickets, statuses, people and
+epics its answer names. No built-in metric reads `changes`, so none
+copies them.
+`TestADashboardCountCopiesWhatItsQueryReads` in `internal/store` runs
+each kind of read on the copy it asks for and on a copy of everything.
 
 ### Metrics
 
@@ -2610,7 +2639,7 @@ tickets each number could not count, how many rows its query returned
 and the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 4,316 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 4,656 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a

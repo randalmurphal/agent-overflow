@@ -898,6 +898,39 @@ done-at-completion rule the Board's sprint sections share. A Stuck drill
 copies the tickets and their statuses, so the tickets fill is most of
 its 146 ms.
 
+A ticket's type and priority names and its labels are in its card blob,
+which the copy decodes only for a query that reads them
+(`TestMirrorExportFillsAtScale` in `internal/store`, the same fixture
+with a version 2 blob of about 160 bytes and two labels a ticket; the
+best of 5 runs, two runs each, and the VM steps, which do not vary):
+
+| Tickets fill | 2,000 issues | 20,000 issues |
+|---|---|---|
+| Before the columns existed | 621,287 steps; 14.6 and 15.0 ms | 6,208,487 steps; 195.8 and 126.9 ms |
+| A query that reads neither column | 629,287 steps; 18.2 and 13.8 ms | 6,288,487 steps; 155.7 and 164.2 ms |
+| A query that reads `type` alone | 647,292 steps; 24.1 and 21.1 ms | 6,468,492 steps; 219.3 and 176.8 ms |
+| A query that reads `type` and `priority` | 665,295 steps; 17.5 and 19.9 ms | 6,648,495 steps; 186.7 and 243.9 ms |
+| `labels`, filled beside it when a query reads it | 134,026 steps; 7.6 and 6.7 ms | 1,340,026 steps; 77.6 and 67.6 ms |
+
+A query that reads neither column decodes no blob, whatever it
+multiplies or counts with `*`: the plan of the statement the count runs
+reads no `Column` of it, and the fill selects NULL for the rest, 4 VM
+steps a ticket. Each column read costs 9 steps a ticket,
+which is why the fill does not decode them for every count. The times
+of these runs spread more than the columns cost.
+
+A join SQLite drops from the program copies nothing: `SELECT DISTINCT
+t.id AS ticket FROM tickets t LEFT JOIN changes c ON c.ticket = t.id`
+copies what a query of tickets alone does. A read the program holds and
+never runs is still copied: the same join of changes grouped by ticket
+first keeps its materialization, and copies the history. Copying the history it does
+not read would add 24,160,468 VM steps at 20,000 issues (the changes,
+the statuses and the people they name; 202, 64 and 110 ms in one run),
+and labels 1,340,026. Reading a metric's plan costs 48 to 91 µs for
+each built-in metric and 175 µs for the empty session's layout (best of
+20, on the developer machine), once per kind for the built-ins and once
+per count for a project's own widgets.
+
 The fill is still most of an evaluation and grows with the board; the
 metrics and the reduction take about 10 ms at 2,000 issues and 55 ms at
 20,000. An open dashboard counts again at most once every 5 s while its

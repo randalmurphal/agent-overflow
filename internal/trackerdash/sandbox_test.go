@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -44,6 +45,9 @@ func sealedOpen(t *testing.T) *session {
 	if err := s.gate(ctx); err != nil {
 		t.Fatal(errors.Join(err, s.close()))
 	}
+	// The copy holds every relation; what metricOf's metric reads of it is
+	// read from its plan on an empty session, which these tests do not do.
+	s.asked = map[string]asks{"probe": {}}
 	return s
 }
 
@@ -452,4 +456,92 @@ func TestASessionThatCannotConnectLeavesNothing(t *testing.T) {
 			t.Errorf("%d database connection openers run after the session failed to open; its database was not closed", n)
 		}
 	})
+}
+
+// emptyFor runs f on an empty session whose layout readLayout read, its
+// relations made by schema.
+func emptyFor(t *testing.T, schema string, f func(*session) error) error {
+	t.Helper()
+	ctx := context.Background()
+	s, err := openSession(ctx, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := s.close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err := s.conn.ExecContext(ctx, schema); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.readLayout(ctx); err != nil {
+		return err
+	}
+	if err := s.gate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return f(s)
+}
+
+// The plan reader fails loudly where its reading would ask for less: a
+// relation stored in a second b-tree, whose index could hold a column
+// outside the table's own cursor, fails the layout; a cursor on a b-tree
+// the layout does not know and a column past a relation's records refuse
+// the widget, saying so.
+func TestThePlanReaderRefusesWhatItCannotAttribute(t *testing.T) {
+	t.Parallel()
+	if err := emptyFor(t, store.MirrorExportSchema+`CREATE INDEX main.by_type ON tickets(type);`, func(*session) error { return nil }); err == nil ||
+		!strings.Contains(err.Error(), "relation tickets is stored in 2 b-trees") {
+		t.Errorf("a layout with an index on tickets: %v; want its refusal", err)
+	}
+	err := emptyFor(t, store.MirrorExportSchema, func(s *session) error {
+		for root, table := range s.layout.roots {
+			if table == "labels" {
+				delete(s.layout.roots, root)
+			}
+		}
+		_, err := s.prepare(metricOf(`SELECT ticket FROM labels`))
+		if err == nil || !strings.Contains(err.Error(), "could not tell what it reads of the board (OpenRead opens b-tree") {
+			t.Errorf("a cursor on a b-tree the layout does not know: %v; want the refusal naming OpenRead", err)
+		}
+		s.layout.columns["tickets"] = s.layout.columns["tickets"][:1]
+		_, err = s.prepare(metricOf(`SELECT id AS ticket FROM tickets WHERE type = 'Bug'`))
+		if err == nil || !strings.Contains(err.Error(), "could not tell what it reads of the board (Column 20 of tickets, which has 1)") {
+			t.Errorf("a column past the layout's: %v; want the refusal naming it", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A WITHOUT ROWID relation stores its key's columns first: the layout reads
+// a column at its place in the stored row, so a key not declared first
+// still names the column a Column reads, and a card column in the key,
+// which a key comparison reads without a Column, fails the layout.
+func TestTheLayoutReadsAKeyNotDeclaredFirst(t *testing.T) {
+	t.Parallel()
+	tickets := func(key string) string {
+		schema := strings.Replace(store.MirrorExportSchema, "tickets(id TEXT PRIMARY KEY,", "tickets(id TEXT NOT NULL,", 1)
+		return strings.Replace(schema, "type TEXT, priority TEXT) WITHOUT ROWID;", "type TEXT, priority TEXT, extra TEXT, PRIMARY KEY ("+key+")) WITHOUT ROWID;", 1)
+	}
+	err := emptyFor(t, tickets("id, extra"), func(s *session) error {
+		p, err := s.prepare(metricOf(`SELECT id AS ticket FROM tickets WHERE type = 'Bug'`))
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(p.asks.columns, []string{"tickets.type"}) {
+			t.Errorf("a type read with the key (id, extra) asks for %v; want tickets.type", p.asks.columns)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := emptyFor(t, tickets("priority, id"), func(*session) error { return nil }); err == nil ||
+		!strings.Contains(err.Error(), "column tickets.priority is part of its relation's key") {
+		t.Errorf("a layout whose key holds priority: %v; want its refusal", err)
+	}
 }
