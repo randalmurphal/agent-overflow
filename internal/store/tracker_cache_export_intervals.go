@@ -6,6 +6,13 @@ import "strconv"
 // stored history (status_intervals, sprint_intervals).
 //
 // What must hold:
+//   - They reach back to the earliest instant a count can ask of them
+//     (mirrorExportIntervalsFrom): the start of the mirror's history
+//     window, or of a sprint the board keeps that began before it. No
+//     range's period and no sprint a count shows begins earlier. An
+//     interval that ends at or before it has no row, and a ticket's
+//     history is read only when what it held may have changed since then,
+//     so a fill follows what changed in the window, not the board's size.
 //   - A status interval is known at both ends: from the ticket's history
 //     (one change to the next, and what the first change left from the
 //     history's start, history_from or else creation), or the status now
@@ -13,7 +20,9 @@ import "strconv"
 //     (MirrorStatusSince), when that is known and no earlier than the
 //     latest status change. Where the history and the card disagree (a
 //     history read behind the card), the stretch after the latest change
-//     has no interval: it is not known.
+//     has no interval: it is not known. A ticket whose status now began at
+//     or before the earliest instant has its interval now alone, which
+//     covers every instant a count can ask; its history is not read.
 //   - A sprint interval is a stretch a ticket spent in one of the board's
 //     sprints with one estimate of the board: the sprint sets the history
 //     holds (the first change's from-set from the history's start, each
@@ -22,11 +31,23 @@ import "strconv"
 //     first estimate change's from-value from the start; a ticket with no
 //     estimate change its estimate now). A stretch still open at the
 //     latest change is open only when the ticket is in the sprint now;
-//     otherwise its end is not known and it has no row.
+//     otherwise its end is not known and it has no row. A ticket's history
+//     is read only when it is in one of the board's sprints now or changed
+//     its sprints after the earliest instant: one in none now that changed
+//     none since was in none of them at any instant a count can ask.
 //   - Each fill reads the change rows once: from the file by each board
 //     issue's key, or from the copy's changes when the same export fills
 //     them (mirrorExportFill.with and without), so a count that reads both
 //     scans the history once.
+
+// mirrorExportIntervalsFrom is the earliest instant a count can ask of the
+// intervals: the history window's start the export binds, or the start of
+// a sprint the board keeps (the sprints relation, filled first) that began
+// before it. It is an uncorrelated subquery, read once a statement.
+func mirrorExportIntervalsFrom() string {
+	w := `CAST(?` + strconv.Itoa(mirrorExportWindowArg) + ` AS INTEGER)`
+	return `min(` + w + `, coalesce((SELECT min(start_at) FROM main.sprints), ` + w + `))`
+}
 
 // mirrorExportChangeSource is where the intervals' fills read a board
 // issue's changes: the file's rows by key, or the copy's. Either holds
@@ -78,19 +99,15 @@ func (src mirrorExportChangeSource) ofKind(alias, kind string) string {
 // next joins the change of issue i of kind after c as n, by key: the
 // estimates' by seeking past c, the others' by its number.
 func (src mirrorExportChangeSource) next(kind string) string {
+	seq := `c.seq + 1`
 	if kind == MirrorChangeEstimate {
-		after := `(SELECT min(x.seq) FROM ` + src.ofKind("x", kind) + ` AND x.seq > c.seq)`
-		if src.fromCopy {
-			return `main.changes n ON n.ticket = i.issue_id AND n.kind = '` + kind + `' AND n.seq = ` + after
-		}
-		return `tracker_cache_changes n ON n.root_id = i.root_id AND n.issue_id = i.issue_id AND n.gen = i.history_gen AND n.kind = ` +
-			strconv.Itoa(mirrorChangeKinds[kind]) + ` AND n.seq = ` + after
+		seq = `(SELECT min(x.seq) FROM ` + src.ofKind("x", kind) + ` AND x.seq > c.seq)`
 	}
 	if src.fromCopy {
-		return `main.changes n ON n.ticket = i.issue_id AND n.kind = '` + kind + `' AND n.seq = c.seq + 1`
+		return `main.changes n ON n.ticket = i.issue_id AND n.kind = '` + kind + `' AND n.seq = ` + seq
 	}
 	return `tracker_cache_changes n ON n.root_id = i.root_id AND n.issue_id = i.issue_id AND n.gen = i.history_gen AND n.kind = ` +
-		strconv.Itoa(mirrorChangeKinds[kind]) + ` AND n.seq = c.seq + 1`
+		strconv.Itoa(mirrorChangeKinds[kind]) + ` AND n.seq = ` + seq
 }
 
 // latest is issue i's latest change of kind: column of it, by key.
@@ -109,18 +126,27 @@ const mirrorExportOnBoard = `b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2
 // it is not read: as tickets.history_from.
 const mirrorExportHistoryStart = `iif(i.history_for > 0, iif(i.history_from > 0, i.history_from, nullif(i.created_at, 0)), NULL)`
 
+// mirrorExportNever stands for an open end where the intervals' fills
+// compare ends: no time the mirror holds reaches it.
+const mirrorExportNever = `9223372036854775807`
+
 // statusIntervalsSQL fills status_intervals from src: each status change
 // to the next, what the first left from the history's start, and the
 // status now from status_since.
 func (src mirrorExportChangeSource) statusIntervalsSQL() string {
+	from := mirrorExportIntervalsFrom()
+	// changed is an issue whose status now did not begin at or before the
+	// earliest instant, the only kind whose history is read.
+	changed := `NOT (i.status_since > 0 AND i.status_since <= ` + from + `)`
 	return `INSERT INTO main.status_intervals(ticket, status, from_at, to_at)
 	  SELECT i.issue_id, c.t, c.at, n.at
 	  FROM ` + mirrorExportBoardIssues + ` CROSS JOIN ` + src.changes(MirrorChangeStatus, false) + ` CROSS JOIN ` + src.next(MirrorChangeStatus) + `
-	  WHERE ` + mirrorExportOnBoard + ` AND n.at > c.at AND c.t IS NOT NULL
+	  WHERE ` + mirrorExportOnBoard + ` AND ` + changed + ` AND n.at > c.at AND n.at > ` + from + ` AND c.t IS NOT NULL
 	  UNION ALL
 	  SELECT i.issue_id, c.f, ` + mirrorExportHistoryStart + `, c.at
 	  FROM ` + mirrorExportBoardIssues + ` CROSS JOIN ` + src.changes(MirrorChangeStatus, true) + `
-	  WHERE ` + mirrorExportOnBoard + ` AND c.f IS NOT NULL AND ` + mirrorExportHistoryStart + ` < c.at
+	  WHERE ` + mirrorExportOnBoard + ` AND ` + changed + ` AND c.f IS NOT NULL AND ` + mirrorExportHistoryStart + ` < c.at
+	    AND c.at > ` + from + `
 	  UNION ALL
 	  SELECT i.issue_id, i.status_id, i.status_since, NULL
 	  FROM ` + mirrorExportBoardIssues + `
@@ -128,36 +154,42 @@ func (src mirrorExportChangeSource) statusIntervalsSQL() string {
 	    AND i.status_since >= coalesce(` + src.latest(MirrorChangeStatus, "at") + `, 0)`
 }
 
-// mirrorExportNever stands for an open end where the intervals' fill
-// compares ends: no time the mirror holds reaches it.
-const mirrorExportNever = `9223372036854775807`
-
 // sprintIntervalsSQL fills sprint_intervals from src: ?5 whether the board
 // has an estimate, ?4 its reset (mirrorRowEstimate).
 func (src mirrorExportChangeSource) sprintIntervalsSQL() string {
-	// v is each version of a covered ticket's sprint set, from and to: what
-	// the first change left from the history's start, each change's to-set
-	// to the next change, and the set now from the start for a ticket with
-	// no change. p is each stretch of a version in a sprint of the board, an
-	// open one only while the ticket is in the sprint now. e is each
-	// version of the ticket's estimate, built the same way.
+	from := mirrorExportIntervalsFrom()
+	never := mirrorExportNever
 	estimate := `iif(CAST(?5 AS INTEGER) = 1, ` + mirrorRowEstimate("CAST(?4 AS INTEGER)") + `, NULL)`
+	// member is an issue that may have been in one of the board's sprints
+	// since the earliest instant, the only kind whose history is read: in
+	// one now, or with a sprint change since.
+	member := `(EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m WHERE m.root_id = i.root_id AND m.issue_id = i.issue_id
+	        AND m.sprint_id IN (SELECT id FROM main.sprints))
+	      OR coalesce(` + src.latest(MirrorChangeSprint, "at") + `, 0) > ` + from + `)`
+	// v is each version of a member's sprint set, from and to: what the
+	// first change left from the history's start, each change's to-set to
+	// the next change, and the set now from the start for a member with no
+	// change. p is each stretch of a version in a sprint of the board that
+	// ends after the earliest instant, an open one only while the ticket is
+	// in the sprint now. e is each version of a member's estimate, built
+	// the same way.
 	return `WITH v AS (
 	    SELECT i.issue_id AS ticket, ` + mirrorExportHistoryStart + ` AS from_at, c.at AS to_at, c.f AS sprints
 	    FROM ` + mirrorExportBoardIssues + ` CROSS JOIN ` + src.changes(MirrorChangeSprint, true) + `
-	    WHERE ` + mirrorExportOnBoard + ` AND ` + mirrorExportHistoryStart + ` < c.at
+	    WHERE ` + mirrorExportOnBoard + ` AND ` + member + ` AND ` + mirrorExportHistoryStart + ` < c.at
 	    UNION ALL
 	    SELECT i.issue_id, c.at, n.at, c.t
 	    FROM ` + mirrorExportBoardIssues + ` CROSS JOIN ` + src.changes(MirrorChangeSprint, false) + ` LEFT JOIN ` + src.next(MirrorChangeSprint) + `
-	    WHERE ` + mirrorExportOnBoard + `
+	    WHERE ` + mirrorExportOnBoard + ` AND ` + member + `
 	    UNION ALL
 	    SELECT i.issue_id, ` + mirrorExportHistoryStart + `, NULL, (SELECT json_group_array(m.sprint_id) FROM tracker_cache_issue_sprints m
 	        WHERE m.root_id = i.root_id AND m.issue_id = i.issue_id)
 	    FROM ` + mirrorExportBoardIssues + `
-	    WHERE ` + mirrorExportOnBoard + ` AND i.history_for > 0 AND NOT EXISTS (SELECT 1 FROM ` + src.ofKind("x", MirrorChangeSprint) + `)),
+	    WHERE ` + mirrorExportOnBoard + ` AND i.history_for > 0 AND ` + member + `
+	      AND NOT EXISTS (SELECT 1 FROM ` + src.ofKind("x", MirrorChangeSprint) + `)),
 	  p AS MATERIALIZED (
 	    SELECT v.ticket, j.value AS sprint, v.from_at, v.to_at FROM v CROSS JOIN json_each(v.sprints) j
-	    WHERE j.value IN (SELECT id FROM main.sprints) AND coalesce(v.to_at, ` + mirrorExportNever + `) > v.from_at
+	    WHERE j.value IN (SELECT id FROM main.sprints) AND coalesce(v.to_at, ` + never + `) > max(v.from_at, ` + from + `)
 	      AND (v.to_at IS NOT NULL OR EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
 	        WHERE m.root_id = CAST(?1 AS INTEGER) AND m.issue_id = v.ticket AND m.sprint_id = j.value))),
 	  e AS MATERIALIZED (
@@ -175,9 +207,9 @@ func (src mirrorExportChangeSource) sprintIntervalsSQL() string {
 	      AND NOT EXISTS (SELECT 1 FROM ` + src.ofKind("x", MirrorChangeEstimate) + `))
 	  INSERT INTO main.sprint_intervals(sprint, ticket, points, from_at, to_at)
 	  SELECT p.sprint, p.ticket, iif(CAST(?5 AS INTEGER) = 1, e.points, NULL), max(p.from_at, e.from_at),
-	    nullif(min(coalesce(p.to_at, ` + mirrorExportNever + `), coalesce(e.to_at, ` + mirrorExportNever + `)), ` + mirrorExportNever + `)
+	    nullif(min(coalesce(p.to_at, ` + never + `), coalesce(e.to_at, ` + never + `)), ` + never + `)
 	  FROM p JOIN e ON e.ticket = p.ticket
-	  WHERE max(p.from_at, e.from_at) < min(coalesce(p.to_at, ` + mirrorExportNever + `), coalesce(e.to_at, ` + mirrorExportNever + `))`
+	  WHERE max(p.from_at, e.from_at) < min(coalesce(p.to_at, ` + never + `), coalesce(e.to_at, ` + never + `))`
 }
 
 // mirrorExportIntervalFills are the intervals' fills, each from the file
@@ -186,11 +218,13 @@ func (src mirrorExportChangeSource) sprintIntervalsSQL() string {
 func mirrorExportIntervalFills() []mirrorExportFill {
 	file, copied := mirrorExportChangeSource{}, mirrorExportChangeSource{fromCopy: true}
 	return []mirrorExportFill{
-		{relation: "status_intervals", name: "status_intervals", without: "changes", sql: file.statusIntervalsSQL()},
-		{relation: "status_intervals", name: "status_intervals from the copy's changes", with: "changes", sql: copied.statusIntervalsSQL()},
+		{relation: "status_intervals", name: "status_intervals", needs: []string{"sprints"}, without: "changes", sql: file.statusIntervalsSQL()},
+		{relation: "status_intervals", name: "status_intervals from the copy's changes", needs: []string{"sprints"}, with: "changes",
+			sql: copied.statusIntervalsSQL()},
 		{relation: "status_intervals", name: "statuses its intervals name", with: "statuses", sql: mirrorExportStatusesSQL("INSERT OR IGNORE",
 			`SELECT DISTINCT status AS id FROM main.status_intervals`)},
 		{relation: "sprint_intervals", name: "sprint_intervals", needs: []string{"sprints"}, without: "changes", sql: file.sprintIntervalsSQL()},
-		{relation: "sprint_intervals", name: "sprint_intervals from the copy's changes", needs: []string{"sprints"}, with: "changes", sql: copied.sprintIntervalsSQL()},
+		{relation: "sprint_intervals", name: "sprint_intervals from the copy's changes", needs: []string{"sprints"}, with: "changes",
+			sql: copied.sprintIntervalsSQL()},
 	}
 }

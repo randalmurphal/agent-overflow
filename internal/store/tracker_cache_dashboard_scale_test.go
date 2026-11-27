@@ -48,7 +48,7 @@ func dashboardAtScale(t *testing.T, n int) {
 	var fills []time.Duration
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
 		start := time.Now()
-		export, ok, err := s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, store.CardShapeForTest)
+		export, ok, err := s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, 0, store.CardShapeForTest)
 		fills = append(fills, time.Since(start))
 		return export, ok, err
 	}
@@ -65,7 +65,7 @@ func dashboardAtScale(t *testing.T, n int) {
 	var asked []string
 	b.Fill = func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
 		asked = slices.Clone(relations)
-		return s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, store.CardShapeForTest)
+		return s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, 0, store.CardShapeForTest)
 	}
 	if _, err := e.Evaluate(ctx, b, trackerdash.Request{Dashboard: "overview_sprints", Range: trackerdash.RangeSprints5, TimeZone: "UTC"}); err != nil {
 		t.Fatal(err)
@@ -153,7 +153,7 @@ func timedExport(ctx context.Context, s *store.Store, root int64, board string, 
 	}
 	defer func() { err = errors.Join(err, conn.Close()) }()
 	start := time.Now()
-	if _, ok, err := s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, store.CardShapeForTest); err != nil || !ok {
+	if _, ok, err := s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, 0, store.CardShapeForTest); err != nil || !ok {
 		return 0, fmt.Errorf("export %v: %v, %w", relations, ok, err)
 	}
 	return time.Since(start), nil
@@ -191,7 +191,7 @@ func TestDashboardMemoryAfterClose(t *testing.T) {
 func dashboardMemory(t *testing.T, n int) {
 	s, root, board := store.ScaleMirrorForTest(t, n)
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-		return s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, store.CardShapeForTest)
+		return s.ExportMirrorBoard(ctx, conn, root, board, store.MirrorRegroup{}, relations, 0, store.CardShapeForTest)
 	}
 	b := trackerdash.Board{Fill: fill, Epics: true, Viewer: "acc-user1"}
 	e := trackerdash.NewEvaluator(time.Now)
