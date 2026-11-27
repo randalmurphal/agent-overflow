@@ -161,11 +161,21 @@ func developmentProblem(dev ticketDevelopment) string {
 	return text
 }
 
-// waitText is a wait as a person reads it: whole seconds in words, a
-// shorter wait (a test's) as Go writes it.
+// waitText is a wait as a person reads it: whole minutes or whole
+// seconds in words ("15 minutes", "2 seconds"), any other wait (a test's)
+// as Go writes it.
 func waitText(d time.Duration) string {
-	if d%time.Second == 0 {
-		return strconv.Itoa(int(d/time.Second)) + " seconds"
+	unit := func(n int, one string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return strconv.Itoa(n) + " " + one + "s"
+	}
+	switch {
+	case d >= time.Minute && d%time.Minute == 0:
+		return unit(int(d/time.Minute), "minute")
+	case d%time.Second == 0:
+		return unit(int(d/time.Second), "second")
 	}
 	return d.String()
 }

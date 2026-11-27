@@ -2267,8 +2267,10 @@ export class PostTimeRequest {
 
 /**
  * PostTimeView is what a post did: each entry named as it is now, how
- * many it posted of those it could, and the sentence that says it. Stale
- * is the read-back of the posted days that failed, as a write's
+ * many it posted of those it could, the sentence that says it, and the
+ * outcome of each entry the request named, in its order, for the agent's
+ * post (no screen reads it, so it is not on the wire). Stale is the
+ * read-back of the posted days that failed, as a write's
  * (WriteView.Stale): those days do not show the posted time until their
  * next read.
  */

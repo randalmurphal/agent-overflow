@@ -103,7 +103,7 @@ var toolTable = []toolSpec{
 	},
 	{
 		name:        "time_draft",
-		description: "Draft the user's time; it is logged only once the user approves. Replaces the agents' draft of each day given.",
+		description: "Give entries to replace this thread's drafts for their days, or post with up to 7 YYYY-MM-DD dates to log those days' drafts after user approval.",
 		properties: map[string]any{
 			"entries": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
 				"day":    property("string", ""),
@@ -112,10 +112,10 @@ var toolTable = []toolSpec{
 				"reason": property("string", "The worklog's description; with no key, what the time was."),
 				"offer":  map[string]any{"type": "array", "items": property("string", ""), "maxItems": maxOfferKeys},
 			}}},
+			"post": map[string]any{"type": "array", "items": property("string", "")},
 		},
-		required: []string{"entries"},
-		time:     true,
-		call:     (*Server).timeDraft,
+		time: true,
+		call: (*Server).timeDraft,
 	},
 }
 

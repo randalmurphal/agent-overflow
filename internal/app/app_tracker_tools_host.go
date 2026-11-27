@@ -122,14 +122,14 @@ func (h trackerToolsHost) WritePolicy(threadID string) (trackertools.WritePolicy
 		return trackertools.WritePolicy{}, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
 	}
 	if provider.RuntimeMode(thread.RuntimeMode) == provider.RuntimeReadOnly {
-		return trackertools.WritePolicy{}, errorsx.Public(codeTrackerReadOnly, "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
+		return trackertools.WritePolicy{}, errorsx.Public(codeTrackerReadOnly, "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.", nil)
 	}
 	rules, err := h.agentRules(thread)
 	if err != nil {
 		return trackertools.WritePolicy{}, err
 	}
 	if !rules.Changes() {
-		return trackertools.WritePolicy{}, errorsx.Public(codeTrackerChangesOff, "This project's Agents settings do not let its threads change tickets, so nothing was sent; ask the user to turn on Change tickets in Settings > Issues > Agents if this change is wanted.", nil)
+		return trackertools.WritePolicy{}, errorsx.Public(codeTrackerChangesOff, "This project's Agents settings do not let its threads change tickets or log time, so nothing was sent; ask the user to turn on Change tickets in Settings > Issues > Agents if this change is wanted.", nil)
 	}
 	return trackertools.WritePolicy{AskSeveral: rules.Asks()}, nil
 }
@@ -176,8 +176,8 @@ func (h trackerToolsHost) Approve(ctx context.Context, threadID string, approval
 	// allow, a cancel of the turn) applies to a tracker write.
 	decisions := []json.RawMessage{json.RawMessage(`"accept"`), json.RawMessage(`"decline"`)}
 	meta, err := json.Marshal(provider.ApprovalRequest{
-		RequestID: id, ThreadID: threadID, Kind: triage.ApprovalKindTrackerWrite, ToolName: "ticket_update",
-		Title: fmt.Sprintf("Change %d tickets", len(approval.Tickets)), Input: input, AvailableDecisions: &decisions,
+		RequestID: id, ThreadID: threadID, Kind: triage.ApprovalKindTrackerWrite, ToolName: approval.Tool,
+		Title: approval.Title, Input: input, AvailableDecisions: &decisions,
 	})
 	if err != nil {
 		return fmt.Errorf("tracker tools: encode the approval: %w", err)
@@ -204,7 +204,7 @@ func (h trackerToolsHost) Approve(ctx context.Context, threadID string, approval
 		}
 		return errorsx.Public(codeTrackerDenied, "The user denied this change; nothing was sent.", nil)
 	case <-timer.C:
-		ended = errorsx.Public(codeTrackerUnseen, fmt.Sprintf("The user did not answer within %d minutes; nothing was sent.", int(a.trackerMCP.approvals.waitFor()/time.Minute)), nil)
+		ended = errorsx.Public(codeTrackerUnseen, fmt.Sprintf("The user did not answer within %s; nothing was sent.", waitText(a.trackerMCP.approvals.waitFor())), nil)
 	case <-ctx.Done():
 		ended = ctx.Err()
 	}
@@ -249,6 +249,13 @@ func (a *App) respondToTrackerWrite(threadID string, claim triage.PromptClaim, r
 	if decision != "approved" && decision != "declined" {
 		a.releasePrompt(claim)
 		return fmt.Errorf("approval %s: a tracker write is approved or denied, not %q", response.RequestID, response.Decision)
+	}
+	if decision == "approved" && !response.Shown {
+		// A screen that did not draw the changes (v0.0.19, a build from
+		// before the tracker write's panel, a panel that failed to draw
+		// them) showed the person nothing to approve.
+		a.releasePrompt(claim)
+		return fmt.Errorf("approval %s: this screen runs an older Agent Overflow that cannot show what this change sends; approve or deny it on a screen with the current version, or update this one", response.RequestID)
 	}
 	if !a.trackerMCP.approvals.settle(threadID, response.RequestID, decision == "approved") {
 		// The call ended first, and withdraws the prompt.
@@ -311,6 +318,32 @@ func (h trackerToolsHost) Drafted(threadID string, row trackertools.TimeRow) {
 		// The draft stands and its answer reaches the agent; the row the
 		// store refused is shown as unsaved (triage's report).
 		log.Printf("tracker tools: the time draft row of %s: %v", threadID, err)
+	}
+}
+
+// Posted writes the row of a time_draft post that ran, once, with its
+// title fixed as the post left it (trackertools.TimePostRow.Title); it is
+// never rewritten.
+func (h trackerToolsHost) Posted(threadID string, row trackertools.TimePostRow) {
+	a := h.a
+	if a.triage == nil {
+		return
+	}
+	meta, err := json.Marshal(struct {
+		Kind string `json:"kind"`
+		trackertools.TimePostRow
+	}{Kind: "time_post", TimePostRow: row})
+	if err != nil {
+		log.Printf("tracker tools: encode the time post row of %s: %v", threadID, err)
+		return
+	}
+	if err := a.triage.HandleSynthetic(provider.ProviderEvent{
+		Kind: provider.EventNotification, ThreadID: threadID, ItemID: trackerApprovalPrefix + row.ID, Content: row.Title(),
+		Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		// The post stands and its answer reaches the agent; the row the
+		// store refused is shown as unsaved (triage's report).
+		log.Printf("tracker tools: the time post row of %s: %v", threadID, err)
 	}
 }
 
