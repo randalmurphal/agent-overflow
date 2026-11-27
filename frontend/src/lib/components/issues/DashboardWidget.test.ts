@@ -202,7 +202,7 @@ it('opens a listed ticket, and the rest and the uncounted in the drill', async (
 
 describe('a chart of the sprint\'s days', () => {
   const day = (key: string, label: string, v: object, over: object = {}) => ({ key, label, cells: [v], total: v, ...over });
-  const burn = view({ id: 'burndown', title: 'Burndown', form: 'line', bucket: 'day', unit: 'estimate', good: 'down', width: 6 });
+  const burn = view({ id: 'burndown', title: 'Burndown', form: 'line', bucket: 'day', unit: 'estimate', good: 'down', width: 6, pace: true });
   const buckets = [
     day('day:start', 'Start', { v: 12 }),
     day('day:2026-11-23', 'Nov 23', { v: 10, nc: 1 }),
@@ -219,6 +219,29 @@ describe('a chart of the sprint\'s days', () => {
     expect(none.getByTestId('dashboard-widget-note').textContent).toBe('No sprint is active on this board.');
     expect(none.queryByTestId('dashboard-line')).toBeNull();
   });
+
+  it('draws an even pace for the burndown alone, not for any line of days', () => {
+    const value = { id: 'burndown', series: [''], buckets } as unknown as WidgetValue;
+    const paced = draw(burn, value);
+    expect(paced.getByTestId('dashboard-legend').textContent).toContain('On pace');
+    paced.unmount();
+    const made = draw(view({ id: 'w_1', title: 'Made per day', form: 'line', bucket: 'day', unit: 'tickets', width: 6 }), { ...value, id: 'w_1' } as WidgetValue);
+    expect(made.queryByTestId('dashboard-legend')).toBeNull();
+  });
+});
+
+it('adds no total to a table whose series overlap', () => {
+  const value = {
+    id: 'sprint_scope',
+    series: ['Committed', 'Added', 'Removed', 'Completed'],
+    buckets: [{ key: 'sprint:1', label: 'WEB Sprint 1', cells: [{ v: 6 }, { v: 7 }, { v: 3 }, { v: 3 }], total: { v: 19 } }],
+  } as unknown as WidgetValue;
+  const v = { id: 'sprint_scope', title: 'Committed, added, removed and completed', form: 'table', bucket: 'sprint', series: value.series };
+  const overlapping = draw(view({ ...v, overlap: true }), value);
+  expect(overlapping.queryByTestId('dashboard-cell-total')).toBeNull();
+  expect(overlapping.getByTestId('dashboard-table').textContent).not.toContain('Total');
+  overlapping.unmount();
+  expect(draw(view(v), value).getByTestId('dashboard-cell-total')).toBeTruthy();
 });
 
 it('compares a state with what held when the range began, not with the range before', () => {

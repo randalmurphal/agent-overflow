@@ -823,6 +823,12 @@ export class WidgetView {
      */
     "state"?: boolean;
     "series"?: string[];
+
+    /**
+     * Pace and Overlap are the metric's (Metric.Pace, Metric.Overlap).
+     */
+    "pace"?: boolean;
+    "overlap"?: boolean;
     "how": How;
 
     /** Creates a new WidgetView instance. */
@@ -854,13 +860,13 @@ export class WidgetView {
      */
     static createFrom($$source: any = {}): WidgetView {
         const $$createField9_0 = $$createType14;
-        const $$createField10_0 = $$createType19;
+        const $$createField12_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("series" in $$parsedSource) {
             $$parsedSource["series"] = $$createField9_0($$parsedSource["series"]);
         }
         if ("how" in $$parsedSource) {
-            $$parsedSource["how"] = $$createField10_0($$parsedSource["how"]);
+            $$parsedSource["how"] = $$createField12_0($$parsedSource["how"]);
         }
         return new WidgetView($$parsedSource as Partial<WidgetView>);
     }
