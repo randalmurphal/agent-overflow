@@ -228,12 +228,6 @@ export class DrillAnswer {
     "rows": TicketRow[];
     "at": number;
 
-    /**
-     * Unread is how many working days of the viewer's logged time the
-     * drilled number counts were not read (worklogs.go).
-     */
-    "unread"?: number;
-
     /** Creates a new DrillAnswer instance. */
     constructor($$source: Partial<DrillAnswer> = {}) {
         if (!("title" in $$source)) {
