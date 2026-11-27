@@ -7,6 +7,11 @@ package store
 //     worklog (source 2) of an issue, its author's account (person), when
 //     it was made (at: a comment's creation, a worklog's start, Unix ms)
 //     and a worklog's time spent in seconds (0 for a comment). No text.
+//     Source 3 is a pull request approval, which has no time (at 0) and
+//     names its reviewer by account (person) or, when no single account
+//     has the name the development data gives, by that name alone
+//     (unmatched, person empty); no writer stores one yet. Each source's
+//     shape is checked on its own.
 //   - tracker_cache_issue_act_reads: one receipt per issue and source, the
 //     issue's update time the read returned (read_for) and the read's
 //     order time (read_at). An issue's acts of a source are what its read
@@ -24,18 +29,24 @@ const trackerActsV177SQL = `
 CREATE TABLE tracker_cache_issue_acts (
  root_id INTEGER NOT NULL,
  issue_id TEXT NOT NULL,
- source INTEGER NOT NULL CHECK(source IN (1, 2)),
+ source INTEGER NOT NULL,
  act_id TEXT NOT NULL CHECK(act_id <> ''),
- person TEXT NOT NULL CHECK(person <> ''),
- at INTEGER NOT NULL CHECK(at > 0),
- seconds INTEGER NOT NULL CHECK(seconds >= 0 AND (source = 2 OR seconds = 0)),
+ person TEXT NOT NULL,
+ unmatched TEXT NOT NULL DEFAULT '',
+ at INTEGER NOT NULL,
+ seconds INTEGER NOT NULL,
+ CHECK(CASE source
+  WHEN 1 THEN person <> '' AND unmatched = '' AND at > 0 AND seconds = 0
+  WHEN 2 THEN person <> '' AND unmatched = '' AND at > 0 AND seconds >= 0
+  WHEN 3 THEN (person = '') <> (unmatched = '') AND at = 0 AND seconds = 0
+  ELSE 0 END),
  PRIMARY KEY (root_id, issue_id, source, act_id),
  FOREIGN KEY (root_id, issue_id) REFERENCES tracker_cache_issues(root_id, issue_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
 CREATE TABLE tracker_cache_issue_act_reads (
  root_id INTEGER NOT NULL,
  issue_id TEXT NOT NULL,
- source INTEGER NOT NULL CHECK(source IN (1, 2)),
+ source INTEGER NOT NULL CHECK(source IN (1, 2, 3)),
  read_for INTEGER NOT NULL CHECK(read_for > 0),
  read_at INTEGER NOT NULL CHECK(read_at > 0),
  PRIMARY KEY (root_id, issue_id, source),
