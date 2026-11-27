@@ -377,7 +377,9 @@ func TestTimeDraftSaysASettingsTicketThatIsGone(t *testing.T) {
 	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, lookup: map[string]map[string]string{timeJira.ID: {"WEB-1": "10101"}}}
 	h := &fakeHost{time: trackerapp.TimeSettings{Meetings: timeTicket("OPS-1"), TimeOff: timeTicket("OPS-2")}}
 	s := timeServer(f, h)
-	entry := func(key string) map[string]any { return map[string]any{"day": "2026-11-24", "key": key, "hours": 1, "reason": "Standup"} }
+	entry := func(key string) map[string]any {
+		return map[string]any{"day": "2026-11-24", "key": key, "hours": 1, "reason": "Standup"}
+	}
 	_, err := timeCall(t, s, "time_draft", map[string]any{"entries": []map[string]any{entry("WEB-1"), entry("ops-1")}})
 	refused(t, err, CodeNotFound, "OPS-1, this project's meetings ticket in Settings > Issues > Time, cannot be found on example.atlassian.net, or this connection cannot see it. "+
 		"Leave out key to ask the user which ticket, and tell them to choose another meetings ticket there.")
@@ -406,7 +408,9 @@ func TestTimeDraftKeepsTimeOffEpics(t *testing.T) {
 			// The mirror holds WEB-8, an epic, and WEB-7, whose card has no type.
 			keyed: map[string][]trackerapp.KeyedTicket{"WEB-8": {{Connection: timeJira.ID, Issue: "10108"}}, "WEB-7": {{Connection: timeJira.ID, Issue: "10107"}}},
 			cards: map[string]trackerapp.CardView{"conn-jira/10108": {Title: "Mirrored epic", Type: epic}, "conn-jira/10107": {Title: "Untyped"}}}
-		f.draft = func(string, trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) { return trackerapp.TimeDraftView{}, nil }
+		f.draft = func(string, trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) {
+			return trackerapp.TimeDraftView{}, nil
+		}
 		return f
 	}
 	entry := func(key string, offer ...string) map[string]any {
