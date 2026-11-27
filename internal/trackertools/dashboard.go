@@ -70,8 +70,8 @@ type widgetAnswer struct {
 	PreviousNotCounted int `json:"previous_not_counted,omitempty"`
 	// NotRead and PreviousNotRead are the days of logged time not read: a
 	// number's, else the widget's (a chart or list of no rows yet). Old
-	// and PreviousOld say a number counts days of logged time older than
-	// the 182 days kept, so it is never known.
+	// and PreviousOld say a number, or a list, counts days of logged time
+	// older than the 182 days kept, so it is never known.
 	NotRead         int             `json:"not_read,omitempty"`
 	PreviousNotRead int             `json:"previous_not_read,omitempty"`
 	Old             bool            `json:"old,omitempty"`
@@ -157,7 +157,7 @@ func (s *Server) dashboardWidget(ctx context.Context, caller Caller, raw json.Ra
 		}
 		out.NotRead, out.Old = v.UR, v.Old
 	} else {
-		out.NotRead = len(tried.Value.Unread)
+		out.NotRead, out.Old = len(tried.Value.Unread), tried.Value.Old
 	}
 	if p := tried.Value.Previous; p != nil {
 		out.PreviousNotCounted, out.PreviousNotRead, out.PreviousOld = p.NC, p.UR, p.Old

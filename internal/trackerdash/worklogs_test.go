@@ -559,7 +559,8 @@ func TestAnEvaluationTellsTheReadsWhatItNeeds(t *testing.T) {
 // coverageBoard is a sprints board of the viewer's logged time, today
 // (25 November) not read, with six closed sprints: p1, p2 and p3 from 200
 // days ago to 160 days ago, around the copy's first day (28 May, 181 days
-// ago), and r1, r2 and r3 from 60 days ago to 18 days ago; and active,
+// ago; p3 begins as it does, at its midnight), and r1, r2 and r3 from 60
+// days ago to 18 days ago; and active,
 // from 5 days ago to 9 days on. Its metrics count the logged time now
 // (now), by the period of each row's day (event), and as a state that
 // holds from its day on (state), and by the active sprint's days (days).
@@ -570,7 +571,7 @@ func coverageBoard() Board {
 	for i, s := range []struct {
 		id         string
 		start, end float64
-	}{{"p1", 200, 190}, {"p2", 190, 176}, {"p3", 176, 160}, {"r1", 60, 46}, {"r2", 46, 32}, {"r3", 32, 18}} {
+	}{{"p1", 200, 190}, {"p2", 190, 176}, {"p3", 181.5, 160}, {"r1", 60, 46}, {"r2", 46, 32}, {"r3", 32, 18}} {
 		f.sprint(s.id, s.id, "closed", ago(s.start), ago(s.end), i+1)
 	}
 	f.dated("active", "active", "active", ago(5), ago(-9), 0, 7)
@@ -582,6 +583,7 @@ func coverageBoard() Board {
 	b.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine", Widgets: []Widget{
 		{ID: "now", Metric: "now", Form: FormNumber, Width: 3}, {ID: "now_bars", Metric: "now_by", Form: FormBars, Width: 6},
 		{ID: "event", Metric: "event", Form: FormNumber, Width: 3}, {ID: "event_bars", Metric: "event", Form: FormBars, Width: 6},
+		{ID: "event_list", Metric: "event", Form: FormList, Width: 6},
 		{ID: "state", Metric: "state", Form: FormNumber, Width: 3}, {ID: "state_bars", Metric: "state", Form: FormBars, Width: 6},
 		{ID: "days", Metric: "days", Form: FormNumber, Width: 3}, {ID: "days_bars", Metric: "days", Form: FormBars, Width: 6},
 	}}}, Metrics: map[string]Metric{
@@ -599,8 +601,9 @@ func coverageBoard() Board {
 // instant on or after the copy's first day by the window's day not read;
 // a period, several periods or a state at an instant that reach before
 // that day for good (old); a period still to come, and a range with no
-// period, not at all. Each kind is checked where it can occur: the
-// widget's number, a bucket, a trend point, the comparison, the drill and
+// period, not at all. A period that begins on that day's midnight needs
+// the window alone. Each kind is checked where it can occur: the widget's
+// number, a bucket, a trend point, the comparison, a list, the drill and
 // Try.
 func TestEachLoggedNumberIsKnownByWhatItsReductionTook(t *testing.T) {
 	t.Parallel()
@@ -657,6 +660,9 @@ func TestEachLoggedNumberIsKnownByWhatItsReductionTook(t *testing.T) {
 	if len(now.Unread) != 1 || len(event.Unread) != 1 {
 		t.Errorf("the widgets list %v and %v; want today", now.Unread, event.Unread)
 	}
+	if list := widgetOf(t, a, "event_list"); len(list.Unread) != 1 || list.Old {
+		t.Errorf("an event period's list lists %v, old %v; want today, not old", list.Unread, list.Old)
+	}
 
 	// The last 10 sprints, p1 to r3: p1 and p2 begin before the copy's
 	// first day; p1 ends before it, p2 after.
@@ -664,7 +670,12 @@ func TestEachLoggedNumberIsKnownByWhatItsReductionTook(t *testing.T) {
 	a = mustEvaluate(t, evaluator(), b, r)
 	event = widgetOf(t, a, "event")
 	check("several periods from before the window: the number", num(event.Value), old)
+	// p3 begins at the first day's midnight: none of its rows is of a day
+	// before it.
 	checkAll("an event period from before the window: the trend", trendOf(event), []string{old, old, unread, unread, unread, unread})
+	if list := widgetOf(t, a, "event_list"); list.Unread != nil || !list.Old {
+		t.Errorf("a list of event periods from before the window lists %v, old %v; want old and no day", list.Unread, list.Old)
+	}
 	checkAll("an event period from before the window: the buckets", buckets(widgetOf(t, a, "event_bars")), []string{old, old, unread, unread, unread, unread})
 	check("an event period from before the window: a bar's drill", drill(r, "event_bars", "sprint:p2"), old)
 	check("several periods from before the window: the drill", drill(r, "event", ""), old)

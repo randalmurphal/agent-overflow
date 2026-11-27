@@ -225,6 +225,8 @@ func num(n *Num) string {
 	switch {
 	case n == nil:
 		return "absent"
+	case (n.Old || n.UR > 0) && n.V != nil:
+		return fmt.Sprintf("%g and not known", *n.V)
 	case n.Gap:
 		return "gap"
 	case n.Old:

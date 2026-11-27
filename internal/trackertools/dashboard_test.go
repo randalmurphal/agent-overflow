@@ -341,6 +341,17 @@ func TestDashboardWidgetSaysTheDaysNotReadAndItsNote(t *testing.T) {
 			t.Errorf("answer %s lacks %s", answer, want)
 		}
 	}
+	// A list says it on the widget.
+	f = &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
+		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{Old: true, Tickets: []trackerdash.TicketRow{{Key: "WEB-1"}}}}, nil
+	}}
+	answer, err = widgetCall(t, f, webBoards(), map[string]any{"board": "1", "widget": openWidget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"unit":"seconds","old":true`; !strings.Contains(answer, want) {
+		t.Errorf("a list's answer %s lacks %s", answer, want)
+	}
 	f = &fakeTracker{try: func(trackerapp.KeptWidget) (trackerdash.Tried, error) {
 		return trackerdash.Tried{Unit: "seconds", Value: trackerdash.WidgetValue{Note: "Only your own logged time is read."}}, nil
 	}}

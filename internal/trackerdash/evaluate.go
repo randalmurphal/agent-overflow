@@ -242,6 +242,10 @@ type WidgetValue struct {
 	// Unread is the range's working days of the viewer's logged time the
 	// copy holds no read of, for a metric that reads it (worklogs.go).
 	Unread []string `json:"unread,omitempty"`
+	// Old is a list's whose rows reach a day of the viewer's logged time
+	// older than the copy holds, so it is never whole (worklogs.go); a
+	// number says so in its Num.
+	Old bool `json:"old,omitempty"`
 }
 
 // Answer is one evaluation of a dashboard and of the widgets agents
@@ -1544,7 +1548,7 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 		}
 	case FormList:
 		t := g.listed()
-		ev.need(t.cover)
+		_, out.Old = ev.need(t.cover)
 		rows := slices.Clone(t.rows)
 		sortDrill(rows, ev.keyOf)
 		out.NotCounted = notCounted(t.rows)
