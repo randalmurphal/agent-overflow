@@ -1207,8 +1207,12 @@ export function dashboardWidgetResultView(data: string): AoResultView | null {
   if (!reply) return null;
   const value = num(reply, 'value');
   const rows = num(reply, 'rows') ?? 0;
-  view.outcome = join(value !== null ? widgetAmount(value, str(reply, 'unit')) : '', plural(rows, 'row'), str(reply, 'board') ? `on ${str(reply, 'board')}` : '');
-  view.note = join(str(reply, 'shown'), str(reply, 'partial'));
+  // A number not known for days of your logged time not read says so,
+  // and a widget that counts nothing here says why (its note).
+  const notRead = num(reply, 'not_read') ?? 0;
+  const amount = value !== null ? widgetAmount(value, str(reply, 'unit')) : notRead > 0 ? `not known, ${notRead} ${notRead === 1 ? 'day' : 'days'} of your logged time not read` : '';
+  view.outcome = join(amount, plural(rows, 'row'), str(reply, 'board') ? `on ${str(reply, 'board')}` : '');
+  view.note = join(str(reply, 'note'), str(reply, 'shown'), str(reply, 'partial'));
   fact(view.facts, 'range', str(reply, 'range'));
   fact(view.facts, 'counts', str(reply, 'counts'));
   for (const row of list(reply.first_rows)) {
