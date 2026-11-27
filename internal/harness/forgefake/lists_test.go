@@ -148,7 +148,8 @@ func TestGitLabMergeRequestListCarriesTheListFields(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("list = %v", got)
 	}
-	fork, mine := got[0], got[1]
+	// Newest update first: the draft was updated after the fork's.
+	mine, fork := got[0], got[1]
 	if mine["draft"] != true || mine["detailed_merge_status"] != "draft_status" || mine["updated_at"] != "2026-10-05T00:00:00Z" ||
 		mine["created_at"] != "2026-01-01T00:00:00Z" || mustJSON(t, mine["author"]) != `{"name":"","username":"octo"}` ||
 		mustJSON(t, mine["reviewers"]) != `[{"name":"","state":"active","username":"bob"}]` || mine["user_notes_count"] != float64(0) ||
