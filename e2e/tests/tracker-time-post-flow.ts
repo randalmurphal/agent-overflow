@@ -57,7 +57,7 @@ async function answer(harness: HarnessApp, cwd: string): Promise<{ isError: bool
 }
 
 /** Drafts the day, opens the thread, asks for the post, and answers its prompt once it shows. */
-async function askToPost(harness: HarnessApp, page: Page, tag: string, compact: boolean): Promise<{ path: string; prompt: Locator; label: string }> {
+async function askToPost(harness: HarnessApp, page: Page, tag: string, compact: boolean): Promise<{ path: string; prompt: Locator; day: string; label: string }> {
   const { day, label } = twoDaysAgo();
   const title = `Timesheet ${tag}`;
   const { path, threadId } = await seedPoster(harness, tag, title, day);
@@ -86,7 +86,7 @@ async function askToPost(harness: HarnessApp, page: Page, tag: string, compact: 
     expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
   }
   expect(await trackerRequests(harness, WORKLOG_ROUTE), 'logged before the person answered').toHaveLength(0);
-  return { path, prompt, label };
+  return { path, prompt, day, label };
 }
 
 function postRow(page: Page): Locator {
@@ -96,11 +96,11 @@ function postRow(page: Page): Locator {
 export function registerTimePostFlow({ compact }: TimePostSurface): void {
   test('an approved post logs the entries the prompt showed and adds its row', async ({ harness, page }) => {
     test.setTimeout(240_000);
-    const { path, prompt, label } = await askToPost(harness, page, compact ? 'approve-compact' : 'approve', compact);
+    const { path, prompt, day, label } = await askToPost(harness, page, compact ? 'approve-compact' : 'approve', compact);
     await press(prompt.getByTestId('approval-allow'), compact);
     const posted = await answer(harness, path);
     expect(posted.isError, posted.text).toBe(false);
-    expect(JSON.parse(posted.text)).toEqual({ posts: [{ posted: 2, of: 2, sentence: `Posted 2 of 2 entries for ${label}.` }] });
+    expect(JSON.parse(posted.text)).toEqual({ logged: [{ day, key: 'WEB-1', hours: 1.5 }, { day, key: 'WEB-2', hours: 0.5 }] });
     expect(await trackerRequests(harness, WORKLOG_ROUTE)).toHaveLength(2);
     await expect(page.getByTestId('composer-pending-approval')).toHaveCount(0);
     await expandActivityRuns(page);

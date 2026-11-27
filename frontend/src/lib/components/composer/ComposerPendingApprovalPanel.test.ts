@@ -82,9 +82,9 @@ describe('<ComposerPendingApprovalPanel> tracker write', () => {
         id: 'call-2',
         tickets: [
           { key: 'WEB-1', title: 'Checkout form', changes: [{ line: 'Tue Nov 24, 1h 30m: Built the form' }] },
-          { key: 'WEB-3', changes: [{ line: 'Tue Nov 24, 1h: Triaged (not sent: it may already be logged)' }] },
+          { key: 'WEB-3', changes: [{ line: 'Tue Nov 24, 1h: Triaged (may already be logged, so it is not sent again; look at the day's logged time, and remove the entry if the time is there, or log the time by hand and then remove the entry)' }] },
         ],
-        notes: ['Tue Nov 24, 15m: Standup (not posted: its ticket is not picked yet)'],
+        notes: ['Tue Nov 24, 15m: Standup (its ticket is not picked yet, so it is not posted)'],
       },
     } as ApprovalRequest;
     const { getByTestId, getAllByTestId, queryByTestId } = render(ComposerPendingApprovalPanel, {
@@ -93,10 +93,10 @@ describe('<ComposerPendingApprovalPanel> tracker write', () => {
     expect(getByTestId('composer-pending-approval-heading').textContent).toBe('Log time for Tue Nov 24');
     expect(getAllByTestId('tracker-write-approval-change').map((c) => c.textContent)).toEqual([
       'Tue Nov 24, 1h 30m: Built the form',
-      'Tue Nov 24, 1h: Triaged (not sent: it may already be logged)',
+      'Tue Nov 24, 1h: Triaged (may already be logged, so it is not sent again; look at the day's logged time, and remove the entry if the time is there, or log the time by hand and then remove the entry)',
     ]);
     expect(getAllByTestId('tracker-write-approval-note').map((n) => n.textContent)).toEqual([
-      'Tue Nov 24, 15m: Standup (not posted: its ticket is not picked yet)',
+      'Tue Nov 24, 15m: Standup (its ticket is not picked yet, so it is not posted)',
     ]);
     expect(queryByTestId('tracker-write-approval-comment')).toBeNull();
   });

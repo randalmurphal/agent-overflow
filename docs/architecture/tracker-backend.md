@@ -2292,8 +2292,8 @@ Status: built: `ticket_find`, `ticket_read`, `ticket_create` and
 `ticket_update` on the `ao-tracker-tools` server, with the read-only
 refusal, the approval and the timeline row ([Writes by
 agents](#writes-by-agents)); `time_read` and `time_draft`, with logged
-time and the draft ([Time](#time)). An agent's post of drafted time is
-not built.
+time and the draft, and the post of drafted time once the person
+approves it ([Time](#time)).
 
 **Who has them.** A session gets the server when its thread belongs to a
 project, its provider is Claude or Codex, and the computer has a Jira or
@@ -2559,7 +2559,11 @@ nothing fetched. A call whose `set` and comment together pass 256 KiB is
 refused before any prompt, telling the model to make the change in
 smaller calls. The person's answer reaches the call by the kind of the
 prompt triage holds open (`triage.PromptClaim.Kind`), not by its request
-ID, and the waiter is keyed by thread and request ID. Triage never
+ID, and the waiter is keyed by thread and request ID. An answer that
+names no prompt occurrence comes from a screen that predates it, as a
+paired v0.0.19 one does, which shows no tracker write's changes: it is
+refused saying to answer on a screen with the current version or to
+update, and the prompt stays open. Triage never
 routes it to a spawner (`triage.promptRoutable`), so a worker's tracker
 write is the person's, which the worker's composer shows on every screen
 and its spawner's Agents row reaches like any prompt routed to nobody
@@ -2746,8 +2750,8 @@ issue, key, title and applied steps; each key opens the ticket.
 Jira connection is on as it starts (`trackerMCPAccess.Time`); a session
 with only Linear gets the four ticket tools, and a call of a time tool
 from it is refused as no such tool. Their two definitions are 268 and
-714 bytes, 984 of the tool list with the commas that join them
-(`TestTheTimeToolsAreGivenWithAJiraConnection`); the whole list is 2,858
+687 bytes, 957 of the tool list with the commas that join them
+(`TestTheTimeToolsAreGivenWithAJiraConnection`); the whole list is 2,831
 bytes and the guide 172 (`TestTrackerMCPToolListAndGuideStayWithinTheirBound`). The time
 is the connection's verified account's: a connection with no verified
 account, or whose key file holds another token than the one verified, is
@@ -2791,24 +2795,38 @@ bare;
 
 **`time_draft` with `post`** names up to 7 days (YYYY-MM-DD) and drafts
 nothing (`trackertools/time_post.go`). It reads `Host.WritePolicy` at
-admission, then each Jira connection's entries not yet logged on those
-days, with no tracker request (`trackerapp.Service.OpenTimeEntries`):
+admission, then the entries not yet logged on exactly those days of each
+verified Jira connection, with no tracker request
+(`trackerapp.Service.OpenTimeEntries`, the day index, at most 251 rows):
 every entry, whichever thread or person drafted it, as a day's approval
-names them. A call with no drafted entry on a ticket is refused, as is
-one past 250 entries on a connection or 256 KiB of approval. It always
-asks the person, through the tracker write's prompt (above), titled `Log
-time for Tue Nov 24`: each entry under its ticket's key (with its site
-when more than one connection is on) as its day, time and whole reason,
-an entry that will not be sent saying why (it may already be logged, or
-it is being posted), and each open question as a note
-(`trackerapp.EntryLine`). Once approved it reads the policy again, then
+names them. A connection never verified holds no draft and is not read;
+one whose read is refused is named in `unread` and on the prompt, and the
+others go on; the call fails when every connection read is refused. Days
+with no entry not yet logged are refused, as are more than 250 entries,
+256 KiB of approval, or more entries than one answer names. When no entry
+is one the post would send, the answer gives each entry's reason and
+nothing is asked. Otherwise it always asks the person, through the
+tracker write's prompt (above), titled `Log time for Tue Nov 24`: each
+entry under its ticket's key as its day, time and whole reason, an entry
+that will not be sent saying why in the words the answer uses
+(`trackerapp.NotSentWhy`: it may already be logged, it is being posted,
+its ticket is not picked), and each question as a note
+(`trackerapp.EntryLine`). A key carries its site when more than one
+connection is on and, when two Jira connections share the site, the name
+the person gave the connection in the Issues settings, or its account
+email when they gave none. Once approved it reads the policy again, then
 posts on each connection exactly the entries shown, at the revisions
 shown, through `PostTrackerTimeEntries` on the server's context, so a
 post is a day's approval with its rules: an entry the person edited or
-removed while the prompt was open is named as not posted, and one drafted
-meanwhile is not sent. The answer is per connection: the entries posted,
-those with a ticket it offered, and the post's sentence (or the
-connection's error); the call fails only when no connection's post ran.
+removed while the prompt was open is not posted, and one drafted
+meanwhile is not sent. The answer names every entry as the prompt showed
+it (day, key, hours): `logged`, and `not_logged` grouped by why, from
+each entry's outcome (`PostTimeView.Outcomes`: posted, uncertain or
+not_posted); the reasons share what the entries leave of the answer's
+budget. A connection whose post was refused before it sent lists its
+entries as not sent with the refusal; the call fails only when no
+connection's post sent anything. A post that failed after it sent
+answers the outcomes it knows, and its error is logged.
 
 **The draft.** There is no draft object: the entries of a connection's
 author by day (`tracker_time_entries`, [schema](schema.md)), each naming
@@ -2860,9 +2878,12 @@ it, and says that the time may already be logged, to look at the day's
 logged time, and to remove the entry if the time is there or to log the
 time by hand and then remove it; the day's other entries post. The answer is built after the post from the entries
 as they are then, names every entry, says in one sentence each one not
-posted, with the tracker's refusal, and names the days whose worklogs
+posted, with the tracker's refusal, gives each named entry's outcome
+(`Outcomes`), and names the days whose worklogs
 could not be read back after the post, which show the posted time after
-their next read. One day's approval of three entries is 3 POSTs and 2
+their next read. A post that fails after it sent (its settle's store
+write, the service's stop) answers the outcomes it knows with the error.
+One day's approval of three entries is 3 POSTs and 2
 reads on Jira's own worklogs (the day before the post, for time logged
 since, and after it); on Tempo it is 3 POSTs, 2 reads of the worklogs and
 2 of the Jira issues they name, the timesheet approvals and, once per
@@ -2878,9 +2899,10 @@ naming the call, the connection and the days, and never rewrites it; a
 thread reads the call's entries as they are now through
 `ThreadTimeEntries`. A post that ran adds one row of kind `time_post`,
 written once with the count it ended with (`Logged 2 of 3 entries for
-Tue Nov 24`, of the entries on tickets the prompt offered to log),
-naming the call, the connections and the days; a denied or unanswered
-post adds none.
+Tue Nov 24`, of the entries the prompt offered to log, and `; 1 may have
+been logged` for those whose answer was lost), naming the call, the
+connections and the days; a denied or unanswered post, or one refused on
+every connection before it sent, adds none.
 
 ## Tests
 
@@ -2963,7 +2985,5 @@ Not built, owed by the app layer:
   that edit them. A query that
   needs part of the setup takes it as a bound argument, as the status
   groups are; nothing of the file is copied into the mirror.
-- An agent's post of drafted time after the person approves it in the
-  thread ([Time](#time)).
 - The Time screen's drafted entries and the `time_draft` row's card.
 - Searching the forge by key for a pull request outside the stored list.
