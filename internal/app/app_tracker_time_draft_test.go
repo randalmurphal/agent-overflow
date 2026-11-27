@@ -103,7 +103,7 @@ func TestAnAgentsTimeDraftPostsOnlyOnTheApproval(t *testing.T) {
 		t.Fatalf("the row's meta %s: %v", rows[0].Meta, err)
 	}
 
-	entries, err := f.a.ThreadTimeEntries(ctx, thread.ID)
+	entries, err := f.a.ThreadTimeEntries(ctx, thread.ID, meta.Call)
 	if err != nil || len(entries) != 2 || entries[0].Key != "WEB-1" || entries[0].Call != meta.Call || entries[1].Key != "" || entries[1].Offers[0].Key != "WEB-3" {
 		t.Fatalf("ThreadTimeEntries = %+v, %v", entries, err)
 	}
@@ -131,8 +131,8 @@ func TestAnAgentsTimeDraftPostsOnlyOnTheApproval(t *testing.T) {
 	if !isError || text != "[tracker_read_only] This thread is read-only, so it cannot change tickets; ask the user to change its access." {
 		t.Fatalf("a read-only draft = %s (error %v)", text, isError)
 	}
-	if got, err := f.a.ThreadTimeEntries(ctx, readOnly.ID); err != nil || len(got) != 0 {
-		t.Fatalf("the read-only thread drafted %+v, %v", got, err)
+	if rows := timeDraftRows(t, f.a, readOnly.ID); len(rows) != 0 {
+		t.Fatalf("the read-only thread drafted %+v", rows)
 	}
 }
 
