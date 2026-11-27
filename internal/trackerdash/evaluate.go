@@ -88,14 +88,16 @@ type Kind struct {
 }
 
 // Board is the board an evaluation reads: Fill exports it, Epics is as
-// Kind has it, Viewer is the connection's verified account, which Mine
-// narrows to ("" before one), and Own is what its project keeps and its
-// agents proposed beside the built-in dashboard.
+// Kind has it, TimeTracking is whether its tracker logs time (Jira),
+// Viewer is the connection's verified account, which Mine narrows to and
+// whose logged time the copy holds ("" before one), and Own is what its
+// project keeps and its agents proposed beside the built-in dashboard.
 type Board struct {
-	Fill   Fill
-	Epics  bool
-	Viewer string
-	Own    Own
+	Fill         Fill
+	Epics        bool
+	TimeTracking bool
+	Viewer       string
+	Own          Own
 }
 
 // Request is what one evaluation counts: a dashboard, over a range,
@@ -228,6 +230,9 @@ type WidgetValue struct {
 	// the rule every number's NC follows, or the tickets of a chart's or
 	// table's range that it places in no bucket (a row with no instant).
 	NotCounted int `json:"not_counted,omitempty"`
+	// Unread is the range's working days of the viewer's logged time the
+	// copy holds no read of, for a metric that reads it (worklogs.go).
+	Unread []string `json:"unread,omitempty"`
 }
 
 // Answer is one evaluation of a dashboard and of the widgets agents
@@ -243,6 +248,9 @@ type Answer struct {
 	Epic      *Name         `json:"epic,omitempty"`
 	At        int64         `json:"at"`
 	Widgets   []WidgetValue `json:"widgets"`
+	// Viewer is the account whose logged time the copy holds, whose days
+	// not read (WidgetValue.Unread) the page reads; "" before one.
+	Viewer string `json:"viewer,omitempty"`
 }
 
 // Listing is what a board offers as the screen lays it out: its
@@ -460,13 +468,15 @@ func valueUnit(m Metric, estimates string) string {
 		return "tickets"
 	case UnitDays:
 		return "days"
+	case UnitTime:
+		return "seconds"
 	}
 	return map[string]string{"points": "points", "time": "seconds", "none": "tickets"}[estimates]
 }
 
 // how renders How this is counted from m's definition.
 func how(m Metric, p prepared, plansSprints bool, estimates string) How {
-	unit := map[Unit]string{UnitTickets: "tickets", UnitDays: "days"}[m.Unit]
+	unit := map[Unit]string{UnitTickets: "tickets", UnitDays: "days", UnitTime: "hours logged"}[m.Unit]
 	if m.Unit == UnitEstimate {
 		unit = map[string]string{"points": "points", "time": "estimated hours", "none": "tickets"}[estimates]
 	}
@@ -517,8 +527,13 @@ func dayRangeWords(sprint string) string {
 // and the placement of a row with no instant read for every row; a shown
 // row's title, status and estimate are read with its page (titles).
 type evaluation struct {
-	s         *session
-	export    store.MirrorExport
+	s      *session
+	loc    *time.Location
+	export store.MirrorExport
+	// viewer is Board.Viewer, and readDays the days of the viewer's logged
+	// time the copy holds as read, filled when a metric reads worklogs.
+	viewer    string
+	readDays  map[string]bool
 	estimates string
 	sprints   []sprintRow
 	tickets   map[string]ticketRow
@@ -540,7 +555,7 @@ func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, relat
 		return nil, err
 	}
 	s.asked = asked
-	ev := &evaluation{s: s}
+	ev := &evaluation{s: s, loc: loc, viewer: b.Viewer}
 	if err := ev.fill(ctx, b, relations); err != nil {
 		if closeErr := s.close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
@@ -563,7 +578,16 @@ func (ev *evaluation) fill(ctx context.Context, b Board, relations []string) err
 	}
 	ev.export = export
 	ev.estimates = estimatesOf(export.EstimateUnit)
-	return tooSlow(ctx, ev.readBoard(ctx))
+	if err := ev.readBoard(ctx); err != nil || !slices.Contains(relations, "worklog_days") {
+		return tooSlow(ctx, err)
+	}
+	ev.readDays = map[string]bool{}
+	return tooSlow(ctx, ev.query(ctx, `SELECT day FROM worklog_days`, func(r *sql.Rows) error {
+		var day string
+		err := r.Scan(&day)
+		ev.readDays[day] = true
+		return err
+	}))
 }
 
 // firstReadGap is the range before's gap while the board's first read has
@@ -703,15 +727,20 @@ func (ev *evaluation) narrowing(r Request, viewer string) (narrowing, error) {
 }
 
 // keep is the rows of the narrowed page: a row's person is the metric's
-// person column, else its ticket's assignee; its epic likewise.
-func (ev *evaluation) keep(n narrowing, cols columns, rows []contribution) []contribution {
+// person column, else the viewer for a metric of the viewer's logged time
+// (p reads worklogs), else its ticket's assignee; its epic likewise.
+func (ev *evaluation) keep(n narrowing, p prepared, rows []contribution) []contribution {
 	if n.person == nil && n.epic == nil {
 		return rows
 	}
+	cols := p.cols
 	var out []contribution
 	for _, c := range rows {
 		t := ev.tickets[c.ticket]
 		person, epic := t.assignee, t.epic
+		if p.readsWorklogs() {
+			person = ev.viewer
+		}
 		if cols.has(ColumnPerson) {
 			person = c.person
 		}
@@ -737,11 +766,13 @@ func location(name string) (*time.Location, error) {
 	return loc, nil
 }
 
-// counted is one metric's rows, narrowed, or the sentence of its failure.
+// counted is one metric's rows, narrowed, or the sentence of its failure,
+// or why it counts nothing on this page (note, worklogNote).
 type counted struct {
 	p    prepared
 	rows []contribution
 	err  *MetricError
+	note string
 }
 
 // run runs metric m's prepared statement p, narrowed by n, a state
@@ -758,7 +789,7 @@ func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing
 	if err != nil {
 		return counted{}, fmt.Errorf("count metric %s: %w", m.Name, err)
 	}
-	rows = ev.keep(n, p.cols, rows)
+	rows = ev.keep(n, p, rows)
 	if m.numbersUnit() == UnitEstimate && ev.estimates == "none" {
 		// The board counts tickets (it has no estimates, or its project
 		// counts tickets): each counted row is one ticket, whatever value
@@ -792,6 +823,8 @@ type opened struct {
 	sp        span
 	n         narrowing
 	now       time.Time
+	// timeTracking is Board.TimeTracking.
+	timeTracking bool
 }
 
 // widgets is the dashboard's widgets and then the proposals.
@@ -876,6 +909,7 @@ func (o *opened) resolve(b Board, r Request, loc *time.Location) error {
 	if !o.ev.export.FirstReadDone {
 		o.sp.previousGap = firstReadGap
 	}
+	o.timeTracking = b.TimeTracking
 	if o.n, err = o.ev.narrowing(r, b.Viewer); err != nil {
 		return err
 	}
@@ -940,6 +974,10 @@ func (e *Evaluator) relationsOf(ctx context.Context, k *Kind, metrics map[string
 	out := slices.Clone(boardRelations)
 	for _, a := range asked {
 		out = append(out, a.fills()...)
+		if slices.Contains(a.tables, "worklogs") {
+			// Which days of it were read (worklogs.go).
+			out = append(out, "worklog_days")
+		}
 	}
 	slices.Sort(out)
 	return slices.Compact(out), asked, nil
@@ -952,6 +990,9 @@ func (o *opened) count(m Metric, r reads) (counted, error) {
 	pr := o.preps[m.Name]
 	if pr.err != nil {
 		return counted{err: pr.err}, nil
+	}
+	if note := o.worklogNote(pr.p); note != "" {
+		return counted{p: pr.p, note: note}, nil
 	}
 	now := o.now.UnixMilli()
 	return o.ev.run(o.ctx, m, pr.p, o.n, now, o.sp.since(now), r.instants(now))
@@ -988,7 +1029,7 @@ func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	a := Answer{Range: rangeView(o.sp), Reading: !o.ev.export.FirstReadDone, Estimates: o.ev.estimates, Person: o.n.person, Epic: o.n.epic, At: o.now.UnixMilli(), Widgets: []WidgetValue{}}
+	a := Answer{Range: rangeView(o.sp), Reading: !o.ev.export.FirstReadDone, Estimates: o.ev.estimates, Person: o.n.person, Epic: o.n.epic, At: o.now.UnixMilli(), Widgets: []WidgetValue{}, Viewer: b.Viewer}
 	// A metric runs once for all of its widgets, for what they read.
 	read := map[string]reads{}
 	for _, w := range o.d.Widgets {
@@ -1318,10 +1359,14 @@ func (ev *evaluation) rank(w Widget, m Metric, rows []contribution) (shown, rest
 }
 
 // widget is w's numbers from its metric's rows.
-func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue {
-	out := WidgetValue{ID: w.ID}
+func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out WidgetValue) {
+	out = WidgetValue{ID: w.ID}
 	if c.err != nil {
 		out.Error = c.err.Sentence
+		return out
+	}
+	if c.note != "" {
+		out.Note = c.note
 		return out
 	}
 	if m.Bucket == BucketDay && sp.daysNote != "" {
@@ -1332,6 +1377,9 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) WidgetValue
 		out.RangeWords = dayRangeWords(sp.daysLabel)
 	}
 	g := ev.inRange(m, c, sp)
+	if c.p.readsWorklogs() {
+		defer ev.markWidget(&out, w, m, g, sp)
+	}
 	rows := g.rows
 	switch w.Form {
 	case FormNumber:
@@ -1501,6 +1549,9 @@ type DrillAnswer struct {
 	Restarted bool        `json:"restarted,omitempty"`
 	Rows      []TicketRow `json:"rows"`
 	At        int64       `json:"at"`
+	// Unread is how many working days of the viewer's logged time the
+	// drilled number counts were not read (worklogs.go).
+	Unread int `json:"unread,omitempty"`
 }
 
 // drillReads is where drill r of widget w reads metric m's states: at
@@ -1551,6 +1602,9 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	if c.err != nil {
 		return DrillAnswer{}, refuse("dashboard_metric_failed", c.err.Sentence, nil)
 	}
+	if c.note != "" {
+		return DrillAnswer{}, refuse("dashboard_request_invalid", c.note, nil)
+	}
 	ev, sp := o.ev, o.sp
 	out := DrillAnswer{Title: cmpOr(w.Title, m.Title), Reading: !ev.export.FirstReadDone, Unit: m.numbersUnit(), Estimates: ev.estimates, Page: r.Page, At: o.now.UnixMilli(), Rows: []TicketRow{}}
 	if m.Bucket == BucketDay && sp.daysNote != "" {
@@ -1559,6 +1613,8 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 	g := ev.inRange(m, c, sp)
 	rows := g.rows
 	reduce := func(rows []contribution) Num { return reduceRows(m.Reduce, rows) }
+	// cellPeriod is the period a drill of one bar or point counts.
+	var cellPeriod []period
 	switch {
 	case r.Cell != nil && r.Rest:
 		return DrillAnswer{}, refuse("dashboard_request_invalid", fmt.Sprintf("a drill of widget %q names one cell or the rest, not both", truncate(w.ID, 64)), nil)
@@ -1590,6 +1646,7 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 			return DrillAnswer{}, refuse("dashboard_request_invalid", "that bar is not in the range any more; read the dashboard again", nil)
 		}
 		p := g.periods[j]
+		cellPeriod = []period{p}
 		out.Title += ", " + p.label
 		rows = g.of(p)
 		reduce = func(rows []contribution) Num { return p.value(m.Reduce, rows) }
@@ -1612,6 +1669,14 @@ func (e *Evaluator) Drill(ctx context.Context, b Board, r DrillRequest) (_ Drill
 			out.Title += ", " + r.Cell.Series
 		}
 		out.Value = reduce(rows)
+	}
+	if c.p.readsWorklogs() {
+		days := ev.rangeUnread(g, sp.now)
+		if cellPeriod != nil {
+			days = ev.unreadOf(cellPeriod, sp.now)
+		}
+		out.Unread = len(days)
+		markUnread(&out.Value, out.Unread)
 	}
 	rows = slices.Clone(rows)
 	sortDrill(rows, ev.keyOf)

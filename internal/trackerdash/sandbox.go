@@ -80,7 +80,7 @@ func init() {
 		count sum total avg group_concat string_agg
 		row_number rank dense_rank percent_rank cume_dist ntile lag lead first_value last_value nth_value
 		ceil ceiling floor trunc ln log log10 log2 exp pow power sqrt mod pi
-		days working_days day`) {
+		days working_days day day_start`) {
 		allowedFunctions[name] = true
 	}
 }

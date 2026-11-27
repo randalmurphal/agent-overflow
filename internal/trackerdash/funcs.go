@@ -32,6 +32,10 @@ import (
 //   - working_days(a, b): the same, Saturdays and Sundays in the zone left
 //     out.
 //   - day(a): instant a's date in the zone, as YYYY-MM-DD.
+//   - day_start(d): the instant a row of day d (YYYY-MM-DD) is placed at,
+//     dayStart: the first millisecond of that date in the zone, which a
+//     period that holds the day holds (period.holds), whatever zone the
+//     day was named in.
 //
 // A process holds one driver for each zone name a count names that
 // time.LoadLocation loads (location refuses any other before a driver is
@@ -101,6 +105,20 @@ func driverFor(loc *time.Location) (*sqlite.Driver, error) {
 				return nil, err
 			}
 			return time.UnixMilli(a).In(loc).Format(time.DateOnly), nil
+		}),
+		scalar("day_start", 1, func(args []driver.Value) (driver.Value, error) {
+			if args[0] == nil {
+				return nil, nil
+			}
+			d, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("day_start takes a day as YYYY-MM-DD, not %T", args[0])
+			}
+			at, err := dayStart(d, loc)
+			if err != nil {
+				return nil, err
+			}
+			return at, nil
 		}),
 	)
 	if err != nil {
@@ -488,3 +506,19 @@ func (a *sinkStep) WindowValue(*sqlite.FunctionContext) (driver.Value, error) {
 }
 
 func (a *sinkStep) Final(*sqlite.FunctionContext) {}
+
+// dayStart is the instant day d (YYYY-MM-DD) is placed at in loc: the
+// first millisecond of that date there. A period holds the instants after
+// its start through its end (period.holds), so a period that begins at
+// midnight holds its first day by this instant and not the day before,
+// and the evaluator finds a period's days by the same instant
+// (evaluation.unread). A worklog's day is the date the person logged it
+// on, in their tracker profile's zone; it is placed on that date in the
+// request's zone, whatever the two zones are.
+func dayStart(d string, loc *time.Location) (int64, error) {
+	t, err := time.ParseInLocation(time.DateOnly, d, loc)
+	if err != nil {
+		return 0, fmt.Errorf("day_start takes a day as YYYY-MM-DD: %w", err)
+	}
+	return t.UnixMilli() + 1, nil
+}

@@ -169,7 +169,7 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 		export.EstimateUnit = int(groups.unit(tracker.EstimateUnit(export.EstimateUnit)))
 		return export, ok, err
 	}
-	return trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), Viewer: row.VerifiedAccountID}, nil
+	return trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), TimeTracking: hasTimeTracking(row.Kind), Viewer: row.VerifiedAccountID}, nil
 }
 
 // ownOf is what key's project keeps for board, and with proposals what

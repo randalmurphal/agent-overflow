@@ -160,7 +160,8 @@ func (f *fixture) fill() Fill {
 				return store.MirrorExport{}, false, fmt.Errorf("%s: %w", s, err)
 			}
 		}
-		return store.MirrorExport{Name: "WEB board", EstimateUnit: unit, PlansSprints: f.plansSprints, FirstReadDone: !f.reading}, true, nil
+		return store.MirrorExport{Name: "WEB board", EstimateUnit: unit, PlansSprints: f.plansSprints, FirstReadDone: !f.reading,
+			Earliest: ms(testNow) - 180*day}, true, nil
 	}
 }
 
@@ -210,6 +211,8 @@ func num(n *Num) string {
 		return "absent"
 	case n.Gap:
 		return "gap"
+	case n.UR > 0:
+		return fmt.Sprintf("not known, %d days not read", n.UR)
 	case n.V == nil && n.NC > 0:
 		return fmt.Sprintf("not known, %d not counted", n.NC)
 	case n.V == nil:

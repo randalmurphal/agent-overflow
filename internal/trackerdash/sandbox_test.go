@@ -334,8 +334,8 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 	_, hasUTC := zoneDrivers.m["UTC"]
 	_, hasYork := zoneDrivers.m["America/New_York"]
 	zoneDrivers.mu.Unlock()
-	if !hasUTC || !hasYork || registrations != 4*zones {
-		t.Errorf("%d registrations over %d zone drivers (UTC %v, New York %v); want 4 a zone", registrations, zones, hasUTC, hasYork)
+	if !hasUTC || !hasYork || registrations != 5*zones {
+		t.Errorf("%d registrations over %d zone drivers (UTC %v, New York %v); want 5 a zone", registrations, zones, hasUTC, hasYork)
 	}
 	sessionSinks.mu.Lock()
 	left := len(sessionSinks.m)
