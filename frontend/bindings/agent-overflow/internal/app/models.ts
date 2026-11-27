@@ -7911,6 +7911,41 @@ export class StartTicketThreadRequest {
 }
 
 /**
+ * StartTicketsThreadRequest is a thread started on tickets selected
+ * together (a dashboard's ticket list): the tickets, by the connection that
+ * reads them and their issue IDs, and the text its draft starts with.
+ */
+export class StartTicketsThreadRequest {
+    "connectionId": string;
+    "issueIds": string[];
+    "text"?: string;
+
+    /** Creates a new StartTicketsThreadRequest instance. */
+    constructor($$source: Partial<StartTicketsThreadRequest> = {}) {
+        if (!("connectionId" in $$source)) {
+            this["connectionId"] = "";
+        }
+        if (!("issueIds" in $$source)) {
+            this["issueIds"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StartTicketsThreadRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): StartTicketsThreadRequest {
+        const $$createField1_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("issueIds" in $$parsedSource) {
+            $$parsedSource["issueIds"] = $$createField1_0($$parsedSource["issueIds"]);
+        }
+        return new StartTicketsThreadRequest($$parsedSource as Partial<StartTicketsThreadRequest>);
+    }
+}
+
+/**
  * SubmitPRReviewDrafts selects the drafts a review posts: a thread's own
  * (ThreadID set) or the PR's (ThreadID empty), of the PR's pr-scope source.
  */

@@ -412,6 +412,7 @@ export const SearchTicketWork = dispatch('SearchTicketWork');
 export const RecordActivity = dispatch('RecordActivity');
 export const GetActivityRecording = dispatch('GetActivityRecording');
 export const StartTicketThread = dispatch('StartTicketThread');
+export const StartTicketsThread = dispatch('StartTicketsThread');
 export const SwitchThread = dispatch('SwitchThread');
 
 // Terminal operations (ThreadTerminalDrawer, TerminalBody, etc).

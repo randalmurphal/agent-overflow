@@ -880,10 +880,11 @@ func TestAReadOfAnUnkeptTicketNamesItsParent(t *testing.T) {
 				if err != nil || d.Card.Key != "OPS-1" || d.Card.Parent == nil || *d.Card.Parent != want {
 					t.Fatalf("%s: a tool's read of OPS-1 names its parent %+v, %v; want %+v", what, d.Card.Parent, err, want)
 				}
-				v, err := s.svc.DetailForThread(t.Context(), conn.ID, issue)
+				vs, err := s.svc.DetailsForThread(t.Context(), conn.ID, []tracker.IssueID{issue})
 				if err != nil {
 					t.Fatal(err)
 				}
+				v := vs[0]
 				if line := "Parent: " + want.Key + " " + want.Title; !strings.Contains(TicketFileText(v), line+"\n") {
 					t.Fatalf("%s: OPS-1's ticket file\n%s\nwants %q", what, TicketFileText(v), line)
 				}
