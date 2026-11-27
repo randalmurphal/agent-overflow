@@ -10463,9 +10463,11 @@ export class TicketForgeProblem {
  * TicketPullRequest is a pull request of a ticket's Work. An open one of
  * the stored Pull requests list carries its title, author and CI. One
  * the forge's search found (SearchTicketWork) carries its title, author
- * and state as the forge answered them, and no CI. One a thread linked to
- * the ticket was last seen with, that neither holds, records no title,
- * author or CI.
+ * and state as the forge answered them, and no CI; so does one only the
+ * tracker's development data links (addDevelopment), whose state is the
+ * tracker's own word when it is not one Work names. One a thread linked to
+ * the ticket was last seen with, that none of those holds, records no
+ * title, author or CI.
  */
 export class TicketPullRequest {
     "ref": git$0.PRReference;
@@ -10560,6 +10562,20 @@ export class TicketWork {
      * requests than its one page holds, so the list may lack some.
      */
     "searchFull": git$0.RepoReference[];
+
+    /**
+     * DevelopmentProblem is why the tracker's development data (Jira's,
+     * read by SearchTicketWork) could not be read; empty when it was, or
+     * when the tracker has none.
+     */
+    "developmentProblem"?: string;
+
+    /**
+     * DevelopmentUnlisted counts the pull requests that data links to the
+     * ticket at an address the app cannot open as a pull request, which
+     * are not listed.
+     */
+    "developmentUnlisted"?: number;
 
     /** Creates a new TicketWork instance. */
     constructor($$source: Partial<TicketWork> = {}) {

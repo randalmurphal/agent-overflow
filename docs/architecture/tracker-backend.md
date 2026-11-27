@@ -128,6 +128,12 @@ this is its shape.
   before the read that gives the card's update time has returned, so
   content newer than that time costs one more read later and never
   passes for current.
+- Development: the pull requests a tracker's forge integrations link to an
+  issue (`PullRequests`), from Jira's undocumented development data, each
+  integration read on its own: the rows read come back beside
+  `errors.Join` of each failed read. A Jira site whose summary says it
+  keeps no such data fails wrapping `tracker.ErrNoDevelopmentData`;
+  Linear fails as unsupported before any request.
 - Finding: issues by key, and a page of cards matching text.
 - Writes: create, edit fields, move to a status (with the fields the move
   takes), set an estimate on a board, rank between neighbors, move to a
@@ -2168,7 +2174,29 @@ delete is refused and the links the delete read are the ones it ends.
   named in `SearchFull`. The client calls both methods at once and shows
   the stored answer until the search's lands (`stores/ticketWork.svelte.ts`);
   a stored answer or failure after it is not shown; nothing is stored.
-  It repeats `GetTicketWork`'s local read, the 18 ms above.
+  It repeats `GetTicketWork`'s local read, the 18 ms above. Beside the
+  forge's search it reads the pull requests the tracker's forge
+  integrations link to the ticket (`trackerapp.Service.IssuePullRequests`,
+  the provider's `PullRequests`: on Jira the development data's summary,
+  then one detail per integration whose count is above zero, at once; on
+  Linear nothing, with no request), waits for it at most
+  `ticketDevelopmentWait` (10 s, an interactive call's gate wait; the
+  transport may still retry within it), and lists them after the forge's rows
+  (`ticketWorkRead.addDevelopment`): a pull request listed already stays
+  as listed, except one only a linked thread's record gave, which takes
+  the tracker's title, author and state; the tracker's link is the
+  evidence, so the key rule does not apply; a link whose URL is no pull
+  request `gitops.ParsePRURL` can address is counted in
+  `DevelopmentUnlisted`; a status not measured is shown as the tracker's
+  word. The service returns each failed read as a
+  `trackerapp.DevelopmentFailure` beside the rows the others answered;
+  `DevelopmentProblem` says each with its endpoint and integration and,
+  for a refused credential or a rate limit that endpoint answered, the
+  HTTP status; when the wait passed, it says that, beside each read that
+  failed otherwise. A site that keeps no data says
+  nothing and its cause is logged. No failure settles the connection's
+  problem, since the endpoints are undocumented
+  ([measured](../references/tracker-api-measurements.md#development-data)).
 - **`StartTicketThread`** (project route, `threads:operate`, plus
   `tracker:read`, and `git:operate` for Start work) makes the thread of
   an Ask or a Start work in one rollback: the thread titled with the key
