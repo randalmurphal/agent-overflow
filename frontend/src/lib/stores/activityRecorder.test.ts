@@ -8,7 +8,10 @@ import { TransportError } from '../transport/wsClient';
 import { REPORT_EVERY_MS, installActivityRecorder, noteActivityFocus } from './activityRecorder';
 
 const layout = vi.hoisted(() => ({ compact: false, screen: 'list' as 'list' | 'thread' }));
-const panes = vi.hoisted(() => ({ focused: null as string | null }));
+// focused is the focused pane's thread; target the pane the screen shows
+// (paneCommandTarget), and threads each pane's thread where it is another
+// pane's: a companion's.
+const panes = vi.hoisted(() => ({ focused: null as string | null, target: null as string | null, threads: {} as Record<string, string> }));
 const diagnostics = vi.hoisted(() => [] as string[][]);
 
 vi.mock('./layoutMode.svelte', () => ({
@@ -17,6 +20,8 @@ vi.mock('./layoutMode.svelte', () => ({
 }));
 vi.mock('./panes.svelte', () => ({
   getFocusedPaneOrNull: () => (panes.focused ? { threadId: panes.focused } : null),
+  paneCommandTarget: () => panes.target,
+  getThreadPaneOf: (id: string | null) => (id ? { threadId: panes.threads[id] ?? id } : null),
 }));
 vi.mock('../utils/frontendErrorCapture', () => ({
   reportFrontendDiagnostic: (message: string, detail = '') => { diagnostics.push([message, detail]); },
@@ -29,16 +34,23 @@ function input(type = 'keydown'): void {
   window.dispatchEvent(new Event(type));
 }
 
+/** The screen shows the pane of thread, which has focus. */
+function show(thread: string | null): void {
+  panes.focused = thread;
+  panes.target = thread;
+}
+
 async function settle(): Promise<void> {
   await vi.advanceTimersByTimeAsync(0);
 }
 
 describe('activity recorder', () => {
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     layout.compact = false;
     layout.screen = 'list';
-    panes.focused = 't-a';
+    show('t-a');
+    panes.threads = {};
     diagnostics.length = 0;
     record = setBindingMock('RecordActivity', async () => undefined);
     dispose = installActivityRecorder();
@@ -49,26 +61,63 @@ describe('activity recorder', () => {
     vi.useRealTimers();
   });
 
-  it('reports the first input, then the first input a report interval later', async () => {
+  it('reports the first input, then input within the interval once the interval is up, with how long ago it was', async () => {
     input();
     await settle();
-    expect(record.mock.calls).toEqual([['t-a', false]]);
+    expect(record.mock.calls).toEqual([['t-a', false, 0]]);
     await vi.advanceTimersByTimeAsync(REPORT_EVERY_MS / 2);
     input('pointerdown');
+    await vi.advanceTimersByTimeAsync(REPORT_EVERY_MS / 4);
     input('wheel');
     await settle();
     expect(record).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(REPORT_EVERY_MS / 2);
+    await vi.advanceTimersByTimeAsync(REPORT_EVERY_MS / 4);
+    expect(record.mock.calls).toEqual([['t-a', false, 0], ['t-a', false, REPORT_EVERY_MS / 4]]);
     input('touchstart');
     await settle();
     expect(record).toHaveBeenCalledTimes(2);
   });
 
+  it('reports the last input of a burst, and nothing when there was none after a report', async () => {
+    input();
+    await settle();
+    await vi.advanceTimersByTimeAsync(50_000);
+    input();
+    await vi.advanceTimersByTimeAsync(10 * REPORT_EVERY_MS);
+    expect(record.mock.calls).toEqual([['t-a', false, 0], ['t-a', false, 10_000]]);
+  });
+
+  it('reports no input it holds once removed', async () => {
+    input();
+    await settle();
+    await vi.advanceTimersByTimeAsync(REPORT_EVERY_MS / 2);
+    input();
+    dispose();
+    await vi.advanceTimersByTimeAsync(REPORT_EVERY_MS);
+    expect(record).toHaveBeenCalledTimes(1);
+    dispose = installActivityRecorder();
+  });
+
+  it('reports the thread of the pane the compact screen shows, a companion opened from its source included', async () => {
+    layout.compact = true;
+    layout.screen = 'thread';
+    input('touchstart');
+    await settle();
+    // An agent thread opened from the Agents rail shows in its companion
+    // pane, while focus stays on the source thread.
+    panes.target = 'p-agent';
+    panes.threads = { 'p-agent': 't-agent' };
+    input('touchstart');
+    noteActivityFocus();
+    await settle();
+    expect(record.mock.calls).toEqual([['t-a', true, 0], ['t-agent', true, 0]]);
+  });
+
   it('reports the thread a press moved to, after the press\'s own handlers', async () => {
     input('pointerdown');
-    panes.focused = 't-b';
+    show('t-b');
     await settle();
-    expect(record.mock.calls).toEqual([['t-b', false]]);
+    expect(record.mock.calls).toEqual([['t-b', false, 0]]);
   });
 
   it('counts no movement of the pointer or the mouse', async () => {
@@ -92,12 +141,12 @@ describe('activity recorder', () => {
     input();
     await settle();
     input('pointerdown');
-    panes.focused = 't-b';
+    show('t-b');
     noteActivityFocus();
     await settle();
-    expect(record.mock.calls).toEqual([['t-a', false], ['t-b', false]]);
+    expect(record.mock.calls).toEqual([['t-a', false, 0], ['t-b', false, 0]]);
     await vi.advanceTimersByTimeAsync(REPORT_EVERY_MS);
-    panes.focused = 't-c';
+    show('t-c');
     noteActivityFocus();
     await settle();
     expect(record).toHaveBeenCalledTimes(2);
@@ -109,10 +158,11 @@ describe('activity recorder', () => {
     input('touchstart');
     await settle();
     layout.screen = 'list';
+    panes.target = null;
     input('touchstart');
     noteActivityFocus();
     await settle();
-    expect(record.mock.calls).toEqual([['t-a', true], ['', true]]);
+    expect(record.mock.calls).toEqual([['t-a', true, 0], ['', true, 0]]);
   });
 
   it('reports nothing once removed', async () => {

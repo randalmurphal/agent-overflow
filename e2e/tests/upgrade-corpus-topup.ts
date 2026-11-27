@@ -364,7 +364,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
   threadIds.push(...await step('threadRequests', () => writeThreadRequests(harness, version, nonce)));
   threadIds.push(...(await step('peerSpawns', () => writePeerSpawns(harness, version, nonce))).threadIds);
   // After the trackers, so a Jira connection is on, and after turns ran.
-  await step('activity', () => recordActivity(harness, threadIds[0]));
+  await step('activity', () => recordActivity(harness, threadIds[0], threadIds));
 
   // Workflow runs add a thread per phase beside the threads listed here,
   // so the thread counts are floors. The thread-request and peer-spawn
@@ -378,20 +378,28 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
 
 /**
  * A screen's input on threadId, on the desktop and then on the phone, and
- * the days of the threads whose turns the steps above started, as the
- * activity recorder writes them at its flush (activity-flush in
- * HARNESS_TIMING), polled until they are in the database.
+ * the days of the threads whose turns the steps since the trackers started,
+ * as the activity recorder writes them at its flush (activity-flush in
+ * HARNESS_TIMING), polled until this run's rows are in the database: the
+ * two spans that start at the reports, and a day of one of this run's
+ * threads today.
  */
-async function recordActivity(harness: HarnessApp, threadId: string): Promise<void> {
-  await harness.rpc('RecordActivity', threadId, false);
-  await harness.rpc('RecordActivity', threadId, true);
+async function recordActivity(harness: HarnessApp, threadId: string, threadIds: readonly string[]): Promise<void> {
+  const since = Date.now();
+  await harness.rpc('RecordActivity', threadId, false, 0);
+  await harness.rpc('RecordActivity', threadId, true, 0);
   const { dbPath } = await harness.rpc<{ dbPath: string }>('HarnessInfo');
+  const today = new Date(since);
+  const day = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const ids = threadIds.map((id) => `'${id.replaceAll("'", "''")}'`).join(', ');
+  const mine = `thread_id = '${threadId.replaceAll("'", "''")}' AND start_ms >= ${since}`;
   await expect.poll(async () => {
     const [written] = await dbQuery<{ desk: number; phone: number; days: number }>(dbPath,
-      `SELECT (SELECT count(*) FROM activity_spans WHERE phone = 0) AS desk, (SELECT count(*) FROM activity_spans WHERE phone = 1) AS phone,
-              (SELECT count(*) FROM thread_days) AS days`);
+      `SELECT (SELECT count(*) FROM activity_spans WHERE ${mine} AND phone = 0) AS desk,
+              (SELECT count(*) FROM activity_spans WHERE ${mine} AND phone = 1) AS phone,
+              (SELECT count(*) FROM thread_days WHERE day = '${day}' AND thread_id IN (${ids})) AS days`);
     return Math.min(written.desk, written.phone, written.days) > 0;
-  }, { timeout: 30_000, message: 'the recorder wrote a desktop span, a phone span and a thread day' }).toBe(true);
+  }, { timeout: 30_000, message: "the recorder wrote this run's desktop span, phone span and thread day" }).toBe(true);
 }
 
 /**

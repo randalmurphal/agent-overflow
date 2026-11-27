@@ -132,7 +132,6 @@ var isolationConsumers = map[string]func(a *App) time.Duration{
 	"TrackerPollInterval":     func(a *App) time.Duration { return a.trackerCadence.Delta },
 	"TrackerTicketPoll":       func(a *App) time.Duration { return a.trackerCadence.Ticket },
 	"TrackerApprovalWait":     func(a *App) time.Duration { return a.trackerMCP.approvals.waitFor() },
-	"ActivityWindow":          func(a *App) time.Duration { return a.activityTiming.Window },
 	"ActivityFlush":           func(a *App) time.Duration { return a.activityTiming.FlushEvery },
 }
 

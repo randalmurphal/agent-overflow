@@ -6,20 +6,25 @@
 // one passive capture-phase listener whose handler stores a timestamp
 // and compares it with the last report's; nothing listens to pointer or
 // mouse movement. A report goes out on the first input REPORT_EVERY_MS
-// after the last one, and at once when the thread the screen shows
+// after the last one; input within the interval is reported once it is
+// up, with how long ago the last of it was, so a burst's last input
+// counts; and a report goes out at once when the thread the screen shows
 // changes after input (noteActivityFocus), so a click that opens a thread
 // is counted on that thread. The computer extends a span while reports on
 // one thread keep coming within its window, so a report a minute is the
 // whole cost of a working hour: 60 calls, none of them on a turn's path.
 //
 // `phone` is the compact layout (layoutMode.svelte.ts), the phone shell's
-// and a phone browser's. The thread is the focused pane's, or none on the
-// compact list. Input the page does not receive (a native browser pane's
-// page, the OS's menus) is not seen here; the spec names those limits.
+// and a phone browser's. The thread is that of the pane the screen shows
+// (paneCommandTarget): on the compact thread screen the pane it shows, a
+// companion opened from the Agents rail included, none on the compact
+// list, and the focused or promoted pane on the desktop. Input the page
+// does not receive (a native browser pane's page, the OS's menus) is not
+// seen here; the spec names those limits.
 
 import { RecordActivity } from './bindings';
-import { getCompactScreen, isCompactLayout } from './layoutMode.svelte';
-import { getFocusedPaneOrNull } from './panes.svelte';
+import { isCompactLayout } from './layoutMode.svelte';
+import { getThreadPaneOf, paneCommandTarget } from './panes.svelte';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
@@ -35,36 +40,36 @@ let lastInput = Number.NEGATIVE_INFINITY;
 let lastReport = Number.NEGATIVE_INFINITY;
 let reportedThread: string | null = null;
 let reportedPhone = false;
-let pending = false;
+// The report about to go out: at once (after the input's own handlers) or
+// when the interval since the last is up.
+let pending: ReturnType<typeof setTimeout> | null = null;
 
-/** The thread this screen shows and whether it is in the compact layout,
+/** The thread the screen shows and whether it is in the compact layout,
  * read reactively, so an effect that calls it follows both. */
 function shown(): { thread: string; phone: boolean } {
-  const phone = isCompactLayout();
-  const thread = phone && getCompactScreen() !== 'thread' ? '' : getFocusedPaneOrNull()?.threadId ?? '';
-  return { thread, phone };
+  return { thread: getThreadPaneOf(paneCommandTarget())?.threadId ?? '', phone: isCompactLayout() };
 }
 
 function onInput(): void {
   const now = Date.now();
   lastInput = now;
-  if (!pending && now - lastReport >= REPORT_EVERY_MS) schedule();
+  if (pending === null) schedule(Math.max(0, lastReport + REPORT_EVERY_MS - now));
 }
 
-// The report runs after the input's own handlers, so a press that moves
-// focus reports the thread it moved to.
-function schedule(): void {
-  pending = true;
-  setTimeout(send, 0);
+// A report at once runs after the input's own handlers, so a press that
+// moves focus reports the thread it moved to.
+function schedule(delayMs: number): void {
+  pending = setTimeout(send, delayMs);
 }
 
 function send(): void {
-  pending = false;
+  pending = null;
   const { thread, phone } = shown();
-  lastReport = Date.now();
+  const now = Date.now();
+  lastReport = now;
   reportedThread = thread;
   reportedPhone = phone;
-  RecordActivity(thread, phone).catch((err: unknown) => {
+  RecordActivity(thread, phone, now - lastInput).catch((err: unknown) => {
     // A connection that dropped ended its span on the computer, and the
     // next input reports again once it is back. Anything else is a
     // diagnostic, recorded once per distinct failure; the computer's own
@@ -83,7 +88,9 @@ function send(): void {
 export function noteActivityFocus(): void {
   const { thread, phone } = shown();
   if (reportedThread === null || (thread === reportedThread && phone === reportedPhone)) return;
-  if (!pending && Date.now() - lastInput < REPORT_EVERY_MS) schedule();
+  if (Date.now() - lastInput >= REPORT_EVERY_MS) return;
+  if (pending !== null) clearTimeout(pending);
+  schedule(0);
 }
 
 /** Attach the input listeners; installed once, from App.svelte, which owns
@@ -98,12 +105,17 @@ export function installActivityRecorder(): () => void {
   };
 }
 
-/** Forget every report, as a page that just loaded has made none. */
+/** Forget every report and drop the one about to go out, as a page that
+ * just loaded has made none. */
 function forgetReports(): void {
+  if (pending !== null) clearTimeout(pending);
+  pending = null;
   lastInput = lastReport = Number.NEGATIVE_INFINITY;
   reportedThread = null;
   reportedPhone = false;
-  pending = false;
 }
 
+/** Run after every test of a file that loads this module
+ * (src/test/config/testResets.ts), so no report or timer of one test
+ * reaches the next. */
 export const resetActivityRecorderForTest = forgetReports;

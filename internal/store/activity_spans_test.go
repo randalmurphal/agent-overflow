@@ -27,9 +27,8 @@ func TestActivityMigration(t *testing.T) {
 	}
 }
 
-// activityStore is a store with threads t1 and t2, and a Jira connection
-// on when jira.
-func activityStore(t *testing.T, jira bool) *Store {
+// activityStore is a store with threads t1 and t2.
+func activityStore(t *testing.T) *Store {
 	t.Helper()
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
@@ -42,20 +41,42 @@ func activityStore(t *testing.T, jira bool) *Store {
 			t.Fatal(err)
 		}
 	}
-	if jira {
-		if _, err := s.CreateTrackerConnection(NewTrackerConnection{Kind: TrackerKindJira, Site: "example.atlassian.net", Account: "user1@example.com", CreatedAt: 1}); err != nil {
-			t.Fatal(err)
+	return s
+}
+
+// A Jira connection is on while one is enabled: not with none, not with
+// only a Linear connection, and not once the Jira one is turned off.
+func TestJiraConnectionOnIsAnEnabledJiraConnection(t *testing.T) {
+	t.Parallel()
+	s := activityStore(t)
+	on := func(want bool, when string) {
+		t.Helper()
+		if got, err := s.JiraConnectionOn(); err != nil || got != want {
+			t.Fatalf("%s: a Jira connection on is %v, %v; want %v", when, got, err, want)
 		}
 	}
-	return s
+	on(false, "with no connection")
+	if _, err := s.CreateTrackerConnection(NewTrackerConnection{Kind: TrackerKindLinear, Site: "linear.app", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	on(false, "with only a Linear connection")
+	jira, err := s.CreateTrackerConnection(NewTrackerConnection{Kind: TrackerKindJira, Site: "example.atlassian.net", Account: "user1@example.com", CreatedAt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	on(true, "with a Jira connection")
+	if _, _, err := s.SetTrackerConnectionEnabled(jira.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	on(false, "with the Jira connection off")
 }
 
 // A span is inserted while a Jira connection is on and its end moves on
 // a later save; a read of a range answers the spans that reach it,
-// through the start index bounded on both sides. With no Jira connection on, nothing is inserted.
+// through the start index bounded on both sides.
 func TestActivitySpansAreSavedAndRead(t *testing.T) {
 	t.Parallel()
-	s := activityStore(t, true)
+	s := activityStore(t)
 	const h = 3_600_000
 	day := int64(1_795_000_000_000)
 	ids, err := s.SaveActivity([]ActivitySpan{
@@ -92,23 +113,13 @@ func TestActivitySpansAreSavedAndRead(t *testing.T) {
 		t.Error("a span longer than a day was saved")
 	}
 
-	off := activityStore(t, false)
-	ids, err = off.SaveActivity([]ActivitySpan{{ThreadID: "t1", StartMs: day, EndMs: day + h}}, nil)
-	if err != nil || !slices.Equal(ids, []int64{0}) {
-		t.Fatalf("with no Jira connection saved %v, %v; want nothing", ids, err)
-	}
-	if got, _ := off.ActivitySpans(day, day+h); len(got) != 0 {
-		t.Fatalf("with no Jira connection read %+v", got)
-	}
 }
 
-// A saved day names its thread once, while a Jira connection is on: a
-// second save of the thread that day writes no other row, and with no
-// Jira connection on no day is named. The days read by day, through the
-// key's day range.
+// A saved day names its thread once: a second save of the thread that day
+// writes no other row. The days read by day, through the key's day range.
 func TestSavedDaysNameEachThreadOnce(t *testing.T) {
 	t.Parallel()
-	s := activityStore(t, true)
+	s := activityStore(t)
 	for _, days := range [][]ThreadDay{
 		{{Day: "2026-11-24", ThreadID: "t1"}},
 		{{Day: "2026-11-24", ThreadID: "t1"}, {Day: "2026-11-25", ThreadID: "t2"}},
@@ -136,20 +147,13 @@ func TestSavedDaysNameEachThreadOnce(t *testing.T) {
 		t.Fatalf("a failed save named a day: %+v", got)
 	}
 
-	off := activityStore(t, false)
-	if _, err := off.SaveActivity(nil, []ThreadDay{{Day: "2026-11-24", ThreadID: "t1"}}); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := off.ThreadDays("2026-11-24", "2026-11-24"); len(got) != 0 {
-		t.Fatalf("with no Jira connection the save named %+v", got)
-	}
 }
 
 // The prune deletes spans that start before its time and thread days
 // before its day, and nothing else.
 func TestThePruneDeletesOnlyOldActivity(t *testing.T) {
 	t.Parallel()
-	s := activityStore(t, true)
+	s := activityStore(t)
 	day := int64(1_795_000_000_000)
 	if _, err := s.SaveActivity([]ActivitySpan{{StartMs: day - 10, EndMs: day}, {StartMs: day, EndMs: day + 10}}, nil); err != nil {
 		t.Fatal(err)
@@ -202,7 +206,7 @@ func TestARestoreKeepsTheRecordedActivity(t *testing.T) {
 // thread with no project or no row.
 func TestThreadProjectsAreEachOnce(t *testing.T) {
 	t.Parallel()
-	s := activityStore(t, false)
+	s := activityStore(t)
 	now := time.Now().UnixMilli()
 	if _, err := s.CreateProject(Project{ID: "p2", Path: "/ws/p2", Name: "Q", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)

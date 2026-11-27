@@ -10,7 +10,7 @@ package store
 // a span is inserted at its end or at the first flush that sees it, and a
 // later flush moves its end. thread_days names each thread that started a
 // turn on day (this computer's local date), written by the recorder's
-// flush too. Both are written only while a Jira connection is on. Neither has
+// flush too. Both hold only time while a Jira connection was on. Neither has
 // a foreign key: a deleted thread's span still counts toward the day's
 // active minutes, and its rows stay until the recorder's prune, which
 // deletes rows of both tables older than 92 days and nothing else. A

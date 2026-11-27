@@ -3,6 +3,7 @@ package git
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -22,7 +23,8 @@ type AuthoredCommit struct {
 // earliest first. A repository with no user.email has none. The walk
 // starts at committer time from, which no commit authored since can
 // precede but by a clock's skew, and the author time is filtered here,
-// so a commit rebased today is not today's.
+// so a commit rebased today is not today's. Commits since from past the
+// most one read takes fail with a sentence that says so.
 func (c *Core) AuthoredCommits(ctx context.Context, repo string, from, to time.Time) ([]AuthoredCommit, error) {
 	email, err := c.runSpec(commandSpec{binary: "git", cwd: repo, ctx: ctx, args: []string{"config", "--get", "user.email"}})
 	if err != nil {
@@ -43,6 +45,10 @@ func (c *Core) AuthoredCommits(ctx context.Context, repo string, from, to time.T
 		"log", "--branches", "--no-merges", "-z", "--fixed-strings", "--author=<" + author + ">",
 		"--since=" + strconv.FormatInt(from.Unix(), 10), "--format=%H%x00%at%x00%s",
 	}})
+	if limit := (*outputLimitError)(nil); errors.As(err, &limit) {
+		return nil, fmt.Errorf("git: your commits in %s since %s are more than the %d bytes of git log one read takes; a range nearer today reads fewer",
+			repo, from.Format(time.DateOnly), limit.limit)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("git: read the commits in %s: %w", repo, err)
 	}

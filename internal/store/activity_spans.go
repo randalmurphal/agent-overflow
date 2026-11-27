@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"strconv"
@@ -9,16 +8,13 @@ import (
 
 // The activity the recorder measured (migration v174): spans of the
 // person's input and the days each thread started a turn. Only
-// internal/activity writes and prunes them.
+// internal/activity writes and prunes them, and the harness's reset
+// clears them (app_harness.go).
 
 // MaxActivitySpanMs is the longest span the recorder writes: it closes a
 // span this long and opens the next, so a read of a range finds every
 // span that reaches it among those that start at most this long before.
 const MaxActivitySpanMs = 24 * 60 * 60 * 1000
-
-// jiraOnSQL is whether a Jira connection is on: the time source the
-// recorded activity serves. While none is, nothing is recorded.
-const jiraOnSQL = `EXISTS (SELECT 1 FROM tracker_connections WHERE kind = 'jira' AND enabled = 1)`
 
 // ActivitySpan is a span of the person's input: ID 0 until it is written.
 type ActivitySpan struct {
@@ -29,16 +25,25 @@ type ActivitySpan struct {
 	EndMs    int64
 }
 
-var insertActivitySpanSQL = `INSERT INTO activity_spans(thread_id, phone, start_ms, end_ms)
- SELECT ?1, ?2, ?3, ?4 WHERE ` + jiraOnSQL + ` RETURNING id`
+const insertActivitySpanSQL = `INSERT INTO activity_spans(thread_id, phone, start_ms, end_ms) VALUES (?1, ?2, ?3, ?4) RETURNING id`
 
-var insertThreadDaySQL = `INSERT OR IGNORE INTO thread_days(day, thread_id) SELECT ?1, ?2 WHERE ` + jiraOnSQL
+const insertThreadDaySQL = `INSERT OR IGNORE INTO thread_days(day, thread_id) VALUES (?1, ?2)`
 
-// SaveActivity writes spans and days in one transaction, while a Jira
-// connection is on: it inserts each span with ID 0 and moves the end of
-// each with an ID, and names each day's thread once. It returns each
-// span's ID in spans' order, 0 for one not inserted because no Jira
-// connection is on.
+// JiraConnectionOn is whether a Jira connection is on: the time source the
+// recorded activity serves, and so whether the recorder records
+// (internal/activity).
+func (s *Store) JiraConnectionOn() (bool, error) {
+	var on bool
+	if err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 FROM tracker_connections WHERE kind = 'jira' AND enabled = 1)`).Scan(&on); err != nil {
+		return false, fmt.Errorf("store: whether a Jira connection is on: %w", err)
+	}
+	return on, nil
+}
+
+// SaveActivity writes spans and days in one transaction: it inserts each
+// span with ID 0 and moves the end of each with an ID, and names each
+// day's thread once. It returns each span's ID in spans' order. Whether
+// anything is recorded at all is the recorder's (JiraConnectionOn).
 func (s *Store) SaveActivity(spans []ActivitySpan, days []ThreadDay) ([]int64, error) {
 	ids := make([]int64, len(spans))
 	if len(spans) == 0 && len(days) == 0 {
@@ -65,8 +70,7 @@ func (s *Store) SaveActivity(spans []ActivitySpan, days []ThreadDay) ([]int64, e
 			ids[i] = sp.ID
 			continue
 		}
-		err := tx.QueryRow(insertActivitySpanSQL, sp.ThreadID, boolToInt(sp.Phone), sp.StartMs, sp.EndMs).Scan(&ids[i])
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRow(insertActivitySpanSQL, sp.ThreadID, boolToInt(sp.Phone), sp.StartMs, sp.EndMs).Scan(&ids[i]); err != nil {
 			return nil, fmt.Errorf("store: save activity span: %w", err)
 		}
 	}

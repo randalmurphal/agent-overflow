@@ -769,10 +769,13 @@ the worklog's description once posted.
 - While a Jira connection is on, each computer records when the person
   gave input to the app on its screens, and on which thread, and which
   threads started a turn each day. A computer with no Jira connection on
-  records nothing.
+  records nothing: turning the last one off keeps what came before and
+  records nothing after, and turning one on records from then.
 - Input is a key, a press, a scroll or a touch. A minute counts when
-  there was input in the 3 minutes before it. Moving the pointer is not
-  input.
+  there was input in the 3 minutes before it, the last input of a burst
+  included. Moving the pointer is not input.
+- The thread is the one the screen shows: on the phone, an agent thread
+  opened from the Agents rail counts on that thread.
 - `phone` time is time in the compact layout: the phone shell, or a
   browser on a narrow touch screen.
 - A computer counts the screens attached to it, and only those of its

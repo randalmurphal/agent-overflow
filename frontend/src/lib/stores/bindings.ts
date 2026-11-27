@@ -1639,8 +1639,8 @@ export function SearchTicketWork(connectionId: string, issueId: string): Promise
 /** Input on this screen now, on the thread its focused pane shows, to
  * every attached computer (stores/activityRecorder.ts); a computer
  * without the recorder takes nothing. */
-export function RecordActivity(focused: string, phone: boolean): Promise<void> {
-  return orOlder(() => RecordActivityRaw(focused, phone), () => undefined);
+export function RecordActivity(focused: string, phone: boolean, sinceInputMs: number): Promise<void> {
+  return orOlder(() => RecordActivityRaw(focused, phone, sinceInputMs), () => undefined);
 }
 
 /** The boards a project lists; none on a computer without trackers. */

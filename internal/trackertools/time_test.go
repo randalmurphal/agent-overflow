@@ -410,7 +410,7 @@ func TestTimeReadRoundsMeasuredMinutesToTheNearest(t *testing.T) {
 
 // The bytes a week's measured activity adds to time_read's answer, for a
 // day of 7 hours on 3 tickets, a fourth ticket touched, half an hour on
-// the phone and 4 commits.
+// the phone and 4 commits: 2,205, as the backend doc says.
 func TestTimeReadsWeekOfActivityBytes(t *testing.T) {
 	t.Parallel()
 	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, time: map[string]trackerapp.WorklogDays{timeJira.ID: {}},
@@ -437,7 +437,10 @@ func TestTimeReadsWeekOfActivityBytes(t *testing.T) {
 		return answer
 	}
 	without, with := read(&fakeHost{}), read(&fakeHost{activity: ActivityDays{Days: days}})
-	t.Logf("a week's answer is %d bytes without the activity and %d with it: %d more", len(without), len(with), len(with)-len(without))
+	// The number docs/architecture/tracker-backend.md#activity quotes.
+	if len(without) != 241 || len(with) != 2446 {
+		t.Fatalf("a week's answer is %d bytes without the activity and %d with it: %d more; the doc says 241, 2,446 and 2,205", len(without), len(with), len(with)-len(without))
+	}
 }
 
 // timeTicket is a ticket of timeJira's site a project's Time settings name.

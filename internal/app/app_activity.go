@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"slices"
 	"strings"
@@ -22,7 +23,7 @@ import (
 // reports of input, tied to their connections; the recorder's status
 // and its change event, for the Time screen; and its start and close.
 // Only this computer's person is recorded (ownScreen), and only while a
-// Jira connection is on is anything written (store.SaveActivity).
+// Jira connection is on (followJira).
 
 // maxFocusedThreadBytes bounds a report's thread id: ids are UUIDs.
 const maxFocusedThreadBytes = 128
@@ -33,34 +34,53 @@ func (a *App) initActivity() {
 	cfg := a.activityTiming
 	cfg.Changed = func(s activity.Status) { a.emit(eventchan.ActivityRecording, s) }
 	a.activity = activity.New(a.store, cfg)
+	a.followJira()
 }
 
-// tapActivityTurns tells the recorder of each turn start, which costs the
-// emit a map write: the day is written at the recorder's next flush. An
-// App built without the recorder (a test of another part) records none.
-func (a *App) tapActivityTurns(name eventchan.Channel, data any) {
-	if name != eventchan.ProviderTurnStarted || a.activity == nil {
+// tapActivity tells the recorder what it follows from the emit funnel:
+// each turn start, which costs the emit a map write (the day is written
+// at the recorder's next flush), and each change of the tracker
+// connections, which trackerapp announces after it commits. An App built
+// without the recorder (a test of another part) records none.
+func (a *App) tapActivity(name eventchan.Channel, data any) {
+	if a.activity == nil {
 		return
 	}
-	if event, ok := data.(triage.TurnStartedEvent); ok {
-		a.activity.Ran(event.ThreadID, event.StartedAt)
+	switch name {
+	case eventchan.ProviderTurnStarted:
+		if event, ok := data.(triage.TurnStartedEvent); ok {
+			a.activity.Ran(event.ThreadID, event.StartedAt)
+		}
+	case eventchan.TrackerConnectionsUpdated:
+		a.followJira()
 	}
+}
+
+// followJira turns the recorder on while a Jira connection is on and off
+// while none is. A failed read leaves it as it was and is logged.
+func (a *App) followJira() {
+	on, err := a.store.JiraConnectionOn()
+	if err != nil {
+		log.Printf("activity: %v; the recorder stays as it was", err)
+		return
+	}
+	a.activity.SetOn(on)
 }
 
 // startActivity starts the recorder's flushes.
 func (a *App) startActivity() { a.activity.Start() }
 
-// RecordActivity is input on the calling screen now, with the thread its
-// focused pane shows (focused, "" for none) and whether it is in the
-// compact layout (phone). A screen calls it on the first input a minute
-// after its last call, and at once when its focused thread changes, on
-// every computer it is attached to. Only a screen of this computer's
-// person is recorded (ownScreen): another's call records nothing. The
-// span it opens ends with the call's connection.
+// RecordActivity is input on the calling screen sinceInputMs ago, with
+// the thread the screen shows (focused, "" for none) and whether it is in
+// the compact layout (phone). A screen calls it at most once a minute,
+// for its last input since its last call, and at once when the thread it
+// shows changes, on every computer it is attached to. Only a screen of
+// this computer's person is recorded (ownScreen): another's call records
+// nothing. The span it opens ends with the call's connection.
 //
 //ao:scope threads:read
 //ao:route all
-func (a *App) RecordActivity(ctx context.Context, focused string, phone bool) error {
+func (a *App) RecordActivity(ctx context.Context, focused string, phone bool, sinceInputMs int64) error {
 	conn, err := transport.CallerConnection(ctx)
 	if err != nil {
 		return err
@@ -78,9 +98,9 @@ func (a *App) RecordActivity(ctx context.Context, focused string, phone bool) er
 	if !own {
 		return nil
 	}
-	return a.activity.Report(fmt.Sprintf("%p", conn), focused, phone, func(end func()) error {
-		_, err := conn.Bind("activity", end)
-		return err
+	return a.activity.Report(fmt.Sprintf("%p", conn), focused, phone, time.Duration(sinceInputMs)*time.Millisecond, func(end func()) (func(), error) {
+		tie, err := conn.Bind("activity", end)
+		return tie.Untie, err
 	})
 }
 
@@ -90,7 +110,7 @@ func (a *App) RecordActivity(ctx context.Context, focused string, phone bool) er
 // succeed. activity:recording carries each change.
 //
 //ao:scope tracker:read
-//ao:route all
+//ao:route selected
 func (a *App) GetActivityRecording() (activity.Status, error) {
 	if a.activity == nil {
 		return activity.Status{}, errors.New("activity recording: the recorder has not started")
@@ -108,13 +128,9 @@ func (h trackerToolsHost) Activity(ctx context.Context, from, to string) (tracke
 	if a.activity == nil {
 		return trackertools.ActivityDays{}, errors.New("activity: the recorder has not started")
 	}
-	first, err := time.ParseInLocation(time.DateOnly, from, time.Local)
+	first, end, err := activity.DayRange(from, to)
 	if err != nil {
-		return trackertools.ActivityDays{}, fmt.Errorf("activity: from %q: %w", from, err)
-	}
-	last, err := time.ParseInLocation(time.DateOnly, to, time.Local)
-	if err != nil {
-		return trackertools.ActivityDays{}, fmt.Errorf("activity: to %q: %w", to, err)
+		return trackertools.ActivityDays{}, err
 	}
 	days, err := a.activity.Days(from, to)
 	if err != nil {
@@ -148,7 +164,7 @@ func (h trackerToolsHost) Activity(ctx context.Context, from, to string) (tracke
 	core := a.gitCore()
 	for i, p := range projects {
 		wg.Go(func() {
-			reads[i].commits, reads[i].err = core.AuthoredCommits(ctx, p.Path, first, last.AddDate(0, 0, 1))
+			reads[i].commits, reads[i].err = core.AuthoredCommits(ctx, p.Path, first, end)
 		})
 	}
 	wg.Wait()

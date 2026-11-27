@@ -108,3 +108,22 @@ func TestAuthoredCommitsWithNoEmailOrNoRepository(t *testing.T) {
 		t.Fatal("a directory that does not exist answers no error")
 	}
 }
+
+// Commits past the most one read takes fail with a sentence a person can
+// act on: whose commits, since when, and that a range nearer today reads
+// fewer.
+func TestAuthoredCommitsPastTheReadLimitSaySo(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
+	repo, commit, _ := authoredRepo(t)
+	for h := range 4 {
+		commit("me@example.com", from.Add(time.Duration(h)*time.Hour), from.Add(time.Duration(h)*time.Hour), "a subject long enough to pass the limit")
+	}
+	core := NewCore()
+	core.maxOutputBytes = 100
+	_, err := core.AuthoredCommits(context.Background(), repo, from, from.AddDate(0, 0, 1))
+	want := "git: your commits in " + repo + " since 2026-11-23 are more than the 100 bytes of git log one read takes; a range nearer today reads fewer"
+	if err == nil || err.Error() != want {
+		t.Fatalf("the read past its limit answers %v\nwant %s", err, want)
+	}
+}

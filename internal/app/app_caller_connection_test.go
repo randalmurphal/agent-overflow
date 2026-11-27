@@ -68,7 +68,7 @@ func ignoreResult[T any](_ T, err error) error { return err }
 // keeps the lists equal).
 var callerConnectionRefusals = map[string]connectionRefusal{
 	"RecordActivity": {
-		call: func(a *App, ctx context.Context) error { return a.RecordActivity(ctx, "thread", false) },
+		call: func(a *App, ctx context.Context) error { return a.RecordActivity(ctx, "thread", false, 0) },
 	},
 	"SubscribePRUpdates": {
 		call: func(a *App, ctx context.Context) error {

@@ -198,7 +198,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ForkThreadFromMessage", ID: 3977213964, Scope: "threads:operate", Route: "thread", Budget: 2 * time.Minute},                      // main.App.ForkThreadFromMessage
 	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "git:operate", Route: "workspace", Budget: 7 * time.Minute},                       // main.App.GenerateCommitMessage
 	{Name: "GetAccessOverview", ID: 1559710962, Scope: "access:admin", Route: "home"},                                                        // main.App.GetAccessOverview
-	{Name: "GetActivityRecording", ID: 3840999293, Scope: "tracker:read", Route: "all"},                                                      // main.App.GetActivityRecording
+	{Name: "GetActivityRecording", ID: 3840999293, Scope: "tracker:read", Route: "selected"},                                                 // main.App.GetActivityRecording
 	{Name: "GetAttachmentThumbnail", ID: 3414107538, Scope: "threads:read", Route: "thread"},                                                 // main.App.GetAttachmentThumbnail
 	{Name: "GetClaudeSkills", ID: 1573335127, Scope: "threads:operate", Route: "selected"},                                                   // main.App.GetClaudeSkills
 	{Name: "GetClaudeSlashCommands", ID: 2854892544, Scope: "threads:read", Route: "selected"},                                               // main.App.GetClaudeSlashCommands

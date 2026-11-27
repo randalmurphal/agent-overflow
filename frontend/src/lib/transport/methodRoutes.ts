@@ -146,7 +146,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3977213964: 'thread', // ForkThreadFromMessage
 	1669373286: 'workspace', // GenerateCommitMessage
 	1559710962: 'home', // GetAccessOverview
-	3840999293: 'all', // GetActivityRecording
+	3840999293: 'selected', // GetActivityRecording
 	3414107538: 'thread', // GetAttachmentThumbnail
 	1573335127: 'selected', // GetClaudeSkills
 	2854892544: 'selected', // GetClaudeSlashCommands

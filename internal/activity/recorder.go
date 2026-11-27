@@ -4,24 +4,31 @@
 // What it keeps true:
 //
 //   - A minute counts when there was input in the Window before it. A
-//     screen reports its input at most once a minute and at once when its
-//     focused thread changes (Report); the recorder keeps one open span per
-//     connection in memory, and a report on the same thread within Window
-//     of the last one extends it. A span ends at its last report plus
-//     Window, or sooner: at the next report on another thread, at the
-//     connection's end (End), or at the flush that finds it idle.
+//     screen reports its input at most once a minute, with how long ago
+//     its last input was, and at once when the thread it shows changes
+//     (Report); the recorder keeps one open span per connection in memory,
+//     and input on the same thread within Window of the last extends it. A
+//     span ends at its last input plus Window, or sooner: at input on
+//     another thread, at the connection's end (End), or at the flush that
+//     finds it idle. Each open span is tied to its connection, and its end
+//     unties it.
+//   - The recorder records only while it is on (SetOn): while a Jira
+//     connection is on, which the app tells it after each change of the
+//     connections. Turning it off ends every open span then and writes
+//     what came before; while off, input and turn starts record nothing.
 //   - Nothing is written per report or per turn start. One flush every
 //     FlushEvery writes what changed (a span inserted once, its end moved
 //     after) and the days of the threads that started a turn since (Ran),
-//     and Close flushes once more. Only while a Jira connection is on is
-//     anything written (store.SaveActivity); what no write took is dropped.
+//     and Close flushes once more.
 //   - A flush that fails keeps what it could not write for the next one,
 //     at most maxUnwritten closed spans, and the earliest time not written
 //     is the recorder's Status until a flush writes again.
 //   - The recorder owns the prune of what it measured: once a day, the
 //     spans and thread days older than Keep, and nothing else.
-//   - Days answers the person's time per day, never the spans: what was
-//     written and what is still in memory, each instant counted once.
+//   - Days answers the person's time per local day, never the spans: what
+//     was written and what is still in memory, read beside no flush, each
+//     instant counted once. A day starts at its midnight, or at the moment
+//     after a midnight its zone skips (DayRange).
 package activity
 
 import (
@@ -67,22 +74,23 @@ type Status struct {
 	Error string `json:"error,omitempty"`
 }
 
-// Config is a recorder's clock, window and flush interval; zero values
-// are the product's (Window, FlushEvery, time.Now). Changed tells the
-// app each time Status changes.
+// Config is a recorder's clock and flush interval; zero values are the
+// product's (time.Now, FlushEvery). Changed tells the app each time
+// Status changes.
 type Config struct {
 	Now        func() time.Time
-	Window     time.Duration
 	FlushEvery time.Duration
 	Changed    func(Status)
 }
 
-// span is a span of one connection's input: last is its last report, and
-// saved the end the store holds (0 before it is inserted).
+// span is a span of one connection's input: last is its last input,
+// saved the end the store holds (0 before it is inserted), and untie
+// removes its tie to its connection (nil for none).
 type span struct {
 	store.ActivitySpan
 	last  int64
 	saved int64
+	untie func()
 }
 
 // Recorder is the one recorder of an app.
@@ -104,6 +112,7 @@ type Recorder struct {
 	ran     map[store.ThreadDay]int64
 	status  Status
 	pruned  string
+	on      bool
 	started bool
 	stopped bool
 
@@ -111,15 +120,13 @@ type Recorder struct {
 	done chan struct{}
 }
 
-// New is a recorder of st that flushes once Start runs.
+// New is a recorder of st that flushes once Start runs, and records once
+// SetOn turns it on.
 func New(st Store, cfg Config) *Recorder {
-	r := &Recorder{st: st, now: cfg.Now, window: int64(cfg.Window / time.Millisecond), flushEvery: cfg.FlushEvery, changed: cfg.Changed,
+	r := &Recorder{st: st, now: cfg.Now, window: int64(Window / time.Millisecond), flushEvery: cfg.FlushEvery, changed: cfg.Changed,
 		open: map[string]*span{}, ran: map[store.ThreadDay]int64{}, stop: make(chan struct{}), done: make(chan struct{})}
 	if r.now == nil {
 		r.now = time.Now
-	}
-	if r.window <= 0 {
-		r.window = int64(Window / time.Millisecond)
 	}
 	if r.flushEvery <= 0 {
 		r.flushEvery = FlushEvery
@@ -178,31 +185,60 @@ func (r *Recorder) Close() error {
 	return nil
 }
 
-// Report is input on connection conn's screen at now, on thread (empty
-// when no thread was focused), in the compact layout when phone. A span
-// it opens for a connection that has none is first tied to the
+// SetOn is whether the recorder records: while a Jira connection is on.
+// Turning it off ends every open span now and writes what came before;
+// while it is off, Report and Ran record nothing.
+func (r *Recorder) SetOn(on bool) {
+	r.mu.Lock()
+	if r.on == on || r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	r.on = on
+	if !on {
+		now := r.now().UnixMilli()
+		for conn := range r.open {
+			r.endLocked(conn, now)
+		}
+	}
+	r.mu.Unlock()
+	if !on {
+		r.Flush()
+	}
+}
+
+// Report is input on connection conn's screen sinceInput ago (clamped to 0
+// to Window), on thread (empty when the screen shows none), in the
+// compact layout when phone. A span it opens is first tied to the
 // connection's end: tie, when set, binds end (End of conn) to run then,
-// inside the recorder's lock, so an end that runs at once finds the span;
-// a tie that fails opens nothing and is Report's error.
-func (r *Recorder) Report(conn, thread string, phone bool, tie func(end func()) error) error {
-	now := r.now().UnixMilli()
+// inside the recorder's lock, so an end that runs at once finds the span,
+// and answers what unties it; a tie that fails opens nothing and is
+// Report's error.
+func (r *Recorder) Report(conn, thread string, phone bool, sinceInput time.Duration, tie func(end func()) (untie func(), err error)) error {
+	at := r.now().Add(-min(max(sinceInput, 0), Window)).UnixMilli()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.stopped {
+	if r.stopped || !r.on {
 		return nil
 	}
 	s := r.open[conn]
-	if s != nil && s.ThreadID == thread && s.Phone == phone && now-s.last <= r.window && now-s.StartMs < store.MaxActivitySpanMs-r.window {
-		s.last = max(s.last, now)
-		return nil
-	}
-	if s == nil && tie != nil {
-		if err := tie(func() { r.End(conn) }); err != nil {
-			return err
+	if s != nil {
+		at = max(at, s.last)
+		if s.ThreadID == thread && s.Phone == phone && at-s.last <= r.window && at-s.StartMs < store.MaxActivitySpanMs-r.window {
+			s.last = at
+			return nil
 		}
 	}
-	r.endLocked(conn, now)
-	r.open[conn] = &span{ActivitySpan: store.ActivitySpan{ThreadID: thread, Phone: phone, StartMs: now, EndMs: now}, last: now}
+	r.endLocked(conn, at)
+	next := &span{ActivitySpan: store.ActivitySpan{ThreadID: thread, Phone: phone, StartMs: at, EndMs: at}, last: at}
+	if tie != nil {
+		untie, err := tie(func() { r.End(conn) })
+		if err != nil {
+			return err
+		}
+		next.untie = untie
+	}
+	r.open[conn] = next
 	return nil
 }
 
@@ -213,7 +249,7 @@ func (r *Recorder) Ran(thread string, atMs int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch at, ok := r.ran[day]; {
-	case r.stopped:
+	case r.stopped, !r.on:
 	case ok:
 		r.ran[day] = min(at, atMs)
 	case len(r.ran) < maxUnwritten:
@@ -229,14 +265,17 @@ func (r *Recorder) End(conn string) {
 	r.endLocked(conn, now)
 }
 
-// endLocked closes conn's open span at now, or at its last report plus
-// the window when that is sooner.
+// endLocked closes conn's open span at now, or at its last input plus
+// the window when that is sooner, and unties it from its connection.
 func (r *Recorder) endLocked(conn string, now int64) {
 	s := r.open[conn]
 	if s == nil {
 		return
 	}
 	delete(r.open, conn)
+	if s.untie != nil {
+		s.untie()
+	}
 	s.EndMs = max(s.StartMs, min(s.last+r.window, now))
 	r.closed = append(r.closed, s)
 	if over := len(r.closed) - maxUnwritten; over > 0 {
@@ -319,8 +358,7 @@ func (r *Recorder) Flush() {
 		for i, s := range write {
 			s.ID, s.saved = ids[i], spans[i].EndMs
 		}
-		// A closed span is done once written, and one a write did not
-		// take (no Jira connection on) is not kept; so is a thread day.
+		// A closed span is done once written, and so is a thread day.
 		r.closed = slices.DeleteFunc(r.closed, func(s *span) bool { return taken[s] })
 		for _, d := range days {
 			delete(r.ran, d)
@@ -368,26 +406,27 @@ type Day struct {
 // Days is what the recorder measured of each local day from from to to,
 // both YYYY-MM-DD and included, for the days that hold any. Where spans
 // of two connections overlap, each instant counts once, on the span that
-// started later: the screen the person turned to.
+// started later: the screen the person turned to. The store and memory are
+// read under the flush's lock, so no flush writes and retires a span
+// between the two reads.
 func (r *Recorder) Days(from, to string) ([]Day, error) {
-	first, err := time.ParseInLocation(time.DateOnly, from, time.Local)
+	first, end, err := DayRange(from, to)
 	if err != nil {
-		return nil, fmt.Errorf("activity: days from %q: %w", from, err)
+		return nil, err
 	}
-	last, err := time.ParseInLocation(time.DateOnly, to, time.Local)
-	if err != nil {
-		return nil, fmt.Errorf("activity: days to %q: %w", to, err)
-	}
-	end := last.AddDate(0, 0, 1)
+	r.flushMu.Lock()
 	stored, err := r.st.ActivitySpans(first.UnixMilli(), end.UnixMilli())
 	if err != nil {
+		r.flushMu.Unlock()
 		return nil, err
 	}
 	ran, err := r.st.ThreadDays(from, to)
 	if err != nil {
+		r.flushMu.Unlock()
 		return nil, err
 	}
 	spans, ran := r.withUnwritten(stored, ran, from, to)
+	r.flushMu.Unlock()
 	byDay := map[string]*Day{}
 	day := func(name string) *Day {
 		d := byDay[name]
@@ -397,12 +436,16 @@ func (r *Recorder) Days(from, to string) ([]Day, error) {
 		}
 		return d
 	}
+	var stuck error
 	count(spans, first.UnixMilli(), end.UnixMilli(), func(s store.ActivitySpan, from, to int64) {
 		// The local days the stretch reaches, each its own part.
-		for from < to {
+		for from < to && stuck == nil {
 			t := time.UnixMilli(from)
-			y, m, dd := t.Date()
-			next := min(to, time.Date(y, m, dd+1, 0, 0, 0, 0, time.Local).UnixMilli())
+			next := min(to, nextDayStart(t).UnixMilli())
+			if next <= from {
+				stuck = fmt.Errorf("activity: the day after %s starts at %s, not after it", t.Format(time.RFC3339), time.UnixMilli(next).Format(time.RFC3339))
+				return
+			}
 			d := day(t.Format(time.DateOnly))
 			part := time.Duration(next-from) * time.Millisecond
 			d.Active += part
@@ -413,6 +456,9 @@ func (r *Recorder) Days(from, to string) ([]Day, error) {
 			from = next
 		}
 	})
+	if stuck != nil {
+		return nil, stuck
+	}
 	for _, td := range ran {
 		d := day(td.Day)
 		d.Ran = append(d.Ran, td.ThreadID)
@@ -423,6 +469,42 @@ func (r *Recorder) Days(from, to string) ([]Day, error) {
 	}
 	slices.SortFunc(out, func(a, b Day) int { return strings.Compare(a.Day, b.Day) })
 	return out, nil
+}
+
+// DayRange is the instants of the local days from from to to, both
+// YYYY-MM-DD and included: from the first instant of from to the first of
+// the day after to (dayStart).
+func DayRange(from, to string) (start, end time.Time, err error) {
+	first, err := time.Parse(time.DateOnly, from)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("activity: days from %q: %w", from, err)
+	}
+	last, err := time.Parse(time.DateOnly, to)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("activity: days to %q: %w", to, err)
+	}
+	return dayStart(first.Date()), dayStart(last.AddDate(0, 0, 1).Date()), nil
+}
+
+// nextDayStart is the first instant of the local day after t's.
+func nextDayStart(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return dayStart(y, m, d+1)
+}
+
+// dayStart is the first instant of local date y-m-d (normalized, so d+1
+// is the next day): its midnight, or, where the zone skips midnight, the
+// first hour that the date has. time.Date may answer a skipped midnight
+// with the evening before (America/Santiago, America/Havana).
+func dayStart(y int, m time.Month, d int) time.Time {
+	y, m, d = time.Date(y, m, d, 12, 0, 0, 0, time.UTC).Date()
+	for h := range 24 {
+		t := time.Date(y, m, d, h, 0, 0, 0, time.Local)
+		if ty, tm, td := t.Date(); ty == y && tm == m && td == d {
+			return t
+		}
+	}
+	return time.Date(y, m, d, 12, 0, 0, 0, time.Local)
 }
 
 // withUnwritten is stored and ran with what the recorder holds that it
@@ -457,7 +539,8 @@ func (r *Recorder) withUnwritten(stored []store.ActivitySpan, ran []store.Thread
 // the span it counts on: of the spans that cover it, the one that started
 // last.
 func count(spans []store.ActivitySpan, from, to int64, each func(s store.ActivitySpan, from, to int64)) {
-	spans = slices.Clone(spans)
+	// A span that does not reach from to to has no stretch in it.
+	spans = slices.DeleteFunc(slices.Clone(spans), func(s store.ActivitySpan) bool { return max(from, s.StartMs) >= min(to, s.EndMs) })
 	slices.SortStableFunc(spans, func(a, b store.ActivitySpan) int { return cmp.Compare(a.StartMs, b.StartMs) })
 	edges := make([]int64, 0, 2*len(spans))
 	for _, s := range spans {
