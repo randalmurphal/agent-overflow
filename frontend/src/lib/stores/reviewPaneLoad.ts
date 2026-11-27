@@ -249,8 +249,10 @@ export async function loadPatch(
       if (!prRef || !revision) throw new Error('No PR or MR is available for this thread.');
       const pr = prReferenceWire(prRef);
       // The backend reads the revision from the local clone, fetching only
-      // the commits the clone lacks.
-      const list = existing ?? commitList(await ListPRCommits(workspace, pr, revision, userInitiated));
+      // the commits the clone lacks. On the review's computer, as its diff
+      // is: the client's project index may not hold the project (an
+      // archived checkout a ticket's Work opened).
+      const list = existing ?? commitList(await withBackendTarget(backend, () => ListPRCommits(workspace, pr, revision, userInitiated)));
       const { commits, commitsTotal } = list;
       // A run is of the list as it is now: one whose commits left it (a
       // rebase, an amend) falls back to the whole PR, and says so.

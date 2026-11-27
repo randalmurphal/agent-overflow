@@ -2104,18 +2104,51 @@ delete is refused and the links the delete read are the ones it ends.
   hold it; the merged and closed pull requests its linked threads were
   last seen with; and the branches that name the key in the projects
   listing the connection's boards, the pull requests' projects and the
-  linked threads' projects, a branch a listed pull request names folded
-  into it. A stored list's project that was removed since (the list
-  stays until the Pull requests page's next read prunes it) keeps its
-  rows and has no branches read. A repository whose
-  branches cannot be read is a problem beside the rest. At 2,000 stored
-  rows over 10 repositories and a 500-branch project it costs 18 ms and
-  4 MB an open, 23 ms and 5 MB when every list names the key
-  (`TestTicketWorkCostAtRealSize`); a 200-row landing's tickets cost
-  0.5 ms. It sends no forge or tracker request.
+  linked threads' projects. A row names the project it was listed
+  under: the stored list's, the linked thread's, or the one whose branch
+  the forge's lookup found it by. A branch of project P folds into a
+  listed pull request whose head it is: their names match, and the pull
+  request is of P's origin's repository or the search's lookup by the
+  branch's name in P's checkout found it (a fork's branch heads a pull
+  request of its parent). The project a row was listed under takes no
+  part, and one ticket's branches can share a name across repositories.
+  So in this answer a fork's branch stands beside the parent's pull
+  request it heads until `SearchTicketWork`'s answer folds it. A stored
+  list's project that was removed since (the list stays until the Pull
+  requests page's next read prunes it) keeps its rows, which name no
+  project, and has no branches read. Each pull request names the project
+  that can show it in the app (`ReviewProjectID`, `reviewProjects`): a
+  project of the computer's, archived or not, whose origin is the pull
+  request's repository, since a review fetches the pull request's refs
+  from origin (`git.Core.EnsurePRObjects`), so a fork's checkout cannot
+  show its parent's pull request; none when no project can, and the row
+  opens on the forge. The row's own project comes first, then the
+  projects Work covers, whose origins the read has; the computer's other
+  projects' origins are read, in name order, only for a row those leave
+  without one, until every such row's repository has a clone. Each of
+  the two methods walks on its own, so a ticket's open walks them up to
+  twice. An origin read is cached for five minutes once it has
+  succeeded, so a walk that starts after another's read finished reads
+  again only the origins that failed; the two requests of one open
+  start together, so their walks can overlap and each read an origin
+  neither has cached. A read
+  is up to two git processes (`rev-parse --git-common-dir`, then
+  `remote get-url origin`). With 10 other projects, a ticket with no
+  rows and one whose rows the covered projects clone read none of their
+  origins over a ticket's open, and a row none of them clones reads
+  each project named before its clone once and none after it
+  (`TestTicketWorkReadsOtherProjectsOriginsOnlyForARowNoWorkProjectClones`).
+  A repository whose branches cannot be read is a problem beside the
+  rest. At 2,000 stored rows over 10 repositories, a 500-branch project
+  and 30 other projects it costs about 30 ms and 4 MB an open, 32 ms and
+  4 MB with the other projects' origins not cached, and 50 ms and 5 MB
+  when every list names the key (`TestTicketWorkCostAtRealSize`); a
+  200-row landing's tickets cost 0.7 ms. It sends no forge or tracker
+  request.
 - **`SearchTicketWork`** (home route, the same scopes, budget 2m15s from
   entry: every forge request runs within it, and no project's local read
-  starts after it) is
+  starts after it, so a row whose project would be found among the other
+  projects after the budget opens on the forge) is
   `GetTicketWork`'s answer with the forge searched by the key
   ([Ticket Work search](forge-transport.md#ticket-work-search)): once per
   distinct repository the projects above clone, then a lookup by name, in
@@ -2129,7 +2162,9 @@ delete is refused and the links the delete read are the ones it ends.
   read, which runs only while the Pull requests page is open or at
   boot). A repository's failure is a `TicketForgeProblem` carrying the
   fields a Pull requests page project carries for a failed read
-  (`newRepoForgeFailure`), beside the rows its search read, and a search that stopped at its page bound is
+  (`newRepoForgeFailure`), beside the rows its search and lookups read
+  before they failed (a GitHub answer keeps the searches no error of it
+  names), and a search that stopped at its page bound is
   named in `SearchFull`. The client calls both methods at once and shows
   the stored answer until the search's lands (`stores/ticketWork.svelte.ts`);
   a stored answer or failure after it is not shown; nothing is stored.

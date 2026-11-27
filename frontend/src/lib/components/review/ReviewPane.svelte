@@ -52,8 +52,8 @@
   interface Props {
     /** A review companion beside a thread pane. */
     ctx?: PanelContext;
-    /** A review pinned to one PR with no thread (the Pull requests page).
-     * The owner keys this component on the PR and calls
+    /** A review pinned to one PR with no thread (the Pull requests page,
+     * a ticket's Work row). The owner keys this component on the PR and calls
      * `disposePRReviewStates(ownerPaneId)` when its page goes; the states
      * of the PR on screen and the one before it outlive this component. */
     pr?: { ownerPaneId: string; backend: BackendKey; projectId: string; pr: PRRef };

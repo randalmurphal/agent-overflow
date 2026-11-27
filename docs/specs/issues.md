@@ -540,6 +540,19 @@ most 500 matches of each kind and says so when there were more.
 - The match is used in both directions: the Pull requests page shows a chip
   per ticket that opens it, and a ticket's Work lists its pull requests and
   branches.
+- A pull request row opens its review in the ticket's place, the one the
+  Pull requests page shows, in any state: over the board or beside the
+  list, in the ticket's own pane, full screen on the phone. A bar over it
+  holds Back, the number and Open on GitHub or GitLab, and stays when the
+  review cannot load. Nothing of the ticket shows or takes the keyboard
+  under it. Find
+  searches the review while the person is in it. Back closes what is open
+  in the review (a CI log, the conflicts, the phone's file list), then
+  shows the ticket as it was. A row opens on the forge instead when no
+  project of the ticket's computer has the pull request's repository as
+  its origin: a fork's checkout cannot show its parent's pull request,
+  since the review fetches it from origin. The row's menu opens it on the
+  forge either way.
 - The forge is searched by key for a pull request outside the stored list,
   and a match counts only when its title or branch names the key by the
   same rule. Jira's own
