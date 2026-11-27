@@ -2,7 +2,7 @@
 // value's name or level: the board answer carries no tracker icon, and the
 // app fetches none.
 
-import type { ChoiceView, IssueTypeView, SectionTotal, SupportView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { ChoiceView, IssueTypeView, PaceView, SectionTotal, SupportView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { ScreenColumn, ShownColumn } from '../../stores/trackerBoardModel';
 import type { SectionNumbers } from '../../stores/trackerBacklogModel';
 
@@ -119,6 +119,19 @@ export function priorityMark(priority: ChoiceView | null | undefined): PriorityM
   return PRIORITY_NAMES[(priority.name ?? '').trim().toLowerCase()] ?? 'other';
 }
 
+/** What a pace counted with credit is made of (`PaceView.credit`), each
+ * part an average a sprint in the unit the board is counted in, and how
+ * many tickets' credit it leaves out; '' for a pace without credit. */
+export function paceCreditWords(pace: PaceView | null, unit: string): string {
+  const c = pace?.credit;
+  if (!pace || !c) return '';
+  const estimated = unit === 'points' || unit === 'time';
+  const part = (a: { rows: number; estimate: number }) => formatPace(estimated ? a.estimate : a.rows, unit);
+  const said = `A sprint's pace: finished tickets ${part(c.finished)}, review credit ${part(c.review)}, support credit ${part(c.support)}.`;
+  if (!c.unread) return said;
+  return `${said} The review or support credit of ${c.unread} ${c.unread === 1 ? 'ticket' : 'tickets'} is not counted: who worked on ${c.unread === 1 ? 'it' : 'them'} is not read.`;
+}
+
 /** A part of a Backlog section's numbers line: plain, what a moved row
  * makes it (`to`, after an arrow), or a warning. */
 export interface LinePart {
@@ -160,8 +173,10 @@ export function sectionLine(kind: 'active' | 'future' | 'backlog', n: SectionNum
     const pace = measure(n.pace);
     moving(was, now, '');
     const last = n.pace.sprints === 1 ? 'the last sprint' : `the last ${n.pace.sprints} sprints' average`;
-    parts.push({ text: ` of about ${formatPace(pace, unit)}, ${last}` });
+    parts.push({ text: ` of about ${formatPace(pace, unit)}, ${last}${n.pace.credit ? ' with credit' : ''}` });
     if (n.over > 0) parts.push({ text: ' · ' }, { text: `${bare(Math.round(n.over * 10) / 10)} over`, tone: 'warn' });
+    const unread = n.pace.credit?.unread ?? 0;
+    if (unread > 0) parts.push({ text: ' · ' }, { text: `credit of ${unread}${tickets(unread)} not counted`, tone: 'warn' });
     return parts;
   }
   const wasRows = n.before ? n.before.rows : null;

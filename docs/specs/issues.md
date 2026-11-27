@@ -412,9 +412,7 @@ last read them for the board, and the completion by the board's
 configuration as this computer last read it for its writes, which can be
 another read. A ticket opens beside the list, and in its own
 pane with Ctrl or Cmd or the menu; the row's menu has Ask and Start
-work…. Not built: the pace counted with credit (it counts the tickets
-whose status counted as done when their sprint was completed, by their
-estimates now); a Linear team's cycles are started and completed in Linear,
+work…. Not built: a Linear team's cycles are started and completed in Linear,
 which the screen says; a completion the tracker refuses part of says the
 first refusal, not how many tickets moved.
 
@@ -425,7 +423,9 @@ first refusal, not how many tickets moved.
   row.
 - The next sprint shows its points against the usual pace (the average of
   the last five finished sprints, counted with credit), each person's
-  load, and a warning when it is over. While a row is carried, the section
+  load, and a warning when it is over. A pace counted with credit says
+  so, says how many tickets' credit it leaves out, and its tip gives the
+  finished tickets, review credit and support credit it is made of. While a row is carried, the section
   it left and the one it is over show what their totals would become.
 - The backlog counts tickets with no estimate. Support tickets are left out
   of that count.
@@ -737,7 +737,9 @@ the credit rules in How this is counted.
   none. A drill's header gives its number and its rows and tickets ("6
   rows, 5 tickets" when a ticket counts in two sprints); each row names
   the period it counts in, and a row not counted says "Not counted" and
-  why.
+  why. A metric with series lists its rows under each series, and under
+  a heading within one where its rows carry one, each with the number
+  of its rows alone.
 - A chart lists the tickets it draws in no bar or point (a finish whose
   time is not known) in a "not counted" that opens the whole chart. A
   chart or table that shows only its first 12 bars or 50 rows says how
@@ -804,8 +806,7 @@ the credit rules in How this is counted.
 Status: built: the rules in Settings, support tickets left out of the
 Backlog's count of tickets without an estimate, a support ticket's
 points on the Time screen, the evidence credit reads, and credit counted
-in the built-in dashboard's pace. Not built: the Backlog's pace counted
-with credit.
+in the built-in dashboard's pace and the Backlog's.
 
 - A support ticket carries no points. It counts as its logged hours divided
   by the project's hours-per-point value, and shows hours where points
@@ -819,7 +820,8 @@ with credit.
 - Opening a credited number lists each finished ticket, each review with
   its arithmetic ("10% of 5 points for commented, logged time"), each
   support ticket with its hours, and anyone who acted but did not
-  qualify, with the actions the rule counts and how many it needs.
+  qualify, under their own heading, with the actions the rule counts
+  and how many it needs.
 - Support time counts in the sprint whose dates hold it; time logged
   between sprints counts in the next sprint to start, once it starts.
   Credit counts only on a Jira site.

@@ -516,9 +516,10 @@ func TestAnUnknownFinishBelongsToTheRangesItsTicketSpans(t *testing.T) {
 	if got, want := rows("pace"), []string{"WEB-1 true ", "WEB-6 false when it finished is not known", "WEB-9 false when it finished is not known", "WEB-10 false when it finished is not known", "0.5, 3 not counted"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("pace drill = %q; want %q", got, want)
 	}
-	// The chart's "3 not counted" opens the whole widget: WEB-9's and
-	// WEB-10's creations are counted and their finishes are not.
-	if got, want := rows("created_finished"), []string{"WEB-1 true ", "WEB-9 true ", "WEB-10 true ", "WEB-6 false when it finished is not known",
+	// The chart's "3 not counted" opens the whole widget, its rows grouped
+	// by series: WEB-9's and WEB-10's creations are counted, then the
+	// finishes, theirs not.
+	if got, want := rows("created_finished"), []string{"WEB-9 true ", "WEB-10 true ", "WEB-1 true ", "WEB-6 false when it finished is not known",
 		"WEB-9 false when it finished is not known", "WEB-10 false when it finished is not known", "3, 3 not counted"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("created and finished drill = %q; want %q", got, want)
 	}

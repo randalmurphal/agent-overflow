@@ -91,7 +91,7 @@ func (s *Service) ProjectPace(projectID string) ([]BoardPace, error) {
 		}
 		if ok {
 			unit := tracker.EstimateUnit(pace.Unit)
-			bp.Read, bp.PlansSprints, bp.Pace = true, pace.PlansSprints, paceOf(pace.Finished)
+			bp.Read, bp.PlansSprints, bp.Pace = true, pace.PlansSprints, paceOf(pace.Finished, groups.credit)
 			bp.Estimate, bp.Counts = nameOf(unitNames[:], unit), nameOf(unitNames[:], groups.unit(unit))
 			out[len(out)-1] = bp
 		}

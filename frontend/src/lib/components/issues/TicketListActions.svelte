@@ -76,11 +76,16 @@
     row: Snippet<[TicketRow]>;
     /** What the list shows with no rows. */
     empty?: Snippet;
+    /** The group a row is listed in, and what heads a group: drawn before
+     * the first row and before each row whose group is not the row's
+     * before it. A list with no `group` has no headings. */
+    groupOf?: (row: TicketRow) => string;
+    group?: Snippet<[TicketRow]>;
     /** A thread on the selection was made, and opens next. */
     onThread?: () => void;
   }
 
-  let { rows, source, variant, listTestId, rowTestId, onTicket, row, empty, onThread }: Props = $props();
+  let { rows, source, variant, listTestId, rowTestId, onTicket, row, empty, groupOf, group, onThread }: Props = $props();
 
   /** A thread carries each ticket as one attachment of its first message. */
   const MAX_THREAD_TICKETS = DEFAULT_MAX_ATTACHMENT_COUNT;
@@ -266,13 +271,17 @@
   const ITEM = { widget: 'border-t border-border-subtle first:border-t-0', drill: 'border-b border-border-subtle last:border-b-0' };
   const PICK = { widget: 'pr-1.5', drill: 'pl-5 pr-2' };
   const ROW = { widget: 'py-1', drill: 'py-1.5 pr-5' };
+  const GROUP = { widget: 'border-t border-border-subtle pt-1.5 first:border-t-0', drill: 'border-b border-border-subtle bg-surface-1 px-5 py-1.5' };
   const BAR = { widget: 'border-t border-border-subtle pt-1.5', drill: 'border-t border-border-subtle px-5 py-2' };
 </script>
 
 <ul class="flex min-h-0 flex-col {variant === 'drill' ? 'flex-1 overflow-y-auto' : ''}" data-testid={listTestId} data-selecting={selecting}>
-  {#each rows as r (r.row)}
+  {#each rows as r, i (r.row)}
     {@const on = chosen.has(r.id)}
     {@const writes = ticketWrites(keyOf(r))}
+    {#if group && groupOf && (i === 0 || groupOf(rows[i - 1]) !== groupOf(r))}
+      <li class={GROUP[variant]} data-testid="ticket-list-group">{@render group(r)}</li>
+    {/if}
     <li class="group/row {ITEM[variant]}">
       <div class="flex min-w-0 items-center">
         <span class="flex shrink-0 items-center {PICK[variant]}">

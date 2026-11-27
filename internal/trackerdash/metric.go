@@ -40,9 +40,12 @@ const (
 	// the row. A row not counted is listed as "Not counted: " and its
 	// note, so its note says only why.
 	ColumnNote = "note"
+	// ColumnHeading is the heading a drill lists the row under within its
+	// series, after the rows with none (Drill, DrillGroup).
+	ColumnHeading = "heading"
 )
 
-var metricColumns = []string{ColumnTicket, ColumnValue, ColumnShare, ColumnBucket, ColumnSeries, ColumnPerson, ColumnEpic, ColumnAt, ColumnUntil, ColumnNote}
+var metricColumns = []string{ColumnTicket, ColumnValue, ColumnShare, ColumnBucket, ColumnSeries, ColumnHeading, ColumnPerson, ColumnEpic, ColumnAt, ColumnUntil, ColumnNote}
 
 // Reducer is how a metric's rows become one number.
 type Reducer string

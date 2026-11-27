@@ -275,6 +275,9 @@ type contribution struct {
 	until    int64
 	hasUntil bool
 	note     string
+	// heading is the drill's heading of the row within its series
+	// (ColumnHeading).
+	heading string
 	// period is the label of the period place put the row in.
 	period string
 }
@@ -332,6 +335,19 @@ var errBytes = &MetricError{Sentence: fmt.Sprintf("This widget's rows passed %d 
 
 const maxNote = 80
 
+// cutNote is a note or a heading cut to maxNote bytes, on a rune, with an
+// ellipsis.
+func cutNote(s string) string {
+	if len(s) <= maxNote {
+		return s
+	}
+	cut := maxNote
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
 // add reads one row into a contribution: onBoard is whether its ticket
 // is one of the copy's tickets, which the wrapper asks of the copy.
 func (s *rowSink) add(onBoard driver.Value, args []driver.Value) error {
@@ -363,14 +379,8 @@ func (s *rowSink) add(onBoard driver.Value, args []driver.Value) error {
 		s.err = s.kept.errRows(s.cols.state())
 		return s.err
 	}
-	if len(c.note) > maxNote {
-		cut := maxNote
-		for cut > 0 && !utf8.RuneStart(c.note[cut]) {
-			cut--
-		}
-		c.note = c.note[:cut] + "…"
-	}
-	s.bytes += 96 + len(c.ticket) + len(c.bucket) + len(c.series) + len(c.person) + len(c.epic) + len(c.note)
+	c.note, c.heading = cutNote(c.note), cutNote(c.heading)
+	s.bytes += 96 + len(c.ticket) + len(c.bucket) + len(c.series) + len(c.person) + len(c.epic) + len(c.note) + len(c.heading)
 	if s.bytes > maxRowBytes {
 		s.err = errBytes
 		return s.err
@@ -409,7 +419,7 @@ func (s *rowSink) read(args []driver.Value) (contribution, error) {
 	for _, f := range []struct {
 		name string
 		to   *string
-	}{{ColumnBucket, &c.bucket}, {ColumnSeries, &c.series}, {ColumnPerson, &c.person}, {ColumnEpic, &c.epic}, {ColumnNote, &c.note}} {
+	}{{ColumnBucket, &c.bucket}, {ColumnSeries, &c.series}, {ColumnPerson, &c.person}, {ColumnEpic, &c.epic}, {ColumnNote, &c.note}, {ColumnHeading, &c.heading}} {
 		if err == nil && s.cols.has(f.name) {
 			*f.to, err = text(f.name, at(f.name))
 		}

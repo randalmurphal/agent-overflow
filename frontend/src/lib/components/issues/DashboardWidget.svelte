@@ -79,6 +79,7 @@
   import LineChart from './charts/LineChart.svelte';
   import Sparkline from './charts/Sparkline.svelte';
   import DashboardHow from './DashboardHow.svelte';
+  import DashboardCreditLine from './DashboardCreditLine.svelte';
   import DashboardLoggedLine from './DashboardLoggedLine.svelte';
   import TicketListActions, { type TicketListSource } from './TicketListActions.svelte';
 
@@ -358,6 +359,7 @@
       {/if}
 
       <DashboardLoggedLine {value} counts={view.how.reads?.includes('worklogs') ?? false} {logged} />
+      <DashboardCreditLine {value} />
       {#if value && !value.error && view.form !== 'number' && (value.more || value.not_counted)}
         <div class="flex flex-wrap gap-3 text-[0.6875rem]">
           {#if value.more}

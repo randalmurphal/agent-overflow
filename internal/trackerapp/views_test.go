@@ -137,6 +137,65 @@ func TestBoardPace(t *testing.T) {
 	}
 }
 
+// While the project counts credit, a board's pace adds the sprints'
+// review and support credit and says what each part adds and how many
+// tickets' credit is not read: with no evidence read, each finished
+// ticket's review is not counted, so the pace is the finished tickets
+// alone, with both of them unread; a patch carries it the same way.
+func TestBoardPaceWithCredit(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	completed := time.UnixMilli(1_799_000_000_000).UTC()
+	m.p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+		st := webStructure(b)
+		st.Sprints = append(st.Sprints, tracker.Sprint{ID: "9", Board: b, Name: "Sprint 1", State: tracker.SprintClosed, Completed: completed})
+		return st, nil
+	}
+	three, one := 3.0, 1.0
+	member := func(id string, estimate *float64) tracker.Row {
+		r := row(id, 1_799_000_000_000, id)
+		r.Card.Status, r.Card.Sprints, r.Estimate = "s3", []tracker.SprintID{"9"}, estimate
+		return r
+	}
+	m.p.changedRows = pagedDelta(t, []tracker.Row{member("10001", &three), member("10002", &one)})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	regroup, err := store.MirrorRegroup{}.WithCredit([]store.MirrorCreditRule{{ReviewShare: 10, ReviewNeed: 1, Commented: true, HoursPerPoint: 4}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credit := StatusGroups{regroup: regroup, credit: true}
+	want := PaceView{Sprints: 1, Rows: 2, Estimate: 4, Credit: &PaceCredit{Finished: PaceAmount{Rows: 2, Estimate: 4}, Unread: 2}}
+	v := must[BoardView](t)(m.svc.Board(m.scope(), credit, nil))
+	if v.Pace == nil || !reflect.DeepEqual(*v.Pace, want) {
+		t.Fatalf("pace with credit %+v; want %+v", v.Pace, want)
+	}
+	if off := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil)); off.Pace == nil || off.Pace.Credit != nil {
+		t.Fatalf("pace without credit %+v; want no credit", off.Pace)
+	}
+	patch := must[BoardPatch](t)(m.svc.BoardPatch(m.scope(), credit, nil, ids("10001"), TotalsAt{}))
+	if patch.Totals == nil || patch.Totals.Pace == nil || !reflect.DeepEqual(*patch.Totals.Pace, want) {
+		t.Fatalf("patch totals %+v; want the pace with credit", patch.Totals)
+	}
+}
+
+// paceOf adds review and support credit to the pace only while the
+// project counts credit, and averages each part over the sprints.
+func TestPaceOfAddsCreditOnlyWhenCounted(t *testing.T) {
+	t.Parallel()
+	finished := []store.MirrorSprintFinished{
+		{SprintID: "1", Done: 2, Estimate: 8, Review: 1, ReviewShares: 0.2, Support: 2, SupportShares: 2, Unread: 1},
+		{SprintID: "2", Done: 0, Estimate: 0, Review: 0, ReviewShares: 0, Support: 1, SupportShares: 1, Unread: 2},
+	}
+	on := PaceView{Sprints: 2, Rows: 1 + 0.1 + 1.5, Estimate: 4 + 0.5 + 1.5, Credit: &PaceCredit{
+		Finished: PaceAmount{Rows: 1, Estimate: 4}, Review: PaceAmount{Rows: 0.1, Estimate: 0.5}, Support: PaceAmount{Rows: 1.5, Estimate: 1.5}, Unread: 3}}
+	if got := paceOf(finished, true); !reflect.DeepEqual(*got, on) {
+		t.Errorf("with credit %+v; want %+v", *got, on)
+	}
+	if got := paceOf(finished, false); !reflect.DeepEqual(*got, PaceView{Sprints: 2, Rows: 1, Estimate: 4}) {
+		t.Errorf("without credit %+v; want the finished tickets alone", *got)
+	}
+}
+
 // A project's pace, as its Points and credit page reads it, is the one
 // sprint planning measures against, read with the project's status groups
 // and in the unit it counts the board in, from the mirror alone; a board

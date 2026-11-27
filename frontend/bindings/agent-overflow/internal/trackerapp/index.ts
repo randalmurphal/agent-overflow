@@ -52,6 +52,8 @@ export {
     MarkdownEditInput,
     MoveRequest,
     MoveView,
+    PaceAmount,
+    PaceCredit,
     PaceView,
     ParentView,
     PartView,

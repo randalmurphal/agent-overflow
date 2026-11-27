@@ -4924,6 +4924,26 @@ describe("the board's summary row", () => {
     view.unmount();
   });
 
+  it('says on a pinned widget of credit that the last read of who worked on the tickets failed: in its chip\'s tip and on its tile', async () => {
+    const sentence = 'Credit may not count everything: the last read of who worked on the tickets failed. Jira refused the request: 401 Unauthorized.';
+    const pace = { id: 'pace', title: 'Usual pace', form: 'number', width: 3, unit: 'estimate', good: 'up', how };
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['pace', 'stuck'] } as Partial<BoardView>) });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [{ ...OVERVIEW, widgets: [...OVERVIEW.widgets, pace] }, KEPT], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    setBindingMock('EvaluateTrackerDashboard', async () => ({
+      range: { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' }, estimates: 'points', at: 1,
+      widgets: [{ id: 'pace', value: { v: 20 }, evidence: sentence }, { id: 'stuck', value: { v: 1 } }],
+    }));
+    const view = mount();
+    await waitFor(() => expect(view.getAllByTestId('board-row-chip').map((c) => c.textContent?.includes('20'))).toEqual([true, false]));
+    const [credit, other] = view.getAllByTestId('board-row-chip');
+    expect(credit.getAttribute('title')?.startsWith(sentence)).toBe(true);
+    expect(other.getAttribute('title')).not.toContain('Credit may not count');
+    await fireEvent.click(view.getByTestId('board-row-toggle'));
+    const tiles = await view.findAllByTestId('board-row-tile');
+    expect(tiles.map((t) => within(t).queryByTestId('dashboard-widget-evidence')?.textContent ?? null)).toEqual([sentence, null]);
+    view.unmount();
+  });
+
   it('says why a pinned chart has no result, as its widget does', async () => {
     const burn = { id: 'burn', title: 'Sprint burndown', form: 'line', width: 6, unit: 'estimate', bucket: 'day', series: ['Remaining'], how };
     const overview = { ...OVERVIEW, widgets: [...OVERVIEW.widgets, burn] };

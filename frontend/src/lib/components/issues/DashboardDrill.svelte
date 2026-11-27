@@ -6,10 +6,12 @@
   // row opens its ticket, which closes the drill; Escape, Back and Close
   // close it, and so does a thread made on its selected rows
   // (TicketListActions), before the thread opens; the selection keeps only
-  // the page's tickets.
+  // the page's tickets. A metric with series or headings lists its rows in
+  // groups (`DrillAnswer.groups`), each under its name with the number of
+  // its rows alone, counted over every page.
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import type { TicketRow } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
+  import type { DrillGroup, TicketRow } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import Modal from '../primitives/Modal.svelte';
@@ -46,6 +48,15 @@
     failure = err ? captureError(err, { context: "Could not list this number's tickets" }) : null;
   });
 
+  // The groups by the series and heading their rows carry; headings show
+  // once the rows are in more than one group.
+  const groupKey = (series: string | undefined, heading: string | undefined) => `${series ?? ''}\u0000${heading ?? ''}`;
+  const groups = $derived(
+    new Map((answer?.groups ?? []).map((g: DrillGroup) => [groupKey(g.series, g.heading), { rows: g.rows, words: numWords(g.value as Num, unit, answer?.estimates ?? '') }])),
+  );
+  const grouped = $derived(groups.size > 1);
+  const groupOf = (row: TicketRow) => groupKey(row.series, row.heading);
+
   function rowValue(row: TicketRow): string {
     if (row.value === undefined || row.value === null || !answer) return '';
     const word = unitWord(row.value, unit, answer.estimates);
@@ -75,7 +86,21 @@
       {#if answer.restarted}
         <p class="border-b border-border-subtle bg-surface-1 px-5 py-1.5 text-[0.75rem] text-fg-muted" role="status" data-testid="dashboard-drill-restarted">The tickets changed while you paged, so this is the first page again, counted now.</p>
       {/if}
-      <TicketListActions rows={answer.rows} source={tickets} variant="drill" listTestId="dashboard-drill-rows" rowTestId="dashboard-drill-row" {onTicket} onThread={onClose}>
+      <TicketListActions rows={answer.rows} source={tickets} variant="drill" listTestId="dashboard-drill-rows" rowTestId="dashboard-drill-row" {onTicket} onThread={onClose} groupOf={grouped ? groupOf : undefined}>
+        {#snippet group(r)}
+          {@const g = groups.get(groupOf(r))}
+          {@const words = g?.words}
+          <div class="flex flex-wrap items-baseline gap-x-2 text-[0.6875rem] text-fg-muted" data-testid="dashboard-drill-group">
+            <span class="font-medium text-fg" data-testid="dashboard-drill-group-name">{[r.series, r.heading].filter(Boolean).join(' · ') || 'Other'}</span>
+            {#if g}<span data-testid="dashboard-drill-group-rows">{g.rows === 1 ? '1 row' : `${g.rows} rows`}</span>{/if}
+            <span class="flex-1"></span>
+            {#if words}
+              <span class="tabular-nums text-fg" data-testid="dashboard-drill-group-value">{words.value}</span>
+              {#if words.notCounted}<span>{words.notCounted}</span>{/if}
+              {#if words.notRead}<span>{words.notRead}</span>{/if}
+            {/if}
+          </div>
+        {/snippet}
         {#snippet row(r)}
           <span class="shrink-0 font-mono text-[0.6875rem] text-fg-muted">{r.key}</span>
           <!-- Under compact the note goes under the title, which keeps its width. -->

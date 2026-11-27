@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { BoardView, CardView, RowView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { sectionLine } from '../components/issues/boardFormat';
+import { paceCreditWords, sectionLine } from '../components/issues/boardFormat';
 import {
   backlogItems,
   backlogSections,
@@ -122,6 +122,24 @@ describe('a header\'s numbers', () => {
     const level = sectionNumbers(one, backlogSections(one)[1], []);
     expect(level.over).toBe(0);
     expect(sectionLine('future', level, 'points', 'points').map((p) => p.text).join('')).toBe('7 of about 7.3 points, the last sprint');
+  });
+
+  it('say a pace counted with credit, what it is made of, and how many tickets\' credit it leaves out', () => {
+    const credit = { finished: { rows: 3, estimate: 5 }, review: { rows: 0.2, estimate: 0.5 }, support: { rows: 1.5, estimate: 1.5 }, unread: 2 };
+    const held = board(ROWS, { pace: { sprints: 5, rows: 4.7, estimate: 7, credit } });
+    const n = sectionNumbers(held, backlogSections(held)[1], []);
+    const line = sectionLine('future', n, 'points', 'points');
+    expect(line.map((p) => p.text).join('')).toBe('7 of about 7 points, the last 5 sprints\' average with credit · credit of 2 tickets not counted');
+    expect(line.filter((p) => p.tone === 'warn').map((p) => p.text)).toEqual(['credit of 2 tickets not counted']);
+    expect(paceCreditWords(n.pace, 'points')).toBe(
+      'A sprint\'s pace: finished tickets 5 points, review credit 0.5 points, support credit 1.5 points. The review or support credit of 2 tickets is not counted: who worked on them is not read.',
+    );
+    expect(paceCreditWords(n.pace, 'none')).toContain('finished tickets 3 tickets, review credit 0.2 tickets, support credit 1.5 tickets.');
+    const read = board(ROWS, { pace: { sprints: 5, rows: 4.7, estimate: 7, credit: { ...credit, unread: 0 } } });
+    const all = sectionNumbers(read, backlogSections(read)[1], []);
+    expect(sectionLine('future', all, 'points', 'points').map((p) => p.text).join('')).toBe('7 of about 7 points, the last 5 sprints\' average with credit');
+    expect(paceCreditWords(all.pace, 'points')).toBe('A sprint\'s pace: finished tickets 5 points, review credit 0.5 points, support credit 1.5 points.');
+    expect(paceCreditWords(sectionNumbers(board(ROWS), backlogSections(board(ROWS))[1], []).pace, 'points')).toBe('');
   });
 
   it('say a future sprint\'s points alone on a board that finished no sprint', () => {
