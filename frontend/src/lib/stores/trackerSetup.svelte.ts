@@ -31,6 +31,11 @@
 // regroups off the boards, and the places its Start work defaults name,
 // are part of their answer.
 //
+// The Points and credit page's pace of the project's Jira boards
+// (`ProjectTrackerPace`) is held the same way as the statuses: read on
+// hold, on the event and on reconnect, since the unit it is in and the
+// status groups it counts done by are the setup's.
+//
 // The Fields page's fields to pin are held by site
 // (`ProjectTrackerSiteFields`), each its own read, so a site that fails
 // or stalls holds up no other: read on hold, on reconnect and on the
@@ -43,8 +48,8 @@
 // computer's tracker read, which a new ticket makes a new read of.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { AgentRules, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace, TimeTicket } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, SetProjectTrackerSetup, TrackerLookup } from './bindings';
+import type { AgentRules, BoardPace, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace, TimeTicket } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { ProjectTrackerPace, ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, SetProjectTrackerSetup, TrackerLookup } from './bindings';
 import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend } from '../transport/entityIndex';
@@ -169,6 +174,12 @@ class HeldStatuses extends HeldRead<ProjectStatuses> {
   }
 }
 
+class HeldPace extends HeldRead<BoardPace[]> {
+  protected call(): Promise<BoardPace[]> {
+    return ProjectTrackerPace(this.project);
+  }
+}
+
 class HeldSiteFields extends HeldRead<PinField[]> {
   constructor(project: string, readonly tracker: string, readonly site: string) {
     super(project);
@@ -195,6 +206,7 @@ class HeldTicketCheck extends HeldRead<LookupView> {
 
 const setups = new SvelteMap<string, HeldSetup>();
 const statuses = new SvelteMap<string, HeldStatuses>();
+const paces = new SvelteMap<string, HeldPace>();
 const fields = new SvelteMap<string, HeldSiteFields>();
 const checks = new SvelteMap<string, HeldTicketCheck>();
 
@@ -332,6 +344,32 @@ export function refreshTrackerStatuses(project: string): Promise<void> {
   return statuses.get(project)?.read() ?? Promise.resolve();
 }
 
+/** The pace of a project's Jira boards as the Points and credit page
+ * shows it. */
+export interface TrackerPaceState {
+  readonly boards: readonly BoardPace[] | null;
+  readonly error: unknown;
+}
+
+const NO_PACE: TrackerPaceState = { boards: null, error: null };
+
+/** Holds `project`'s pace while the caller shows it, reading it now; the
+ * returned function releases the hold. */
+export function acquireTrackerPace(project: string): () => void {
+  return acquire(paces, project, () => new HeldPace(project));
+}
+
+/** `project`'s pace as held. Reactive. */
+export function trackerPaceOf(project: string): TrackerPaceState {
+  const entry = paces.get(project);
+  return entry ? { boards: entry.value, error: entry.error } : NO_PACE;
+}
+
+/** Reads `project`'s pace again if a surface holds it. */
+export function refreshTrackerPace(project: string): Promise<void> {
+  return paces.get(project)?.read() ?? Promise.resolve();
+}
+
 /** A site's fields to pin as the Fields page shows them. */
 export interface TrackerSiteFieldsState {
   readonly fields: readonly PinField[] | null;
@@ -401,6 +439,29 @@ export function withNeverEpics(setup: Setup, on: boolean): Setup {
   return { ...setup, time: { ...setup.time, never_epics: on } };
 }
 
+/** Whether the project counts its Jira boards' tickets in place of their
+ * estimates: absent counts the estimates (trackerapp.Estimates). */
+export function countsTickets(setup: Setup | null | undefined): boolean {
+  return setup?.estimates?.count === 'tickets';
+}
+
+/** `setup` counting tickets or the boards' estimates. The computer stores
+ * the estimates as none (trackerapp's checkEstimates). */
+export function withCountTickets(setup: Setup, on: boolean): Setup {
+  return { ...setup, estimates: { ...setup.estimates, count: on ? 'tickets' : 'estimates' } };
+}
+
+/** Whether the project's tickets offer planning poker: absent is on. */
+export function pokerOn(setup: Setup | null | undefined): boolean {
+  return setup?.estimates?.poker !== false;
+}
+
+/** `setup` with planning poker on or off. The computer stores it turned
+ * on as none. */
+export function withPoker(setup: Setup, on: boolean): Setup {
+  return { ...setup, estimates: { ...setup.estimates, poker: on } };
+}
+
 /** A check of the tickets `keys` through `connection` on computer
  * `backend` for `project`'s Time page. */
 function ticketCheckKey(project: string, backend: BackendKey, connection: string, keys: readonly string[]): string {
@@ -445,7 +506,7 @@ function readAgainOn(backend: BackendKey): void {
     if (entry.saving) entry.readOwed = true;
     else void entry.read();
   }
-  for (const entry of statuses.values()) {
+  for (const entry of [...statuses.values(), ...paces.values()]) {
     const owner = entry.backend();
     if (owner === undefined || owner === backend) void entry.read();
   }
@@ -465,6 +526,7 @@ onBackendStatusChange((backend, status) => {
 export function resetTrackerSetupForTest(): void {
   setups.clear();
   statuses.clear();
+  paces.clear();
   fields.clear();
   checks.clear();
 }

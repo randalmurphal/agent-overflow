@@ -101,7 +101,7 @@
   import { opensTicketPane, ticketPanesOffered } from '../../stores/ticketPanes.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { getProjectLabelText } from '../../stores/projects.svelte';
-  import { acquireTrackerSetup, editTrackerSetup, trackerRegroupsOf, trackerSetupOf } from '../../stores/trackerSetup.svelte';
+  import { acquireTrackerSetup, editTrackerSetup, pokerOn, trackerRegroupsOf, trackerSetupOf } from '../../stores/trackerSetup.svelte';
   import { markGroup } from '../../stores/statusMarkGroup';
   import { projectScopeGrant } from '../../transport/entityScopes';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
@@ -386,7 +386,7 @@
   // asked, so a project that turned it off asks nothing; a setup that
   // cannot be read has the built-in rule.
   const pokerAllowed = $derived(
-    !project || (setupState !== null && (setupState.view !== null ? setupState.view.setup.estimates?.poker !== false : setupState.error !== null)),
+    !project || (setupState !== null && (setupState.view !== null ? pokerOn(setupState.view.setup) : setupState.error !== null)),
   );
 
   // Planning poker, on a Jira site that has it, unless the ticket's

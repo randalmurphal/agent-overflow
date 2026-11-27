@@ -8,20 +8,16 @@
   // (TrackerTimeTickets).
   import { trackerProjectBoardsOf, acquireTrackerProjectBoards, refreshTrackerProjectBoards } from '../../stores/trackerProjectBoards.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import TrackerProjectSettings, { type TrackerProjectPage } from './TrackerProjectSettings.svelte';
+  import TrackerProjectSettings, { jiraOnly, type TrackerProjectPage } from './TrackerProjectSettings.svelte';
   import TrackerTimeTickets from './TrackerTimeTickets.svelte';
   import { settingsComputer } from './settingsComputer';
 
   const { backend } = settingsComputer();
 
   /** Why `project` has no Time settings: they apply only while it lists
-   * a Jira board, and its setup keeps what it holds. */
+   * a Jira board. */
   function none(project: string): string | null {
-    const boards = trackerProjectBoardsOf(backend, project).list;
-    if (boards.some((b) => b.connection_kind === 'jira')) return null;
-    return boards.length === 0
-      ? 'This project lists no boards. Add a Jira board in Boards to choose where its time goes.'
-      : 'A Linear project has no time settings: time is logged on Jira.';
+    return jiraOnly(trackerProjectBoardsOf(backend, project).list, 'to choose where its time goes', 'A Linear project has no time settings: time is logged on Jira.');
   }
 
   function readError(project: string): string | null {
