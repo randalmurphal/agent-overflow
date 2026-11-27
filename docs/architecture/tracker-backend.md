@@ -1919,7 +1919,9 @@ address in one place (`trackerBoardModel.ts#cardURL`).
   The app's boot step `tracker.start` (`startTrackers`, with the
   unattended work) arms it, and once the first client's reads settle runs
   `FinishMirrorCleanup`, which finishes a drain the last run left; the
-  loop runs one only after each of its rounds. A failure of either is a
+  loop runs one only after each of its rounds, and then calls
+  `Deps.ReadForgeHistory` ([forge pull request history](#forge-pull-request-history)).
+  A failure of either is a
   boot failure every client shows. Before clients are served it reads the connections once:
   70 µs with a 20,000-issue mirror and 50 kept tickets. After the first
   reads, the cleanup with nothing pending costs 0.1 ms, and a drain of a
@@ -2278,16 +2280,21 @@ delete is refused and the links the delete read are the ones it ends.
 - **`GetTicketWork`** (home route, `git:operate` and `tracker:read`)
   answers a ticket's open pull requests from the stored lists, scanning
   each stored list's bytes for the key and decoding only the lists that
-  hold it; the merged and closed pull requests its linked threads were
-  last seen with; and the branches that name the key in the projects
-  listing the connection's boards, the pull requests' projects and the
-  linked threads' projects. A row names the project it was listed
-  under: the stored list's, the linked thread's, or the one whose branch
-  the forge's lookup found it by. A branch of project P folds into a
-  listed pull request whose head it is: their names match, and the pull
-  request is of P's origin's repository or the search's lookup by the
-  branch's name in P's checkout found it (a fork's branch heads a pull
-  request of its parent). The project a row was listed under takes no
+  hold it; the pull requests of the stored
+  [forge pull request history](#forge-pull-request-history) that name
+  the key, in every state, beside each source's failed last read; the
+  merged and closed pull requests its linked threads were last seen
+  with; and the branches that name the key in the projects listing the
+  connection's boards, the pull requests' projects and the linked
+  threads' projects. A row names the project it was listed under: the
+  stored list's, the first of Work's projects whose origin is the
+  history row's repository (for a fork's parent, the fork's), the linked
+  thread's, or the one whose branch the forge's lookup found it by. A
+  branch of project P folds into a listed pull request whose head it is:
+  their names match, and the pull request is of P's origin's repository,
+  or the history says its head repository is P's origin, or the search's
+  lookup by the branch's name in P's checkout found it (a fork's branch
+  heads a pull request of its parent). The project a row was listed under takes no
   part, and one ticket's branches can share a name across repositories.
   So in this answer a fork's branch stands beside the parent's pull
   request it heads until `SearchTicketWork`'s answer folds it. A stored
@@ -2325,12 +2332,15 @@ delete is refused and the links the delete read are the ones it ends.
 - **`SearchTicketWork`** (home route, the same scopes, budget 2m15s from
   entry: every forge request runs within it, and no project's local read
   starts after it, so a row whose project would be found among the other
-  projects after the budget opens on the forge) is
-  `GetTicketWork`'s answer with the forge searched by the key
-  ([Ticket Work search](forge-transport.md#ticket-work-search)): once per
-  distinct repository the projects above clone, then a lookup by name, in
-  every state, of each branch of the ticket, the forge's or this
-  computer's. A found
+  projects after the budget opens on the forge) first reads again, at
+  interactive priority, each history source of the projects above whose
+  last read is a minute old, then is `GetTicketWork`'s answer with the
+  forge searched by the key
+  ([Ticket Work search](forge-transport.md#ticket-work-search)) in each
+  repository the history cannot answer for: once per such distinct
+  repository the projects above clone, then a lookup by name, in every
+  state, of each branch of the ticket, the forge's or this computer's.
+  A found
   pull request or branch counts only when its title or name names the key
   by the same rule (`namesTicketKey`). A pull request is listed once
   (`ticketWorkRead.addFound`): the forge's row, the newest read of it,
@@ -2388,6 +2398,65 @@ delete is refused and the links the delete read are the ones it ends.
   the encoder refuses to write any section named in `Newer`
   (`ErrSetupNewer`), whatever its name, so Save as defaults over a newer
   `start_work` saves nothing.
+
+### Forge pull request history
+
+The app keeps the pull requests of the forge repositories the tracker
+connections' projects clone, updated inside `trackerapp.HistoryWindow`
+(180 days), with who approved and commented on each, so a ticket's Work
+lists its pull requests without searching the forge
+(`app/app_forge_history.go`, the reads in
+[forge transport](forge-transport.md#pull-request-history), the tables in
+[schema](schema.md#application-records)).
+
+- **Sources** (`syncForgeHistorySources`): the origin of every project,
+  not archived, that lists a board of an enabled Jira or Linear
+  connection, every pull request kept; and the parent of each such origin
+  that a landed read found to be a fork, unless a project clones the
+  parent too, keeping only the pull requests whose head repository is
+  the fork, with their acts. A parent is read by the same reader as any
+  repository. The set is made at each round and at once when a
+  connection is turned on, off or removed, so turning a connection off
+  drops what was kept for it; a board listed or a project archived takes
+  effect at the next round. While git cannot read a listed project's
+  origin, no source is removed, since that origin may be one of them,
+  and the round reports which. A fork's parent is added at the round
+  after the fork's first read lands.
+- **Reads** (`readForgeHistory`): the linked loop calls
+  `Deps.ReadForgeHistory` after each round it runs, so only while a
+  client is connected. Each source whose last read is 15 minutes old is
+  read, at most 4 at once, at background priority; a read left behind
+  its newest updates is stored and followed at once by the next, until
+  one is not. Two reads of one source never run at once; the second
+  reads only if the first left the source as old as it asks. A read the
+  context ends stores nothing. A forge failure is stored on the source
+  with what the read read before it (`newRepoForgeFailure`'s sentence,
+  kind and detail) and logged under its correlation ID; a landed read
+  clears it. The writer is `store.ApplyForgeHistory`, one transaction a
+  read: a re-read pull request's keys are replaced, and its acts too
+  when the read holds them all.
+- **Coverage** (`store.ForgeHistorySource.Covers`, the one rule): a
+  source answers for a ticket created (the tracker's clock) at or after
+  the window's start and at least `ForgeHistoryClockMargin` (5 minutes,
+  for the two clocks) after its reach. A pull request can name a key
+  only once the ticket exists, and naming it moves its update time, so
+  each of the ticket's was updated after the ticket's creation. Recent
+  tickets are covered after the first reads; older ones as the first
+  full read reaches back to them.
+- **Work** lists a source's rows that name the key (`ForgeHistoryByKey`,
+  by `forge_history_keys`), and its branches fold into a pull request
+  whose head repository is the project's origin. `SearchTicketWork`
+  searches by the key only an origin with no source, or whose source,
+  or its parent's, does not cover the ticket; an origin whose source or
+  its parent's failed its last read is not searched, and Work shows that
+  failure (`TicketForgeProblem.History`) beside its stored rows.
+- **Costs**: storing a read of 500 pull requests, each with 2 keys and 4
+  acts, took at most 23 ms into a source of 4,500 and 48 ms into one of
+  45,000; a steady read of one 0.3 ms at both sizes, a key's read 0.2
+  ms, and the prune of every row 61 ms and 888 ms
+  (`TestForgeHistoryAtScale`, `AO_TRACKER_SCALE=4500,45000`). Each
+  statement reaches the stored rows by key from its read's list
+  (`TestForgeHistoryWriterPlans`).
 
 ## Dashboards
 

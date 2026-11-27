@@ -203,6 +203,38 @@ likewise `STABLE` and `stable`, so it matches a substring and ignores
 case. A self-managed GitLab of another version was not measured, nor
 which rate-limit pool these searches use.
 
+## Pull request history
+
+The reads of a repository's history
+([forge transport](../architecture/forge-transport.md#pull-request-history))
+rest on these documented behaviors, read on 2026-11-27; none was measured
+against a live forge.
+
+- GitLab's Events API documentation (`docs.gitlab.com/api/events/`): a
+  project's events (`GET /projects/:id/events`) filter by `action`
+  (`approved` and `commented` are among the listed actions), by `after`
+  and `before`, each a date (`YYYY-MM-DD`), and sort by `sort` (`asc` or
+  `desc`). The page names no GitLab version for these parameters, and
+  says events older than 3 years are removed. Each walk reads from a
+  date a day past where it splits, so a date boundary that is exclusive
+  or inclusive drops nothing; an event read twice is skipped by its ID.
+- GitLab's merge requests API documentation: `updated_after` and
+  `updated_before` return merge requests updated on or after, and on or
+  before, the given time; `order_by=updated_at` with `sort`; a filter by
+  `source_project_id` exists only on the group list, so the project list
+  is read and each row's `source_project_id` names its head.
+- GitHub's GraphQL rate limit documentation: `first` and `last` are 1 to
+  100; a query's cost is the requests it needs (each connection and each
+  nested connection by its `first`) divided by 100, rounded, at least 1;
+  5,000 points an hour for a user; a query that runs past 10 seconds is
+  stopped. `PullHistory` (50 pull requests, 50 reviews and 50 comments
+  each) is 101 requests, 1 point a page.
+- A `PullHistory` page's size was not measured; its body bound is 8 MiB
+  (`WithMaxBody`), as the GitLab merge request list's is: 50 pull
+  requests with 100 nested items each fit it at up to 1.6 KB an item.
+  A project events page uses `gitlabEventsMaxBody` (4 MiB), sized from
+  the user events pages measured below.
+
 ## List page sizes
 
 Read-only GETs on 2026-11-11 (`gh api` on randalmurphal/agent-overflow,

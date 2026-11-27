@@ -799,14 +799,72 @@ list sizes past it is refused before its request) within a 10-minute
 timeout, and the answer names the directory and files. Downloads are not
 pipeline actions and do not take the pending slot.
 
+### Pull request history
+
+`Core.ReadPRHistory(ctx, repo, in)` (`internal/git/pr_history*.go`) reads
+the next part of a repository's pull requests updated inside a window,
+each with who approved it and who commented on it, for the history the
+app keeps ([tracker backend](tracker-backend.md#forge-pull-request-history)).
+The caller stores the walk the read returns and hands it to the next
+read. A read makes at most `PRHistoryPages` (10) pages of each stream,
+newest first on its first read: the first full read of a repository is
+resumable over as many reads as it takes. Each read first reads on from
+the updates the last one read, then walks back with the pages left. A read
+whose reading on used its pages before it reached them says `Behind`: its
+reach holds for nothing, and the caller reads again at once. A read that
+fails answers what it read, with its walk moved to it, beside the error.
+`Reach` is the forge time back to which every update is read; zero is
+back to the window's start.
+
+- **GitHub**, one GraphQL `PullHistory` a page: the repository's node id
+  (a pull request's head identity) and parent, and `pullRequests(first:
+  50, orderBy: UPDATED_AT DESC)` with each one's head repository, first
+  50 reviews and first 50 conversation comments, under an 8 MiB body
+  bound (`WithMaxBody`). By GitHub's documented cost formula a page costs
+  1 point. A pull request with more reviews or comments reads the rest
+  with `PullHistoryMore`, 100 a page, up to 10 pages; past that its acts
+  are added to the stored ones, not replaced. An approving review is an
+  approval, any other submitted review and a conversation comment a
+  comment; an author that is not a `User` (a bot) is left out. The walk
+  (`githubHistoryWalk`) reads from the newest down to the newest update
+  it read, then continues an open gap by its cursor. Cursors move only
+  toward older updates, so one never skips a pull request: one updated
+  since is above it, which the next read reads first. A read that cannot
+  reach the newest update it read leaves the rest as the gap, and Reach
+  is the gap's top. More than 500 pull requests sharing one update time
+  stop the read with a failure that says so.
+- **GitLab**, three streams of 100 a page: the merge request list,
+  `projects/P/merge_requests?state=all&order_by=updated_at`, read on with
+  `sort=asc&updated_after=T` from the newest update read and walked back
+  with `sort=desc&updated_before=T`; and the project's events,
+  `projects/P/events?action=approved` and `action=commented`, read on with
+  `after=D&sort=asc` and walked back with `before=D&sort=desc`, each by a
+  fixed date and a page number, since a page of past events stays the
+  same. An approval does not reliably move a merge request's update
+  time, so acts come from the events by their own time and are added to
+  the stored ones; the feed has no event for a withdrawn approval or a
+  deleted comment, so those stay. An event naming a merge request
+  neither the read nor the store holds (`PRHistoryInput.Known`) fetches
+  it by `iids[]`, 100 at once. `projects/P` (cached) gives the head
+  identity, the project ID, and `forked_from_project`. Reach is the least
+  reach of the streams still walking back. More than 100 merge requests
+  sharing one update time stop the read with a failure that says so.
+
+| History read | GitHub | GitLab |
+|---|---|---|
+| First full read of N pull requests | N/50 pages, 10 a read | N/100 list pages and the event pages, each stream 10 a read |
+| Steady read (nothing more changed than a read holds) | 1 `PullHistory` | 1 list page and 1 page of each events feed, + `projects/P` when its cache expired |
+| A 30,000 pull request repository's first full read at 10 pages a read every 15 minutes | 600 pages, 60 reads, 15 h | 300 list pages, 30 reads, 7.5 h, and as long as its event pages take (300,000 events, 3,000 pages a feed, 75 h) |
+
 ### Ticket Work search
 
 A ticket's Work (`SearchTicketWork`,
 [tracker backend](tracker-backend.md#ticket-keys-work-ask-and-start-work))
-asks the forge for the pull requests of the ticket's key that the stored
-list and its linked threads do not hold. It runs when Work shows and on
-the ticket's Refresh (and after a Start work run, when Work reads again),
-never on a timer, and is interactive. It reads in two rounds, each over
+asks the forge for the pull requests of the ticket's key in each
+repository whose stored history cannot answer for the ticket
+([tracker backend](tracker-backend.md#forge-pull-request-history)). It
+runs when Work shows and on the ticket's Refresh (and after a Start work
+run, when Work reads again), never on a timer, and is interactive. It reads in two rounds, each over
 at most `prListReadConcurrency` (4) repositories or lookups at a time
 (GitLab's two searches of a repository run at once, so up to 8 requests,
 the host's limit), every request within the method's budget:

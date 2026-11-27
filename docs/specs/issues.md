@@ -529,15 +529,27 @@ holding the template text.
 
 Status: built: every bullet below. A key
 matches when this computer's copy of an enabled connection holds an issue
-of its project. A ticket's Work reads the stored list of open pull
-requests, the pull requests its linked threads were last seen with
-(merged and closed among them) and the branches of the projects that list
-its connection's boards, and searches the forge of each of those
-projects' repositories once. It is read when Work shows and on the
-ticket's Refresh, never on a timer. The rows Work stores show at once,
-with "Searching the forge…" until the search answers; a search that fails
-is said in Work in the Pull requests page's words, beside the rest. A pull
-request found by the search shows its state and author and no CI.
+of its project. The app keeps the pull request history of the
+repositories its tracker projects clone: every pull request updated in
+the last 180 days, in any state, with who approved and commented on it,
+read in the background every 15 minutes while a client is connected and
+the connection is on. A fork's parent is read for the fork's pull
+requests. A ticket's Work reads that history, the stored list of open
+pull requests, the pull requests its linked threads were last seen with
+and the branches of the projects that list its connection's boards. When
+Work shows and on the ticket's Refresh, it reads a repository's history
+again when the last read is more than a minute old, and searches the
+forge by the key only a repository whose history has not yet read back
+to the ticket's creation, or one the app keeps no history of (a linked
+thread's project that lists no board). The rows Work stores show at
+once, with "Searching the forge…" until the search answers. A
+repository whose last history read failed says so in Work in the Pull
+requests page's words, beside the rows its history holds, and is not
+searched; a search that fails is said the same way. A pull request from
+the history or the search shows its state and author and no CI. A
+repository's first full read runs 10 pages a read: on GitHub 500 pull
+requests every 15 minutes, so 30,000 take 15 hours, and older tickets
+are searched until it reaches them.
 
 The search finds a pull request in any state by its title, and by a
 branch name that holds the key: a branch the searched repository still has, a branch
@@ -567,9 +579,9 @@ most 500 matches of each kind and says so when there were more.
   its origin: a fork's checkout cannot show its parent's pull request,
   since the review fetches it from origin. The row's menu opens it on the
   forge either way.
-- The forge is searched by key for a pull request outside the stored list,
-  and a match counts only when its title or branch names the key by the
-  same rule.
+- The forge is searched by key for a pull request the history cannot
+  answer for, and a match counts only when its title or branch names the
+  key by the same rule.
 
 ### Thread link
 
