@@ -31,11 +31,10 @@ let pageMarker = '';
  * constant stays the default; its owner reads it through `harnessInterval`
  * when it arms.
  */
-export type HarnessFrontendTimer = 'unreachable-settle' | 'agent-row-linger' | 'activity-report';
+export type HarnessFrontendTimer = 'unreachable-settle' | 'agent-row-linger';
 const FRONTEND_TIMERS: ReadonlySet<string> = new Set<HarnessFrontendTimer>([
   'unreachable-settle',
   'agent-row-linger',
-  'activity-report',
 ]);
 /** A manifest's frontend timer overrides, read by `readHarnessTimingFromBootstrap`. */
 export type HarnessTiming = ReadonlyMap<HarnessFrontendTimer, number>;

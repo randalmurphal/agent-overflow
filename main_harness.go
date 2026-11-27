@@ -325,11 +325,9 @@ var harnessTimers = []harnessTimer{
 	{name: "activity-window", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ActivityWindow }},
 	{name: "activity-flush", field: func(t *harnessTiming) *time.Duration { return &t.Isolation.ActivityFlush }},
 	// Page timers: how long a computer stays unreachable before the screen
-	// says so, how long a settled Agents row stays, and the least time
-	// between two of a screen's activity reports.
+	// says so, and how long a settled Agents row stays.
 	{name: "unreachable-settle", max: pageTimerMax, unit: time.Millisecond},
 	{name: "agent-row-linger", max: pageTimerMax, unit: time.Millisecond},
-	{name: "activity-report", max: pageTimerMax, unit: time.Millisecond},
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the

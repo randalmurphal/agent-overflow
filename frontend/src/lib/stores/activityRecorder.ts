@@ -20,7 +20,6 @@
 import { RecordActivity } from './bindings';
 import { getCompactScreen, isCompactLayout } from './layoutMode.svelte';
 import { getFocusedPaneOrNull } from './panes.svelte';
-import { harnessInterval } from '../transport/harnessMode';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
@@ -34,7 +33,6 @@ const INPUTS = ['keydown', 'pointerdown', 'wheel', 'touchstart'] as const;
 
 let lastInput = Number.NEGATIVE_INFINITY;
 let lastReport = Number.NEGATIVE_INFINITY;
-let every = REPORT_EVERY_MS;
 let reportedThread: string | null = null;
 let reportedPhone = false;
 let pending = false;
@@ -50,7 +48,7 @@ function shown(): { thread: string; phone: boolean } {
 function onInput(): void {
   const now = Date.now();
   lastInput = now;
-  if (!pending && now - lastReport >= every) schedule();
+  if (!pending && now - lastReport >= REPORT_EVERY_MS) schedule();
 }
 
 // The report runs after the input's own handlers, so a press that moves
@@ -64,7 +62,6 @@ function send(): void {
   pending = false;
   const { thread, phone } = shown();
   lastReport = Date.now();
-  every = harnessInterval('activity-report', REPORT_EVERY_MS);
   reportedThread = thread;
   reportedPhone = phone;
   RecordActivity(thread, phone).catch((err: unknown) => {
@@ -86,7 +83,7 @@ function send(): void {
 export function noteActivityFocus(): void {
   const { thread, phone } = shown();
   if (reportedThread === null || (thread === reportedThread && phone === reportedPhone)) return;
-  if (!pending && Date.now() - lastInput < every) schedule();
+  if (!pending && Date.now() - lastInput < REPORT_EVERY_MS) schedule();
 }
 
 /** Attach the input listeners; installed once, from App.svelte, which owns
@@ -104,7 +101,6 @@ export function installActivityRecorder(): () => void {
 /** Forget every report, as a page that just loaded has made none. */
 function forgetReports(): void {
   lastInput = lastReport = Number.NEGATIVE_INFINITY;
-  every = REPORT_EVERY_MS;
   reportedThread = null;
   reportedPhone = false;
   pending = false;
