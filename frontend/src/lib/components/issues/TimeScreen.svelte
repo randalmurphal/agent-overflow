@@ -23,6 +23,13 @@
   // An entry's hours open its form (TimeDraftForm); an entry of unknown
   // outcome offers the log form filled from it, and once that time was
   // logged the entry is removed.
+  //
+  // An entry on a support ticket of the board shows what its hours are
+  // worth in points (or tickets), as is a support ticket's week in By
+  // ticket: which of the week's tickets are support, and the hours a
+  // point, are the board's computer's answer (ProjectTrackerSupport, held
+  // in stores/trackerSetup.svelte.ts), read again for another week's
+  // tickets and when the project's setup changes.
   import { untrack } from 'svelte';
   import ChevronLeft from '@lucide/svelte/icons/chevron-left';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -48,6 +55,8 @@
   import { saveTimeLayout, savedTimeLayout, type TimeLayout } from '../../stores/issuesPane.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { attachTrackerWeek, refreshTrackerWeek, setTrackerWeekShown, type TrackerWeekAttachment } from '../../stores/trackerTime.svelte';
+  import { acquireTrackerSupport, trackerSupportOf } from '../../stores/trackerSetup.svelte';
+  import { supportWorth } from './boardFormat';
   import {
     addDays,
     dayInFull,
@@ -68,7 +77,11 @@
 
   interface Props {
     backend: string;
+    /** The project the pane shows the board of, whose credit rules the
+     * support line follows. */
+    project: string;
     connection: string;
+    board: string;
     /** The connection's kind: "jira" or "linear". */
     connectionKind: string;
     /** The connection is on and the board is followed. */
@@ -95,7 +108,9 @@
 
   let {
     backend,
+    project,
     connection,
+    board: boardID,
     connectionKind,
     connectionOn,
     author,
@@ -169,6 +184,22 @@
   const tickets = $derived(shape ? weekTickets(shape) : []);
   const questions = $derived(shape ? weekQuestions(shape) : []);
   $effect(() => { refreshing = weekState?.refreshing ?? false; });
+
+  // The week's logged tickets, in one order, and which are support.
+  const weekIssues = $derived.by(() => {
+    const issues = new Set<string>();
+    for (const d of shape?.days ?? []) for (const e of d.entries) issues.add(e.issue);
+    return [...issues].sort();
+  });
+  const weekIssuesKey = $derived(weekIssues.join('\n'));
+  $effect(() => {
+    void weekIssuesKey;
+    const issues = untrack(() => weekIssues);
+    if (issues.length === 0) return;
+    return untrack(() => acquireTrackerSupport(project, connection, boardID, issues));
+  });
+  const support = $derived(weekIssues.length ? trackerSupportOf(project, connection, boardID, weekIssues) : null);
+  const worth = (issue: string, seconds: number) => supportWorth(support, issue, seconds);
 
   /** Refresh: reads the week from the tracker now. */
   export function refresh(): void {
@@ -437,6 +468,7 @@
           <TimeByDay
             ctx={writeCtx}
             {shape}
+            {worth}
             {today}
             onlyDay={compact ? shownDay : null}
             {openIssue}
@@ -452,6 +484,7 @@
         {:else}
           <TimeByTicket
             {shape}
+            {worth}
             {tickets}
             {today}
             {compact}

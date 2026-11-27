@@ -42,14 +42,19 @@
 // site's Try again. A tracker read, which no change of the setup moves;
 // the page holds a site again when the connections that reach it change.
 //
+// The Time screen's support tickets of a board (`ProjectTrackerSupport`)
+// are held by the project, the board and the week's issues, read on hold,
+// on the event and on reconnect: which tickets are support and the hours
+// a point are the setup's, read from the board's copy on its computer.
+//
 // The Time page's check of its tickets (`TrackerLookup`) is held by the
 // connection asked and the keys, one read for every ticket of a
 // connection, read on hold, on reconnect and on Try again: the page's
 // computer's tracker read, which a new ticket makes a new read of.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { AgentRules, BoardPace, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace, TimeTicket } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { ProjectTrackerPace, ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, SetProjectTrackerSetup, TrackerLookup } from './bindings';
+import type { AgentRules, BoardPace, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace, SupportView, TimeTicket } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { ProjectTrackerPace, ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, ProjectTrackerSupport, SetProjectTrackerSetup, TrackerLookup } from './bindings';
 import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend } from '../transport/entityIndex';
@@ -190,6 +195,16 @@ class HeldSiteFields extends HeldRead<PinField[]> {
   }
 }
 
+class HeldSupport extends HeldRead<SupportView> {
+  constructor(project: string, readonly connection: string, readonly board: string, readonly issues: readonly string[]) {
+    super(project);
+  }
+
+  protected call(): Promise<SupportView> {
+    return ProjectTrackerSupport(this.project, this.connection, this.board, [...this.issues]);
+  }
+}
+
 class HeldTicketCheck extends HeldRead<LookupView> {
   constructor(project: string, readonly on: BackendKey, readonly connection: string, readonly keys: readonly string[]) {
     super(project);
@@ -209,6 +224,7 @@ const statuses = new SvelteMap<string, HeldStatuses>();
 const paces = new SvelteMap<string, HeldPace>();
 const fields = new SvelteMap<string, HeldSiteFields>();
 const checks = new SvelteMap<string, HeldTicketCheck>();
+const supports = new SvelteMap<string, HeldSupport>();
 
 function acquire<E extends HeldRead<unknown>>(map: SvelteMap<string, E>, key: string, make: () => E): () => void {
   let entry = map.get(key);
@@ -462,6 +478,26 @@ export function withPoker(setup: Setup, on: boolean): Setup {
   return { ...setup, estimates: { ...setup.estimates, poker: on } };
 }
 
+/** The support read of `issues` on `project`'s `board` of `connection`. */
+function supportKey(project: string, connection: string, board: string, issues: readonly string[]): string {
+  return [project, connection, board, ...issues].join('\u0000');
+}
+
+/** Holds which of `issues` are support tickets of `project` on `board`
+ * of `connection` while the caller shows them, reading them now; the
+ * returned function releases the hold. Other issues are a new read. */
+export function acquireTrackerSupport(project: string, connection: string, board: string, issues: readonly string[]): () => void {
+  return acquire(supports, supportKey(project, connection, board, issues), () => new HeldSupport(project, connection, board, issues));
+}
+
+/** Which of `issues` are support tickets as held, with the hours a point
+ * and the unit; null before a read answers or after it failed, when the
+ * screen shows no line. Reactive. */
+export function trackerSupportOf(project: string, connection: string, board: string, issues: readonly string[]): SupportView | null {
+  const entry = supports.get(supportKey(project, connection, board, issues));
+  return entry?.error == null ? entry?.value ?? null : null;
+}
+
 /** A check of the tickets `keys` through `connection` on computer
  * `backend` for `project`'s Time page. */
 function ticketCheckKey(project: string, backend: BackendKey, connection: string, keys: readonly string[]): string {
@@ -506,7 +542,7 @@ function readAgainOn(backend: BackendKey): void {
     if (entry.saving) entry.readOwed = true;
     else void entry.read();
   }
-  for (const entry of [...statuses.values(), ...paces.values()]) {
+  for (const entry of [...statuses.values(), ...paces.values(), ...supports.values()]) {
     const owner = entry.backend();
     if (owner === undefined || owner === backend) void entry.read();
   }
@@ -529,4 +565,5 @@ export function resetTrackerSetupForTest(): void {
   paces.clear();
   fields.clear();
   checks.clear();
+  supports.clear();
 }

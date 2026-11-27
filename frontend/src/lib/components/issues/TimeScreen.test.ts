@@ -10,12 +10,14 @@ import TimeScreen from './TimeScreen.svelte';
 import { methodNotFound } from '../../../test/helpers/olderComputer';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { applyTrackerConnectionsChanged } from '../../stores/trackerConnections.svelte';
-import { trackerTimeEntriesUpdated } from '../../stores/trackerBoardEvents';
+import { trackerSetupUpdated, trackerTimeEntriesUpdated } from '../../stores/trackerBoardEvents';
 import { DRAFT_REREAD_DELAY_MS } from '../../stores/trackerTime.svelte';
 
 const BASE: ComponentProps<typeof TimeScreen> = {
   backend: 'peer-1',
+  project: 'p1',
   connection: 'c1',
+  board: '1',
   connectionKind: 'jira',
   connectionOn: true,
   author: 'acct-1',
@@ -125,6 +127,49 @@ describe('the week', () => {
     view.unmount();
     const again = render(TimeScreen, BASE);
     expect(await again.findByTestId('time-by-ticket')).toBeInTheDocument();
+  });
+});
+
+describe('support tickets', () => {
+  it('says what an entry on a support ticket is worth, by day and by ticket, in the unit the project counts', async () => {
+    answerWeek([...WEEK, log('503', '2026-11-11', 9000, { issue: '10002', key: 'WEB-2', title: 'Second story' })]);
+    let answer = { issues: ['10002'], hours_per_point: 4, counts: 'points' };
+    setBindingMock('ProjectTrackerSupport', async () => answer);
+    const view = render(TimeScreen, BASE);
+    await waitFor(() => expect(view.getAllByTestId('time-entry-support').map((e) => e.textContent)).toEqual(['Support · 0.1 points', 'Support · 0.6 points']));
+    expect(getBindingMock('ProjectTrackerSupport')!.mock.calls).toEqual([['p1', 'c1', '1', ['10001', '10002']]]);
+    expect(view.getAllByTestId('time-entry-support')[0]).toHaveAttribute('title', 'Support ticket: every 4 hours logged count as 1 point.');
+    const entries = view.getAllByTestId('time-entry');
+    expect(within(entries[0]).queryByTestId('time-entry-support'), 'no line for a ticket that is not support').toBeNull();
+    await fireEvent.click(view.getByRole('radio', { name: 'By ticket' }));
+    const rows = view.getAllByTestId('time-ticket-row');
+    expect(within(rows[0]).queryByTestId('time-ticket-support')).toBeNull();
+    expect(within(rows[1]).getByTestId('time-ticket-support')).toHaveTextContent('0.8 points');
+
+    // A save of the setup reads it again: counting tickets, then credit off.
+    answer = { issues: ['10002'], hours_per_point: 4, counts: 'none' };
+    trackerSetupUpdated('peer-1');
+    await waitFor(() => expect(within(view.getAllByTestId('time-ticket-row')[1]).getByTestId('time-ticket-support')).toHaveTextContent('0.8 tickets'));
+    answer = { issues: [] } as unknown as typeof answer;
+    trackerSetupUpdated('peer-1');
+    await waitFor(() => expect(view.queryByTestId('time-ticket-support')).toBeNull());
+  });
+
+  it('asks again for another week\'s tickets, and asks nothing for a week with none', async () => {
+    answerWeek(WEEK);
+    setBindingMock('ProjectTrackerSupport', async () => ({ issues: [] }));
+    const view = render(TimeScreen, BASE);
+    await view.findAllByTestId('time-entry');
+    await waitFor(() => expect(getBindingMock('ProjectTrackerSupport')!.mock.calls).toHaveLength(1));
+    answerWeek([log('601', '2026-11-03', 3600, { issue: '10009', key: 'WEB-9', title: 'Older story' })]);
+    await fireEvent.click(view.getByTestId('time-previous'));
+    await waitFor(() => expect(getBindingMock('ProjectTrackerSupport')!.mock.calls.at(-1)).toEqual(['p1', 'c1', '1', ['10009']]));
+    answerWeek([]);
+    await fireEvent.click(view.getByTestId('time-previous'));
+    await view.findByTestId('time-by-day');
+    await tick();
+    expect(getBindingMock('ProjectTrackerSupport')!.mock.calls).toHaveLength(2);
+    expect(view.queryByTestId('time-entry-support')).toBeNull();
   });
 });
 

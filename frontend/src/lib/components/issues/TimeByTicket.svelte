@@ -9,7 +9,8 @@
   // table scrolls sideways in its own frame, so every column and the
   // totals stay reachable. The agent's draft shows dashed in its ticket's
   // cell beside the time logged there, and its questions in a last row,
-  // Not placed, a cell per day that opens them.
+  // Not placed, a cell per day that opens them. A support ticket's total
+  // says what its hours are worth in points (`worth`).
   import Plus from '@lucide/svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
   import type { TimeEntryView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -18,6 +19,8 @@
 
   interface Props {
     shape: WeekShape;
+    /** What a ticket's hours are worth on a support ticket; null for none. */
+    worth: (issue: string, seconds: number) => { text: string; title: string } | null;
     /** The week's rows, `weekTickets(shape)`. */
     tickets: readonly WeekTicket[];
     today: string;
@@ -34,7 +37,7 @@
     onQuestions: (day: number, anchor: HTMLElement) => void;
   }
 
-  let { shape, tickets, today, compact, openIssue, onOpenTicket, onCell, onCellMenu, onLogOther, questions, onQuestions }: Props = $props();
+  let { shape, worth, tickets, today, compact, openIssue, onOpenTicket, onCell, onCellMenu, onLogOther, questions, onQuestions }: Props = $props();
 
   const placing = $derived(questions.some((q) => q.length > 0));
 
@@ -65,6 +68,7 @@
       <span class="border-l border-border-subtle px-2 text-right" role="columnheader">Total</span>
     </div>
     {#each tickets as t (t.issue)}
+      {@const w = t.total ? worth(t.issue, t.total) : null}
       <div class="grid min-h-9 items-stretch border-t border-border-subtle" style:grid-template-columns={columns} role="row" data-testid="time-ticket-row" data-issue={t.issue}>
         <span role="rowheader" class="flex min-w-0 items-center {openIssue === t.issue ? 'bg-accent/10' : ''}">
           {#if t.key}
@@ -99,7 +103,10 @@
             {/if}
           </button>
         {/each}
-        <span class="flex items-center justify-end border-l border-border-subtle px-2 tabular-nums text-fg-muted" role="cell" data-testid="time-ticket-total">{t.total ? formatTimeSpent(t.total) : '–'}</span>
+        <span class="flex flex-col items-end justify-center border-l border-border-subtle px-2 tabular-nums text-fg-muted" role="cell" data-testid="time-ticket-total">
+          <span>{t.total ? formatTimeSpent(t.total) : '–'}</span>
+          {#if w}<span class="text-[0.6875rem]" title={w.title} data-testid="time-ticket-support">{w.text}</span>{/if}
+        </span>
       </div>
     {/each}
     {#if placing}

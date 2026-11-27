@@ -545,7 +545,9 @@
               bind:this={timeView}
               bind:refreshing={timeRefreshing}
               backend={timeBoard.backend}
+              project={timeBoard.projectId}
               connection={timeBoard.connection}
+              board={timeBoard.board}
               connectionKind={choice.connection_kind}
               connectionOn={isBoardChoiceOpenable(choice) && !boardState?.ended}
               author={me}
