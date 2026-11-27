@@ -377,7 +377,9 @@ no step runs at root creation, restore or start.
   `time_off`, each a Jira ticket by site and key, `WEB-1`, never an issue
   ID, so a client saves what a finder answers with no read; and
   `never_epics`, true when absent and stored only when false; the
-  section dropped when it sets nothing). The writer (`validateSetup`)
+  section dropped when it sets nothing; it applies only while the
+  project lists a Jira board, and `ProjectTimeSettings` answers the
+  built-in settings otherwise, with the file keeping the section). The writer (`validateSetup`)
   owns these defaults: a client sends the value it shows. Beside them,
   `dashboards` (by tracker site and board, the dashboards the project
   keeps) is written only by its own edits ([Own dashboards and
@@ -2450,8 +2452,9 @@ method makes, has the default method budget. The tool list carries no
 always-load marker (`threadmcp.Server.OmitAlwaysLoad`): no agy session is
 given it.
 
-**Keys.** With one connection on, a key is the tracker's (`WEB-12`). With
-several on, every key an answer gives names its site, `site/KEY`
+**Keys.** With one connection on, a key of its site is the tracker's
+(`WEB-12`), and a key of another site, such as a Time setting's, names
+its site. With several on, every key an answer gives names its site, `site/KEY`
 (`example.atlassian.net/WEB-12`, `example/ENG-4`), so a key a search
 gives reads that ticket whatever the other connections hold. A read with
 no key reads the ticket the thread is linked to
@@ -2946,9 +2949,11 @@ its open questions. A connection whose read failed is named in `unread`
 with its sentence; the call fails only when every connection did. The
 answer names the tickets the thread's project's Time settings put
 meeting and time-off hours on (`meetings_ticket`, `time_off_ticket`,
-each absent when not set), read from the setup with no request
-(`Host.TimeSettings`); settings this build cannot read fail the call
-with their sentence.
+each absent when not set, and written as [Keys](#agent-tools) are),
+read from the setup with no request (`Host.TimeSettings`). Time
+settings that cannot be read, or that a newer version saved, fail
+`time_read` and a draft of entries with their sentence; a post reads no
+Time setting.
 
 **`time_draft`** takes `entries` to draft or `post` to log the draft of
 days (below), and refuses a call with neither or both. `entries` are each a `day`, `hours` (whole minutes),
@@ -2965,7 +2970,9 @@ refused (`Host.WritePolicy`, read at admission and again just before the
 store write, so a thread made read-only during the key lookup drafts
 nothing). A key of the project's meetings or time-off ticket that no site
 finds is refused naming the setting, so the agent asks and the person
-picks another (`goneSetting`, from the not-found refusal's cause). With
+picks another (`goneSetting`, from the not-found refusal's cause); a key
+the mirror holds resolves with no request, so a ticket gone from Jira
+drafts until this computer reads it again. With
 Never log to an epic on, an entry whose own ticket is an epic (type level
 1 or more) is refused; the type is the lookup's card's or the mirror's,
 which the draft reads anyway, and an entry whose type neither has, such

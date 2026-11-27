@@ -725,8 +725,9 @@ counted, selecting rows in a ticket list, or a number tile's limit.
 - An entry on a support ticket shows what its hours are worth in points.
 - An agent's draft puts meeting hours on the project's meetings ticket and
   time off on its time-off ticket ([Setup](#setup)) without a question.
-  When one of them is not set, or is gone or cannot be read, the agent
-  asks instead. With Never log to an epic on, a draft entry on an epic is
+  When one of them is not set, the agent asks instead. One that is gone
+  is refused once Jira is asked, so the agent asks; until this computer
+  reads that ticket again, its copy may still answer. With Never log to an epic on, a draft entry on an epic is
   refused, and the agent puts the hours on a ticket under the epic or
   asks. Time logged by hand is not held to it.
 
@@ -805,7 +806,8 @@ counted, selecting rows in a ticket list, or a number tile's limit.
   ticket set that is gone, or that the connection cannot see, is said
   beside it, as is one whose site no connection that is on reaches. A
   project with only Linear boards says it has no time settings, and one
-  with no boards says to add one. The draft's sources are not offered
+  with no boards says to add one; tickets it chose while it listed a Jira
+  board are kept and apply again once it lists one. The draft's sources are not offered
   here until the calendar and call-duration readers are designed.
 - The rest is per project: which boards the picker lists and which opens
   first; which group each status belongs to, including left out of counts;
