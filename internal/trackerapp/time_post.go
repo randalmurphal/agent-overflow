@@ -194,9 +194,10 @@ func (s *Service) PostTimeEntries(ctx context.Context, id string, in PostTimeReq
 		var checked []string
 		var sent bool
 		settled, checked, applied, notes, unread, sent, err = s.sendTimeEntries(ctx, id, author, send, !in.Alone, notes)
-		// Entries a failed post settled changed all the same, and the days
-		// its check read hold the worklogs it stored, an approval that
-		// skipped every entry included: one frame names both.
+		// Entries a failed post settled changed all the same, and every
+		// day its check stored holds the worklogs it read, an approval that
+		// skipped every entry or a check that failed later included: one
+		// frame names both.
 		s.timeEntriesChanged(id, author, settled, checked...)
 		if err != nil {
 			if !sent {
@@ -269,34 +270,38 @@ func NotSentOutcome(e TimeEntryView) PostOutcome {
 
 // checkedDays reads author's worklogs of the days of entries, at most
 // worklogSpan days a read, through the run's provider, and stores them as
-// a refresh does (run.worklogs).
-func (r *run) checkedDays(author string, entries []store.TimeEntry) ([]tracker.Worklog, error) {
+// a refresh does (run.worklogs). It answers the days its reads stored,
+// each read's from its first day to its last, those of the reads before
+// a failure included.
+func (r *run) checkedDays(author string, entries []store.TimeEntry) ([]tracker.Worklog, []string, error) {
 	var days []tracker.Date
 	for _, e := range entries {
 		d, err := tracker.ParseDate(e.Day)
 		if err != nil {
-			return nil, fmt.Errorf("trackerapp: entry %d: %w", e.ID, err)
+			return nil, nil, fmt.Errorf("trackerapp: entry %d: %w", e.ID, err)
 		}
 		days = append(days, d)
 	}
 	slices.SortFunc(days, tracker.Date.Compare)
 	days = slices.Compact(days)
 	var logs []tracker.Worklog
+	var stored []string
 	for span := range daySpans(days) {
 		got, err := r.worklogs(tracker.UserID(author), span[0], span[len(span)-1])
 		if err != nil {
-			return nil, err
+			return nil, stored, err
 		}
 		logs = append(logs, got...)
+		stored = append(stored, spanDays(span)...)
 	}
-	return logs, nil
+	return logs, stored, nil
 }
 
 // sendTimeEntries sends sends as one batch in one hold of the connection:
 // when check, it reads their days and leaves out each whose day holds a
 // worklog of its ticket made since it was drafted (loggedSince); it marks
 // the rest sent, sends those it marked, and settles each with its outcome. It
-// returns the entries it settled, the days its check read, which of the
+// returns the entries it settled, the days its check stored, which of the
 // entries the time source applied, notes for those not posted, the
 // read-back that failed (WriteView.Stale), and whether any worklog was
 // sent. A day that could not be read sends nothing. A store
@@ -325,17 +330,12 @@ func (s *Service) sendTimeEntries(ctx context.Context, id, author string, sends 
 		var logs []tracker.Worklog
 		if check {
 			var err error
-			if logs, err = r.checkedDays(author, sends); err != nil {
+			if logs, checked, err = r.checkedDays(author, sends); err != nil {
 				why := s.staleView(r.row.Kind, nil, err).Failure.Message
 				for _, e := range sends {
 					notes = append(notes, postNote{e: e, why: "was not posted: the day's logged time could not be read to check it (" + strings.TrimSuffix(why, ".") + "); try again"})
 				}
 				return notSent(err)
-			}
-			for _, e := range sends {
-				if !slices.Contains(checked, e.Day) {
-					checked = append(checked, e.Day)
-				}
 			}
 		}
 		var entries []store.TimeEntry

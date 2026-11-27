@@ -3,7 +3,8 @@
   // (docs/specs/issues.md, "Time"). It is filled with what it was opened
   // from and nothing else: the ticket and the day when the person started
   // from them, an entry's values when it changes one, an agent's entry's
-  // time and reason when the person logs that entry by hand (`fill`). Opened with no
+  // time and reason when the person logs that entry by hand (`resolves`),
+  // which goes once the time is logged. Opened with no
   // ticket, the person finds one by key or words (TicketFinder, offering
   // `candidates` first). The day is any day;
   // the time is typed ("1h 30m", "45m", "1.5h" or minutes) and read by
@@ -18,7 +19,7 @@
   import Button from '../primitives/Button.svelte';
   import TicketFinder from './TicketFinder.svelte';
   import WriteNote from './WriteNote.svelte';
-  import type { WorklogView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import type { TimeEntryView, WorklogView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import {
     addTarget,
     addWorklog,
@@ -49,9 +50,10 @@
     worklog?: WorklogView;
     /** Opened by Delete: the delete's question shows at once. */
     confirmDelete?: boolean;
-    /** A new entry's time and description to start from (an agent's
-     * entry of unknown outcome, logged by hand); the person saves it. */
-    fill?: { readonly time: string; readonly description: string };
+    /** An agent's entry of unknown outcome that the person logs by hand:
+     * a new entry starts from its time and reason, and once the time is
+     * logged the entry goes (addWorklog). */
+    resolves?: TimeEntryView;
     /** The tickets the finder offers before anything is typed, when
      * `ticket` is null. */
     candidates?: readonly WorklogTicket[];
@@ -64,7 +66,7 @@
     onDone: () => void;
   }
 
-  let { ctx, ticket, day, worklog, confirmDelete = false, fill, candidates = [], waiting, onSaved, onDone }: Props = $props();
+  let { ctx, ticket, day, worklog, confirmDelete = false, resolves, candidates = [], waiting, onSaved, onDone }: Props = $props();
 
   // The form's own values, seeded from what it was opened with. `seed` is
   // what each input started from: a change sends only the inputs the
@@ -78,7 +80,7 @@
   // svelte-ignore state_referenced_locally
   let base = $state<WorklogView | undefined>(worklog);
   // svelte-ignore state_referenced_locally
-  let seed = $state<Seed>(worklog ? seedOf(worklog) : { day: day ?? '', time: fill?.time ?? '', description: fill?.description ?? '' });
+  let seed = $state<Seed>(worklog ? seedOf(worklog) : { day: day ?? '', time: resolves ? formatTimeSpent(resolves.minutes * 60) : '', description: resolves?.reason ?? '' });
   // svelte-ignore state_referenced_locally
   let dayValue = $state(seed.day);
   // svelte-ignore state_referenced_locally
@@ -169,7 +171,7 @@
         return;
       }
       sentDay = dayValue;
-      finish(await addWorklog(ctx, { issue: picked.issue, key: picked.key, day: dayValue, spentSeconds: spent, description: description.trim() }), sentDay);
+      finish(await addWorklog(ctx, { issue: picked.issue, key: picked.key, day: dayValue, spentSeconds: spent, description: description.trim() }, resolves), sentDay);
       return;
     }
     const change: { -readonly [K in keyof WorklogChange]: WorklogChange[K] } = {};

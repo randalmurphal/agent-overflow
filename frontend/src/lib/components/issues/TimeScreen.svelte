@@ -62,7 +62,7 @@
     type WeekTicket,
     type WorklogTicket,
   } from '../../stores/trackerTimeModel';
-  import { entryTarget, removeDraftEntries, type TimeWriteContext } from '../../stores/trackerTimeWrites.svelte';
+  import type { TimeWriteContext } from '../../stores/trackerTimeWrites.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
   import { formatTimeSpent } from '../../utils/timeSpent';
 
@@ -139,6 +139,10 @@
 
   const readable = $derived(!offline && connectionKind !== 'linear' && connectionOn && !!author);
   const ctx: TimeWriteContext | null = $derived(author ? { backend, connection, author, computer: computerName } : null);
+  // The board the screen writes on. A form, a draft's popover or a menu
+  // is opened on one board: each is null again when it switches, and the
+  // body is keyed on it, so a confirmation inside a component ends too.
+  const board = $derived(`${backend}\n${connection}\n${author ?? ''}`);
 
   // The week shown, held while the screen shows it; a week moved away
   // from stays among the weeks the store holds.
@@ -217,7 +221,7 @@
      * fills the form, and is removed once the time was logged. */
     readonly unknown?: TimeEntryView;
   }
-  let form = $state.raw<FormOpen | null>(null);
+  let form = $derived.by((): FormOpen | null => (void board, null));
   function openForm(open: FormOpen): void {
     form = open;
   }
@@ -239,7 +243,7 @@
   type DraftOpen =
     | { readonly kind: 'entry'; readonly anchor: HTMLElement; readonly entry: TimeEntryView }
     | { readonly kind: 'questions'; readonly anchor: HTMLElement; readonly day: string };
-  let draft = $state.raw<DraftOpen | null>(null);
+  let draft = $derived.by((): DraftOpen | null => (void board, null));
   const draftEntry = $derived.by(() => {
     if (draft?.kind !== 'entry') return null;
     const opened = draft.entry;
@@ -281,14 +285,6 @@
     return !shape.days.some((d) => d.drafted.some((x) => x.id === e.id && x.state === 'unknown'));
   });
 
-  // The hand-logged time of an entry of unknown outcome was logged: the
-  // entry goes, under its own target, so a failed removal shows on it.
-  function savedFrom(open: FormOpen, day: string): void {
-    onSaved(day);
-    const e = open.unknown;
-    if (e && ctx) void removeDraftEntries(ctx, entryTarget(e.id), [e]);
-  }
-
   function ticketOf(w: WorklogView): WorklogTicket {
     return { issue: w.issue, key: w.key ?? '', title: w.title ?? '' };
   }
@@ -307,7 +303,7 @@
     | { readonly kind: 'entry'; readonly x: number; readonly y: number; readonly anchor: HTMLElement; readonly worklog: WorklogView }
     | { readonly kind: 'cell'; readonly x: number; readonly y: number; readonly anchor: HTMLElement; readonly ticket: WeekTicket; readonly day: string; readonly entries: readonly WorklogView[]; readonly drafted: readonly TimeEntryView[] }
     | { readonly kind: 'day'; readonly x: number; readonly y: number; readonly anchor: HTMLElement; readonly day: string };
-  let menu = $state.raw<MenuOpen | null>(null);
+  let menu = $derived.by((): MenuOpen | null => (void board, null));
   function fromMenu(action: () => void): void {
     if (!menu) return;
     // The action reads the menu it was opened from, so it runs first.
@@ -373,175 +369,184 @@
   {:else if !author || !ctx}
     <p class="px-4 py-6 text-sm text-fg-muted" data-testid="time-no-account">The app does not know which account is yours on this connection. Verify the connection in Settings.</p>
   {:else}
-    {@const writeCtx = ctx}
-    <div class="flex flex-wrap items-center gap-1.5 border-b border-border-subtle px-3 py-1.5 text-xs" data-testid="time-toolbar">
-      <IconButton label="Previous week" size="sm" testId="time-previous" onClick={() => moveWeek(addDays(monday, -7))}>
-        {#snippet children()}<Icon icon={ChevronLeft} size={14} strokeWidth={2} />{/snippet}
-      </IconButton>
-      <IconButton label="Next week" size="sm" testId="time-next" onClick={() => moveWeek(addDays(monday, 7))}>
-        {#snippet children()}<Icon icon={ChevronRight} size={14} strokeWidth={2} />{/snippet}
-      </IconButton>
-      <span class="whitespace-nowrap font-semibold text-fg" data-testid="time-week">{weekLabel(monday)}</span>
-      {#if monday !== mondayOf(today)}
-        <button type="button" class="rounded-[var(--radius-control)] px-1.5 py-0.5 text-accent hover:bg-surface-1" data-testid="time-this-week" onclick={() => { today = localDay(new Date()); moveWeek(mondayOf(today)); }}>This week</button>
+    <!-- What was open on one board ends when the board switches. -->
+    {#key board}
+      {@const writeCtx = ctx}
+      <div class="flex flex-wrap items-center gap-1.5 border-b border-border-subtle px-3 py-1.5 text-xs" data-testid="time-toolbar">
+        <IconButton label="Previous week" size="sm" testId="time-previous" onClick={() => moveWeek(addDays(monday, -7))}>
+          {#snippet children()}<Icon icon={ChevronLeft} size={14} strokeWidth={2} />{/snippet}
+        </IconButton>
+        <IconButton label="Next week" size="sm" testId="time-next" onClick={() => moveWeek(addDays(monday, 7))}>
+          {#snippet children()}<Icon icon={ChevronRight} size={14} strokeWidth={2} />{/snippet}
+        </IconButton>
+        <span class="whitespace-nowrap font-semibold text-fg" data-testid="time-week">{weekLabel(monday)}</span>
+        {#if monday !== mondayOf(today)}
+          <button type="button" class="rounded-[var(--radius-control)] px-1.5 py-0.5 text-accent hover:bg-surface-1" data-testid="time-this-week" onclick={() => { today = localDay(new Date()); moveWeek(mondayOf(today)); }}>This week</button>
+        {/if}
+        {#if shape}
+          <span class="whitespace-nowrap text-fg-muted" data-testid="time-week-total">
+            <b class="font-semibold tabular-nums text-fg">{weekTotal}</b>{#if shape.uncounted > 0}, leaving out {shape.uncounted === 1 ? '1 day' : `${shape.uncounted} days`} with no total{/if}
+          </span>
+        {/if}
+        <span class="flex-1"></span>
+        <Segmented
+          ariaLabel="Layout"
+          value={layout}
+          onChange={setLayout}
+          options={[{ value: 'day', label: 'By day' }, { value: 'ticket', label: 'By ticket' }]}
+        />
+      </div>
+      {#if weekState?.failure}
+        <p class="border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="time-refresh-failure">{weekState.failure.message} The week is shown as this computer last read it.</p>
+      {/if}
+      {#each weekState?.receipts ?? [] as r (r.id)}
+        <div class="flex items-center gap-2 border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="time-receipt">
+          <span class="min-w-0 flex-1">{r.sentence}</span>
+          <button type="button" class="shrink-0 text-accent hover:underline" data-testid="time-receipt-refresh" onclick={refresh}>Refresh</button>
+        </div>
+      {/each}
+      {#if readFailure}
+        <ErrorNotice
+          message="Could not read your logged time: {readFailure.report.reason}"
+          captured={readFailure}
+          onDismiss={() => { readFailure = null; }}
+          testId="time-read-error"
+        />
       {/if}
       {#if shape}
-        <span class="whitespace-nowrap text-fg-muted" data-testid="time-week-total">
-          <b class="font-semibold tabular-nums text-fg">{weekTotal}</b>{#if shape.uncounted > 0}, leaving out {shape.uncounted === 1 ? '1 day' : `${shape.uncounted} days`} with no total{/if}
-        </span>
+        <TimeDraftBanner ctx={writeCtx} {monday} {shape} />
       {/if}
-      <span class="flex-1"></span>
-      <Segmented
-        ariaLabel="Layout"
-        value={layout}
-        onChange={setLayout}
-        options={[{ value: 'day', label: 'By day' }, { value: 'ticket', label: 'By ticket' }]}
-      />
-    </div>
-    {#if weekState?.failure}
-      <p class="border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="time-refresh-failure">{weekState.failure.message} The week is shown as this computer last read it.</p>
-    {/if}
-    {#each weekState?.receipts ?? [] as r (r.id)}
-      <div class="flex items-center gap-2 border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning" role="status" data-testid="time-receipt">
-        <span class="min-w-0 flex-1">{r.sentence}</span>
-        <button type="button" class="shrink-0 text-accent hover:underline" data-testid="time-receipt-refresh" onclick={refresh}>Refresh</button>
-      </div>
-    {/each}
-    {#if readFailure}
-      <ErrorNotice
-        message="Could not read your logged time: {readFailure.report.reason}"
-        captured={readFailure}
-        onDismiss={() => { readFailure = null; }}
-        testId="time-read-error"
-      />
-    {/if}
-    {#if shape}
-      <TimeDraftBanner ctx={writeCtx} {monday} {shape} />
-    {/if}
-    {#if savedNote}
-      <div class="flex items-center gap-2 border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" role="status" data-testid="time-saved-elsewhere">
-        <span class="min-w-0 flex-1">{savedNote}</span>
-        <IconButton label="Dismiss" size="xs" variant="tint" testId="time-saved-elsewhere-dismiss" onClick={() => { savedNote = null; }}>
-          {#snippet children()}<Icon icon={X} size={12} strokeWidth={2.25} />{/snippet}
-        </IconButton>
-      </div>
-    {/if}
-    <div class="min-h-0 flex-1 overflow-auto px-3 py-2" data-testid="time-body">
-      {#if !shape}
-        <p class="py-4 text-sm text-fg-muted" data-testid="time-reading">Reading your time…</p>
-      {:else if layout === 'day'}
-        {#if compact && shownDay}
-          <div class="mb-2">
-            <TimeDayStrip days={shape.days} selected={shownDay} {today} onSelect={(d) => { compactDay = d; }} />
-          </div>
-        {/if}
-        <TimeByDay
-          ctx={writeCtx}
-          {shape}
-          {today}
-          onlyDay={compact ? shownDay : null}
-          {openIssue}
-          onOpenTicket={(w) => openTicket(ticketOf(w))}
-          onChange={(w, anchor) => openForm({ anchor, ticket: ticketOf(w), day: w.day, worklog: w })}
-          {onEntryMenu}
-          onLogDay={(day, anchor) => openForm({ anchor, ticket: null, day })}
-          {onDayMenu}
-          onOpenDraftTicket={(e) => openTicket({ issue: e.issue ?? '', key: e.key ?? '', title: e.title ?? '' })}
-          onEditDraft={openDraft}
-          onLogByHand={logByHand}
-        />
-      {:else}
-        <TimeByTicket
-          {shape}
-          {tickets}
-          {today}
-          {compact}
-          {openIssue}
-          onOpenTicket={openTicket}
-          {onCell}
-          {onCellMenu}
-          onLogOther={(anchor) => openForm({ anchor, ticket: null, day: null })}
-          {questions}
-          onQuestions={(i, anchor) => { draft = { kind: 'questions', anchor, day: shape.days[i].day }; }}
-        />
+      {#if savedNote}
+        <div class="flex items-center gap-2 border-b border-border-subtle bg-surface-1 px-3 py-1.5 text-xs text-fg-muted" role="status" data-testid="time-saved-elsewhere">
+          <span class="min-w-0 flex-1">{savedNote}</span>
+          <IconButton label="Dismiss" size="xs" variant="tint" testId="time-saved-elsewhere-dismiss" onClick={() => { savedNote = null; }}>
+            {#snippet children()}<Icon icon={X} size={12} strokeWidth={2.25} />{/snippet}
+          </IconButton>
+        </div>
       {/if}
-    </div>
-
-    {#if form}
-      {@const open = form}
-      <Popover anchor={open.anchor} open={true} role="dialog" ariaLabel={open.worklog ? 'Change logged time' : 'Log time'} onClose={() => { form = null; }}>
-        <WorklogForm
-          ctx={writeCtx}
-          ticket={open.ticket}
-          day={open.day}
-          worklog={formWorklog}
-          confirmDelete={open.confirmDelete}
-          fill={open.unknown ? { time: formatTimeSpent(open.unknown.minutes * 60), description: open.unknown.reason } : undefined}
-          candidates={tickets}
-          waiting={unknownSettled ? UNKNOWN_SETTLED : undefined}
-          onSaved={(day) => savedFrom(open, day)}
-          onDone={() => { if (form === open) form = null; }}
-        />
-      </Popover>
-    {/if}
-
-    {#if draft}
-      {@const d = draft}
-      <Popover anchor={d.anchor} open={true} role="dialog" ariaLabel={d.kind === 'questions' ? 'Questions of the draft' : 'Drafted time'} onClose={() => { draft = null; }}>
-        {#if d.kind === 'questions'}
-          <div class="flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2 p-3" data-testid="time-draft-questions">
-            {#each draftQuestions as q (q.id)}
-              <TimeDraftQuestion ctx={writeCtx} entry={q} />
-            {/each}
-          </div>
-        {:else if draftEntry && draftEntry.state === 'drafted'}
-          <TimeDraftForm ctx={writeCtx} entry={draftEntry} onDone={() => { if (draft === d) draft = null; }} />
-        {:else if draftEntry}
-          <div class="w-[min(20rem,calc(100vw-2rem))] p-3">
-            <TimeDraftEntry ctx={writeCtx} entry={draftEntry} onEdit={() => {}} onLogByHand={(e) => { draft = null; logByHand(e, d.anchor); }} />
-          </div>
-        {/if}
-      </Popover>
-    {/if}
-
-    {#if menu}
-      {@const m = menu}
-      <ContextMenu x={m.x} y={m.y} ariaLabel={m.kind === 'day' ? 'Day actions' : m.kind === 'cell' ? 'Cell actions' : 'Entry actions'} onDismiss={() => { menu = null; }}>
-        {#if m.kind === 'entry'}
-          <MenuItem label="Change" testId="time-menu-change" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: ticketOf(m.worklog), day: m.worklog.day, worklog: m.worklog }))} />
-          <MenuItem label="Delete" variant="danger" testId="time-menu-delete" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: ticketOf(m.worklog), day: m.worklog.day, worklog: m.worklog, confirmDelete: true }))} />
-          {#if m.worklog.key}
-            {@const key = m.worklog.key}
-            <MenuDivider />
-            <MenuItem label="Open ticket" testId="time-menu-open" onSelect={() => fromMenu(() => openTicket(ticketOf(m.worklog)))} />
-            <MenuItem label="Copy key" testId="time-menu-copy-key" onSelect={() => fromMenu(() => { void copyKey(key); })} />
+      <div class="min-h-0 flex-1 overflow-auto px-3 py-2" data-testid="time-body">
+        {#if !shape}
+          <p class="py-4 text-sm text-fg-muted" data-testid="time-reading">Reading your time…</p>
+        {:else if layout === 'day'}
+          {#if compact && shownDay}
+            <div class="mb-2">
+              <TimeDayStrip days={shape.days} selected={shownDay} {today} onSelect={(d) => { compactDay = d; }} />
+            </div>
           {/if}
-        {:else if m.kind === 'cell'}
-          <MenuItem label={m.entries.length ? 'Log more here' : 'Log time here'} testId="time-menu-log-here" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: m.ticket, day: m.day }))} />
-          {#if m.drafted.length}
-            <MenuDivider />
-            {#each m.drafted as e (e.id)}
-              <MenuItem label="Drafted {formatTimeSpent(e.minutes * 60)}: {e.reason}" testId="time-menu-draft" onSelect={() => fromMenu(() => openDraft(e, m.anchor))} />
-            {/each}
-          {/if}
-          {#if m.entries.length}
-            <MenuDivider />
-            {#each m.entries as w (w.id)}
-              {@const label = `${formatTimeSpent(w.spent_seconds)}${w.description ? `: ${w.description}` : ''}`}
-              <MenuItem label="Change {label}" testId="time-menu-change" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: m.ticket, day: m.day, worklog: w }))} />
-              <MenuItem label="Delete {label}" variant="danger" testId="time-menu-delete" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: m.ticket, day: m.day, worklog: w, confirmDelete: true }))} />
-            {/each}
-          {/if}
-          {#if m.ticket.key}
-            {@const key = m.ticket.key}
-            <MenuDivider />
-            <MenuItem label="Open ticket" testId="time-menu-open" onSelect={() => fromMenu(() => openTicket(m.ticket))} />
-            <MenuItem label="Copy key" testId="time-menu-copy-key" onSelect={() => fromMenu(() => { void copyKey(key); })} />
-          {/if}
+          <TimeByDay
+            ctx={writeCtx}
+            {shape}
+            {today}
+            onlyDay={compact ? shownDay : null}
+            {openIssue}
+            onOpenTicket={(w) => openTicket(ticketOf(w))}
+            onChange={(w, anchor) => openForm({ anchor, ticket: ticketOf(w), day: w.day, worklog: w })}
+            {onEntryMenu}
+            onLogDay={(day, anchor) => openForm({ anchor, ticket: null, day })}
+            {onDayMenu}
+            onOpenDraftTicket={(e) => openTicket({ issue: e.issue ?? '', key: e.key ?? '', title: e.title ?? '' })}
+            onEditDraft={openDraft}
+            onLogByHand={logByHand}
+          />
         {:else}
-          <MenuItem label="Log time on {dayInSentence(m.day)}" testId="time-menu-log-day" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: null, day: m.day }))} />
+          <TimeByTicket
+            {shape}
+            {tickets}
+            {today}
+            {compact}
+            {openIssue}
+            onOpenTicket={openTicket}
+            {onCell}
+            {onCellMenu}
+            onLogOther={(anchor) => openForm({ anchor, ticket: null, day: null })}
+            {questions}
+            onQuestions={(i, anchor) => { draft = { kind: 'questions', anchor, day: shape.days[i].day }; }}
+          />
         {/if}
-      </ContextMenu>
-    {/if}
+      </div>
+
+      {#if form}
+        {@const open = form}
+        <!-- One form per opening: another entry opened from the keyboard mounts its own. -->
+        {#key open}
+          <Popover anchor={open.anchor} open={true} role="dialog" ariaLabel={open.worklog ? 'Change logged time' : 'Log time'} onClose={() => { form = null; }}>
+            <WorklogForm
+              ctx={writeCtx}
+              ticket={open.ticket}
+              day={open.day}
+              worklog={formWorklog}
+              confirmDelete={open.confirmDelete}
+              resolves={open.unknown}
+              candidates={tickets}
+              waiting={unknownSettled ? UNKNOWN_SETTLED : undefined}
+              {onSaved}
+              onDone={() => { if (form === open) form = null; }}
+            />
+          </Popover>
+        {/key}
+      {/if}
+
+      {#if draft}
+        {@const d = draft}
+        <!-- One popover per opening, as the form's. -->
+        {#key d}
+          <Popover anchor={d.anchor} open={true} role="dialog" ariaLabel={d.kind === 'questions' ? 'Questions of the draft' : 'Drafted time'} onClose={() => { draft = null; }}>
+            {#if d.kind === 'questions'}
+              <div class="flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2 p-3" data-testid="time-draft-questions">
+                {#each draftQuestions as q (q.id)}
+                  <TimeDraftQuestion ctx={writeCtx} entry={q} />
+                {/each}
+              </div>
+            {:else if draftEntry && draftEntry.state === 'drafted'}
+              <TimeDraftForm ctx={writeCtx} entry={draftEntry} onDone={() => { if (draft === d) draft = null; }} />
+            {:else if draftEntry}
+              <div class="w-[min(20rem,calc(100vw-2rem))] p-3">
+                <TimeDraftEntry ctx={writeCtx} entry={draftEntry} onEdit={() => {}} onLogByHand={(e) => { draft = null; logByHand(e, d.anchor); }} />
+              </div>
+            {/if}
+          </Popover>
+        {/key}
+      {/if}
+
+      {#if menu}
+        {@const m = menu}
+        <ContextMenu x={m.x} y={m.y} ariaLabel={m.kind === 'day' ? 'Day actions' : m.kind === 'cell' ? 'Cell actions' : 'Entry actions'} onDismiss={() => { menu = null; }}>
+          {#if m.kind === 'entry'}
+            <MenuItem label="Change" testId="time-menu-change" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: ticketOf(m.worklog), day: m.worklog.day, worklog: m.worklog }))} />
+            <MenuItem label="Delete" variant="danger" testId="time-menu-delete" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: ticketOf(m.worklog), day: m.worklog.day, worklog: m.worklog, confirmDelete: true }))} />
+            {#if m.worklog.key}
+              {@const key = m.worklog.key}
+              <MenuDivider />
+              <MenuItem label="Open ticket" testId="time-menu-open" onSelect={() => fromMenu(() => openTicket(ticketOf(m.worklog)))} />
+              <MenuItem label="Copy key" testId="time-menu-copy-key" onSelect={() => fromMenu(() => { void copyKey(key); })} />
+            {/if}
+          {:else if m.kind === 'cell'}
+            <MenuItem label={m.entries.length ? 'Log more here' : 'Log time here'} testId="time-menu-log-here" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: m.ticket, day: m.day }))} />
+            {#if m.drafted.length}
+              <MenuDivider />
+              {#each m.drafted as e (e.id)}
+                <MenuItem label="Drafted {formatTimeSpent(e.minutes * 60)}: {e.reason}" testId="time-menu-draft" onSelect={() => fromMenu(() => openDraft(e, m.anchor))} />
+              {/each}
+            {/if}
+            {#if m.entries.length}
+              <MenuDivider />
+              {#each m.entries as w (w.id)}
+                {@const label = `${formatTimeSpent(w.spent_seconds)}${w.description ? `: ${w.description}` : ''}`}
+                <MenuItem label="Change {label}" testId="time-menu-change" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: m.ticket, day: m.day, worklog: w }))} />
+                <MenuItem label="Delete {label}" variant="danger" testId="time-menu-delete" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: m.ticket, day: m.day, worklog: w, confirmDelete: true }))} />
+              {/each}
+            {/if}
+            {#if m.ticket.key}
+              {@const key = m.ticket.key}
+              <MenuDivider />
+              <MenuItem label="Open ticket" testId="time-menu-open" onSelect={() => fromMenu(() => openTicket(m.ticket))} />
+              <MenuItem label="Copy key" testId="time-menu-copy-key" onSelect={() => fromMenu(() => { void copyKey(key); })} />
+            {/if}
+          {:else}
+            <MenuItem label="Log time on {dayInSentence(m.day)}" testId="time-menu-log-day" onSelect={() => fromMenu(() => openForm({ anchor: m.anchor, ticket: null, day: m.day }))} />
+          {/if}
+        </ContextMenu>
+      {/if}
+    {/key}
   {/if}
 </div>

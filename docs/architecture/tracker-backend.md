@@ -1445,9 +1445,9 @@ changed, `tracker:board_updated` (`trackerapp.BoardEvent`),
 project's stored setup changed, after which a client reads again the
 setups it holds, and `tracker:time_entries_updated`
 (`trackerapp.TimeEntriesEvent`: the connection, author, days and drafting
-threads of a change to the time draft, or the days a post's check read,
-after which a client reads those days or that thread's entries again),
-all at `tracker:read`.
+threads of a change to the time draft, or every day a post's check
+stored, from the first to the last of each read, after which a client
+reads those days or that thread's entries again), all at `tracker:read`.
 
 A connection ID is minted on one computer. Every method whose first
 argument is one is generated with the route home and routed by its client

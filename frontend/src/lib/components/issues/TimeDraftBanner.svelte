@@ -4,9 +4,9 @@
   // entries, time and questions, and the thread it came from, or how many
   // threads), with Discard and the approval of the whole week shown. With
   // only questions left it says where to answer them and what the draft
-  // logged; with nothing left, what it logged (its posted entries whose
-  // worklog the week holds). What the last approval or discard of the week
-  // did stays here until dismissed.
+  // logged; with nothing left, what it logged (its posted entries'
+  // worklogs as the week holds them now). What the last approval or
+  // discard of the week did stays here until dismissed.
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
   import Check from '@lucide/svelte/icons/check';
@@ -58,11 +58,11 @@
     <Icon icon={AlertTriangle} size={15} strokeWidth={2} class="shrink-0 text-warning" />
     <div class="flex min-w-0 flex-1 flex-col">
       <b class="font-semibold text-fg" data-testid="time-draft-banner-title">{plural(draft.questions, 'question', 'questions')} left for {questionDays.map((d) => draftDayLabel(d.day)).join(', ')}</b>
-      <span class="text-fg-muted">{draft.logged.worklogs > 0 ? `${formatTimeSpent(draft.logged.minutes * 60)} is logged. ` : ''}Answer {draft.questions === 1 ? 'it' : 'them'} in that day's column.</span>
+      <span class="text-fg-muted">{draft.logged.worklogs > 0 ? `${formatTimeSpent(draft.logged.seconds)} is logged. ` : ''}Answer {draft.questions === 1 ? 'it' : 'them'} in that day's column.</span>
     </div>
   {:else if draft.logged.worklogs > 0}
     <Icon icon={Check} size={15} strokeWidth={2} class="shrink-0 text-success" />
-    <b class="min-w-0 flex-1 font-semibold text-fg" data-testid="time-draft-banner-title">Logged {formatTimeSpent(draft.logged.minutes * 60)} in {plural(draft.logged.worklogs, 'worklog', 'worklogs')}</b>
+    <b class="min-w-0 flex-1 font-semibold text-fg" data-testid="time-draft-banner-title">Logged {formatTimeSpent(draft.logged.seconds)} in {plural(draft.logged.worklogs, 'worklog', 'worklogs')}</b>
   {/if}
   <TimeDraftApprove
     {ctx}

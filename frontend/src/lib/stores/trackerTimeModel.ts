@@ -138,14 +138,15 @@ export function postedMinutes(entries: readonly TimeEntryView[]): number {
 /** The week's draft as the banner counts it: the days that hold drafted
  * entries, the entries on a ticket, the questions, the minutes an
  * approval of the week posts, the threads that drafted them, and what of
- * the draft is logged: its posted entries whose worklog the read holds. */
+ * the draft is logged: its posted entries' worklogs the read holds, as
+ * those worklogs are now. */
 export interface WeekDraft {
   readonly days: number;
   readonly entries: number;
   readonly questions: number;
   readonly minutes: number;
   readonly threads: readonly string[];
-  readonly logged: { readonly minutes: number; readonly worklogs: number };
+  readonly logged: { readonly seconds: number; readonly worklogs: number };
 }
 
 /** One ticket's row of the grid. */
@@ -200,12 +201,13 @@ export function weekShape(monday: string, answer: WorklogDays): WeekShape {
   // The worklogs say what is logged: a posted entry shows as its worklog,
   // and as nothing once that worklog was deleted or moved. A post whose
   // worklogs could not be read back is a receipt on the week.
-  const logged = new Set(logs.map((w) => w.id));
-  const draftLogged = { minutes: 0, worklogs: 0 };
+  const logged = new Map(logs.map((w) => [w.id, w.spent_seconds]));
+  const draftLogged = { seconds: 0, worklogs: 0 };
   const draftByDay = new Map<string, TimeEntryView[]>();
   for (const e of answer.drafted ?? []) {
-    if (e.state === 'posted' && e.worklog && logged.has(e.worklog)) {
-      draftLogged.minutes += e.minutes;
+    const spent = e.state === 'posted' && e.worklog ? logged.get(e.worklog) : undefined;
+    if (spent !== undefined) {
+      draftLogged.seconds += spent;
       draftLogged.worklogs += 1;
     }
     if (e.state === 'left_out' || e.state === 'posted') continue;

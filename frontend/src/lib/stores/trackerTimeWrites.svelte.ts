@@ -35,6 +35,14 @@
 // the tracker's words, is held as its outcome until the surface lets go.
 // What the week and the cards show after one is the computer's
 // `tracker:time_entries_updated`, which they read again on.
+//
+// Every write that names entries sends them on the connection its
+// context names, and only there: an entry of another connection is one
+// another board's screen showed (connection IDs are each computer's own),
+// so it is refused before anything is sent (`foreignEntries`). A write of
+// two steps (Log now's change, then its post; a hand log, then the
+// removal of the entry it logged) is one call here, so its second step
+// goes where its first went.
 
 import { SvelteMap } from 'svelte/reactivity';
 import type { PostTimeView, TimeEntryEdit, TimeEntryView, WorklogView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
@@ -209,11 +217,14 @@ async function write(
   kind: TimeWriteKind,
   label: WriteLabel,
   days: readonly string[],
+  entries: readonly TimeEntryView[],
   send: (acceptLoss: boolean) => Promise<WriteView>,
   acceptLoss: boolean,
 ): Promise<WriteOutcome | null> {
   const k = writeKey(ctx, target);
   if (writes.get(k)?.pending) return null;
+  const foreign = foreignEntries(ctx, entries);
+  if (foreign) return settleUnsent(k, kind, label.toast, foreign);
   // The draft as it is sent: Save anyway is for it alone.
   consent.sending(k);
   writes.set(k, { kind, pending: true, outcome: null, reread: null, saveAnyway: null });
@@ -247,7 +258,7 @@ async function write(
     toastUnheld(label.toast, outcome);
     return outcome;
   }
-  const settled: TimeWrite = { kind, pending: false, outcome, reread: null, saveAnyway: offer ? () => write(ctx, target, kind, label, days, send, true) : null };
+  const settled: TimeWrite = { kind, pending: false, outcome, reread: null, saveAnyway: offer ? () => write(ctx, target, kind, label, days, entries, send, true) : null };
   writes.set(k, settled);
   if (reread) {
     void reread.then((ended) => {
@@ -255,6 +266,23 @@ async function write(
       if (writes.get(k) === settled) writes.set(k, { ...settled, reread: ended });
     });
   }
+  return outcome;
+}
+
+const FOREIGN_ONE = "The entry belongs to another board's connection, so nothing was sent.";
+const FOREIGN_SOME = "One of these entries belongs to another board's connection, so nothing was sent.";
+
+/** The refusal of entries not of ctx's connection, or null. */
+function foreignEntries(ctx: DraftWriteContext, entries: readonly TimeEntryView[]): WriteOutcome | null {
+  if (entries.every((e) => e.connection === ctx.connection)) return null;
+  return { kind: 'not_sent', message: entries.length === 1 ? FOREIGN_ONE : FOREIGN_SOME };
+}
+
+/** A write refused before it was sent: held under its target while a
+ * surface holds it, else a toast. */
+function settleUnsent(k: string, kind: TimeWriteKind, toast: string, outcome: WriteOutcome): WriteOutcome {
+  if (holds.has(k)) writes.set(k, { kind, pending: false, outcome, reread: null, saveAnyway: null });
+  else toastUnheld(toast, outcome);
   return outcome;
 }
 
@@ -284,14 +312,19 @@ export interface NewWorklog {
   readonly description: string;
 }
 
-/** Logs time on a ticket (AddTrackerWorklog). */
-export function addWorklog(ctx: TimeWriteContext, w: NewWorklog): Promise<WriteOutcome | null> {
+/** Logs time on a ticket (AddTrackerWorklog). `resolves` is the entry
+ * of unknown outcome whose time this logs by hand: once the time is
+ * logged, the entry goes on the same connection, under its own target,
+ * so a failed removal shows on it. */
+export async function addWorklog(ctx: TimeWriteContext, w: NewWorklog, resolves?: TimeEntryView): Promise<WriteOutcome | null> {
   const label = {
     done: `${formatTimeSpent(w.spentSeconds)} logged on ${ticketName(w.key)} for ${dayInSentence(w.day)}`,
     toast: `The time logged on ${ticketName(w.key)}`,
   };
-  return write(ctx, addTarget(w.issue, w.day), 'add', label, [w.day], () =>
+  const outcome = await write(ctx, addTarget(w.issue, w.day), 'add', label, [w.day], resolves ? [resolves] : [], () =>
     AddTrackerWorklog(ctx.connection, { issue: w.issue, day: w.day, spent_seconds: w.spentSeconds, description: w.description || undefined }), false);
+  if (resolves && outcome?.kind === 'applied') void removeDraftEntries(ctx, entryTarget(resolves.id), [resolves]);
+  return outcome;
 }
 
 /** The members of a worklog a change sets; each one absent stays. */
@@ -308,7 +341,7 @@ export function editWorklog(ctx: TimeWriteContext, from: WorklogView, change: Wo
     done: `The change to the time on ${ticketName(from.key)} for ${dayInSentence(from.day)}`,
     toast: `The change to the time on ${ticketName(from.key)}`,
   };
-  return write(ctx, worklogTarget(from.id), 'edit', label, days, (acceptLoss) =>
+  return write(ctx, worklogTarget(from.id), 'edit', label, days, [], (acceptLoss) =>
     EditTrackerWorklog(ctx.connection, {
       from,
       day: change.day,
@@ -324,7 +357,7 @@ export function deleteWorklog(ctx: TimeWriteContext, from: WorklogView): Promise
     done: `The delete of the time on ${ticketName(from.key)} for ${dayInSentence(from.day)}`,
     toast: `The delete of the time on ${ticketName(from.key)}`,
   };
-  return write(ctx, worklogTarget(from.id), 'delete', label, [from.day], () =>
+  return write(ctx, worklogTarget(from.id), 'delete', label, [from.day], [], () =>
     DeleteTrackerWorklog(ctx.connection, { from }), false);
 }
 
@@ -367,11 +400,14 @@ async function draftWrite<T>(
   target: string,
   kind: TimeWriteKind,
   toast: string,
+  entries: readonly TimeEntryView[],
   send: () => Promise<T>,
   done: (value: T) => string | null,
 ): Promise<DraftWriteResult<T> | null> {
   const k = writeKey(ctx, target);
   if (writes.get(k)?.pending) return null;
+  const foreign = foreignEntries(ctx, entries);
+  if (foreign) return { outcome: settleUnsent(k, kind, toast, foreign), value: null };
   writes.set(k, { kind, pending: true, outcome: null, reread: null, saveAnyway: null });
   const sent = await sendCall(ctx.backend, ctx.computer, DRAFT_SUBJECT, send);
   const outcome: WriteOutcome = sent.ok ? { kind: 'applied', note: done(sent.value) } : sent.outcome;
@@ -399,7 +435,7 @@ function entryName(e: TimeEntryView): string {
  * a question answered with a ticket that has a drafted entry that day is
  * that entry, the question's time added. Nothing is sent to the tracker. */
 export function changeDraftEntry(ctx: DraftWriteContext, entry: TimeEntryView, edit: TimeEntryEdit): Promise<DraftWriteResult<TimeEntryView> | null> {
-  return draftWrite(ctx, entryTarget(entry.id), 'change', `The change of ${entryName(entry)}`,
+  return draftWrite(ctx, entryTarget(entry.id), 'change', `The change of ${entryName(entry)}`, [entry],
     () => EditTrackerTimeEntry(ctx.connection, { id: entry.id, revision: entry.revision }, edit), () => null);
 }
 
@@ -407,7 +443,7 @@ export function changeDraftEntry(ctx: DraftWriteContext, entry: TimeEntryView, e
  * one entry, or a discard. Nothing is sent to the tracker. An entry that
  * changed or was posted since it was read stays, and the outcome says so. */
 export function removeDraftEntries(ctx: DraftWriteContext, target: string, entries: readonly TimeEntryView[]): Promise<DraftWriteResult<TimeEntryView[]> | null> {
-  return draftWrite(ctx, target, 'remove', entries.length === 1 ? `The removal of ${entryName(entries[0])}` : 'The discard of the draft',
+  return draftWrite(ctx, target, 'remove', entries.length === 1 ? `The removal of ${entryName(entries[0])}` : 'The discard of the draft', entries,
     () => RemoveTrackerTimeEntries(ctx.connection, refs(entries)),
     (gone) => gone.length < entries.length
       ? `${gone.length} of ${entries.length} entries were removed; the others changed or were posted since they were read.`
@@ -422,7 +458,7 @@ export function removeDraftEntries(ctx: DraftWriteContext, target: string, entri
  * the post failed (`stale`); those days hold it as a receipt on the weeks
  * that show them. */
 export function postDraftEntries(ctx: DraftWriteContext, target: string, entries: readonly TimeEntryView[], alone = false): Promise<DraftWriteResult<PostTimeView> | null> {
-  return draftWrite(ctx, target, 'post', alone ? `Logging ${entryName(entries[0])}` : 'The approval of the draft',
+  return draftWrite(ctx, target, 'post', alone ? `Logging ${entryName(entries[0])}` : 'The approval of the draft', entries,
     () => PostTrackerTimeEntries(ctx.connection, { entries: refs(entries), alone: alone || undefined }),
     (view) => {
       // The sentence names the days not read back and why; the weeks
@@ -436,6 +472,26 @@ export function postDraftEntries(ctx: DraftWriteContext, target: string, entries
       for (const [author, of] of days) weeks?.receipt({ ...ctx, author }, of, view.sentence);
       return view.sentence;
     });
+}
+
+/** Log now: changes the entry as read when `edit` is given, then logs it
+ * alone as that change stored it, both on ctx; `saved` hears the changed
+ * entry before its post is sent. Answers the post, or null when nothing
+ * was posted: the change was not made, or a write of the entry is out. */
+export async function logDraftEntryAlone(
+  ctx: DraftWriteContext,
+  entry: TimeEntryView,
+  edit: TimeEntryEdit | null,
+  saved: (now: TimeEntryView) => void,
+): Promise<DraftWriteResult<PostTimeView> | null> {
+  let now = entry;
+  if (edit) {
+    const done = await changeDraftEntry(ctx, entry, edit);
+    if (done?.outcome.kind !== 'applied' || !done.value) return null;
+    now = done.value;
+    saved(now);
+  }
+  return postDraftEntries(ctx, entryTarget(now.id), [now], true);
 }
 
 export function resetTrackerTimeWritesForTest(): void {

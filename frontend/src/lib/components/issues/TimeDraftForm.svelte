@@ -6,11 +6,13 @@
   // time was logged on its ticket that day since), Keep as draft (the
   // changes kept, nothing posted) or Remove. A change is sent first
   // (EditTrackerTimeEntry) and Log now posts the entry as the change
-  // answered it. Every write goes under the entry's target, so the entry
-  // shows what became of it after the form closed; the form closes once
-  // its write was made. The form acts on the entry as it opened, at that
-  // revision, so the computer refuses a press on an entry another window
-  // changed since; it says so, and Show the change reloads it.
+  // answered it, on the same connection (logDraftEntryAlone). Every write
+  // goes under the entry's target, so the entry shows what became of it
+  // after the form closed; the form closes once its write was made. A form
+  // is one opening of one entry (its surface keys it so): it acts on the
+  // entry as it opened, at that revision, or as its own change saved it,
+  // so the computer refuses a press on an entry another window changed
+  // since; a newer revision says so, and Show the change loads it.
   import type { TimeEntryEdit, TimeEntryView, TimeOfferView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import Button from '../primitives/Button.svelte';
   import TicketFinder from './TicketFinder.svelte';
@@ -20,7 +22,7 @@
     dismissTimeWrite,
     entryTarget,
     holdTimeWriteTarget,
-    postDraftEntries,
+    logDraftEntryAlone,
     removeDraftEntries,
     timeWrite,
     timeWriteText,
@@ -48,8 +50,9 @@
   let ticket = $state<TimeOfferView>(opened.ticket);
   let timeText = $state(opened.time);
   let reason = $state(opened.reason);
-  // Another window changed the entry since the form showed it.
-  const moved = $derived(entry.id === seed.entry.id && entry.revision !== seed.entry.revision);
+  // Another window changed the entry since the form showed it or saved
+  // it; an older revision is the list not yet caught up with the form.
+  const moved = $derived(entry.revision > seed.entry.revision);
 
   function showChange(): void {
     seed = seedOf(entry);
@@ -84,33 +87,38 @@
     return Object.keys(out).length > 0 ? out : null;
   }
 
-  /** Sends the change, if any, and answers the entry as it now is; null
-   * when nothing should follow. */
-  async function changed(): Promise<TimeEntryView | null> {
-    problem = '';
-    const change = edit();
-    if (change === undefined) {
-      problem = TIME_SPENT_REFUSAL;
-      return null;
-    }
-    if (change === null) return seed.entry;
-    const done = await changeDraftEntry(ctx, seed.entry, change);
-    if (done?.outcome.kind !== 'applied' || !done.value) return null;
-    // The form shows what it saved; its next press acts on that revision.
-    seed = seedOf(done.value);
-    return done.value;
+  /** The change the person made, null for none; undefined, said, when
+   * the time does not read. */
+  function change(): TimeEntryEdit | null | undefined {
+    const out = edit();
+    problem = out === undefined ? TIME_SPENT_REFUSAL : '';
+    return out;
+  }
+
+  // The form shows what it saved; its next press acts on that revision.
+  function saved(now: TimeEntryView): void {
+    seed = seedOf(now);
   }
 
   async function keep(): Promise<void> {
     if (pending) return;
-    if (await changed()) onDone();
+    const out = change();
+    if (out === undefined) return;
+    if (out === null) {
+      onDone();
+      return;
+    }
+    const done = await changeDraftEntry(ctx, seed.entry, out);
+    if (done?.outcome.kind !== 'applied' || !done.value) return;
+    saved(done.value);
+    onDone();
   }
 
   async function logNow(): Promise<void> {
     if (pending) return;
-    const now = await changed();
-    if (!now) return;
-    const done = await postDraftEntries(ctx, entryTarget(now.id), [now], true);
+    const out = change();
+    if (out === undefined) return;
+    const done = await logDraftEntryAlone(ctx, seed.entry, out, saved);
     if (done?.outcome.kind === 'applied' && done.value && done.value.posted === done.value.of) onDone();
   }
 

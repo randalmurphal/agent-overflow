@@ -163,7 +163,10 @@
 
 {#if editing && editingNow && ctx}
   {@const opened = editing}
-  <Popover anchor={opened.anchor} open={true} role="dialog" ariaLabel="Drafted time" onClose={() => { editing = null; }}>
-    <TimeDraftForm {ctx} entry={editingNow} onDone={() => { if (editing === opened) editing = null; }} />
-  </Popover>
+  <!-- One form per opening: another entry opened from the keyboard mounts its own. -->
+  {#key opened}
+    <Popover anchor={opened.anchor} open={true} role="dialog" ariaLabel="Drafted time" onClose={() => { editing = null; }}>
+      <TimeDraftForm {ctx} entry={editingNow} onDone={() => { if (editing === opened) editing = null; }} />
+    </Popover>
+  {/key}
 {/if}

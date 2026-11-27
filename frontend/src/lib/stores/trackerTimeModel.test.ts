@@ -114,7 +114,7 @@ describe('the agent\'s draft in a week', () => {
     expect(wed.drafted.map((e) => e.id)).toEqual([4]);
     expect(wed.draftedMinutes).toBe(0);
     expect([mon.mark, tue.mark, wed.mark, thu.mark]).toEqual(['drafted', 'question', 'drafted', 'none']);
-    expect(shape.draft).toEqual({ days: 2, entries: 2, questions: 1, minutes: 120, threads: ['t1'], logged: { minutes: 0, worklogs: 0 } });
+    expect(shape.draft).toEqual({ days: 2, entries: 2, questions: 1, minutes: 120, threads: ['t1'], logged: { seconds: 0, worklogs: 0 } });
     expect(weekDrafted(shape).map((e) => e.id)).toEqual([1, 2, 3]);
     expect(weekQuestions(shape).map((q) => q.map((e) => e.id))).toEqual([[], [3], [], [], []]);
     const rows = weekTickets(shape);
@@ -140,7 +140,7 @@ describe('the agent\'s draft in a week', () => {
     expect(shape.days[1].questions).toEqual([]);
     expect(shape.days[1].mark).toBe('none');
     expect(shape.draft.entries).toBe(0);
-    expect(shape.draft.logged).toEqual({ minutes: 30, worklogs: 1 });
+    expect(shape.draft.logged).toEqual({ seconds: 1800, worklogs: 1 });
   });
 
   it('shows a weekend day that holds a draft', () => {

@@ -603,7 +603,8 @@ describe('a draft changed while the person looks at it', () => {
 
   it('logs and removes from its form the entry as the form shows it, not a later change', async () => {
     answerDraft([], [drafted(11, '2026-11-11', 60)]);
-    const post = setBindingMock('PostTrackerTimeEntries', async () => POSTED('Entry 11 changed since it was read and was not posted.'));
+    // The computer refuses the entry as changed: the form stays open.
+    const post = setBindingMock('PostTrackerTimeEntries', async () => ({ entries: [], posted: 0, of: 1, sentence: 'Entry 11 changed since it was read and was not posted.' }));
     const remove = setBindingMock('RemoveTrackerTimeEntries', async () => []);
     const view = render(TimeScreen, BASE);
     await fireEvent.click(await view.findByTestId('time-draft-entry-hours'));
