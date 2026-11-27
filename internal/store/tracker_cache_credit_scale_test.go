@@ -27,12 +27,20 @@ import (
 // off (VM steps and time; it fails when the totals with credit on take more
 // than twice the steps, or the pace more than creditPaceSteps), and, as a board that plans no sprints, the
 // evidence listing's weeks arm and the weeks credit fill. It restores the
-// board's sprints, plan, estimates and update times.
+// board's sprints, plan, estimates, update times and what its histories
+// were read for.
 func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *mirrorWriteRecorder) {
 	t.Helper()
 	board := benchBoardID(0)
 	week := 7 * benchDay
 	window := BenchNowForTest - 182*benchDay
+	var histories string
+	if err := s.db.QueryRow(`SELECT json_group_array(json_array(issue_id, history_for, history_wait)) FROM tracker_cache_issues WHERE root_id = ?`,
+		root).Scan(&histories); err != nil {
+		t.Fatal(err)
+	}
+	defer mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_for = h.value ->> 1, history_wait = h.value ->> 2
+		FROM json_each(?2) h WHERE root_id = ?1 AND issue_id = h.value ->> 0`, root, histories)
 	members, evidence := creditScaleSetup(t, s, root, size)
 	t.Logf("credit: %d members in the window's 26 sprints, %d with evidence", len(members), len(evidence))
 	rules := []MirrorCreditRule{{ReviewShare: 10, ReviewNeed: 2, Commented: true, LoggedTime: true, HoursPerPoint: 4}}
@@ -106,6 +114,7 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 	read := func(int) {
 		mustExec(t, s.db, `INSERT OR REPLACE INTO tracker_cache_issue_act_reads(root_id, issue_id, source, read_for, read_at, read_wall)
 			SELECT root_id, issue_id, src.value, updated_at, 1, ? FROM tracker_cache_issues, json_each('[1,2]') src WHERE root_id = ?`, testNow, root)
+		mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_for = updated_at, history_wait = 0 WHERE root_id = ?`, root)
 	}
 	read(0)
 	creditExportAtScale(t, s, root, board, on, reset, 0, 0, "weeks, every done ticket in the window")
@@ -145,12 +154,12 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 // a change that makes it dearer unnoticed. A change that makes it cheaper
 // lowers the number.
 var creditPaceSteps = map[string]int{
-	"1x2000, every row estimated":  128_896,
-	"1x2000, no row estimated":     64_558,
-	"1x20000, every row estimated": 559_996,
-	"1x20000, no row estimated":    258_058,
-	"5x4000, every row estimated":  176_798,
-	"5x4000, no row estimated":     86_060,
+	"1x2000, every row estimated":  131_190,
+	"1x2000, no row estimated":     65_552,
+	"1x20000, every row estimated": 585_690,
+	"1x20000, no row estimated":    270_752,
+	"5x4000, every row estimated":  181_692,
+	"5x4000, no row estimated":     88_354,
 }
 
 // creditExportAtScale fills a copy of board's credit by regroup, its
@@ -207,8 +216,9 @@ func creditExportAtScale(t *testing.T, s *Store, root int64, board string, regro
 }
 
 // creditScaleSetup gives board 0 of a mirror of size creditAtScale's
-// sprints and evidence: the members of the window's sprints, and those of
-// them with evidence.
+// sprints and evidence: the members of the window's sprints, each with
+// its history and receipts read for its card, and those of them with
+// evidence.
 func creditScaleSetup(t *testing.T, s *Store, root int64, size benchMirrorSize) (members, evidence []string) {
 	t.Helper()
 	board := benchBoardID(0)
@@ -257,6 +267,10 @@ func creditScaleSetup(t *testing.T, s *Store, root int64, size benchMirrorSize) 
 	mustExec(t, s.db, `INSERT OR REPLACE INTO tracker_cache_issue_act_reads(root_id, issue_id, source, read_for, read_at, read_wall)
 		SELECT root_id, issue_id, src.value, updated_at, 1, ? FROM tracker_cache_issues, json_each('[1,2]') src
 		WHERE root_id = ? AND issue_id IN (SELECT value FROM json_each(?))`, testNow, root, list)
+	// Each member's history, read for its card as it now is, as the
+	// history unit reads a changed card.
+	mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_for = updated_at, history_wait = 0
+		WHERE root_id = ? AND issue_id IN (SELECT value FROM json_each(?))`, root, list)
 	return members, evidence
 }
 
