@@ -83,6 +83,17 @@ function startWorkPage(page: Page, compact: boolean): Promise<Locator> {
   return openIssuesSetting(page, compact, 'Starting work', 'settings-tracker-start-work');
 }
 
+/** The setup stored at `path`, or 'no file' when there is none; any
+ * other failure to read or parse it fails the test. */
+async function storedOrAbsent(path: string): Promise<Record<string, unknown> | 'no file'> {
+  try {
+    return await storedSetup(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'no file';
+    throw err;
+  }
+}
+
 function pointsPage(page: Page, compact: boolean): Promise<Locator> {
   return openIssuesSetting(page, compact, 'Points and credit', 'settings-tracker-points');
 }
@@ -457,7 +468,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     await expect(screen.getByTestId('tracker-points-pace-line')).toHaveText('No sprint of WEB board has finished yet.');
     await count.selectOption('tickets');
     // Poker on again left no file until this save writes one.
-    await expect.poll(() => storedSetup(file).catch(() => 'no file'), { timeout: 15_000 }).toEqual({ estimates: { version: 1, count: 'tickets' } });
+    await expect.poll(() => storedOrAbsent(file), { timeout: 15_000 }).toEqual({ estimates: { version: 1, count: 'tickets' } });
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
     await expect(columnCount).not.toContainText('pts', { timeout: 15_000 });
@@ -469,7 +480,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     const back = await pointsPage(page, compact);
     await back.getByTestId('tracker-points-count').selectOption('estimates');
     // Counting by the estimates sets nothing, so the setup is no file.
-    await expect.poll(() => readFile(file, 'utf8').then(() => 'a file', () => 'no file'), { timeout: 15_000 }).toBe('no file');
+    await expect.poll(() => storedOrAbsent(file).then((v) => (v === 'no file' ? v : 'a file')), { timeout: 15_000 }).toBe('no file');
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
     await expect(sprint).toHaveText(/points done$/, { timeout: 15_000 });

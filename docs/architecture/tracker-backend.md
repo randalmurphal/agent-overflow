@@ -2668,7 +2668,7 @@ tickets each number could not count, how many rows its query returned
 and the first 5.
 With `show` the widget is then proposed on the board ([Own dashboards
 and proposals](#own-dashboards-and-proposals)). Called with no `widget`
-it answers the rules (`trackerdash.Rules`, 4,656 bytes): the widget's
+it answers the rules (`trackerdash.Rules`, 4,751 bytes): the widget's
 fields, the query's contract and the export's relations with what each
 column holds, so only a thread that writes a widget reads them. A query
 runs under the same sandbox and bounds as a built-in metric, and a
