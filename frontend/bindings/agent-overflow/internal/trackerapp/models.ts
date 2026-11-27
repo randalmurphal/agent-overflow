@@ -185,7 +185,8 @@ export class BoardInfoView {
 /**
  * BoardPace is one board a project lists as Settings shows its usual
  * pace: the board, its connection's kind and its name, and for a Jira
- * board whether this computer has read it (Read), its own estimate unit
+ * board its connection's site as a setup names it (Site, which the
+ * Credit group's support picks are kept by), whether this computer has read it (Read), its own estimate unit
  * (Estimate, as BoardView.Estimate.Unit), the unit the project counts it
  * in (Counts, as BoardView.Counts), whether it plans sprints, and the
  * pace sprint planning measures against (BoardView.Pace), nil for a board
@@ -195,6 +196,7 @@ export class BoardInfoView {
 export class BoardPace {
     "connection": string;
     "connection_kind": string;
+    "site"?: string;
     "board": string;
     "name": string;
     "read": boolean;
@@ -237,10 +239,10 @@ export class BoardPace {
      * Creates a new BoardPace instance from a string or object.
      */
     static createFrom($$source: any = {}): BoardPace {
-        const $$createField8_0 = $$createType2;
+        const $$createField9_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pace" in $$parsedSource) {
-            $$parsedSource["pace"] = $$createField8_0($$parsedSource["pace"]);
+            $$parsedSource["pace"] = $$createField9_0($$parsedSource["pace"]);
         }
         return new BoardPace($$parsedSource as Partial<BoardPace>);
     }
