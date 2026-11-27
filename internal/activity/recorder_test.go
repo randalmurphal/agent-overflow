@@ -13,12 +13,12 @@ import (
 // fakeStore holds the spans written, as the store would: an insert takes
 // the next ID while jira is on.
 type fakeStore struct {
-	mu     sync.Mutex
-	jira   bool
-	fail   error
-	spans  map[int64]store.ActivitySpan
-	days   []store.ThreadDay
-	saves  [][]store.ActivitySpan
+	mu    sync.Mutex
+	jira  bool
+	fail  error
+	spans map[int64]store.ActivitySpan
+	days  []store.ThreadDay
+	saves [][]store.ActivitySpan
 	// during runs inside each save, without the lock.
 	during func()
 	prunes [][2]any
