@@ -31,8 +31,8 @@
 // regroups off the boards, and the places its Start work defaults name,
 // are part of their answer.
 //
-// The Points and credit page's pace of the project's Jira boards
-// (`ProjectTrackerPace`) is held the same way as the statuses: read on
+// The Points and credit page's boards with the pace of each Jira board
+// (`ProjectTrackerPace`) are held the same way as the statuses: read on
 // hold, on the event and on reconnect, since the unit it is in and the
 // status groups it counts done by are the setup's.
 //
@@ -344,8 +344,8 @@ export function refreshTrackerStatuses(project: string): Promise<void> {
   return statuses.get(project)?.read() ?? Promise.resolve();
 }
 
-/** The pace of a project's Jira boards as the Points and credit page
- * shows it. */
+/** A project's boards with the pace of each Jira board, as the Points
+ * and credit page shows them. */
 export interface TrackerPaceState {
   readonly boards: readonly BoardPace[] | null;
   readonly error: unknown;

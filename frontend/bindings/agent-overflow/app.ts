@@ -4569,11 +4569,11 @@ export function ProjectTrackerBoards(projectID: string): $CancellablePromise<tra
 }
 
 /**
- * ProjectTrackerPace is the usual pace of each Jira board the project
- * lists, as its Points and credit page shows it: what the board's last
- * finished sprints finished on average, in the unit the project counts
- * the board in, as sprint planning measures against it. It reads this
- * computer's copy and makes no tracker request.
+ * ProjectTrackerPace is every board the project lists, as its Points and
+ * credit page shows them, with the usual pace of each Jira board: what
+ * the board's last finished sprints finished on average, in the unit the
+ * project counts the board in, as sprint planning measures against it.
+ * It reads this computer's copy and makes no tracker request.
  */
 export function ProjectTrackerPace(projectID: string): $CancellablePromise<trackerapp$0.BoardPace[]> {
     return $Call.ByID(342403521, projectID).then(($result: any) => {

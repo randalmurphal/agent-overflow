@@ -183,15 +183,18 @@ export class BoardInfoView {
 }
 
 /**
- * BoardPace is one Jira board a project lists as Settings shows its
- * usual pace: the board and its name, whether this computer has read it
- * (Read), its own estimate unit (Estimate, as BoardView.Estimate.Unit),
- * the unit the project counts it in (Counts, as BoardView.Counts),
- * whether it plans sprints, and the pace sprint planning measures against
- * (BoardView.Pace), nil for a board that has finished no sprint.
+ * BoardPace is one board a project lists as Settings shows its usual
+ * pace: the board, its connection's kind and its name, and for a Jira
+ * board whether this computer has read it (Read), its own estimate unit
+ * (Estimate, as BoardView.Estimate.Unit), the unit the project counts it
+ * in (Counts, as BoardView.Counts), whether it plans sprints, and the
+ * pace sprint planning measures against (BoardView.Pace), nil for a board
+ * that has finished no sprint. A Linear board has none of these: the
+ * page's settings are a Jira board's.
  */
 export class BoardPace {
     "connection": string;
+    "connection_kind": string;
     "board": string;
     "name": string;
     "read": boolean;
@@ -204,6 +207,9 @@ export class BoardPace {
     constructor($$source: Partial<BoardPace> = {}) {
         if (!("connection" in $$source)) {
             this["connection"] = "";
+        }
+        if (!("connection_kind" in $$source)) {
+            this["connection_kind"] = "";
         }
         if (!("board" in $$source)) {
             this["board"] = "";
@@ -231,10 +237,10 @@ export class BoardPace {
      * Creates a new BoardPace instance from a string or object.
      */
     static createFrom($$source: any = {}): BoardPace {
-        const $$createField7_0 = $$createType2;
+        const $$createField8_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pace" in $$parsedSource) {
-            $$parsedSource["pace"] = $$createField7_0($$parsedSource["pace"]);
+            $$parsedSource["pace"] = $$createField8_0($$parsedSource["pace"]);
         }
         return new BoardPace($$parsedSource as Partial<BoardPace>);
     }

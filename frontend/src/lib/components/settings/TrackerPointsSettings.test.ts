@@ -3,6 +3,7 @@
 // each sprint-planning Jira board's pace in the unit the project counts
 // it in, read again when the setup changes; Planning poker turns off and
 // on; a Linear-only project, and one with no boards, say they have none.
+// One read (ProjectTrackerPace) lists the boards with their pace.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
@@ -19,6 +20,7 @@ import { trackerSetupUpdated } from '../../stores/trackerBoardEvents';
 let stored: SetupView;
 let saves: Setup[];
 let paceReads: number;
+let boardReads: number;
 
 function setupWith(estimates: Setup['estimates']): SetupView {
   return { revision: 'r0', setup: { status_groups: [], ticket_pins: [], start_work: [], estimates } } as SetupView;
@@ -29,7 +31,7 @@ function setupWith(estimates: Setup['estimates']): SetupView {
 function paceOf(extra: Partial<BoardPace> = {}): BoardPace {
   const tickets = stored.setup.estimates?.count === 'tickets';
   return {
-    connection: 'jira-1', board: '1', name: 'WEB board', read: true, estimate: 'points', counts: tickets ? 'none' : 'points', plans_sprints: true,
+    connection: 'jira-1', connection_kind: 'jira', board: '1', name: 'WEB board', read: true, estimate: 'points', counts: tickets ? 'none' : 'points', plans_sprints: true,
     pace: { sprints: 5, rows: 9, estimate: 44 }, ...extra,
   };
 }
@@ -42,7 +44,11 @@ beforeEach(async () => {
   noteProject('p1', '');
   addProjectLocal({ id: 'p1', name: 'web', path: '/repos/web', createdAt: 1, updatedAt: 1, sortPosition: 0, archived: false });
   setBindingMock('TrackerConnections', async () => [trackerConnection()]);
-  setBindingMock('ProjectTrackerBoards', async () => [trackerBoardChoice()]);
+  boardReads = 0;
+  setBindingMock('ProjectTrackerBoards', async () => {
+    boardReads++;
+    return [trackerBoardChoice()];
+  });
   stored = setupWith(undefined);
   saves = [];
   paceReads = 0;
@@ -72,6 +78,7 @@ describe('<TrackerPointsSettings>', () => {
     expect(count().value).toBe('estimates');
     expect([...count().options].map((o) => o.text)).toEqual(['Story points', 'Count tickets']);
     expect(paceLines()).toEqual(['44 points a sprint, from the last 5 sprints.']);
+    expect([paceReads, boardReads], 'one read of the boards, the pace\'s').toEqual([1, 0]);
 
     count().value = 'tickets';
     await fireEvent.change(count());
@@ -107,6 +114,7 @@ describe('<TrackerPointsSettings>', () => {
       paceOf({ board: '2', name: 'OPS board', read: false, estimate: '', counts: '', plans_sprints: false, pace: undefined }),
       paceOf({ board: '3', name: 'New board', pace: undefined }),
       paceOf({ board: '4', name: 'Kanban', plans_sprints: false, pace: undefined }),
+      { connection: 'lin-1', connection_kind: 'linear', board: 'team-1', name: 'Linear team', read: false, estimate: '', counts: '', plans_sprints: false },
     ];
     render(TrackerPointsSettings);
     await screen.findByTestId('tracker-points-count');
@@ -125,13 +133,19 @@ describe('<TrackerPointsSettings>', () => {
     expect(paceLines()).toEqual(['10h a sprint, from the last sprint.']);
   });
 
-  it('says a Linear-only project has no points settings, reading no pace', async () => {
+  it('says a Linear-only project has no points settings, from its one read of the boards', async () => {
     setBindingMock('TrackerConnections', async () => [trackerConnection({ id: 'lin-1', kind: 'linear', site: 'acme' })]);
-    setBindingMock('ProjectTrackerBoards', async () => [trackerBoardChoice({ connection: 'lin-1', connection_kind: 'linear' })]);
-    paces = () => [];
+    paces = () => [{ connection: 'lin-1', connection_kind: 'linear', board: 'team-1', name: 'Linear team', read: false, estimate: '', counts: '', plans_sprints: false }];
     render(TrackerPointsSettings);
     expect((await screen.findByTestId('settings-tracker-points-none')).textContent?.trim()).toBe('A Linear project has no points settings: they are for Jira boards.');
     expect(screen.queryByTestId('tracker-points-count')).toBeNull();
+    expect([paceReads, boardReads]).toEqual([1, 0]);
+  });
+
+  it('says a project with no boards to add one', async () => {
+    paces = () => [];
+    render(TrackerPointsSettings);
+    expect((await screen.findByTestId('settings-tracker-points-none')).textContent?.trim()).toBe('This project lists no boards. Add a Jira board in Boards to set how its work is counted.');
   });
 
   it('shows no control for an estimates section a newer version saved', async () => {

@@ -444,11 +444,13 @@ no step runs at root creation, restore or start.
   tells the dashboards changed, since a board's dashboards are laid out
   and counted in that unit (`Dashboards`; the copy keeps each ticket's
   own estimate, and the evaluator counts each counted row of an estimate
-  widget as one ticket). `ProjectTrackerPace` answers each Jira
-  board the project lists with its pace read from the mirror by the same
-  rule the section totals use (`GetMirrorBoardPace`), in that unit, with
-  no tracker request: one query of the board's last 5 closed sprints and
-  their members per board. Planning poker off is the ticket screen's
+  widget as one ticket). `ProjectTrackerPace` answers every board the
+  project lists with its connection's kind, which is how the Points and
+  credit page knows whether it applies, and each Jira board with its pace
+  read from the mirror by the same rule the section totals use
+  (`GetMirrorBoardPace`), in that unit, with no tracker request: one
+  query of the board's last 5 closed sprints and their members per Jira
+  board. Planning poker off is the ticket screen's
   rule: it asks no poker support and shows no poker for a ticket of the
   project, so the votes are not followed, and it asks nothing until the
   project's setup is read.

@@ -7,7 +7,7 @@
    * `toDo`, or only Linear ones (`linear`); null when it lists a Jira
    * board. Its setup keeps what it holds for when it lists one (the
    * frame's `none`). */
-  export function jiraOnly(boards: readonly BoardChoice[], toDo: string, linear: string): string | null {
+  export function jiraOnly(boards: readonly Pick<BoardChoice, 'connection_kind'>[], toDo: string, linear: string): string | null {
     if (boards.some((b) => b.connection_kind === 'jira')) return null;
     return boards.length === 0 ? `This project lists no boards. Add a Jira board in Boards ${toDo}.` : linear;
   }

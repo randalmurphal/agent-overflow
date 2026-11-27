@@ -161,7 +161,21 @@ func TestProjectPaceIsTheBoardsPace(t *testing.T) {
 		}
 		return all[i]
 	}
-	if got := of(must[[]BoardPace](t)(m.svc.ProjectPace(m.project()))); got.Read || got.Pace != nil || got.Counts != "" {
+	// A Linear board the project lists is listed by its kind, with no pace.
+	lin := m.addLinear()
+	current := must[[]store.ProjectTrackerBoard](t)(m.st.ListProjectTrackerBoards(m.project()))
+	held := make([]store.HeldTrackerBoard, len(current))
+	for i, b := range current {
+		held[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+	}
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), held, append(slices.Clone(current), store.ProjectTrackerBoard{ConnectionID: lin.ID, BoardID: "team-1"})); err != nil {
+		t.Fatal(err)
+	}
+	all := must[[]BoardPace](t)(m.svc.ProjectPace(m.project()))
+	if got := all[len(all)-1]; got != (BoardPace{Connection: lin.ID, ConnectionKind: store.TrackerKindLinear, Board: "team-1"}) {
+		t.Fatalf("the Linear board listed: %+v", got)
+	}
+	if got := of(all); got.ConnectionKind != store.TrackerKindJira || got.Read || got.Pace != nil || got.Counts != "" {
 		t.Fatalf("the pace of a board not read: %+v", got)
 	}
 	three, one := 3.0, 1.0
@@ -185,7 +199,7 @@ func TestProjectPaceIsTheBoardsPace(t *testing.T) {
 		}
 		return got
 	}
-	want := BoardPace{Connection: m.conn.ID, Board: string(testBoard), Name: "WEB board " + string(testBoard), Read: true, Estimate: "points", Counts: "points", PlansSprints: true,
+	want := BoardPace{Connection: m.conn.ID, ConnectionKind: store.TrackerKindJira, Board: string(testBoard), Name: "WEB board " + string(testBoard), Read: true, Estimate: "points", Counts: "points", PlansSprints: true,
 		Pace: &PaceView{Sprints: 2, Rows: 1.5, Estimate: 2}}
 	if got := of(pace()); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the project's pace = %+v; want %+v", got, want)

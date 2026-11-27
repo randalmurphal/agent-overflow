@@ -6,15 +6,15 @@
   // ticket is worth picks the boards' estimates or a count of tickets,
   // which every total, the pace and the dashboards of the project follow
   // (BoardView.counts); Usual pace is the number sprint planning measures
-  // against, read from this computer's copy of each Jira board
-  // (ProjectTrackerPace); Planning poker is on until turned off, and off
+  // against, read from this computer's copy of each Jira board. One read
+  // (ProjectTrackerPace) lists the project's boards, which say whether
+  // the page applies, with each Jira board's pace; Planning poker is on until turned off, and off
   // the project's tickets offer none. Credit is not built, so the page
   // has no Credit group.
   import { tick } from 'svelte';
   import type { BoardPace } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { measureOf } from '../../stores/trackerBacklogModel';
-  import { acquireTrackerProjectBoards, refreshTrackerProjectBoards, trackerProjectBoardsOf } from '../../stores/trackerProjectBoards.svelte';
   import {
     acquireTrackerPace,
     countsTickets,
@@ -29,26 +29,18 @@
   import { formatEstimateSum } from '../issues/boardFormat';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import TrackerProjectSettings, { jiraOnly, type TrackerProjectPage } from './TrackerProjectSettings.svelte';
-  import { settingsComputer } from './settingsComputer';
   import { SELECT_CLASS } from './styles';
 
-  const { backend } = settingsComputer();
   const compact = $derived(isCompactLayout());
 
-  function hold(project: string): () => void {
-    const boards = acquireTrackerProjectBoards(backend, project);
-    const pace = acquireTrackerPace(project);
-    return () => {
-      boards();
-      pace();
-    };
+  function readError(project: string): string | null {
+    const err = trackerPaceOf(project).error;
+    return err !== null ? `The project's boards could not be read: ${userFacingError(err)}` : null;
   }
 
-  function readError(project: string): string | null {
-    const boards = trackerProjectBoardsOf(backend, project).error;
-    if (boards !== null) return `The project's boards could not be read: ${userFacingError(boards)}`;
-    const pace = trackerPaceOf(project).error;
-    return pace !== null ? `The boards' pace could not be read: ${userFacingError(pace)}` : null;
+  /** The project's Jira boards, which the page's settings are for. */
+  function jiraBoards(project: string): BoardPace[] {
+    return (trackerPaceOf(project).boards ?? []).filter((b) => b.connection_kind === 'jira');
   }
 
   /** The pick of the boards' estimates, named as the boards estimate:
@@ -94,18 +86,15 @@
   hint="Choose the project whose counting to set."
   what="points and credit settings"
   section="estimates"
-  {hold}
+  hold={acquireTrackerPace}
   {readError}
-  ready={(project) => trackerProjectBoardsOf(backend, project).loaded && trackerPaceOf(project).boards !== null}
-  none={(project) => jiraOnly(trackerProjectBoardsOf(backend, project).list, 'to set how its work is counted', 'A Linear project has no points settings: they are for Jira boards.')}
-  retry={(project) => {
-    void refreshTrackerProjectBoards(backend, project);
-    void refreshTrackerPace(project);
-  }}
+  ready={(project) => trackerPaceOf(project).boards !== null}
+  none={(project) => jiraOnly(trackerPaceOf(project).boards ?? [], 'to set how its work is counted', 'A Linear project has no points settings: they are for Jira boards.')}
+  retry={(project) => void refreshTrackerPace(project)}
   reading="Reading the project's boards…"
 >
   {#snippet body(page: TrackerProjectPage)}
-    {@const boards = trackerPaceOf(page.project).boards ?? []}
+    {@const boards = jiraBoards(page.project)}
     {@const planning = boards.filter((b) => !b.read || b.plans_sprints)}
     {@const locked = page.lockReason !== ''}
     <ul class="flex flex-col gap-3">
