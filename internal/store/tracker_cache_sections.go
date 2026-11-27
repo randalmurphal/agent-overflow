@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+
+	"agent-overflow/internal/slicesx"
 )
 
 // MirrorSectionKind is a section of a board.
@@ -52,7 +54,8 @@ type MirrorSectionPage struct {
 }
 
 // mirrorSectionRowsSQL reads ?1 root, ?2 board, after (?3, ?4), a
-// section's ?5, ?6 the board's estimate reset, and ?7 the regrouping.
+// section's ?5, ?6 the board's estimate reset, ?7 the regrouping and ?8
+// the support rule (MirrorSection.statement).
 var mirrorSectionRowsSQL = `SELECT ` + mirrorRowColumnsSQL + `
 	  FROM tracker_cache_board_issues b
 	  JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
@@ -68,16 +71,18 @@ func mirrorRowEstimate(reset string) string {
 	return `iif(b.read_at <= ` + reset + `, NULL, b.estimate)`
 }
 
-// mirrorRowColumnsSQL are a section row's columns, of a board row b and
-// its issue i, as scanMirrorRow reads them, ?6 being the board's estimate
-// reset. Every read of a section's rows, by page or by ID, projects them.
-var mirrorRowColumnsSQL = mirrorCardColumns + `, b.order_key, ` + mirrorRowEstimate("?6")
+// mirrorRowColumnsSQL are a section row's columns, of a board row b of
+// board ?2 and its issue i, as scanMirrorRow reads them, ?6 being the
+// board's estimate reset and ?8 the support rule. Every read of a
+// section's rows, by page or by ID, projects them.
+var mirrorRowColumnsSQL = mirrorCardColumns + `, b.order_key, ` + mirrorRowEstimate("?6") + `, ` +
+	mirrorSupportSQL("?8", "?2", mirrorRowEstimate("?6"))
 
 // scanMirrorRow reads a row of mirrorRowColumnsSQL.
 func scanMirrorRow(r rowScanner) (MirrorRow, error) {
 	var row MirrorRow
 	var err error
-	row.Card, err = scanMirrorCard(r, &row.OrderKey, &row.Estimate)
+	row.Card, err = scanMirrorCard(r, &row.OrderKey, &row.Estimate, &row.Support)
 	return row, err
 }
 
@@ -95,16 +100,17 @@ func (section MirrorSection) ruleArg() any {
 	return nil
 }
 
-// statement is a section statement's text and arguments, the six every
-// one binds: the plain text of the section's kind, or, for the backlog
-// (the one section whose rule reads a status's group) under a regrouping
-// that regroups something, regroupedBacklog, which binds it as ?7.
+// statement is a section statement's text and arguments: the six every
+// one binds, then the regrouping as ?7 and the support rule as ?8. The
+// text is the plain text of the section's kind, or, for the backlog (the
+// one section whose rule reads a status's group) under a regrouping that
+// regroups something, regroupedBacklog, the one that reads ?7.
 func (section MirrorSection) statement(regroup MirrorRegroup, plain map[MirrorSectionKind]string, regroupedBacklog string,
 	six ...any) (string, []any) {
 	if section.Kind == MirrorSectionBacklog && regroup.statuses != "" {
-		return regroupedBacklog, append(six, regroup.statuses)
+		return regroupedBacklog, append(six, regroup.statuses, regroup.supportArg())
 	}
-	return plain[section.Kind], six
+	return plain[section.Kind], append(six, nil, regroup.supportArg())
 }
 
 // The sprint rules hold for a row b of board ?2 of root ?1 in a future or
@@ -144,17 +150,90 @@ func mirrorRegroupedGroupNameSQL(expr string) string {
 	return mirrorGroupCaseSQL(expr, ` WHEN `+strconv.Itoa(MirrorGroupLeftOut)+` THEN 'left_out'`, "NULL")
 }
 
-// MirrorRegroup is a project's regrouping of one tracker site's statuses,
-// which a board read applies: by status ID, the group the status counts
-// in (MirrorGroupBacklog to MirrorGroupCanceled, or MirrorGroupLeftOut).
-// A status it does not name keeps the group tracker_cache_statuses holds.
+// MirrorRegroup is how a project counts the rows of one tracker site's
+// boards, which a board read applies. Its regrouping of the site's
+// statuses: by status ID, the group the status counts in
+// (MirrorGroupBacklog to MirrorGroupCanceled, or MirrorGroupLeftOut). A
+// status it does not name keeps the group tracker_cache_statuses holds.
 // The zero value regroups nothing, and a read with it runs the plain
 // statements, which read a row's status by its key; a regrouping that
-// regroups something runs the regrouped ones, which bind it.
+// regroups something runs the regrouped ones, which bind it. Its support
+// rule (WithSupport): which rows are support tickets, which a total does
+// not count as without an estimate (mirrorSupportSQL). The zero value
+// names no row support.
 type MirrorRegroup struct {
 	// statuses is the JSON object the regrouped statements read with
 	// json_each, empty for the zero value.
 	statuses string
+	// support is the JSON object mirrorSupportSQL reads, empty for none.
+	support string
+}
+
+// MirrorSupportRule names a project's support tickets of one tracker
+// site: those of an issue type (by ID), with a label (by name) or on a
+// board (by ID) it lists.
+type MirrorSupportRule struct {
+	Types, Labels, Boards []string
+}
+
+// mirrorSupport is the JSON object mirrorSupportSQL reads: the rule's
+// lists, and where a card blob holds its labels (MirrorCardShape): the
+// version a blob of that shape has, the members of the version and of the
+// labels, and each label's name member, each as a JSON path.
+type mirrorSupport struct {
+	Boards        []string `json:"boards"`
+	Types         []string `json:"types"`
+	Labels        []string `json:"labels"`
+	Version       int      `json:"v"`
+	VersionPath   string   `json:"vp"`
+	LabelsPath    string   `json:"lp"`
+	LabelNamePath string   `json:"np"`
+}
+
+// WithSupport is r with rule as its support rule, a card's labels read
+// where card says; a rule that names nothing names no row.
+func (r MirrorRegroup) WithSupport(rule MirrorSupportRule, card MirrorCardShape) (MirrorRegroup, error) {
+	r.support = ""
+	if len(rule.Types)+len(rule.Labels)+len(rule.Boards) == 0 {
+		return r, nil
+	}
+	path := func(member string) string { return "$." + member }
+	encoded, err := encodeMirrorJSON(mirrorSupport{Boards: slicesx.OrEmpty(rule.Boards), Types: slicesx.OrEmpty(rule.Types), Labels: slicesx.OrEmpty(rule.Labels),
+		Version: card.Version, VersionPath: path(card.VersionMember), LabelsPath: path(card.Labels), LabelNamePath: path(card.LabelName)})
+	if err != nil {
+		return MirrorRegroup{}, err
+	}
+	r.support = encoded
+	return r, nil
+}
+
+// supportArg is the support rule as a statement binds it: NULL for none.
+func (r MirrorRegroup) supportArg() any {
+	if r.support == "" {
+		return nil
+	}
+	return r.support
+}
+
+// mirrorSupportSQL holds for a row b of board, with its issue i, that is a
+// support ticket by the support rule the JSON object rule binds (NULL for
+// none): its estimate (estimate, the SQL expression every read of a row's
+// estimate states, mirrorRowEstimate) is none, and the rule lists its
+// board, its type, or one of its card's labels, by a card blob of the
+// rule's version. A row that has an estimate is never support. The arms
+// run cheapest first and SQLite stops at the first that decides: a row
+// with an estimate reads nothing more, the board's arm is one test a
+// statement, the type's reads the issue's row, and only a rule that lists
+// labels decodes the card. Every read that tells support (a row's flag,
+// the totals) states it with this.
+func mirrorSupportSQL(rule, board, estimate string) string {
+	return `(` + estimate + ` IS NULL AND ` + rule + ` IS NOT NULL AND (` +
+		board + ` IN (SELECT value FROM json_each(` + rule + `, '$.boards'))
+		 OR i.type_id IN (SELECT value FROM json_each(` + rule + `, '$.types'))
+		 OR (json_array_length(` + rule + `, '$.labels') > 0
+		   AND json_extract(CAST(i.data AS TEXT), json_extract(` + rule + `, '$.vp')) = json_extract(` + rule + `, '$.v')
+		   AND EXISTS (SELECT 1 FROM json_each(CAST(i.data AS TEXT), json_extract(` + rule + `, '$.lp')) l
+		     WHERE json_extract(l.value, json_extract(` + rule + `, '$.np')) IN (SELECT value FROM json_each(` + rule + `, '$.labels'))))))`
 }
 
 // NewMirrorRegroup is the regrouping groups gives, by status ID. A
@@ -348,10 +427,11 @@ func (s *Store) LastMirrorPlanRow(rootID int64, boardID, sprintID string) (issue
 }
 
 // MirrorSectionTotal is how many rows a section holds, the sum of the
-// board's estimates of them and how many of them have none; a row with no
-// estimate, or one read no later than the board's estimate definition last
-// changed (unknown), adds nothing to the sum and counts as having none, and
-// a board with no estimate unit sums to zero and counts none.
+// board's estimates of them and how many of them have none and are not
+// support tickets (mirrorSupportSQL); a row with no estimate, or one read
+// no later than the board's estimate definition last changed (unknown),
+// adds nothing to the sum and counts as having none, and a board with no
+// estimate unit sums to zero and counts none.
 type MirrorSectionTotal struct {
 	Rows        int
 	Estimate    float64
@@ -371,30 +451,36 @@ type MirrorSectionCounts struct {
 	Pace                     []MirrorSprintFinished
 }
 
-// The count statements read no issue's table row and sort nothing.
-// mirrorCountRowsSQL walks the board's rows once, in
-// idx_tracker_cache_board_issues_order, reads each row's status from
-// idx_tracker_cache_issues_status, tests it against the open sprints'
+// The count statements sort nothing, and read an issue's table row only
+// for a row with no estimate under a support rule that lists types or
+// labels (mirrorSupportSQL). mirrorCountRowsSQL walks the board's rows
+// once, in idx_tracker_cache_board_issues_order, reads each row's status
+// from idx_tracker_cache_issues_status, tests it against the open sprints'
 // members (read once), and returns a row per board row, which
 // countMirrorSectionsTx sums: a GROUP BY would sort every row, in memory
-// that grows with the board. mirrorRegroupedCountRowsSQL does the same
-// under the regrouping ?4 (its list built once), and its last column is
-// the issue of a row left out of counts, NULL for every other.
-// mirrorCountSprintsSQL totals each sprint of the board from its members,
-// in the sprints' key order; mirrorCountSprintsLeftOutSQL does the same
-// without the issues of the JSON list ?4, the rows the first statement
-// found left out, so a sprint member's status is read once a board, not
-// once a member.
+// that grows with the board. Its last column is the issue of a row the
+// support rule ?5 names, NULL for every other. mirrorRegroupedCountRowsSQL
+// does the same under the regrouping ?4 (its list built once), with one
+// more column before it: the issue of a row left out of counts, NULL for
+// every other. mirrorCountSprintsSQL totals each sprint of the board from
+// its members, in the sprints' key order, a member in the JSON list ?5
+// (the support rows the first statement found) not counting as without an
+// estimate; mirrorCountSprintsLeftOutSQL does the same without the issues
+// of the JSON list ?4, the rows the first statement found left out, so a
+// sprint member's status and support are read once a board, not once a
+// member.
 var (
 	mirrorCountRowsFromSQL = `
 		FROM tracker_cache_board_issues b
 		CROSS JOIN tracker_cache_issues i INDEXED BY idx_tracker_cache_issues_status ON i.root_id = b.root_id AND i.issue_id = b.issue_id
 		WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`
-	mirrorCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, mirrorNotDoneSQL) + `, i.status_id, ` + mirrorRowEstimate("?3") +
-		mirrorCountRowsFromSQL
+	mirrorCountSupportSQL = `iif(` + mirrorSupportSQL("?5", "?2", mirrorRowEstimate("?3")) + `, b.issue_id, NULL)`
+	mirrorCountRowsSQL    = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, mirrorNotDoneSQL) + `, i.status_id, ` + mirrorRowEstimate("?3") + `, ` +
+		mirrorCountSupportSQL + mirrorCountRowsFromSQL
 	mirrorRegroupedCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL, mirrorRegroupedNotDone("?4")) + `, i.status_id, ` +
-		mirrorRowEstimate("?3") + `, iif(` + mirrorLeftOut("?4") + `, b.issue_id, NULL)` + mirrorCountRowsFromSQL
+		mirrorRowEstimate("?3") + `, iif(` + mirrorLeftOut("?4") + `, b.issue_id, NULL), ` + mirrorCountSupportSQL + mirrorCountRowsFromSQL
 	mirrorCountSprintsRowsSQL = `SELECT sp.sprint_id, count(*), total(` + mirrorRowEstimate("?3") + `), count(*) - count(` + mirrorRowEstimate("?3") + `)
+		  - sum(b.issue_id IN (SELECT value FROM json_each(?5)))
 		  FROM tracker_cache_sprints sp
 		  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = sp.root_id AND m.sprint_id = sp.sprint_id
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = sp.root_id AND b.issue_id = m.issue_id AND b.board_id = sp.board_id
@@ -445,30 +531,33 @@ func readMirrorColumnPlacesTx(tx sqlQueryer, rootID int64, boardID string) (map[
 
 // countMirrorSectionsTx totals a shown board's sections in tx's snapshot,
 // by the regrouping; columns places each status the board's columns hold.
-// A row the regrouping leaves out of counts adds to no total.
+// A row the regrouping leaves out of counts adds to no total, and a
+// support row counts as a row with no estimate does, but not as one
+// without an estimate.
 func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mirrorShownBoard, regroup MirrorRegroup,
 	columns map[string]int) (MirrorSectionCounts, error) {
 	counts := MirrorSectionCounts{Revision: board.revision, TotalsRevision: board.totalsRevision,
 		Sprints: map[string]MirrorSectionTotal{}, Columns: map[int]MirrorSectionTotal{}}
 	estimated := board.unit != MirrorEstimateNone
-	add := func(t MirrorSectionTotal, estimate sql.NullFloat64) MirrorSectionTotal {
+	var status, leftOut, support sql.RawBytes
+	var estimate sql.NullFloat64
+	add := func(t MirrorSectionTotal) MirrorSectionTotal {
 		t.Rows++
 		if estimated {
 			t.Estimate += estimate.Float64
-			if !estimate.Valid {
+			if !estimate.Valid && support == nil {
 				t.Unestimated++
 			}
 		}
 		return t
 	}
-	var status, leftOut sql.RawBytes
-	var estimate sql.NullFloat64
-	var leftOutIssues []string
+	var leftOutIssues, supportIssues []string
 	var backlog bool
-	query, args, dest := mirrorCountRowsSQL, []any{rootID, boardID, board.estimateResetAt}, []any{&backlog, &status, &estimate}
+	query, args, dest := mirrorCountRowsSQL, []any{rootID, boardID, board.estimateResetAt, nil, regroup.supportArg()}, []any{&backlog, &status, &estimate}
 	if regroup.statuses != "" {
-		query, args, dest = mirrorRegroupedCountRowsSQL, append(args, regroup.statuses), append(dest, &leftOut)
+		query, args[3], dest = mirrorRegroupedCountRowsSQL, regroup.statuses, append(dest, &leftOut)
 	}
+	dest = append(dest, &support)
 	err := scanMirrorRows(tx, query, args, func(r rowScanner) error {
 		if err := r.Scan(dest...); err != nil {
 			return err
@@ -477,25 +566,35 @@ func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mi
 			leftOutIssues = append(leftOutIssues, string(leftOut))
 			return nil
 		}
-		counts.All = add(counts.All, estimate)
+		if support != nil && estimated {
+			supportIssues = append(supportIssues, string(support))
+		}
+		counts.All = add(counts.All)
 		if backlog {
-			counts.Backlog = add(counts.Backlog, estimate)
+			counts.Backlog = add(counts.Backlog)
 		}
 		if position, ok := columns[string(status)]; ok {
-			counts.Columns[position] = add(counts.Columns[position], estimate)
+			counts.Columns[position] = add(counts.Columns[position])
 		}
 		return nil
 	})
 	if err != nil {
 		return MirrorSectionCounts{}, fmt.Errorf("rows: %w", err)
 	}
-	sprints, sprintArgs := mirrorCountSprintsSQL, []any{rootID, boardID, board.estimateResetAt}
+	sprints, sprintArgs := mirrorCountSprintsSQL, []any{rootID, boardID, board.estimateResetAt, nil, nil}
 	if len(leftOutIssues) > 0 {
 		list, err := encodeMirrorIDs(leftOutIssues)
 		if err != nil {
 			return MirrorSectionCounts{}, err
 		}
-		sprints, sprintArgs = mirrorCountSprintsLeftOutSQL, append(sprintArgs, list)
+		sprints, sprintArgs[3] = mirrorCountSprintsLeftOutSQL, list
+	}
+	if len(supportIssues) > 0 {
+		list, err := encodeMirrorIDs(supportIssues)
+		if err != nil {
+			return MirrorSectionCounts{}, err
+		}
+		sprintArgs[4] = list
 	}
 	err = scanMirrorRows(tx, sprints, sprintArgs, func(r rowScanner) error {
 		var sprint string
