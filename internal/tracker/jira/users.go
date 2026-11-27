@@ -33,21 +33,25 @@ type User struct {
 	AvatarURL   string // 48x48
 }
 
-// userJSON is a user as the API sends it.
+// userJSON is a user as the API sends it. Of its avatars it keeps the
+// one User carries, so decoding a user (each comment's and worklog's
+// author among them) allocates no map.
 type userJSON struct {
-	AccountID   string            `json:"accountId"`
-	DisplayName string            `json:"displayName"`
-	Email       string            `json:"emailAddress"`
-	Active      bool              `json:"active"`
-	AccountType string            `json:"accountType"`
-	TimeZone    string            `json:"timeZone"`
-	Avatars     map[string]string `json:"avatarUrls"`
+	AccountID   string `json:"accountId"`
+	DisplayName string `json:"displayName"`
+	Email       string `json:"emailAddress"`
+	Active      bool   `json:"active"`
+	AccountType string `json:"accountType"`
+	TimeZone    string `json:"timeZone"`
+	Avatars     struct {
+		Large string `json:"48x48"`
+	} `json:"avatarUrls"`
 }
 
 func (u userJSON) user() User {
 	return User{
 		AccountID: u.AccountID, DisplayName: u.DisplayName, Email: u.Email, Active: u.Active,
-		AccountType: u.AccountType, TimeZone: u.TimeZone, AvatarURL: u.Avatars["48x48"],
+		AccountType: u.AccountType, TimeZone: u.TimeZone, AvatarURL: u.Avatars.Large,
 	}
 }
 

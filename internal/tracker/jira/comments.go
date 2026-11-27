@@ -92,15 +92,14 @@ const maxCommentPage = 5000
 // commentPage reads the page of issue's comments q names; path is the
 // issue's path.
 func (c *Client) commentPage(ctx context.Context, issue, path string, q url.Values) (CommentPage, error) {
-	var v struct {
-		Comments []commentJSON `json:"comments"`
-		StartAt  int           `json:"startAt"`
-		Total    int           `json:"total"`
+	v, err := commentPageOf[commentJSON](ctx, c, issue, path, q)
+	if err != nil {
+		return CommentPage{}, err
 	}
-	if err := c.get(ctx, path+"/comment", q, &v); err != nil {
-		return CommentPage{}, fmt.Errorf("jira: comments of %s: %w", issue, err)
+	page := CommentPage{StartAt: v.StartAt, Comments: make([]Comment, 0, len(v.Comments))}
+	if v.Total != nil {
+		page.Total = *v.Total
 	}
-	page := CommentPage{StartAt: v.StartAt, Total: v.Total, Comments: make([]Comment, 0, len(v.Comments))}
 	for _, j := range v.Comments {
 		cm, err := j.comment()
 		if err != nil {
@@ -109,6 +108,59 @@ func (c *Client) commentPage(ctx context.Context, issue, path string, q url.Valu
 		page.Comments = append(page.Comments, cm)
 	}
 	return page, nil
+}
+
+// commentPageJSON is a page of an issue's comments, each decoded as J:
+// the comment field's value and the answer of the comment list alike.
+type commentPageJSON[J any] struct {
+	Comments []J  `json:"comments"`
+	StartAt  int  `json:"startAt"`
+	Total    *int `json:"total"`
+}
+
+// commentPageOf reads the page of issue's comments q names, each decoded
+// as J; path is the issue's path. Every read of a page of comments makes
+// it.
+func commentPageOf[J any](ctx context.Context, c *Client, issue, path string, q url.Values) (commentPageJSON[J], error) {
+	var v commentPageJSON[J]
+	if err := c.get(ctx, path+"/comment", q, &v); err != nil {
+		return v, fmt.Errorf("jira: comments of %s: %w", issue, err)
+	}
+	return v, nil
+}
+
+// commentPages is one walk of every page of issue's comments, oldest
+// first, each decoded as J and given to each. It ends at the total the
+// pages name, and fails at a page that names none, at an empty page
+// before it, and at an error of each.
+func commentPages[J any](ctx context.Context, c *Client, issue string, each func(J) error) error {
+	path, err := issuePath(issue)
+	if err != nil {
+		return err
+	}
+	q := url.Values{"maxResults": {strconv.Itoa(maxCommentPage)}, "orderBy": {"created"}}
+	for start := 0; ; {
+		q.Set("startAt", strconv.Itoa(start))
+		page, err := commentPageOf[J](ctx, c, issue, path, q)
+		if err != nil {
+			return err
+		}
+		for _, j := range page.Comments {
+			if err := each(j); err != nil {
+				return fmt.Errorf("jira: comments of %s: %w", issue, err)
+			}
+		}
+		if page.Total == nil {
+			return fmt.Errorf("jira: comments of %s: %w", issue, &AnswerError{Message: "a comment page names no total"})
+		}
+		start += len(page.Comments)
+		switch {
+		case start >= *page.Total:
+			return nil
+		case len(page.Comments) == 0:
+			return fmt.Errorf("jira: comments of %s: an empty page at %d of %d", issue, start, *page.Total)
+		}
+	}
 }
 
 // Comment returns one comment.

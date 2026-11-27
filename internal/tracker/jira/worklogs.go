@@ -134,9 +134,23 @@ func (c *Client) Worklogs(ctx context.Context, q WorklogQuery) (WorklogList, err
 // worklogs is one walk of Worklogs.
 func (c *Client) worklogs(ctx context.Context, q WorklogQuery) (WorklogList, error) {
 	var out WorklogList
+	err := worklogPages(ctx, c, q, func(j worklogJSON) error {
+		out.Worklogs = append(out.Worklogs, j.worklog())
+		return nil
+	})
+	out.Complete = err == nil
+	return out, err
+}
+
+// worklogPages is one walk of the pages of q's issue's worklogs, each
+// decoded as J and given to each in Jira's order, oldest first: the one
+// walk every read of an issue's worklogs makes. It ends at the total the
+// pages name, and fails at a page that names none, at an empty page
+// before it, and at an error of each.
+func worklogPages[J any](ctx context.Context, c *Client, q WorklogQuery, each func(J) error) error {
 	path, err := issuePath(q.Issue)
 	if err != nil {
-		return out, err
+		return err
 	}
 	v := url.Values{"maxResults": {"1000"}}
 	if !q.StartedAfter.IsZero() {
@@ -148,26 +162,27 @@ func (c *Client) worklogs(ctx context.Context, q WorklogQuery) (WorklogList, err
 	for start := 0; ; {
 		v.Set("startAt", strconv.Itoa(start))
 		var page struct {
-			Worklogs []worklogJSON `json:"worklogs"`
-			Total    *int          `json:"total"`
+			Worklogs []J  `json:"worklogs"`
+			Total    *int `json:"total"`
 		}
 		if err := c.get(ctx, path+"/worklog", v, &page); err != nil {
-			return out, fmt.Errorf("jira: worklogs of %s: %w", q.Issue, err)
+			return fmt.Errorf("jira: worklogs of %s: %w", q.Issue, err)
 		}
 		for _, j := range page.Worklogs {
-			out.Worklogs = append(out.Worklogs, j.worklog())
+			if err := each(j); err != nil {
+				return fmt.Errorf("jira: worklogs of %s: %w", q.Issue, err)
+			}
 		}
 		if page.Total == nil {
 			// Only the total ends the walk; without it the end is unknown.
-			return out, fmt.Errorf("jira: worklogs of %s: %w", q.Issue, &AnswerError{Message: "a worklog page names no total"})
+			return fmt.Errorf("jira: worklogs of %s: %w", q.Issue, &AnswerError{Message: "a worklog page names no total"})
 		}
 		start += len(page.Worklogs)
 		switch {
 		case start >= *page.Total:
-			out.Complete = true
-			return out, nil
+			return nil
 		case len(page.Worklogs) == 0:
-			return out, fmt.Errorf("jira: worklogs of %s: an empty page at %d of %d", q.Issue, start, *page.Total)
+			return fmt.Errorf("jira: worklogs of %s: an empty page at %d of %d", q.Issue, start, *page.Total)
 		}
 	}
 }
