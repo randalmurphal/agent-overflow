@@ -758,7 +758,10 @@ counted.
   on follows whether up is good news. Over the limit, the tile is marked
   on the dashboard and on the board's summary row. A limit holds in the
   unit it was set in: while the project counts the tile in another unit,
-  it shows no limit.
+  it shows no limit, and a number counted in another unit than the
+  limit's is never marked. A limit can be below 0, as a signed number
+  sets it; Lower stops at 0. A proposal whose agent asked for a limit is
+  marked by it before Keep, with no control of it.
 - A widget's pin shows it on the board's summary row, at most five; a
   full row takes no other pin and says so. A proposal whose agent asked
   for the row says before Keep whether Keep puts it there.
