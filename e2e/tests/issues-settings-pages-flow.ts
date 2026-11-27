@@ -456,7 +456,8 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     await expect(count.locator('option')).toHaveText(['Story points', 'Count tickets']);
     await expect(screen.getByTestId('tracker-points-pace-line')).toHaveText('No sprint of WEB board has finished yet.');
     await count.selectOption('tickets');
-    await expect.poll(() => storedSetup(file), { timeout: 15_000 }).toEqual({ estimates: { version: 1, count: 'tickets' } });
+    // Poker on again left no file until this save writes one.
+    await expect.poll(() => storedSetup(file).catch(() => 'no file'), { timeout: 15_000 }).toEqual({ estimates: { version: 1, count: 'tickets' } });
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
     await expect(columnCount).not.toContainText('pts', { timeout: 15_000 });
