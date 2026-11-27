@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/harness/trackerfake"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/trackerapp"
 )
 
@@ -70,6 +71,36 @@ func TestTheTimeToolsFollowTheProjectsTimeSettings(t *testing.T) {
 	}
 	if entries, err := svc.OpenTimeEntries(f.conn.ID, []string{today}); err != nil || len(entries) != 0 {
 		t.Fatalf("the refused drafts left %+v, %v", entries, err)
+	}
+
+	// With the project's last Jira board taken off, its Time settings do
+	// not apply and the file keeps them; listed again, they apply again.
+	listed, err := f.a.store.ListProjectTrackerBoards(f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relist := func(held []store.ProjectTrackerBoard, boards []store.ProjectTrackerBoard) {
+		t.Helper()
+		h := make([]store.HeldTrackerBoard, len(held))
+		for i, b := range held {
+			h[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+		}
+		if _, _, err := f.a.store.ReplaceProjectTrackerBoards(f.project, h, boards); err != nil {
+			t.Fatal(err)
+		}
+	}
+	relist(listed, nil)
+	text, isError = trackerMCPStreamedCall(t, f.a, endpoint, "time_read", map[string]any{"from": today, "to": today})
+	if isError || strings.Contains(text, "meetings_ticket") || strings.Contains(text, "time_off_ticket") {
+		t.Fatalf("time_read of a project with no Jira board = %s (error %v)", text, isError)
+	}
+	if data, err := os.ReadFile(f.setupPath(t)); err != nil || !strings.Contains(string(data), `"WEB-404"`) {
+		t.Fatalf("the file with no Jira board listed: %s, %v", data, err)
+	}
+	relist(nil, listed)
+	text, isError = trackerMCPStreamedCall(t, f.a, endpoint, "time_read", map[string]any{"from": today, "to": today})
+	if isError || !strings.HasSuffix(text, `"meetings_ticket":"WEB-404","time_off_ticket":"WEB-2"}`) {
+		t.Fatalf("time_read with the Jira board listed again = %s (error %v)", text, isError)
 	}
 
 	// A hand edit, which the save that loses to it holds.
