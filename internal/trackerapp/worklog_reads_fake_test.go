@@ -444,10 +444,11 @@ func TestAnotherTimeSourceStartsTheReadsOver(t *testing.T) {
 	}
 }
 
-// A run reads nothing more once the time source changes under it, though
-// no evaluation came to start the reads over: the read in flight ends, and
-// the next span is not read for the old source.
-func TestARunStopsWhenTheTimeSourceChanges(t *testing.T) {
+// A run reads nothing more for its account once the connection is
+// verified as another, though no evaluation came to start the reads over:
+// the read in flight ends, and the next span of the first account's time
+// is not read as the second.
+func TestARunStopsWhenTheAccountChanges(t *testing.T) {
 	t.Parallel()
 	s, today := dashTime(t)
 	arrived, release := make(chan struct{}), make(chan struct{})
@@ -466,11 +467,26 @@ func TestARunStopsWhenTheTimeSourceChanges(t *testing.T) {
 	case <-time.After(gateWait):
 		t.Fatal("the first read never reached its store")
 	}
-	s.addTempoOn(t)
+	// The connection's key now signs in as User 2: the site's own account
+	// is User 2's, under User 1's email.
+	site := s.e.Snapshot().Jira[0]
+	site.Token = "fake-jira-token-1"
+	if site.Tempo != nil {
+		site.Tempo.Token = tempoTokenFake
+	}
+	one, two := slices.IndexFunc(site.Users, func(u trackerfake.JiraUser) bool { return u.AccountID == "acc-user1" }), slices.IndexFunc(site.Users, func(u trackerfake.JiraUser) bool { return u.AccountID == "acc-user2" })
+	site.Users[one].Email, site.Users[two].Email = site.Users[two].Email, site.Users[one].Email
+	site.Account = "acc-user2"
+	if err := s.e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}); err != nil {
+		t.Fatal(err)
+	}
+	if c := must[Connection](t)(s.svc.Verify(t.Context(), s.conn.ID)); c.VerifiedAccountID != "acc-user2" {
+		t.Fatalf("verified as %q; want acc-user2", c.VerifiedAccountID)
+	}
 	let()
 	s.told(t, 1)
 	if got := s.spanCount(); got != 1 {
-		t.Fatalf("the run read %v after the time source changed; want the read in flight alone", s.spansSince(0))
+		t.Fatalf("the run read %v after the account changed; want the read in flight alone", s.spansSince(0))
 	}
 }
 
