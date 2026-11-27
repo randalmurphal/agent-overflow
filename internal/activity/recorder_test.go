@@ -135,11 +135,11 @@ func ms(t time.Time) int64 { return t.UnixMilli() }
 func TestReportsAreSpansWrittenAtAFlush(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false)
+	r.Report("c1", "t1", false, nil)
 	c.add(time.Minute)
-	r.Report("c1", "t1", false)
+	r.Report("c1", "t1", false, nil)
 	c.add(2 * time.Minute)
-	r.Report("c1", "t1", false) // 09:03
+	r.Report("c1", "t1", false, nil) // 09:03
 	if len(f.saves) != 0 {
 		t.Fatalf("a report wrote %v", f.saves)
 	}
@@ -150,7 +150,7 @@ func TestReportsAreSpansWrittenAtAFlush(t *testing.T) {
 		t.Fatalf("stored %+v\nwant %+v", got, want)
 	}
 	c.add(time.Minute)
-	r.Report("c1", "t2", true) // 09:05: t1 ends here
+	r.Report("c1", "t2", true, nil) // 09:05: t1 ends here
 	c.add(time.Minute)
 	r.Flush() // 09:06
 	want = []store.ActivitySpan{
@@ -179,12 +179,12 @@ func TestReportsAreSpansWrittenAtAFlush(t *testing.T) {
 func TestASpanEndsAtAGapAndAtADay(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false)
+	r.Report("c1", "t1", false, nil)
 	c.add(4 * time.Minute)
-	r.Report("c1", "t1", false)
+	r.Report("c1", "t1", false, nil)
 	for range 24 * 60 {
 		c.add(time.Minute)
-		r.Report("c1", "t1", false)
+		r.Report("c1", "t1", false, nil)
 	}
 	r.Flush()
 	got := f.stored()
@@ -203,13 +203,13 @@ func TestASpanEndsAtAGapAndAtADay(t *testing.T) {
 func TestTheEndOfAConnectionAndOfTheRecorder(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false)
-	r.Report("c2", "t2", false)
+	r.Report("c1", "t1", false, nil)
+	r.Report("c2", "t2", false, nil)
 	c.add(time.Minute)
 	r.End("c1")
 	c.add(time.Minute)
 	r.Close()
-	r.Report("c3", "t3", false)
+	r.Report("c3", "t3", false, nil)
 	r.Flush()
 	want := []store.ActivitySpan{
 		{ID: 1, ThreadID: "t1", StartMs: ms(nine), EndMs: ms(nine.Add(time.Minute))},
@@ -228,9 +228,9 @@ func TestTheEndOfAConnectionAndOfTheRecorder(t *testing.T) {
 func TestAFailedFlushIsKeptAndSaid(t *testing.T) {
 	t.Parallel()
 	r, f, c, changes := recorder(t)
-	r.Report("c1", "t1", false)
+	r.Report("c1", "t1", false, nil)
 	c.add(time.Minute)
-	r.Report("c1", "t2", false)
+	r.Report("c1", "t2", false, nil)
 	f.fail = errors.New("disk I/O error")
 	c.add(time.Minute)
 	r.Flush()
@@ -252,9 +252,9 @@ func TestAFailedFlushIsKeptAndSaid(t *testing.T) {
 
 	off, fo, co, _ := recorder(t)
 	fo.jira = false
-	off.Report("c1", "t1", false)
+	off.Report("c1", "t1", false, nil)
 	co.add(time.Minute)
-	off.Report("c1", "t2", false)
+	off.Report("c1", "t2", false, nil)
 	off.Flush()
 	if len(fo.stored()) != 0 || len(off.closed) != 0 {
 		t.Fatalf("with no Jira connection stored %+v and kept %d", fo.stored(), len(off.closed))
@@ -268,7 +268,7 @@ func TestAFailingRecorderIsBounded(t *testing.T) {
 	r, f, c, _ := recorder(t)
 	f.fail = errors.New("disk full")
 	for i := range maxUnwritten + 10 {
-		r.Report("c1", []string{"t1", "t2"}[i%2], false)
+		r.Report("c1", []string{"t1", "t2"}[i%2], false, nil)
 		c.add(time.Second)
 	}
 	r.Flush()
@@ -304,16 +304,16 @@ func TestDaysCountEachInstantOnce(t *testing.T) {
 	r, f, c, _ := recorder(t)
 	// c1 on t1 from 09:00; c2 (the phone) on t2 from 09:02 to 09:05: the
 	// overlap is t2's.
-	r.Report("c1", "t1", false)
+	r.Report("c1", "t1", false, nil)
 	c.add(2 * time.Minute)
-	r.Report("c1", "t1", false)
-	r.Report("c2", "t2", true)
+	r.Report("c1", "t1", false, nil)
+	r.Report("c2", "t2", true, nil)
 	c.add(3 * time.Minute)
 	r.End("c2")
-	r.Report("c1", "t1", false) // 09:05
+	r.Report("c1", "t1", false, nil) // 09:05
 	r.Flush()
 	c.add(time.Minute)
-	r.Report("c1", "t1", false) // 09:06, written to 09:05 so far
+	r.Report("c1", "t1", false, nil) // 09:06, written to 09:05 so far
 	f.days = []store.ThreadDay{{Day: "2026-11-24", ThreadID: "t1"}, {Day: "2026-11-24", ThreadID: "t3"}}
 	// 23:59 to 00:01 the next night, on no thread.
 	f.spans[99] = store.ActivitySpan{ID: 99, StartMs: ms(time.Date(2026, 11, 24, 23, 59, 0, 0, time.Local)),
@@ -354,7 +354,7 @@ func mapsEqual(a, b map[string]time.Duration) bool {
 func TestAFlushWritesOnlyWhatChanged(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false)
+	r.Report("c1", "t1", false, nil)
 	c.add(3 * time.Minute)
 	r.Flush() // written to 09:03, its last report plus the window, still open
 	c.add(10 * time.Minute)
@@ -363,16 +363,44 @@ func TestAFlushWritesOnlyWhatChanged(t *testing.T) {
 		t.Fatalf("closing a span written at its end wrote %d spans", n)
 	}
 
-	r.Report("c1", "t2", false)
+	r.Report("c1", "t2", false, nil)
 	f.during = func() {
 		f.during = nil
 		c.add(time.Minute)
-		r.Report("c1", "t3", false) // t2 closes while the flush writes
+		r.Report("c1", "t3", false, nil) // t2 closes while the flush writes
 	}
 	r.Flush()
 	r.Flush()
 	got := f.stored()
 	if len(got) != 3 || got[1].ThreadID != "t2" || got[1].EndMs != got[1].StartMs+60_000 {
 		t.Fatalf("stored %+v; want t2 written with its end once it closed", got)
+	}
+}
+
+// A span opened for a connection with none is tied to its end first; a
+// tie that fails opens nothing, and the end it bound ends the span.
+func TestASpanIsTiedToItsConnection(t *testing.T) {
+	t.Parallel()
+	r, f, c, _ := recorder(t)
+	var ends []func()
+	tie := func(end func()) error { ends = append(ends, end); return nil }
+	if err := r.Report("c1", "t1", false, tie); err != nil {
+		t.Fatal(err)
+	}
+	c.add(time.Minute)
+	if err := r.Report("c1", "t1", false, tie); err != nil || len(ends) != 1 {
+		t.Fatalf("a report on an open span tied %d times, %v", len(ends), err)
+	}
+	ends[0]()
+	r.Flush()
+	if got := f.stored(); len(got) != 1 || got[0].EndMs != ms(nine.Add(time.Minute)) {
+		t.Fatalf("stored %+v; want the span ended by its connection's end", got)
+	}
+	refused := errors.New("the connection closed")
+	if err := r.Report("c2", "t1", false, func(func()) error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("a refused tie answered %v", err)
+	}
+	if len(r.open) != 0 {
+		t.Fatalf("a refused tie opened %d spans", len(r.open))
 	}
 }

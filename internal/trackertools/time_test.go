@@ -2,6 +2,7 @@ package trackertools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/activity"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/trackerapp"
 )
@@ -333,4 +335,77 @@ func TestTimeDraftAnswersWithAReceipt(t *testing.T) {
 	if len(raw) > answerBudget || strings.Count(string(raw), site) != 1 {
 		t.Fatalf("the answer of 250 entries on tickets is %d bytes, over %d, or names the site more than once", len(raw), answerBudget)
 	}
+}
+
+// time_read answers what this computer measured of each day beside its
+// logged time: the active minutes and the phone's share when there is
+// any, the minutes on each Jira ticket the focused threads are linked to
+// with a ticket only a turn touched named without minutes, at most
+// commitsShown commits and how many more, and the recording gap while
+// there is one; a day with nothing measured carries none of it, and a
+// failed read of the activity fails the call.
+func TestTimeReadAnswersTheMeasuredDay(t *testing.T) {
+	t.Parallel()
+	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, time: map[string]trackerapp.WorklogDays{timeJira.ID: {}},
+		links: map[string]trackerapp.JiraTicket{
+			"t1": {Site: timeJira.Site, Key: "WEB-1"}, "t2": {Site: timeJira.Site, Key: "WEB-2"}, "t4": {Site: timeJira.Site, Key: "WEB-4"},
+		}}
+	day := activity.Day{Day: "2026-11-24", Active: 125*time.Minute + 20*time.Second, Phone: 30 * time.Minute, Threads: map[string]time.Duration{
+		"t1": 90*time.Minute + 20*time.Second, "t2": 10 * time.Minute, "t3": 20 * time.Minute, "": 5 * time.Minute,
+	}, Ran: []string{"t1", "t4"}}
+	var commits []Commit
+	for i := range commitsShown + 2 {
+		commits = append(commits, Commit{At: time.Date(2026, 11, 24, 9, i, 0, 0, time.Local), Subject: fmt.Sprintf("Change %d", i)})
+	}
+	gap := time.Date(2026, 11, 25, 14, 5, 0, 0, time.Local)
+	h := &fakeHost{activity: ActivityDays{Days: []ActivityDay{{Day: day, Commits: commits}}, Gap: gap.UnixMilli()}}
+	answer, err := timeCall(t, timeServer(f, h), "time_read", map[string]any{"from": "2026-11-24", "to": "2026-11-25"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for i := range commitsShown {
+		lines = append(lines, fmt.Sprintf(`{"at":"09:%02d","subject":"Change %d"}`, i, i))
+	}
+	want := `{"days":[{"day":"2026-11-24","logged":[],"active":125,"phone":30,"tickets":[{"key":"WEB-1","minutes":90},{"key":"WEB-2","minutes":10},{"key":"WEB-4"}],` +
+		`"commits":[` + strings.Join(lines, ",") + `],"commits_more":2},{"day":"2026-11-25","logged":[]}],"activity_gap":"since 2026-11-25 14:05"}`
+	if answer != want {
+		t.Fatalf("time_read = %s\nwant %s", answer, want)
+	}
+	h.activityErr = errors.New("disk I/O error")
+	if _, err := timeCall(t, timeServer(f, h), "time_read", map[string]any{"from": "2026-11-24", "to": "2026-11-25"}); err == nil || !strings.Contains(err.Error(), "disk I/O error") {
+		t.Fatalf("a failed activity read answered %v", err)
+	}
+}
+
+// The bytes a week's measured activity adds to time_read's answer, for a
+// day of 7 hours on 3 tickets, a fourth ticket touched, half an hour on
+// the phone and 4 commits.
+func TestTimeReadsWeekOfActivityBytes(t *testing.T) {
+	t.Parallel()
+	f := &fakeTracker{sources: []trackerapp.TicketSource{timeJira}, time: map[string]trackerapp.WorklogDays{timeJira.ID: {}},
+		links: map[string]trackerapp.JiraTicket{
+			"t1": {Site: timeJira.Site, Key: "WEB-101"}, "t2": {Site: timeJira.Site, Key: "WEB-102"}, "t3": {Site: timeJira.Site, Key: "WEB-103"},
+			"t4": {Site: timeJira.Site, Key: "WEB-104"},
+		}}
+	var days []ActivityDay
+	for d := range 5 {
+		name := time.Date(2026, 11, 23+d, 0, 0, 0, 0, time.Local).Format(time.DateOnly)
+		var commits []Commit
+		for i := range 4 {
+			commits = append(commits, Commit{At: time.Date(2026, 11, 23+d, 10+i, 17, 0, 0, time.Local), Subject: "WEB-101: Handle the empty cart on checkout"})
+		}
+		days = append(days, ActivityDay{Day: activity.Day{Day: name, Active: 7 * time.Hour, Phone: 30 * time.Minute,
+			Threads: map[string]time.Duration{"t1": 3 * time.Hour, "t2": 2 * time.Hour, "t3": 90 * time.Minute, "": 30 * time.Minute},
+			Ran:     []string{"t1", "t2", "t3", "t4"}}, Commits: commits})
+	}
+	read := func(h *fakeHost) string {
+		answer, err := timeCall(t, timeServer(f, h), "time_read", map[string]any{"from": "2026-11-23", "to": "2026-11-29"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return answer
+	}
+	without, with := read(&fakeHost{}), read(&fakeHost{activity: ActivityDays{Days: days}})
+	t.Logf("a week's answer is %d bytes without the activity and %d with it: %d more", len(without), len(with), len(with)-len(without))
 }

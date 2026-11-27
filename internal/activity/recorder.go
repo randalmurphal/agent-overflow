@@ -169,22 +169,31 @@ func (r *Recorder) Close() {
 }
 
 // Report is input on connection conn's screen at now, on thread (empty
-// when no thread was focused), in the compact layout when phone.
-func (r *Recorder) Report(conn, thread string, phone bool) {
+// when no thread was focused), in the compact layout when phone. A span
+// it opens for a connection that has none is first tied to the
+// connection's end: tie, when set, binds end (End of conn) to run then,
+// inside the recorder's lock, so an end that runs at once finds the span;
+// a tie that fails opens nothing and is Report's error.
+func (r *Recorder) Report(conn, thread string, phone bool, tie func(end func()) error) error {
 	now := r.now().UnixMilli()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.stopped {
-		return
+		return nil
 	}
-	if s := r.open[conn]; s != nil {
-		if s.ThreadID == thread && s.Phone == phone && now-s.last <= r.window && now-s.StartMs < store.MaxActivitySpanMs-r.window {
-			s.last = max(s.last, now)
-			return
+	s := r.open[conn]
+	if s != nil && s.ThreadID == thread && s.Phone == phone && now-s.last <= r.window && now-s.StartMs < store.MaxActivitySpanMs-r.window {
+		s.last = max(s.last, now)
+		return nil
+	}
+	if s == nil && tie != nil {
+		if err := tie(func() { r.End(conn) }); err != nil {
+			return err
 		}
-		r.endLocked(conn, now)
 	}
+	r.endLocked(conn, now)
 	r.open[conn] = &span{ActivitySpan: store.ActivitySpan{ThreadID: thread, Phone: phone, StartMs: now, EndMs: now}, last: now}
+	return nil
 }
 
 // End is connection conn's end: its open span ends now.

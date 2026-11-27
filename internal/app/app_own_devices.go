@@ -171,41 +171,78 @@ func NotifyOwnDevices(a *App) {
 	}
 }
 func (a *App) ownCaller(ctx context.Context) (OwnDeviceMember, error) {
-	if transport.SessionFromContext(ctx) == "" {
-		self, e := a.ownSelf()
-		if e != nil {
-			return OwnDeviceMember{}, e
-		}
-		return a.store.OwnDevice(self.KeyThumbprint)
-	}
-	state, e := a.accessState()
-	if e != nil {
-		return OwnDeviceMember{}, e
-	}
-	id := transport.SessionFromContext(ctx)
-	session, reason := state.sessions.Live(id)
-	if reason.Refused() {
-		return OwnDeviceMember{}, errors.New("session is no longer active")
-	}
-	device, err := a.store.GetDevice(session.DeviceID)
+	local, session, err := a.ownCallerSession(ctx)
 	if err != nil {
 		return OwnDeviceMember{}, err
 	}
-	if device.Channel == identity.LocalChannel {
+	if local {
 		self, err := a.ownSelf()
 		if err != nil {
 			return OwnDeviceMember{}, err
 		}
 		return a.store.OwnDevice(self.KeyThumbprint)
 	}
-	m, e := a.store.OwnDeviceForSession(id)
-	if e != nil {
-		return OwnDeviceMember{}, e
+	return a.ownMemberSession(session)
+}
+
+// ownCallerSession is how a call is this computer's own (ownCaller,
+// ownScreen): local for a call over no session (the host's own window,
+// an in-process caller) or from a local-channel client, and otherwise the
+// call's live session, whose own-device membership decides.
+func (a *App) ownCallerSession(ctx context.Context) (local bool, session string, err error) {
+	id := transport.SessionFromContext(ctx)
+	if id == "" {
+		return true, "", nil
+	}
+	state, err := a.accessState()
+	if err != nil {
+		return false, "", err
+	}
+	live, reason := state.sessions.Live(id)
+	if reason.Refused() {
+		return false, "", errors.New("session is no longer active")
+	}
+	device, err := a.store.GetDevice(live.DeviceID)
+	if err != nil {
+		return false, "", err
+	}
+	return device.Channel == identity.LocalChannel, id, nil
+}
+
+// ownMemberSession is the own device session id belongs to, refused once
+// the device is no longer a member.
+func (a *App) ownMemberSession(id string) (OwnDeviceMember, error) {
+	m, err := a.store.OwnDeviceForSession(id)
+	if err != nil {
+		return OwnDeviceMember{}, err
 	}
 	if m.Removed {
-		return OwnDeviceMember{}, errors.New("device is no longer a member")
+		return OwnDeviceMember{}, errNotOwnMember
 	}
 	return m, nil
+}
+
+// errNotOwnMember refuses a session of a device removed from the own
+// devices.
+var errNotOwnMember = errors.New("device is no longer a member")
+
+// ownScreen reports whether the call came from a screen of this
+// computer's person: the host's own window, a local-channel client, or an
+// own device that is a member. Unlike ownCaller it needs no own-device
+// record for this computer, which a computer that never turned own
+// devices on has none of.
+func (a *App) ownScreen(ctx context.Context) (bool, error) {
+	local, session, err := a.ownCallerSession(ctx)
+	if err != nil || local {
+		return local, err
+	}
+	switch _, err := a.ownMemberSession(session); {
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, errNotOwnMember):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return true, nil
 }
 
 //ao:scope session
