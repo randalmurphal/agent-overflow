@@ -367,14 +367,17 @@ func (s *Service) timeEntriesChanged(connection, author string, entries []store.
 	s.emitTimeEntries(e)
 }
 
-// ThreadTimeEntries are the entries thread's agent drafted that still
-// exist, on every connection.
-func (s *Service) ThreadTimeEntries(thread string) ([]TimeEntryView, error) {
+// ThreadTimeEntries are the entries that call of thread's agent drafted
+// that still exist, on every connection.
+func (s *Service) ThreadTimeEntries(thread, call string) ([]TimeEntryView, error) {
+	if thread == "" || call == "" {
+		return nil, invalidDraft("a thread's time entries are read by its thread and call")
+	}
 	if err := s.enterTime(); err != nil {
 		return nil, err
 	}
 	defer s.leave()
-	es, err := s.store.ThreadTimeEntries(thread)
+	es, err := s.store.ThreadTimeEntries(thread, call)
 	if err != nil {
 		return nil, fmt.Errorf("trackerapp: %w", err)
 	}

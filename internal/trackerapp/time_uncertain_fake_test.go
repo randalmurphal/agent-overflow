@@ -55,7 +55,7 @@ func TestAnEntryARunLeftSentIsUnknownToTheNext(t *testing.T) {
 			t.Fatalf("the post before the stop made %d worklog posts", posts)
 		}
 		d.restart()
-		shown := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1"))
+		shown := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1", "call-1"))
 		if len(shown) != 1 || shown[0].State != store.TimeEntryUnknown {
 			t.Fatalf("the next run shows the thread's entries as %+v; want WEB-2 unknown", shown)
 		}
@@ -154,12 +154,12 @@ func TestADayHoldsAtMost24Hours(t *testing.T) {
 		!strings.HasSuffix(err.Error(), ": "+over) {
 		t.Fatalf("an edit of WEB-2 to 12h beside WEB-1's 14h: %v; want %q", err, over)
 	}
-	all := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-2"))
+	all := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-2", "call-c"))
 	if len(all) != 1 || all[0].Minutes != 8*60 || all[0].Key != web2.Key {
 		t.Fatalf("thread-2's entries are %+v; want WEB-2's 8h as drafted", all)
 	}
 	_ = web1
-	if !slices.ContainsFunc(must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1")), func(e TimeEntryView) bool { return e.Minutes == 14*60 }) {
+	if !slices.ContainsFunc(must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1", "call-1")), func(e TimeEntryView) bool { return e.Minutes == 14*60 }) {
 		t.Fatal("thread-1's 14h is gone")
 	}
 }
@@ -171,7 +171,7 @@ func TestEveryEntryPathRecoversAnEarlierRunsSends(t *testing.T) {
 	t.Parallel()
 	for name, sees := range map[string]func(t *testing.T, d *draftScenario, left, q TimeEntryView) string{
 		"the thread's entries": func(t *testing.T, d *draftScenario, _, _ TimeEntryView) string {
-			return must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1"))[0].State
+			return must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1", "call-1"))[0].State
 		},
 		"the mirror read": func(t *testing.T, d *draftScenario, _, _ TimeEntryView) string {
 			return must[WorklogDays](t)(d.svc.Worklogs(d.conn.ID, "acc-user1", d.day, d.day)).Drafted[0].State

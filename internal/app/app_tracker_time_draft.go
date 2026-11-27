@@ -20,17 +20,17 @@ func (a *App) emitTimeEntries(e trackerapp.TimeEntriesEvent) {
 	a.emit(eventchan.TrackerTimeEntriesUpdated, e)
 }
 
-// ThreadTimeEntries are the time entries the thread's agent drafted that
-// still exist, with their state now, on every connection of this
-// computer.
+// ThreadTimeEntries are the time entries that one time_draft call of the
+// thread's agent drafted that still exist, with their state now, on every
+// connection of this computer: what the call's timeline row shows.
 //
 //ao:scope tracker:read
-func (a *App) ThreadTimeEntries(ctx context.Context, threadID string) ([]trackerapp.TimeEntryView, error) {
+func (a *App) ThreadTimeEntries(ctx context.Context, threadID, callID string) ([]trackerapp.TimeEntryView, error) {
 	svc, err := a.trackerService()
 	if err != nil {
 		return nil, err
 	}
-	out, err := svc.ThreadTimeEntries(threadID)
+	out, err := svc.ThreadTimeEntries(threadID, callID)
 	return out, trackerError(err)
 }
 

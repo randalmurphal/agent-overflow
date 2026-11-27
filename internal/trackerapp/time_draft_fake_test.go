@@ -134,6 +134,17 @@ func (d *draftScenario) draft(t *testing.T, entries ...TimeDraftEntry) TimeDraft
 	return must[TimeDraftView](t)(d.svc.DraftTime(d.conn.ID, TimeDraftRequest{Thread: "thread-1", Call: fmt.Sprintf("call-%d", d.calls), Entries: entries}))
 }
 
+// entriesOf are thread's entries of the scenario's calls call-1 to
+// call-n, each call's as its timeline row reads them, in call order.
+func (d *draftScenario) entriesOf(t *testing.T, thread string, n int) []TimeEntryView {
+	t.Helper()
+	var out []TimeEntryView
+	for i := 1; i <= n; i++ {
+		out = append(out, must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries(thread, fmt.Sprintf("call-%d", i)))...)
+	}
+	return out
+}
+
 func entryRefs(views ...TimeEntryView) []TimeEntryRefView {
 	out := make([]TimeEntryRefView, len(views))
 	for i, v := range views {
@@ -250,7 +261,7 @@ func TestADraftIsRefusedByName(t *testing.T) {
 			t.Errorf("%s: %v; want %q", tc.name, err, tc.want)
 		}
 	}
-	if got, err := d.st.ThreadTimeEntries("thread-1"); err != nil || len(got) != 0 {
+	if got, err := d.st.ThreadTimeEntries("thread-1", "call-1"); err != nil || len(got) != 0 {
 		t.Fatalf("the refused drafts stored %+v, %v", got, err)
 	}
 	if ev := d.takeEvents(); len(ev) != 0 {
@@ -289,7 +300,7 @@ func TestAnAnsweredQuestionIsAddedToItsTicketsEntry(t *testing.T) {
 	if ev := d.takeEvents(); len(ev) != 1 || !slices.Equal(ev[0].Days, []string{d.day}) {
 		t.Fatalf("the answer told %+v; want one event of the day", ev)
 	}
-	left := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1"))
+	left := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1", "call-1"))
 	if slices.ContainsFunc(left, func(e TimeEntryView) bool { return e.ID == call.ID }) || len(left) != 4 {
 		t.Fatalf("the thread's entries after the answer are %+v", left)
 	}
@@ -379,7 +390,7 @@ func TestADraftReplacesTheAgentsEntriesOfItsDays(t *testing.T) {
 	if ev := d.takeEvents(); len(ev) != 0 {
 		t.Fatalf("a draft that changed nothing told %+v", ev)
 	}
-	got := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1"))
+	got := d.entriesOf(t, "thread-1", 5)
 	if len(got) != 1 || got[0].ID != edited.ID {
 		t.Fatalf("the thread's entries are %+v; want the person's WEB-2", got)
 	}
@@ -389,7 +400,7 @@ func TestADraftReplacesTheAgentsEntriesOfItsDays(t *testing.T) {
 	if len(theirs.Replaced) != 0 || len(theirs.Made) != 1 {
 		t.Fatalf("thread-2's draft answered %+v; want WEB-1 made and nothing of thread-1's replaced", theirs)
 	}
-	if got := must[[]TimeEntryView](t)(d.svc.ThreadTimeEntries("thread-1")); len(got) != 2 || got[1].ID != mine.Made[0].ID {
+	if got := d.entriesOf(t, "thread-1", 6); len(got) != 2 || got[1].ID != mine.Made[0].ID {
 		t.Fatalf("thread-1's entries after thread-2's draft are %+v", got)
 	}
 }
