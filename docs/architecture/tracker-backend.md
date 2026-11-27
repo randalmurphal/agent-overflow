@@ -496,8 +496,12 @@ no step runs at root creation, restore or start.
   a point and the unit the board is counted in (`ListMirrorSupport`, one
   statement over the issues named, no tracker request), and nothing for
   a project that counts no credit, a board the mirror has not read or a
-  board estimated in time. The Time screen reads it for the week's
-  tickets, again on `tracker:setup_updated` and on reconnect.
+  board estimated in time. The Time screen reads it for the project,
+  connection, board and week's tickets it shows, again on
+  `tracker:setup_updated`, on reconnect, on Refresh, and on the board's
+  changes (`TrackerBoardState.changes`, which a hidden board handle
+  receives too), at most once every 5 s; a read that failed says why
+  with Try again.
 - **Status groups apply to a board read** as a bound argument
   (`store.MirrorRegroup`), resolved from the board handle's project and
   its connection's site, so two projects that list one board each read it
