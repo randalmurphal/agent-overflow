@@ -42,6 +42,7 @@
   import { formatAmount, type DashboardUnit } from '../../utils/dashboardAmount';
   import { userFacingError } from '../../utils/userFacingError';
   import { workGate } from './ticketWorkGate';
+  import DashboardCreditLine from './DashboardCreditLine.svelte';
   import DashboardLoggedLine from './DashboardLoggedLine.svelte';
 
   interface Props {
@@ -227,7 +228,7 @@
           <button
             type="button"
             class="inline-flex h-7 max-w-[16rem] shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] border px-2 text-[0.75rem] tabular-nums transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:h-8 compact:select-none {filteredTo === w.view.id ? 'border-accent bg-accent/15 text-fg' : 'border-border-subtle bg-surface-1 text-fg-muted hover:text-fg'} {store.stale ? 'opacity-60' : ''}"
-            title={pressTitle(w.view)}
+            title={value?.evidence ? `${value.evidence} ${pressTitle(w.view)}` : pressTitle(w.view)}
             aria-pressed={filters(w.view) ? filteredTo === w.view.id : undefined}
             data-testid="board-row-chip"
             data-widget={w.view.id}
@@ -300,6 +301,7 @@
               {/if}
             </button>
             <DashboardLoggedLine {value} counts={w.view.how.reads?.includes('worklogs') ?? false} logged={store.logged} />
+            <DashboardCreditLine {value} />
             {#if editing}
               <button
                 type="button"

@@ -118,6 +118,36 @@ describe('a number with tickets not counted', () => {
     vi.unstubAllGlobals();
   });
 
+  it('heads each group of a drill\'s rows with its name, its rows over every page and its own number, and no heading for one group', () => {
+    const row = { status: 'Done', counted: true };
+    const rows = [
+      { ...row, row: 0, id: '10001', key: 'WEB-1', title: 'First story', value: 5, series: 'Finished tickets' },
+      { ...row, row: 1, id: '10001', key: 'WEB-1', title: 'First story', value: 0.5, series: 'Review credit', note: '10% of 5 points for commented, logged time' },
+      { ...row, row: 2, id: '10002', key: 'WEB-2', title: 'Second story', counted: false, series: 'Review credit', note: 'who worked on it is not read yet' },
+      { ...row, row: 3, id: '10001', key: 'WEB-1', title: 'First story', value: 0, series: 'Review credit', heading: 'Acted but did not qualify', note: 'no credit: commented; needs 2 of commented, logged time' },
+    ];
+    const groups = [
+      { series: 'Finished tickets', value: { v: 1 }, rows: 1 },
+      { series: 'Review credit', value: { v: 0.1, nc: 1 }, rows: 7 },
+      { series: 'Review credit', heading: 'Acted but did not qualify', value: { v: 0 }, rows: 1 },
+    ];
+    const d = drill({ v: 1.1, nc: 1 }, { unit: 'estimate', count: 9, tickets: 2, counted: 8, rows, groups });
+    const heads = d.getAllByTestId('dashboard-drill-group');
+    expect(heads.map((h) => within(h).getByTestId('dashboard-drill-group-name').textContent)).toEqual(['Finished tickets', 'Review credit', 'Review credit · Acted but did not qualify']);
+    expect(heads.map((h) => within(h).getByTestId('dashboard-drill-group-rows').textContent)).toEqual(['1 row', '7 rows', '1 row']);
+    expect(heads.map((h) => h.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+      'Finished tickets 1 row 1 point',
+      'Review credit 7 rows 0.1 points 1 not counted',
+      'Review credit · Acted but did not qualify 1 row 0 points',
+    ]);
+    // Each heading sits before its group's first row.
+    const order = [...d.getByTestId('dashboard-drill-rows').querySelectorAll('[data-testid="ticket-list-group"], [data-testid="dashboard-drill-row"]')].map((e) => (e as HTMLElement).dataset.testid);
+    expect(order).toEqual(['ticket-list-group', 'dashboard-drill-row', 'ticket-list-group', 'dashboard-drill-row', 'dashboard-drill-row', 'ticket-list-group', 'dashboard-drill-row']);
+    d.unmount();
+    const one = drill({ v: 1 }, { unit: 'estimate', count: 1, tickets: 1, counted: 1, rows: rows.slice(0, 1), groups: groups.slice(0, 1) });
+    expect(one.queryByTestId('dashboard-drill-group')).toBeNull();
+  });
+
   it('says in the drill that the board\'s first read has not finished, from its answer', () => {
     const d = drill({ v: 1 }, { reading: true });
     expect(d.getByTestId('dashboard-drill-reading').textContent).toBe("This board's first read has not finished: these numbers count the tickets read so far.");
@@ -135,6 +165,14 @@ describe('a number with tickets not counted', () => {
     expect(d.getByTestId('dashboard-drill-value').textContent).toBe('Not known');
     expect(d.getByTestId('dashboard-drill-value-not-counted').textContent).toBe('2 not counted');
   });
+});
+
+it('says beside a widget of credit that the last read of who worked on the tickets failed, and nothing without it', () => {
+  const sentence = 'Credit may not count everything: the last read of who worked on the tickets failed. Jira refused the request: 401 Unauthorized.';
+  const failing = draw(view({}), { id: 'pace', value: { v: 12 }, evidence: sentence } as WidgetValue);
+  expect(failing.getByTestId('dashboard-widget-evidence').textContent).toBe(sentence);
+  failing.unmount();
+  expect(draw(view({}), { id: 'pace', value: { v: 12 } } as WidgetValue).queryByTestId('dashboard-widget-evidence')).toBeNull();
 });
 
 it('says why its metric failed, in its place', () => {

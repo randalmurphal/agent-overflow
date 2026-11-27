@@ -211,7 +211,9 @@ board methods, events and the patch read in
   on its own from its
   evaluations, `trackerapp/worklog_reads.go`, and the answer says whether
   it reads and why it failed; `DashboardLoggedLine.svelte` says so on a
-  widget and on the summary row's tile). It counts again on the board's changes
+  widget and on the summary row's tile; `DashboardCreditLine.svelte` says
+  beside a widget of credit, in both places, that the last read of who
+  worked on the tickets failed). It counts again on the board's changes
   (`TrackerBoardState.changes`, which the end of those reads moves too), at most once every 5 s, and every 10
   minutes, and lists again when the project's dashboards of the board
   change (`TrackerBoardState.dashboards`); its rules are at the top of

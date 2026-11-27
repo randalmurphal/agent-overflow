@@ -231,6 +231,7 @@ export class DrillAnswer {
     "pages": number;
     "restarted"?: boolean;
     "rows": TicketRow[];
+    "groups"?: DrillGroup[];
     "ids"?: string[];
     "at": number;
 
@@ -278,13 +279,17 @@ export class DrillAnswer {
      */
     static createFrom($$source: any = {}): DrillAnswer {
         const $$createField11_0 = $$createType13;
-        const $$createField12_0 = $$createType14;
+        const $$createField12_0 = $$createType15;
+        const $$createField13_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("rows" in $$parsedSource) {
             $$parsedSource["rows"] = $$createField11_0($$parsedSource["rows"]);
         }
+        if ("groups" in $$parsedSource) {
+            $$parsedSource["groups"] = $$createField12_0($$parsedSource["groups"]);
+        }
         if ("ids" in $$parsedSource) {
-            $$parsedSource["ids"] = $$createField12_0($$parsedSource["ids"]);
+            $$parsedSource["ids"] = $$createField13_0($$parsedSource["ids"]);
         }
         return new DrillAnswer($$parsedSource as Partial<DrillAnswer>);
     }
@@ -317,6 +322,41 @@ export class DrillCell {
     static createFrom($$source: any = {}): DrillCell {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new DrillCell($$parsedSource as Partial<DrillCell>);
+    }
+}
+
+/**
+ * DrillGroup is one group of a drill's rows, of a metric that returns a
+ * series or a heading column: its series (in the metric's order) and its
+ * heading within the series (none first, then by name), the number of its
+ * rows alone as the drill counts its own (Value), and how many rows it
+ * lists over every page (Rows). The rows of every page are in the
+ * groups' order.
+ */
+export class DrillGroup {
+    "series"?: string;
+    "heading"?: string;
+    "value": Num;
+    "rows": number;
+
+    /** Creates a new DrillGroup instance. */
+    constructor($$source: Partial<DrillGroup> = {}) {
+        if (!("value" in $$source)) {
+            this["value"] = null;
+        }
+        if (!("rows" in $$source)) {
+            this["rows"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DrillGroup instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DrillGroup {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DrillGroup($$parsedSource as Partial<DrillGroup>);
     }
 }
 
@@ -370,8 +410,8 @@ export class DrillRequest {
      * Creates a new DrillRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): DrillRequest {
-        const $$createField6_0 = $$createType14;
-        const $$createField8_0 = $$createType16;
+        const $$createField6_0 = $$createType16;
+        const $$createField8_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("widgets" in $$parsedSource) {
             $$parsedSource["widgets"] = $$createField6_0($$parsedSource["widgets"]);
@@ -458,8 +498,8 @@ export class How {
      * Creates a new How instance from a string or object.
      */
     static createFrom($$source: any = {}): How {
-        const $$createField0_0 = $$createType14;
-        const $$createField5_0 = $$createType14;
+        const $$createField0_0 = $$createType16;
+        const $$createField5_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("words" in $$parsedSource) {
             $$parsedSource["words"] = $$createField0_0($$parsedSource["words"]);
@@ -634,7 +674,7 @@ export class RangeView {
      * Creates a new RangeView instance from a string or object.
      */
     static createFrom($$source: any = {}): RangeView {
-        const $$createField2_0 = $$createType18;
+        const $$createField2_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("periods" in $$parsedSource) {
             $$parsedSource["periods"] = $$createField2_0($$parsedSource["periods"]);
@@ -679,7 +719,7 @@ export class Request {
      * Creates a new Request instance from a string or object.
      */
     static createFrom($$source: any = {}): Request {
-        const $$createField6_0 = $$createType14;
+        const $$createField6_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("widgets" in $$parsedSource) {
             $$parsedSource["widgets"] = $$createField6_0($$parsedSource["widgets"]);
@@ -694,7 +734,8 @@ export class Request {
  * unique within it, since a ticket can count more than once (done in two
  * sprints). Assignee is the person the row counts for: the metric's
  * person column, else the ticket's assignee. Period is the sprint or week
- * a row of the range falls in, Series the metric's series it is in.
+ * a row of the range falls in, Series the metric's series it is in, and
+ * Heading the drill's heading of it within the series.
  * Value is the row's number in the metric's unit, absent for a metric
  * that counts tickets, whose rows' values are not what it counts.
  */
@@ -710,6 +751,7 @@ export class TicketRow {
     "counted": boolean;
     "period"?: string;
     "series"?: string;
+    "heading"?: string;
     "note"?: string;
 
     /** Creates a new TicketRow instance. */
@@ -845,10 +887,10 @@ export class WidgetValue {
      */
     static createFrom($$source: any = {}): WidgetValue {
         const $$createField6_0 = $$createType7;
-        const $$createField7_0 = $$createType14;
-        const $$createField8_0 = $$createType20;
+        const $$createField7_0 = $$createType16;
+        const $$createField8_0 = $$createType22;
         const $$createField9_0 = $$createType13;
-        const $$createField12_0 = $$createType14;
+        const $$createField12_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("trend" in $$parsedSource) {
             $$parsedSource["trend"] = $$createField6_0($$parsedSource["trend"]);
@@ -924,8 +966,8 @@ export class WidgetView {
      * Creates a new WidgetView instance from a string or object.
      */
     static createFrom($$source: any = {}): WidgetView {
-        const $$createField9_0 = $$createType14;
-        const $$createField12_0 = $$createType21;
+        const $$createField9_0 = $$createType16;
+        const $$createField12_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("series" in $$parsedSource) {
             $$parsedSource["series"] = $$createField9_0($$parsedSource["series"]);
@@ -976,11 +1018,13 @@ const $$createType10 = WidgetView.createFrom;
 const $$createType11 = $Create.Array($$createType10);
 const $$createType12 = TicketRow.createFrom;
 const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = $Create.Array($Create.Any);
-const $$createType15 = DrillCell.createFrom;
-const $$createType16 = $Create.Nullable($$createType15);
-const $$createType17 = PeriodView.createFrom;
-const $$createType18 = $Create.Array($$createType17);
-const $$createType19 = BucketValue.createFrom;
+const $$createType14 = DrillGroup.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = $Create.Array($Create.Any);
+const $$createType17 = DrillCell.createFrom;
+const $$createType18 = $Create.Nullable($$createType17);
+const $$createType19 = PeriodView.createFrom;
 const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = How.createFrom;
+const $$createType21 = BucketValue.createFrom;
+const $$createType22 = $Create.Array($$createType21);
+const $$createType23 = How.createFrom;

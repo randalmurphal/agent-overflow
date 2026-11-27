@@ -8,6 +8,7 @@ export {
     DashboardView,
     DrillAnswer,
     DrillCell,
+    DrillGroup,
     DrillRequest,
     Form,
     Good,

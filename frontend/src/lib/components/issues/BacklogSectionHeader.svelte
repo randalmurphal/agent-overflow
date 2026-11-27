@@ -13,7 +13,7 @@
   import ReviewAvatar from '../review/ReviewAvatar.svelte';
   import type { BacklogSection, SectionNumbers } from '../../stores/trackerBacklogModel';
   import { measureOf } from '../../stores/trackerBacklogModel';
-  import { formatEstimateSum, sectionLine } from './boardFormat';
+  import { formatEstimateSum, paceCreditWords, sectionLine } from './boardFormat';
 
   interface Props {
     sec: BacklogSection;
@@ -95,7 +95,7 @@
       {/each}
     </span>
   {/if}
-  <span class="shrink-0 text-[0.75rem] tabular-nums text-fg-muted" data-testid="issues-backlog-numbers">
+  <span class="shrink-0 text-[0.75rem] tabular-nums text-fg-muted" title={paceCreditWords(numbers.pace, unit) || undefined} data-testid="issues-backlog-numbers">
     {#if sec.unread}
       Not read yet
     {:else}

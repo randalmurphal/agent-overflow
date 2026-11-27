@@ -468,7 +468,9 @@ no step runs at root creation, restore or start.
   board's (`StatusGroups.unit`, which carries the count with the site's
   groups). The board view says it as `counts` beside the board's own
   `estimate.unit`: every total, the pace and a person's load on the Board
-  and Backlog screens read `counts`, and a card's estimate reads
+  and Backlog screens read `counts`, the pace with the project's review
+  and support credit while it counts credit (`PaceView.Credit`: each
+  part's average and the tickets whose credit is not counted), and a card's estimate reads
   `estimate.unit`. The store's totals carry both rows and estimates, so a
   change of the count reads the project's open boards again by the path
   a change of its groups takes (`setupMoved`, `readBoardsAgain`) and
@@ -2954,8 +2956,8 @@ Their costs at 2,000 and 20,000 issues are in
 ### Metrics
 
 A metric is one SELECT over the export whose rows are contributions:
-a `ticket` and any of `value`, `share`, `bucket`, `series`, `person`,
-`epic`, `at`, `until` and `note` (`trackerdash/metric.go`). Each row is checked as it comes
+a `ticket` and any of `value`, `share`, `bucket`, `series`, `heading`,
+`person`, `epic`, `at`, `until` and `note` (`trackerdash/metric.go`). Each row is checked as it comes
 in: its ticket is in the copy, its series is one the metric names, its
 value is finite and within ±1e12, and its `at` is an instant before the
 year 2286. The app does the rest: it places rows in the range's periods
@@ -3011,7 +3013,12 @@ its 12 bars or 50 rows (what its More opens), ranked by the same
 function as the widget. It evaluates its metric again, so
 a number and its rows always come from one evaluation, and lists one
 row per contribution, with the period it counts in, its value (none for
-a count) and the drill's count of rows and of tickets. A later page that
+a count) and the drill's count of rows and of tickets. A metric that
+returns `series` or `heading` lists its rows in groups, by series in
+the metric's order and by heading within one, the rows with none first
+(`DrillAnswer.Groups`): each group has the number of its rows alone,
+reduced as the drill's own number is, and its rows over every page. A
+later page that
 finds a different count starts again at the first. A list and a drill
 page read their tickets' titles, statuses and points by ID, eight to a
 statement.
