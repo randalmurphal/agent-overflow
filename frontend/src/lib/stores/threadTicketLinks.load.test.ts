@@ -38,7 +38,7 @@ it('says a failed load of the Issues pane, and loads it again on the next open',
   vi.resetModules();
   for (const toast of getToasts()) removeToast(toast.id);
   await openLinkedTicket(thread);
-  const { takeTicketOpenRequest } = await import('./issuesPane.svelte');
-  expect(takeTicketOpenRequest()?.ref.issue).toBe('10001');
+  const { takePaneOpenRequest } = await import('./issuesPane.svelte');
+  expect(takePaneOpenRequest()).toMatchObject({ ref: { issue: '10001' } });
   expect(getToasts()).toEqual([]);
 });

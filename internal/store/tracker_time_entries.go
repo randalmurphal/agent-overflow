@@ -294,13 +294,14 @@ func (s *Store) TimeEntriesOf(connection, author, from, to string) ([]TimeEntry,
 	return out, nil
 }
 
-// ThreadTimeEntries are the entries thread's agent drafted that still
-// exist, on every connection, by ID.
-func (s *Store) ThreadTimeEntries(thread string) ([]TimeEntry, error) {
+// ThreadTimeEntries are the entries that call of thread's agent drafted
+// that still exist, on every connection, by ID: at most the call's
+// entries, whatever the thread drafted before or since.
+func (s *Store) ThreadTimeEntries(thread, call string) ([]TimeEntry, error) {
 	out, err := scanTimeEntries(s.reader().Query(`SELECT `+timeEntryColumns+` FROM tracker_time_entries
- WHERE thread_id = ?1 AND thread_id <> '' ORDER BY id LIMIT `+strconv.Itoa(timeEntriesShown), thread))
+ WHERE thread_id = ?1 AND call_id = ?2 AND thread_id <> '' ORDER BY id LIMIT `+strconv.Itoa(timeEntriesShown), thread, call))
 	if err != nil {
-		return nil, fmt.Errorf("store: time entries of thread %s: %w", thread, err)
+		return nil, fmt.Errorf("store: time entries of thread %s call %s: %w", thread, call, err)
 	}
 	return out, nil
 }

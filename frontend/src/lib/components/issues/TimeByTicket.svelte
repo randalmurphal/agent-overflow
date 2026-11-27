@@ -7,9 +7,12 @@
   // cells narrow, so the page does not scroll sideways. On a desktop list
   // narrower than the table's least width (a ticket open beside it), the
   // table scrolls sideways in its own frame, so every column and the
-  // totals stay reachable.
+  // totals stay reachable. The agent's draft shows dashed in its ticket's
+  // cell beside the time logged there, and its questions in a last row,
+  // Not placed, a cell per day that opens them.
   import Plus from '@lucide/svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
+  import type { TimeEntryView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { dayHeader, ticketLabel, uncountedText, type WeekShape, type WeekTicket } from '../../stores/trackerTimeModel';
   import { formatTimeSpent } from '../../utils/timeSpent';
 
@@ -25,9 +28,15 @@
     onCell: (t: WeekTicket, day: number, anchor: HTMLElement) => void;
     onCellMenu: (t: WeekTicket, day: number, event: MouseEvent) => void;
     onLogOther: (anchor: HTMLElement) => void;
+    /** The questions of each day, `weekQuestions(shape)`. */
+    questions: readonly (readonly TimeEntryView[])[];
+    /** A Not placed cell was pressed: `day` is its index in `shape.days`. */
+    onQuestions: (day: number, anchor: HTMLElement) => void;
   }
 
-  let { shape, tickets, today, compact, openIssue, onOpenTicket, onCell, onCellMenu, onLogOther }: Props = $props();
+  let { shape, tickets, today, compact, openIssue, onOpenTicket, onCell, onCellMenu, onLogOther, questions, onQuestions }: Props = $props();
+
+  const placing = $derived(questions.some((q) => q.length > 0));
 
   const columns = $derived(compact
     ? `minmax(3.5rem, 1fr) repeat(${shape.days.length}, minmax(0, 2.6rem)) 3rem`
@@ -37,6 +46,10 @@
 
   function cellTotal(entries: readonly { spent_seconds: number }[]): number {
     return entries.reduce((s, w) => s + w.spent_seconds, 0);
+  }
+
+  function draftTotal(entries: readonly TimeEntryView[]): number {
+    return entries.reduce((s, e) => s + e.minutes * 60, 0);
   }
 </script>
 
@@ -65,27 +78,51 @@
         </span>
         {#each t.cells as entries, i (shape.days[i].day)}
           {@const spent = cellTotal(entries)}
+          {@const drafted = t.drafted[i]}
           <button
             type="button"
             role="cell"
-            class="flex items-center justify-center border-l border-border-subtle tabular-nums text-fg hover:bg-surface-2 compact:select-none"
-            title={entries.length === 0 ? 'Log time' : entries.length === 1 ? 'Change' : 'Entries'}
+            class="flex flex-wrap items-center justify-center gap-x-1 border-l tabular-nums text-fg hover:bg-surface-2 compact:select-none {drafted.length > 0 ? 'border-dashed border-accent/50 bg-accent/5' : 'border-border-subtle'}"
+            title={entries.length === 0 && drafted.length === 0 ? 'Log time' : entries.length + drafted.length === 1 ? 'Change' : 'Entries'}
             data-testid="time-cell"
             data-day={shape.days[i].day}
             data-count={entries.length}
+            data-drafted={drafted.length || undefined}
             onclick={(event) => onCell(t, i, event.currentTarget)}
             oncontextmenu={(event) => onCellMenu(t, i, event)}
           >
-            {#if entries.length === 0}
+            {#if entries.length === 0 && drafted.length === 0}
               <Icon icon={Plus} size={12} strokeWidth={2} class="text-fg-muted opacity-40" />
             {:else}
-              {formatTimeSpent(spent)}
+              {#if entries.length > 0}<span>{formatTimeSpent(spent)}</span>{/if}
+              {#if drafted.length > 0}<span class="text-accent" data-testid="time-cell-drafted">{entries.length > 0 ? '+' : ''}{formatTimeSpent(draftTotal(drafted))}</span>{/if}
             {/if}
           </button>
         {/each}
         <span class="flex items-center justify-end border-l border-border-subtle px-2 tabular-nums text-fg-muted" role="cell" data-testid="time-ticket-total">{t.total ? formatTimeSpent(t.total) : '–'}</span>
       </div>
     {/each}
+    {#if placing}
+      <div class="grid min-h-9 items-stretch border-t border-border-subtle" style:grid-template-columns={columns} role="row" data-testid="time-not-placed-row">
+        <span role="rowheader" class="flex min-w-0 items-center px-2 text-fg-muted">Not placed</span>
+        {#each questions as asked, i (shape.days[i].day)}
+          {#if asked.length > 0}
+            <button
+              type="button"
+              role="cell"
+              class="flex items-center justify-center border-l border-dashed border-warning/60 bg-warning/5 tabular-nums text-warning hover:bg-surface-2 compact:select-none"
+              title={asked.length === 1 ? 'A question is waiting' : `${asked.length} questions are waiting`}
+              data-testid="time-not-placed-cell"
+              data-day={shape.days[i].day}
+              onclick={(event) => onQuestions(i, event.currentTarget)}
+            >{formatTimeSpent(draftTotal(asked))}</button>
+          {:else}
+            <span class="border-l border-border-subtle" role="cell"></span>
+          {/if}
+        {/each}
+        <span class="border-l border-border-subtle" role="cell"></span>
+      </div>
+    {/if}
     <div class="grid min-h-10 items-center border-t border-border-subtle bg-surface-0" style:grid-template-columns={columns} role="row">
       <span class="px-2 text-fg-muted" role="rowheader">Logged</span>
       {#each shape.days as d (d.day)}
@@ -94,6 +131,9 @@
             <span class="text-fg-muted" title={uncountedText(d.uncounted!)}>{compact ? '?' : uncountedText(d.uncounted!)}</span>
           {:else}
             <b class="font-semibold {d.total ? 'text-fg' : 'font-normal text-fg-muted'}">{d.total ? formatTimeSpent(d.total) : '–'}</b>
+          {/if}
+          {#if d.draftedMinutes > 0}
+            <small class="block text-accent" title="Drafted, not logged yet" data-testid="time-grid-day-drafted">+{formatTimeSpent(d.draftedMinutes * 60)}</small>
           {/if}
         </span>
       {/each}
@@ -105,4 +145,7 @@
     <Icon icon={Plus} size={12} strokeWidth={2} />
     Log on another ticket
   </button>
+  {#if shape.draft.entries > 0 || shape.draft.questions > 0}
+    <p class="text-xs text-fg-muted" data-testid="time-draft-note">Dashed cells are your agent's draft. Nothing is posted until you approve.</p>
+  {/if}
 </div>
