@@ -105,29 +105,65 @@ func TestThePacesDrillSaysHowCreditWasCounted(t *testing.T) {
 	}
 }
 
-// While credit is not read for a ticket, an answer says the last read of
-// who worked on the tickets failed and why; with all of it read, or no
-// failure, it says nothing.
-func TestAnAnswerSaysWhyCreditIsNotRead(t *testing.T) {
+// While the last read of who worked on the tickets failed as a whole,
+// every answer with a widget that reads the credit relation says so and
+// why, whatever its rows hold: the built-in pace, a kept number of
+// finished tickets alone, a proposal, and a tried widget. An answer with
+// no widget that reads it, or with no failure, says nothing.
+func TestTheCreditSentenceGoesWithTheCreditRelation(t *testing.T) {
 	t.Parallel()
-	failing := func(f *fixture) Board {
-		b := creditOn(f)
-		b.EvidenceFailure = "Jira refused the request: 401 Unauthorized."
+	const failure = "Jira refused the request: 401 Unauthorized."
+	sentence := "Credit may not count everything: the last read of who worked on the tickets failed. " + failure
+	failing := func(b Board) Board {
+		b.EvidenceFailure = failure
 		return b
 	}
-	read := creditBoard("points").exec(`DELETE FROM credit WHERE value IS NULL`)
+	finished := Metric{Name: "w_1", Title: "Finished", Words: []string{"Finished tickets."}, SQL: `SELECT ticket, value FROM credit WHERE kind = 'finished'`,
+		Reduce: ReduceSum, Unit: UnitEstimate}
+	open := Metric{Name: "w_2", Title: "Open", Words: []string{"Open tickets."}, SQL: `SELECT id AS ticket FROM tickets WHERE open = 1`,
+		Reduce: ReduceCount, Unit: UnitTickets}
+	own := func(kept, proposed *Metric) Board {
+		b := creditOn(creditBoard("points"))
+		b.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine"}}, Metrics: map[string]Metric{}}
+		if kept != nil {
+			b.Own.Dashboards[0].Widgets = []Widget{{ID: "kept", Metric: kept.Name, Form: FormNumber, Width: 3}}
+			b.Own.Metrics[kept.Name] = *kept
+		}
+		if proposed != nil {
+			b.Own.Proposals = []Proposal{{Widget: Widget{ID: "proposed", Metric: proposed.Name, Form: FormNumber, Width: 3}}}
+			b.Own.Metrics[proposed.Name] = *proposed
+		}
+		return b
+	}
+	mine := Request{Dashboard: "mine", Range: RangeSprints5, TimeZone: "UTC"}
 	for _, c := range []struct {
 		name string
 		b    Board
+		r    Request
 		want string
 	}{
-		{"failing, not read", failing(creditBoard("points")),
-			"Some tickets' credit is not counted: the last read of who worked on them failed. Jira refused the request: 401 Unauthorized."},
-		{"failing, all read", failing(read), ""},
-		{"not failing", creditOn(creditBoard("points")), ""},
+		{"the built-in pace", failing(creditOn(creditBoard("points"))), utcSprints5, sentence},
+		{"a kept number of finished tickets", failing(own(&finished, nil)), mine, sentence},
+		{"a proposal", failing(own(&open, &finished)), mine, sentence},
+		{"no widget reads credit", failing(own(&open, &open)), mine, ""},
+		{"credit not counted", failing(creditBoard("points").board()), utcSprints5, ""},
+		{"no failure", creditOn(creditBoard("points")), utcSprints5, ""},
 	} {
-		if a := mustEvaluate(t, evaluator(), c.b, utcSprints5); a.Evidence != c.want {
+		if a := mustEvaluate(t, evaluator(), c.b, c.r); a.Evidence != c.want {
 			t.Errorf("%s: evidence %q; want %q", c.name, a.Evidence, c.want)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		m    Metric
+		want string
+	}{{"a tried widget of credit", finished, sentence}, {"a tried widget of tickets", open, ""}} {
+		tried, err := evaluator().Try(context.Background(), failing(creditOn(creditBoard("points"))), Widget{Form: FormNumber, Width: 3}, c.m, "UTC")
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if tried.Evidence != c.want {
+			t.Errorf("%s: evidence %q; want %q", c.name, tried.Evidence, c.want)
 		}
 	}
 }
@@ -241,21 +277,24 @@ func TestACreditRowsNoteGivesItsArithmetic(t *testing.T) {
 			t.Errorf("%s: notes %q; want %q", c.name, notes, c.want)
 		}
 	}
+	const partial = "time logged before 2026-06-01 is not read"
 	for _, c := range []struct {
 		name, estimates string
 		tickets         bool
-		want            string
+		note, want      string
 	}{
-		{"support, points", "points", false, "2h ÷ 4 = 0.5"},
-		{"support, time", "time", false, "2h logged"},
-		{"support, a project counting tickets on a time board", "time", true, "2h ÷ 4 = 0.5"},
+		{"support, points", "points", false, "", "2h ÷ 4 = 0.5"},
+		{"support, time", "time", false, "", "2h logged"},
+		{"support, a project counting tickets on a time board", "time", true, "", "2h ÷ 4 = 0.5"},
+		{"support read in part, points", "points", false, partial, "2h ÷ 4 = 0.5 · " + partial},
+		{"support read in part, time", "time", false, partial, "2h logged · " + partial},
 	} {
 		f := newFixture(true, c.estimates).person("u1", "User 1").person("u2", "User 2").status("1", "To Do", "todo")
 		f.countsTickets = c.tickets
 		f.ticket(ticket{id: "t1", key: "WEB-1", status: "1", group: "todo", created: ago(20), updated: ago(1)})
 		f.sprint("s1", "WEB Sprint 1", "closed", ago(10), ago(2), 1)
-		f.exec(`INSERT INTO credit(sprint, at, ticket, kind, person, value, share, hours, hours_per_point)
-			VALUES ('s1', NULL, 't1', 'support', 'u2', 0.5, 0.5, 2, 4)`)
+		f.exec(`INSERT INTO credit(sprint, at, ticket, kind, person, value, share, hours, hours_per_point, note)
+			VALUES ('s1', NULL, 't1', 'support', 'u2', 0.5, 0.5, 2, 4, %s)`, quote(c.note))
 		d, err := evaluator().Drill(context.Background(), creditOn(f), DrillRequest{Request: utcSprints5, Widget: "pace"})
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)

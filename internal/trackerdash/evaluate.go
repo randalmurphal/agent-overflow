@@ -267,9 +267,9 @@ type WidgetValue struct {
 type Answer struct {
 	Range   RangeView `json:"range"`
 	Reading bool      `json:"reading,omitempty"`
-	// Evidence says, while credit a widget counts in its range is not read
-	// for some ticket, that the last read of who worked on the tickets
-	// failed and why (EvidenceSentence); "" otherwise.
+	// Evidence says, beside a widget that reads the credit relation while
+	// the last read of who worked on the tickets failed as a whole, that
+	// it failed and why (EvidenceSentence); "" otherwise.
 	Evidence  string        `json:"evidence,omitempty"`
 	Estimates string        `json:"estimates"`
 	Person    *Name         `json:"person,omitempty"`
@@ -565,8 +565,6 @@ func dayRangeWords(sprint string) string {
 type evaluation struct {
 	s   *session
 	loc *time.Location
-	// filled is the relations the copy was filled with.
-	filled map[string]bool
 	export store.MirrorExport
 	// readDays is the days of the viewer's (export.Viewer) logged time the
 	// copy holds as read, filled when a metric reads worklogs.
@@ -615,10 +613,6 @@ func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, now t
 }
 
 func (ev *evaluation) fill(ctx context.Context, b Board, relations []string, loggedThrough string) error {
-	ev.filled = map[string]bool{}
-	for _, r := range relations {
-		ev.filled[r] = true
-	}
 	export, ok, err := b.Fill(ctx, ev.s.conn, relations, loggedThrough)
 	switch {
 	case err != nil:
@@ -1106,11 +1100,13 @@ func (e *Evaluator) Evaluate(ctx context.Context, b Board, r Request) (Answer, e
 	if err == nil && len(b.Own.Proposals) > 0 && r.Widgets == nil {
 		var proposed []WidgetValue
 		var also *WorklogNeed
-		if proposed, also, err = e.proposals(ctx, b, r); err != nil {
+		var evidence string
+		if proposed, also, evidence, err = e.proposals(ctx, b, r); err != nil {
 			return Answer{}, err
 		}
 		a.Widgets = append(a.Widgets, proposed...)
 		need = cmp.Or(need, also)
+		a.Evidence = cmpOr(a.Evidence, evidence)
 	}
 	if err != nil {
 		return a, err
@@ -1139,7 +1135,6 @@ func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer
 		read[m.Name] = read[m.Name].and(widgetReads(w, m, o.sp))
 	}
 	runs := map[string]counted{}
-	unread := false
 	for _, w := range o.d.Widgets {
 		m := o.metrics[w.Metric]
 		c, ok := runs[m.Name]
@@ -1150,38 +1145,34 @@ func (e *Evaluator) dashboard(ctx context.Context, b Board, r Request) (_ Answer
 			runs[m.Name] = c
 		}
 		a.Widgets = append(a.Widgets, o.ev.widget(w, m, c, o.sp))
-		unread = unread || b.EvidenceFailure != "" && o.unreadCredit(m, c)
+		a.Evidence = cmpOr(a.Evidence, o.evidence(b, m))
 	}
 	if err := o.ev.titles(o.ctx, listed(a.Widgets)); err != nil {
 		return Answer{}, nil, err
 	}
-	if unread {
-		a.Evidence = EvidenceSentence(b.EvidenceFailure)
-	}
 	return a, o.worklogNeed(), nil
 }
 
-// unreadCredit reports that metric m, which read the credit relation,
-// counted c with a row of the range it does not count for want of credit
-// read: a review or support row not counted (one whose status or finish
-// is not known is a finished one).
-func (o *opened) unreadCredit(m Metric, c counted) bool {
-	if c.err != nil || !slices.Contains(o.preps[m.Name].p.asks.tables, "credit") {
-		return false
+// evidence is the sentence beside a widget of metric m on board b
+// (EvidenceSentence): while the evidence unit's last read of b's
+// connection failed as a whole, for a metric that reads the credit
+// relation, whatever its rows hold.
+func (o *opened) evidence(b Board, m Metric) string {
+	if !slices.Contains(o.preps[m.Name].p.asks.tables, "credit") {
+		return ""
 	}
-	unread := func(r contribution) bool { return !r.counted && r.series != seriesFinished }
-	return slices.ContainsFunc(o.ev.inRange(m, c, o.sp).listed().rows, unread)
+	return EvidenceSentence(b.EvidenceFailure)
 }
 
-// EvidenceSentence is what a screen says where credit it counts is not
-// read for some ticket in view while the evidence unit's last read of who
-// worked on the tickets failed with failure: "" for none
-// (Board.EvidenceFailure, Answer.Evidence).
+// EvidenceSentence is what a screen says beside credit it counts while
+// the evidence unit's last read of who worked on the tickets failed as a
+// whole with failure: what it counts may lack what that read was to
+// read. "" for none (Board.EvidenceFailure, Answer.Evidence).
 func EvidenceSentence(failure string) string {
 	if failure == "" {
 		return ""
 	}
-	return "Some tickets' credit is not counted: the last read of who worked on them failed. " + failure
+	return "Credit may not count everything: the last read of who worked on the tickets failed. " + failure
 }
 
 // proposals is the values of b's proposals over r's range and narrowing,
@@ -1189,18 +1180,19 @@ func EvidenceSentence(failure string) string {
 // value is drawn. A proposal the deadline stops, or leaves no time for,
 // says so (outOfTime), and a failure of the evaluation itself is each
 // proposal's sentence; only the caller's leaving fails the call. It
-// returns what they need of the viewer's logged time.
-func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []WidgetValue, _ *WorklogNeed, err error) {
-	failed := func(err error) ([]WidgetValue, *WorklogNeed, error) {
+// returns what they need of the viewer's logged time, and the sentence
+// their credit asks for (evidence).
+func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []WidgetValue, _ *WorklogNeed, evidence string, err error) {
+	failed := func(err error) ([]WidgetValue, *WorklogNeed, string, error) {
 		if ctx.Err() != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 		sentence := proposalsFailed(err)
 		out := make([]WidgetValue, 0, len(b.Own.Proposals))
 		for _, p := range b.Own.Proposals {
 			out = append(out, WidgetValue{ID: p.Widget.ID, Error: sentence})
 		}
-		return out, nil, nil
+		return out, nil, "", nil
 	}
 	o, err := e.begin(ctx, b, r, func(_ Widget, proposed bool) bool { return proposed })
 	if err != nil {
@@ -1225,6 +1217,7 @@ func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []Widg
 			}
 		}
 		out = append(out, o.ev.widget(w, m, c, o.sp))
+		evidence = cmpOr(evidence, o.evidence(b, m))
 	}
 	if err := o.ev.titles(o.ctx, listed(out)); err != nil {
 		if o.ctx.Err() == nil {
@@ -1236,7 +1229,7 @@ func (e *Evaluator) proposals(ctx context.Context, b Board, r Request) (_ []Widg
 			}
 		}
 	}
-	return out, o.worklogNeed(), nil
+	return out, o.worklogNeed(), evidence, nil
 }
 
 // proposalsFailed is the sentence each proposal shows when their
