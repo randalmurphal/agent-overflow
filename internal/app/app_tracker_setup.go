@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 
+	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerapp"
 )
 
@@ -57,6 +58,23 @@ func (a *App) ProjectTrackerPace(ctx context.Context, projectID string) ([]track
 		return nil, err
 	}
 	out, err := svc.ProjectPace(projectID)
+	return out, trackerError(err)
+}
+
+// ProjectTrackerSupport is which of issues are support tickets of the
+// project on board of connectionID, which the project lists, with the hours a
+// point counts on them: what the Time screen shows a support ticket's
+// logged hours as. Its issues are empty when no such line shows (the
+// project counts no credit, the board is not Jira's or is estimated in
+// time). It reads this computer's copy and makes no tracker request.
+//
+//ao:scope tracker:read
+func (a *App) ProjectTrackerSupport(ctx context.Context, projectID, connectionID, board string, issues []string) (trackerapp.SupportView, error) {
+	svc, err := a.trackerService()
+	if err != nil {
+		return trackerapp.SupportView{}, err
+	}
+	out, err := svc.ProjectSupport(projectID, trackerapp.Scope{Connection: connectionID, Board: tracker.BoardID(board)}, issues)
 	return out, trackerError(err)
 }
 

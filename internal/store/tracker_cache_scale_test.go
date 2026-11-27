@@ -169,6 +169,10 @@ func mirrorAtScale(t *testing.T, size benchMirrorSize) {
 	for _, name := range slices.Sorted(maps.Keys(paths)) {
 		t.Logf("%-34s %s", name, paths[name])
 	}
+	support := supportAtScale(t, s, root, rec)
+	for _, name := range slices.Sorted(maps.Keys(support)) {
+		t.Logf("%-58s %s", name, support[name])
+	}
 	readyListedAgainAtScale(t, filled, filledRec)
 	mirrorPlansAtScale(t, s)
 }
@@ -303,6 +307,11 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		var err error
 		if held, err = s.ListMirrorCards(root, tickets); err != nil || len(held) != len(tickets) {
 			t.Fatalf("%d cards of %d tickets: %v", len(held), len(tickets), err)
+		}
+		// A card read leaves the labels out (MirrorCard.Labels); the
+		// tracker gives them to every card it writes.
+		for i := range held {
+			held[i].Labels = slices.Clone(benchLabels)
 		}
 	}
 	ticketsOf := func(cards []MirrorCard, rev int) []MirrorTicket {
@@ -555,6 +564,67 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		walked[tc.table] = n
 	}
 	t.Logf("first read of the root (seed): %d VM steps, rows of the root walked %v, plan:\n%s", seedSteps, walked, explainMirror(t, s, mirrorReadSeedSQL))
+	return out
+}
+
+// supportAtScale measures board 0's totals, as a board view and a patch
+// read them, under support rules (mirrorSupportSQL), with every row
+// estimated, as the bench board is, and then with none (its estimate
+// reset moved past every row's read, so every row reads as unknown): a
+// rule that lists a type the board's cards do not have, labels that none
+// of their cards carries or one that every card carries, or the board. It
+// runs last: it leaves the board's rows unknown.
+func supportAtScale(t *testing.T, s *Store, root int64, rec *mirrorWriteRecorder) map[string]scaleCost {
+	t.Helper()
+	board := benchBoardID(0)
+	rule := func(r MirrorSupportRule) MirrorRegroup {
+		regroup, err := MirrorRegroup{}.WithSupport(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return regroup
+	}
+	rules := []struct {
+		name    string
+		regroup MirrorRegroup
+		support bool
+	}{
+		{"no rule", MirrorRegroup{}, false},
+		{"a type no card has", rule(MirrorSupportRule{Types: []string{"10004"}}), false},
+		{"2 labels no card has", rule(MirrorSupportRule{Labels: []string{"support", "customer"}}), false},
+		{"a label every card has", rule(MirrorSupportRule{Labels: []string{"auth"}}), true},
+		{"the board", rule(MirrorSupportRule{Boards: []string{board}}), true},
+	}
+	sections := []MirrorSection{{Kind: MirrorSectionColumn}, {Kind: MirrorSectionBacklog}, {Kind: MirrorSectionSprint, SprintID: strconv.Itoa(benchBoardSprints - 1)}}
+	out := map[string]scaleCost{}
+	for _, rows := range []string{"every row estimated", "no row estimated"} {
+		if rows == "no row estimated" {
+			mustExec(t, s.db, `UPDATE tracker_cache_boards SET estimate_reset_at = (SELECT max(read_at) FROM tracker_cache_board_issues WHERE root_id = ?1 AND board_id = ?2)
+				WHERE root_id = ?1 AND board_id = ?2`, root, board)
+		}
+		for _, r := range rules {
+			regroup := r.regroup
+			counts, err := s.CountMirrorSections(root, board, regroup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if rows == "no row estimated" && !r.support {
+				want = counts.All.Rows
+			}
+			if counts.All.Unestimated != want {
+				t.Fatalf("%s, %s: %d without an estimate, want %d", rows, r.name, counts.All.Unestimated, want)
+			}
+			out[fmt.Sprintf("section counts, %s, %s", rows, r.name)] = measureScale(t, rec, nil, func(int) error {
+				_, err := s.CountMirrorSections(root, board, regroup)
+				return err
+			})
+			out[fmt.Sprintf("board view, 3 sections, %s, %s", rows, r.name)] = measureScale(t, rec, nil, func(int) error {
+				_, _, err := s.ReadMirrorBoardView(root, board, regroup, theseSections(sections))
+				return err
+			})
+		}
+	}
 	return out
 }
 

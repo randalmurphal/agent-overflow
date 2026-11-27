@@ -9,7 +9,8 @@ import (
 
 // BoardPace is one board a project lists as Settings shows its usual
 // pace: the board, its connection's kind and its name, and for a Jira
-// board whether this computer has read it (Read), its own estimate unit
+// board its connection's site as a setup names it (Site, which the
+// Credit group's support picks are kept by), whether this computer has read it (Read), its own estimate unit
 // (Estimate, as BoardView.Estimate.Unit), the unit the project counts it
 // in (Counts, as BoardView.Counts), whether it plans sprints, and the
 // pace sprint planning measures against (BoardView.Pace), nil for a board
@@ -18,6 +19,7 @@ import (
 type BoardPace struct {
 	Connection     string    `json:"connection"`
 	ConnectionKind string    `json:"connection_kind"`
+	Site           string    `json:"site,omitempty"`
 	Board          string    `json:"board"`
 	Name           string    `json:"name"`
 	Read           bool      `json:"read"`
@@ -77,6 +79,8 @@ func (s *Service) ProjectPace(projectID string) ([]BoardPace, error) {
 			}
 			mirrors[choice.Connection] = m
 		}
+		bp.Site = m.site.site
+		out[len(out)-1] = bp
 		if !m.ok {
 			continue
 		}

@@ -108,6 +108,20 @@ func (s *Service) IssueTypes(ctx context.Context, id, project string) ([]IssueTy
 	})
 }
 
+// ProjectIssueTypes are the issue types project has, which a user who can
+// see it reads whatever it may create; none on a tracker without issue
+// types.
+func (s *Service) ProjectIssueTypes(ctx context.Context, id, project string) ([]IssueTypeView, error) {
+	return ask(s, ctx, id, func(r *run) ([]IssueTypeView, error) {
+		ts, err := r.p.ProjectIssueTypes(r.ctx, tracker.ProjectID(project))
+		out := make([]IssueTypeView, len(ts))
+		for i, t := range ts {
+			out[i] = IssueTypeView{ID: string(t.ID), Name: t.Name, Level: t.Level}
+		}
+		return out, call(err)
+	})
+}
+
 // BoardInfoView is a board a project has, for picking the boards it
 // lists.
 type BoardInfoView struct {

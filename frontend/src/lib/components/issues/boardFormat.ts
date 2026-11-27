@@ -2,7 +2,7 @@
 // value's name or level: the board answer carries no tracker icon, and the
 // app fetches none.
 
-import type { ChoiceView, IssueTypeView, SectionTotal } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { ChoiceView, IssueTypeView, SectionTotal, SupportView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { ScreenColumn, ShownColumn } from '../../stores/trackerBoardModel';
 import type { SectionNumbers } from '../../stores/trackerBacklogModel';
 
@@ -52,6 +52,19 @@ function amountWord(v: number, unit: string): string {
  * planning and Settings say it: "7.3 points", "10h", "3 tickets". */
 export function formatPace(v: number, unit: string): string {
   return `${bareAmount(Math.round(v * 10) / 10, unit)}${amountWord(v, unit)}`;
+}
+
+/** What `seconds` logged on `issue` are worth when it is a support
+ * ticket of the board the Time screen shows (`support`, the board's
+ * computer's answer): its hours over the newest hours a point, in the
+ * unit the project counts the board in, "1.5 points" or "0.8 tickets",
+ * with the rule as `title`. Null when it is no support ticket there, or
+ * the answer shows no line (no credit, a board estimated in time). */
+export function supportWorth(support: SupportView | null, issue: string, seconds: number): { text: string; title: string } | null {
+  const hours = support?.hours_per_point;
+  const unit = support?.counts;
+  if (!hours || !unit || !support.issues.includes(issue)) return null;
+  return { text: formatPace(seconds / 3600 / hours, unit), title: `Support ticket: every ${hours} hours logged count as 1${amountWord(1, unit)}.` };
 }
 
 /** A column's count and, for a board with estimates, its sum. */
