@@ -692,8 +692,9 @@ How this is counted, or a number tile's limit.
   many are selected and offers Move to, Assign and Start a thread, and
   says under them why one cannot run. A count again keeps the selected
   rows it still lists, and closes an open Move to, Assign or Start a
-  thread whose tickets it changed, so none acts on a ticket the list no
-  longer shows.
+  thread whose tickets it changed, and an open Move to whose tickets'
+  statuses it changed, so none acts on a ticket the list no longer shows
+  or plans from a status it has left.
 - Move to lists the statuses the selected tickets can move to. A ticket
   already in the status, as its row shows it or where this list last
   moved it, is left as it is ("3 tickets moved to Done, 1 already in
@@ -708,8 +709,9 @@ How this is counted, or a number tile's limit.
   tickets, one file each on its unsent draft with the text typed, and
   opens it. It is linked to a ticket only when there is one; several are
   named in its title ("WEB-1, WEB-2, WEB-3 and 2 more"). Nothing on the
-  tickets changes. A drill closes as its thread opens. A start that is
-  refused keeps the text and the selection.
+  tickets changes. A drill closes as its thread opens. A list starts one
+  thread at a time; a start that is refused keeps the text and the
+  selection. Typed text stays with the tickets it was typed for.
 - An answer to a one-off question appears as a provisional widget. It joins
   the dashboard only when kept.
 - A number tile can carry a limit. Over the limit, the tile is marked on
