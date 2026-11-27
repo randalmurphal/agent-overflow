@@ -95,6 +95,7 @@
     ticketCommentOrder,
     ticketSectionOpen,
     type TicketPlacement,
+    type TicketPullRequestOpen,
     type TicketSeed,
   } from '../../stores/issuesPane.svelte';
   import { opensTicketPane, ticketPanesOffered } from '../../stores/ticketPanes.svelte';
@@ -189,9 +190,12 @@
     /** Opens another issue of the connection from this ticket: here, or in
      * a pane of its own. */
     onOpenIssue: (issue: string, seed: TicketSeed, ownPane: boolean) => void;
+    /** Shows a pull request of the ticket's Work in the ticket's place
+     * (`TicketTrail.openPullRequest`). */
+    onOpenPullRequest: (pr: TicketPullRequestOpen) => void;
   }
 
-  let { attachment, seed, board, computerName, project, onProject, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, startWorkAsked, onStartWorkEnded, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, computerName, project, onProject, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, startWorkAsked, onStartWorkEnded, onBack, onClose, onOwnPane, onOpenIssue, onOpenPullRequest }: Props = $props();
   setTicketWriteSurface(() => shown);
 
   // The ticket a person opened takes the focus, so a key or a paste of
@@ -226,9 +230,11 @@
   const CARD_TARGETS = ['status', fieldTarget('assignee'), fieldTarget('priority'), 'points'] as const;
 
   // Undefined until the screen measured itself: until then it lays out
-  // wide whatever its width.
+  // wide whatever its width, without Work, whose mount reads the ticket's
+  // pull requests and which a narrow screen would unmount at once.
   let width = $state<number | undefined>();
-  const narrow = $derived(width !== undefined && width > 0 && width < NARROW_PX);
+  const measured = $derived(width !== undefined);
+  const narrow = $derived(measured && width! > 0 && width! < NARROW_PX);
   let railOpen = $state(false);
   $effect(() => {
     if (!narrow) railOpen = false;
@@ -241,7 +247,7 @@
   $effect(() => {
     if (narrow && startWorkAsked) railOpen = true;
   });
-  const workAsked = $derived(startWorkAsked && width !== undefined);
+  const workAsked = $derived(startWorkAsked && measured);
   function closeDetails(): void {
     railOpen = false;
     if (startWorkAsked) onStartWorkEnded();
@@ -730,7 +736,9 @@
       {/if}
     {/if}
   </div>
-  <TicketWork {attachment} {project} {onProject} me={account} startWorkAsked={workAsked} onStartWorkTaken={onStartWorkEnded} />
+  {#if measured}
+    <TicketWork {attachment} {project} {onProject} me={account} startWorkAsked={workAsked} onStartWorkTaken={onStartWorkEnded} {onOpenPullRequest} />
+  {/if}
 {/snippet}
 
 {#snippet content()}

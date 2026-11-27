@@ -27,7 +27,7 @@ import {
   type TrackerBoardRef,
 } from './trackerBoard.svelte';
 import { attachTrackerTicket, trackerTicketKey, type TrackerTicketAttachment, type TrackerTicketRef } from './trackerTicket.svelte';
-import { closeTicketPane, sameTicketRef, setTicketPaneTicket, takeTicketPaneHandoff, ticketPaneRecord } from './ticketPanes.svelte';
+import { closeTicketPane, sameTicketRef, setTicketPanePullRequest, setTicketPaneTicket, takeTicketPaneHandoff, ticketPaneRecord } from './ticketPanes.svelte';
 import { createOpenFocusRequest, type OpenFocusRequest } from '../utils/openFocusRequest.svelte';
 import { holdTicketDrafts } from './trackerTicketWrites.svelte';
 import type { CommentOrder } from './trackerTicketModel';
@@ -45,6 +45,7 @@ import {
 import { pageGrantsKnownTracked, scopeGrant } from '../transport/scopes';
 import type { CapturedError } from './errorReports.svelte';
 import type { BoardChoice, CardView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { PRRef } from '../utils/prReference';
 
 /** A card field the Display menu turns on and off. Title always shows. */
 export type CardField = 'type' | 'key' | 'parent' | 'labels' | 'priority' | 'estimate' | 'assignee' | 'days';
@@ -362,6 +363,16 @@ export interface OpenTicket {
   readonly project: string | null;
 }
 
+/** A pull request a ticket's Work row shows in the ticket's place: its
+ * reference, the project of the ticket's computer whose checkout shows it
+ * (`TicketPullRequest.reviewProjectId`), and its link and title for the
+ * bar over the review. */
+export interface TicketPullRequestOpen {
+  readonly pr: PRRef;
+  readonly projectId: string;
+  readonly url: string;
+}
+
 /** A ticket a surface outside the pane asked it to open (a thread's
  * link): its ticket, what to draw until it is read, and the project the
  * ask came from, whose boards are tried first. `unplaced` runs when no
@@ -562,10 +573,15 @@ export interface TicketTrailState {
   readonly ticket: OpenTicket | null;
   /** Reactive; oldest first. */
   readonly trail: readonly OpenTicket[];
+  /** A `ticket` other than the one shown ends `pullRequest`. */
   set(ticket: OpenTicket, trail: readonly OpenTicket[]): void;
   /** No ticket shown here: the Issues pane shows its list, a ticket pane
    * closes. */
   close(): void;
+  /** The pull request shown in the ticket's place; null for none. Not
+   * saved. Reactive. */
+  readonly pullRequest: TicketPullRequestOpen | null;
+  setPullRequest(pr: TicketPullRequestOpen | null): void;
   readonly focus: OpenFocusRequest<OpenTicket>;
   /** What held the ticket until this trail subscribed it, taken. */
   takeHandoff(): (() => void) | null;
@@ -587,9 +603,20 @@ export interface TicketTrail {
   readonly depth: number;
   /** The ticket shown and those on the trail. Reactive. */
   readonly held: readonly OpenTicket[];
-  /** The pane is on screen now, so the person sees the ticket it shows
-   * (`TicketTrailOptions.shown`). Reactive. */
+  /** The person sees the ticket it shows: the pane is on screen
+   * (`TicketTrailOptions.shown`) and no pull request covers the ticket.
+   * The ticket's subscription votes this. Reactive. */
   readonly shown: boolean;
+  /** The pull request shown in the ticket's place, over the ticket, which
+   * stays mounted under it; null for none (`TicketTrailState.pullRequest`).
+   * It belongs to the open it was opened from: a new open, Back, Close and
+   * any open or show of the ticket itself end it, the ticket pane's own
+   * open from anywhere (`openTicketPane`) included. Reactive. */
+  readonly pullRequest: TicketPullRequestOpen | null;
+  /** A person opens `pr` from the ticket shown's Work. */
+  openPullRequest(pr: TicketPullRequestOpen): void;
+  /** Back from the pull request to the ticket, which asks for the focus. */
+  closePullRequest(): void;
   /** The project of the ticket shown, which its Ask and Start work make
    * their thread in and whose setup holds its Start work defaults: the
    * one the person picked for it, else the one its last opener that named
@@ -639,16 +666,23 @@ export interface TicketTrail {
 export function localTicketTrailState(): TicketTrailState {
   let ticket = $state.raw<OpenTicket | null>(null);
   let trail = $state.raw<readonly OpenTicket[]>([]);
+  let pullRequest = $state.raw<TicketPullRequestOpen | null>(null);
   return {
     get ticket() { return ticket; },
     get trail() { return trail; },
     set(next, nextTrail) {
+      if (next !== ticket) pullRequest = null;
       ticket = next;
       trail = nextTrail;
     },
     close() {
       ticket = null;
       trail = [];
+      pullRequest = null;
+    },
+    get pullRequest() { return pullRequest; },
+    setPullRequest(pr) {
+      pullRequest = pr;
     },
     focus: createOpenFocusRequest<OpenTicket>(),
     takeHandoff: () => null,
@@ -668,6 +702,10 @@ export function ticketPaneTrailState(paneId: string): TicketTrailState {
     },
     close() {
       closeTicketPane(paneId);
+    },
+    get pullRequest() { return ticketPaneRecord(paneId)?.pullRequest ?? null; },
+    setPullRequest(pr) {
+      setTicketPanePullRequest(paneId, pr);
     },
     focus,
     takeHandoff: () => takeTicketPaneHandoff(paneId),
@@ -707,6 +745,10 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
   const project = $derived(!ticket ? null : projectWord?.open === ticket ? projectWord.project : ticket.project ?? defaultProject());
   // The open whose Start work form was asked for, until Work takes it.
   let startAsk = $state.raw<OpenTicket | null>(null);
+  // The state ends the pull request with the ticket it was opened from,
+  // so a new open, Back and Close end it with no write of their own.
+  const pullRequest = $derived(state.pullRequest);
+  const ticketShown = $derived(shown() && pullRequest === null);
 
   const stop = $effect.root(() => {
     $effect(() => {
@@ -718,7 +760,7 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
         if (computer === 'gone') untrack(() => state.takeHandoff()?.());
         return;
       }
-      const attachment = untrack(() => attachTrackerTicket(open.ref, shown()));
+      const attachment = untrack(() => attachTrackerTicket(open.ref, ticketShown));
       view = { open, attachment };
       untrack(() => state.takeHandoff()?.());
       return () => attachment.release();
@@ -726,7 +768,7 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
 
     $effect(() => {
       const held = view?.attachment;
-      const on = shown();
+      const on = ticketShown;
       if (held) untrack(() => held.setShown(on));
     });
   });
@@ -736,7 +778,16 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
     get view() { return view; },
     get computer() { return computer; },
     get depth() { return state.trail.length; },
-    get shown() { return shown(); },
+    get shown() { return ticketShown; },
+    get pullRequest() { return pullRequest; },
+    openPullRequest(pr) {
+      if (state.ticket) state.setPullRequest(pr);
+    },
+    closePullRequest() {
+      const open = state.ticket;
+      state.setPullRequest(null);
+      if (open) state.focus.ask(open);
+    },
     get project() { return project; },
     setProject(next) {
       if (ticket) projectWord = { open: ticket, project: next, picked: true };
@@ -759,6 +810,8 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
     open(ref, seed, from) {
       const current = state.ticket;
       if (current && sameTicketRef(current.ref, ref)) {
+        // The person asked for the ticket: it shows, not its pull request.
+        state.setPullRequest(null);
         state.focus.ask(current);
         return;
       }
@@ -780,6 +833,7 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
         state.set(open, []);
         return;
       }
+      state.setPullRequest(null);
       state.set(current, []);
       if (open.project !== null && !(projectWord?.open === current && projectWord.picked)) {
         projectWord = { open: current, project: open.project, picked: false };

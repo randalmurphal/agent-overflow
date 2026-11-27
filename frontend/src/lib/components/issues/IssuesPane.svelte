@@ -361,7 +361,7 @@
   // The board a dashboard counts: its subscription once the subscribe
   // answered, and how many times the board changed since.
   const dashboardSource = $derived(
-    board && boardState?.subscription ? { backend: board.backend, subscription: boardState.subscription, changes: boardState.changes } : null,
+    board && boardState?.subscription ? { backend: board.backend, board, subscription: boardState.subscription, changes: boardState.changes } : null,
   );
 
   // The board's listing: its connection's kind, whether it may be opened.
@@ -595,6 +595,7 @@
             bind:this={dashboardView}
             bind:counting={dashboardCounting}
             source={dashboardSource}
+            boardName={boardChoice?.name ?? 'this board'}
             shown={selection.dashboardsShown}
             {compact}
             computerName={computerName(dashboardBoard.backend)}
@@ -645,6 +646,7 @@
         {compact}
         placement={besideFits ? { value: selection.placement, set: (p) => setTicketPlacement(screen, p) } : undefined}
         onOwnPane={moveToOwnPane}
+        hostPaneId={paneId}
       />
     </div>
   {/if}

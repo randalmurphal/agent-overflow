@@ -39,7 +39,8 @@ type Forge interface {
 	// ListOpenPRs returns open PRs/MRs for the given head/source branch.
 	ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error)
 	// ListPRsByHead returns the PRs/MRs in any state for the given
-	// head/source branch, as ListOpenPRs reads the open ones.
+	// head/source branch, as ListOpenPRs reads the open ones, and what
+	// it read beside an error.
 	ListPRsByHead(ctx context.Context, cwd, head string) ([]PRFound, error)
 	// SearchPRsByKey reads the PRs/MRs of repo the forge's search finds
 	// for a ticket key (see pr_key_search.go).

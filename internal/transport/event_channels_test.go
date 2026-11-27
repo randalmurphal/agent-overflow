@@ -154,6 +154,8 @@ var (
 		"tracker:connections_updated",
 		// The same nudge, for the projects' tracker setups.
 		"tracker:setup_updated",
+		// The same nudge, for the boards' dashboards and proposed widgets.
+		"tracker:dashboards_updated",
 		// The same payload-less listing nudge, for a card's resets.
 		"provider:account_listing",
 	}

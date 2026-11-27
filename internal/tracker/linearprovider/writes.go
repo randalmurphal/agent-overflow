@@ -409,6 +409,12 @@ func (p *Provider) Attach(_ context.Context, in tracker.AttachInput) tracker.Res
 	return unsupported(tracker.StepUpload, "file attachments", in.Issue)
 }
 
+// PullRequests fails wrapping tracker.ErrUnsupported before any
+// request: Linear has no development panel this app reads.
+func (p *Provider) PullRequests(context.Context, tracker.IssueID) ([]tracker.LinkedPullRequest, error) {
+	return nil, fmt.Errorf("linearprovider: pull requests: %w", tracker.ErrUnsupported)
+}
+
 // Download fails wrapping tracker.ErrUnsupported: Linear holds no files.
 func (p *Provider) Download(_ context.Context, in tracker.DownloadInput) error {
 	if err := in.Check(); err != nil {

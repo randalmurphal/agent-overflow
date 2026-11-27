@@ -1,5 +1,6 @@
 // A review pinned to one PR with no thread, for the Pull requests page
-// (docs/specs/pull-requests.md, "The page"): its subject, and the states
+// (docs/specs/pull-requests.md, "The page") and a ticket's Work row
+// (components/issues/TicketReview.svelte): its subject, and the states
 // each owner pane keeps. The state itself is reviewPane.svelte.ts's; a
 // pinned subject makes it read only that PR on that computer.
 

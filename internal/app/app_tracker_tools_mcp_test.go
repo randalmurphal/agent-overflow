@@ -396,10 +396,10 @@ func TestStartSession_CodexCarriesTheTrackerToolsEntryAndGuide(t *testing.T) {
 // as a client receives them through the transport, and fails past the bound
 // saying the sizes it found. The session has a Jira connection, so its list
 // carries the time tools, 881 of its bytes (268 and 611, and the commas
-// that join them).
+// that join them); dashboard_widget is 304.
 func TestTrackerMCPToolListAndGuideStayWithinTheirBound(t *testing.T) {
 	t.Parallel()
-	const bound = 2_930
+	const bound = 3_235
 	app := newTestAppWithStore(t)
 	t.Cleanup(func() { _ = app.trackerMCPServer().Close() })
 	withTicketSource(t, app)
@@ -435,7 +435,7 @@ func TestTrackerMCPToolListAndGuideStayWithinTheirBound(t *testing.T) {
 
 // trackerToolListSum is the sha256 of the tracker tools' tools/list
 // result followed by their guide.
-const trackerToolListSum = "3061ade9c84a3caf7f014033087bbea50052c1e4aaf99e15c4fbe04ddf73e7be"
+const trackerToolListSum = "bb20c17711cb95ef4a4261dfd5dc09d7c3c50add06bf4741380ab4df95b641c0"
 
 // brokenPhaseThread is a workflow phase thread whose session scope cannot
 // be resolved: its attempt row names a phase its run's snapshot does not

@@ -5,7 +5,8 @@
   // whose label narrows the page when the bucket can. A bar's value shows
   // on hover and focus; a press or Enter opens its rows.
   import type { BucketValue } from '../../../../../bindings/agent-overflow/internal/trackerdash/models';
-  import { formatNum, numValue, numWords, type DashboardUnit, type Num } from '../../../stores/trackerDashboardModel';
+  import { formatNum, numValue, numWords, type Num } from '../../../stores/trackerDashboardModel';
+  import type { DashboardUnit } from '../../../utils/dashboardAmount';
   import { isLocalEnter } from '../../../utils/localEnter';
   import { band, labelEvery, SERIES_COLORS, valueScale } from './chartScale';
 

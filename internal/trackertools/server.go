@@ -10,7 +10,8 @@
 // It depends on the Tracker interface below, which the app implements over
 // trackerapp with each read and write bounded as the matching bound method
 // is, and on Host, the app's answers about the calling thread (whether it
-// may write, the person's approval, its timeline row, a create's board);
+// may write, the person's approval, its timeline row, the boards it can
+// reach);
 // never on internal/app or the store. Which sessions have the server, and
 // whether a capability URL still acts for its session, are the app's. The
 // read marks (marks.go) are the server's own state, per session.
@@ -31,6 +32,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/mcpargs"
 	"agent-overflow/internal/trackerapp"
+	"agent-overflow/internal/trackerdash"
 )
 
 // MCPServerName is the server's name in every provider's MCP configuration.
@@ -113,6 +115,10 @@ type Tracker interface {
 	// EndWrites refreshes what ctx's write session's writes changed
 	// (trackerapp.Service.EndWrites).
 	EndWrites(ctx context.Context) error
+
+	// TryWidget counts w on board of connection, which project lists, and
+	// with show proposes it there for thread (trackerapp.Service.TryWidget).
+	TryWidget(ctx context.Context, project, connection, board string, w trackerapp.KeptWidget, thread string, show bool) (trackerdash.Tried, error)
 }
 
 // WritePolicy is what a thread's change of tickets may do.
@@ -146,20 +152,24 @@ type Host interface {
 	// Drafted puts the row of a time_draft call that changed the draft in
 	// the thread's timeline.
 	Drafted(threadID string, row TimeRow)
-	// CreateBoards are the boards any project of this computer lists of
-	// tracker project project (its key), on every connection, each marked
-	// when the thread's project lists it, in the order the listings are.
-	CreateBoards(threadID, project string) ([]CreateBoard, error)
+	// Boards are the boards the projects of this computer list, on every
+	// connection, each marked when the thread's project lists it, in the
+	// order the listings are, and the thread's project ("" for none).
+	Boards(threadID string) (project string, boards []ListedBoard, err error)
 	// Live reports whether session is still thread's session with the
 	// tools: false once its capability was revoked.
 	Live(threadID, session string) bool
 }
 
-// CreateBoard is a board a create can go through: its connection and ID,
-// and whether the calling thread's project lists it.
-type CreateBoard struct {
+// ListedBoard is a board a project of this computer lists: its connection
+// and ID, its name, the tracker project its tickets are made in (its
+// key), and whether the calling thread's project lists it.
+type ListedBoard struct {
 	Connection, Board string
-	Thread            bool
+	// ConnectionLabel is the name the user gave the connection, "" for none.
+	ConnectionLabel      string
+	Name, TrackerProject string
+	Thread               bool
 }
 
 // Approval is a change the person approves before it is sent: the call's

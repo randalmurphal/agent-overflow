@@ -189,7 +189,7 @@ import {
 } from './threadTitleGeneration.svelte';
 import { applyPRReviewCILog, applyPRReviewCIUpdated, applyPRReviewUpdated } from './eventsPRReview';
 import { applyPipelineUpdated, applyPullsUpdated } from './eventsPulls';
-import { applyTrackerBoardUpdated, applyTrackerIssueUpdated, applyTrackerSetupUpdated, applyTrackerTimeEntriesUpdated } from './eventsTracker';
+import { applyTrackerBoardUpdated, applyTrackerDashboardsUpdated, applyTrackerIssueUpdated, applyTrackerSetupUpdated, applyTrackerTimeEntriesUpdated } from './eventsTracker';
 import { setupSessionImportEvents } from './eventsSessionImport';
 import {
   applyHighlightDiffSeed,
@@ -824,6 +824,9 @@ export function setupEventListeners(): () => void {
   // A time draft's entries changed: the weeks and the draft cards that
   // show its days and threads read again.
   const cancelTrackerTimeEntriesUpdated = wailsEventOn('tracker:time_entries_updated', applyTrackerTimeEntriesUpdated);
+  // A board's dashboards or its proposed widgets changed: an open
+  // Dashboards screen of that computer reads them again.
+  const cancelTrackerDashboardsUpdated = wailsEventOn('tracker:dashboards_updated', applyTrackerDashboardsUpdated);
   // workflow:* — the typed run-record channel. Item/phase transitions keep
   // the overlay's run cache live (and the sidebar's needs-attention badge
   // authoritative) without polling; engine-state carries the one global pause
@@ -945,6 +948,7 @@ export function setupEventListeners(): () => void {
     cancelTrackerIssueUpdated();
     cancelTrackerSetupUpdated();
     cancelTrackerTimeEntriesUpdated();
+    cancelTrackerDashboardsUpdated();
     cancelWorkflowError();
     cancelWorkflowItemState();
     cancelWorkflowPhaseState();

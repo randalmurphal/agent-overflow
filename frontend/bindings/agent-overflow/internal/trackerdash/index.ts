@@ -14,6 +14,7 @@ export {
     How,
     Name,
     PeriodView,
+    ProposalView,
     RangeOption,
     RangeView,
     Request,

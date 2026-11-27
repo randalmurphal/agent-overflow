@@ -144,6 +144,9 @@ type handle struct {
 	// setup names the status groups a board handle's reads apply: its
 	// project's, for its connection's site.
 	setup setupKey
+	// project is the project a board handle was subscribed for, whose
+	// thread Ask your agent makes (DashboardAsk).
+	project string
 }
 
 // Tie ties a subscription's handle to the client that holds it as the
@@ -246,16 +249,23 @@ func (s *Service) SubscriptionBoard(id string) (Scope, StatusGroups, error) {
 // boardHandle is board handle id's scope and the status groups it reads
 // with.
 func (s *Service) boardHandle(id string) (Scope, setupKey, error) {
+	scope, key, _, err := s.boardHandleProject(id)
+	return scope, key, err
+}
+
+// boardHandleProject is boardHandle with the project the handle was
+// subscribed for.
+func (s *Service) boardHandleProject(id string) (Scope, setupKey, string, error) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	h := s.subs.handles[id]
 	switch {
 	case h == nil:
-		return Scope{}, setupKey{}, fmt.Errorf("%w: %s", ErrUnknownSubscription, id)
+		return Scope{}, setupKey{}, "", fmt.Errorf("%w: %s", ErrUnknownSubscription, id)
 	case h.board == nil:
-		return Scope{}, setupKey{}, fmt.Errorf("%w: subscription %s is a ticket's, not a board's", ErrInvalidRequest, id)
+		return Scope{}, setupKey{}, "", fmt.Errorf("%w: subscription %s is a ticket's, not a board's", ErrInvalidRequest, id)
 	}
-	return h.board.scope, h.setup, nil
+	return h.board.scope, h.setup, h.project, nil
 }
 
 // SubscriptionCountsForTesting reports the board and ticket handles the

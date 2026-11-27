@@ -21,8 +21,11 @@ func (fakeProvider) Projects(context.Context) ([]Project, error) { return nil, n
 func (fakeProvider) BoardProjects(context.Context, BoardID) ([]Project, error) {
 	return nil, nil
 }
-func (fakeProvider) LinkTypes(context.Context) ([]LinkType, error)      { return nil, nil }
-func (fakeProvider) Fields(context.Context) ([]Field, error)            { return nil, nil }
+func (fakeProvider) LinkTypes(context.Context) ([]LinkType, error) { return nil, nil }
+func (fakeProvider) Fields(context.Context) ([]Field, error)       { return nil, nil }
+func (fakeProvider) PullRequests(context.Context, IssueID) ([]LinkedPullRequest, error) {
+	return nil, nil
+}
 func (fakeProvider) Boards(context.Context, ProjectID) ([]Board, error) { return nil, nil }
 func (fakeProvider) IssueTypes(context.Context, ProjectID) ([]IssueType, error) {
 	return nil, nil

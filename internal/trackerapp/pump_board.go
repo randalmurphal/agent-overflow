@@ -138,7 +138,7 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 	case !listed:
 		return BoardSubscription{}, fmt.Errorf("%w: project %s, board %s of %s", ErrNotListed, projectID, scope.Board, scope.Connection)
 	}
-	id, p, start, seq, told, key, err := s.takeBoardHandle(scope, slug, visible, tie)
+	id, p, start, seq, told, key, err := s.takeBoardHandle(projectID, scope, slug, visible, tie)
 	if err != nil {
 		return BoardSubscription{}, err
 	}
@@ -186,7 +186,7 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 // were last told of it then, and key the status groups the handle reads
 // with. The connection is read under opMu, so a turn off orders entirely
 // before (refused) or after (the pump ends).
-func (s *Service) takeBoardHandle(scope Scope, slug string, visible bool, tie Tie) (id string, p *boardPump, start bool, seq uint64,
+func (s *Service) takeBoardHandle(projectID string, scope Scope, slug string, visible bool, tie Tie) (id string, p *boardPump, start bool, seq uint64,
 	told SyncView, key setupKey, err error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -217,7 +217,7 @@ func (s *Service) takeBoardHandle(scope Scope, slug string, visible bool, tie Ti
 		s.subs.boards[scope] = p
 		start = true
 	}
-	h := &handle{board: p, untie: untie, setup: key}
+	h := &handle{board: p, untie: untie, setup: key, project: projectID}
 	s.takeHandleLocked(id, h, &p.core)
 	h.ref.VoteLocked(visible)
 	return id, p, start, s.nextSeqLocked(), p.toldLocked(), key, nil

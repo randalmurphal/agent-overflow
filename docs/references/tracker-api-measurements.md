@@ -138,7 +138,64 @@ Other:
   or `branch` returns pull requests (author, reviewers with approval,
   source and destination branch, status, URL, last update) and branches
   (last commit, repository). They are undocumented and can change without
-  notice.
+  notice. What Work reads of them is in
+  [Development data](#development-data).
+
+### Development data
+
+Measured 2026-11-26, read-only, with a classic API token (basic auth) on
+one Jira Cloud site whose forge integration is the GitLab.com app for
+Jira, whose instance type in these answers is
+`oAuth-gitlab-jira-connect-gitlab.com`. Key names and value types only.
+The endpoints are undocumented and can change without notice; the app's
+reader (`internal/tracker/jira/devstatus.go`) and the fake tracker answer
+only this shape.
+
+- `GET /rest/dev-status/latest/issue/summary?issueId=<numeric id>` answers
+  200 with `errors` and `configErrors` (arrays) and `summary`, whose keys
+  are `pullrequest`, `build`, `review`, `deployment-environment`,
+  `repository` and `branch`. `summary.pullrequest` holds `overall`
+  (`count` number, `lastUpdated` string, `stateCount` number, `state`
+  string, `dataType` string, `open` boolean) and `byInstanceType`, an
+  object keyed by instance type of `{count, name}`. An issue with no pull
+  request answers `summary.pullrequest` too, with `overall.count` 0,
+  `overall.lastUpdated` null and an empty `byInstanceType`. The endpoint
+  takes the issue's number, not its key.
+- `GET /rest/dev-status/latest/issue/detail?issueId=<id>&applicationType=<instance type>&dataType=pullrequest`
+  answers 200 with `errors` and `detail`, a list of instances, each with
+  `branches`, `pullRequests`, `repositories` and `_instance` (`name`,
+  `baseUrl`, `type`, `id`, `typeName`, `singleInstance`). A pull request
+  holds `author` (`name`, `avatar`), `id`, `name`, `commentCount`,
+  `source` (`branch`, `url`), `destination` (`branch`), `reviewers`
+  (`name`, `avatar`, `approved`), `status`, `url`, `lastUpdate`,
+  `repositoryId`, `repositoryName`, `repositoryUrl` and `ari`. A branch
+  holds `name`, `url`, `createPullRequestUrl`, `repository` (`id`, `name`,
+  `url`) and `lastCommit`. `dataType=branch` answered a body of the same
+  shape and size, branches and pull requests both.
+- Every pull request `url` seen was a gitlab.com merge request page, `/<group>/<project>/-/merge_requests/<number>` or
+  with a subgroup, and every `id` had the form `<group>/<project>!<number>`.
+  The `status` values seen were `MERGED`, `OPEN` and `DECLINED`. No
+  element was seen in `errors` or `configErrors`.
+- JQL `development[pullrequests].all > 0` and `.open` were accepted by
+  `POST /rest/api/3/search/jql`; `.declined` was refused (HTTP 400).
+- The field list holds one field whose `schema.custom` ends in
+  `devsummarycf`. On an issue its value is a string, not JSON: a prefix of
+  its own format, then `json={...}` holding the summary endpoint's shape
+  under `cachedValue` and an `isStale` flag. The app does not read it.
+- Unmeasured: what a site with no forge integration answers on the
+  summary (the app takes a 404 there, and a 200 with no
+  `summary.pullrequest`, as a site that keeps no development data: Work
+  says nothing and the cause is logged); a GitHub or other integration's
+  instance type and shape; a pull request with no `url` (counted with
+  the links Work cannot open) or no `status` (listed with no state, or
+  with the state a linked thread recorded); what `errors` and
+  `configErrors` hold (Work says how many, and none of their text); a
+  draft's status, and any
+  status but the three above; a token that lacks the "View development
+  tools" project permission; paging of a long list; rate limits; how long
+  the endpoints take to answer. The app shows a status it does not know
+  as Jira's word, says any other answer outside this shape as a failure
+  of Work's development data, and says a refusal with the endpoint.
 - A forge can be searched for a ticket key. GitLab's merge request list
   takes `search` with `in=title,description`, and `source_branch`
   ([merge requests API](https://docs.gitlab.com/17.9/api/merge_requests)).
@@ -810,7 +867,7 @@ changes each (20,000 at 2,000 issues), 100 sprints and 20 people
 | of which the store's fill | 30 ms (27 to 44) | 249 ms (244 to 277) |
 | Evaluation, this sprint | 38 ms (36 to 56) | 335 ms (309 to 370) |
 | Drill of the stuck tickets, first page of 100 rows | 23 ms (22 to 25) | 146 ms (142 to 158) |
-| Answer as JSON | 12,516 bytes | 12,518 bytes |
+| Answer as JSON (values only; the layout is the list's, measured after the list took it) | 2,147 bytes | 2,149 bytes |
 | Drill page as JSON | 17,924 bytes | 17,928 bytes |
 | Go allocations of one evaluation, last 5 sprints | 2.8 MB in 37,639 | 30.2 MB in 351,076 |
 

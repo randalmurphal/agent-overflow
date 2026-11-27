@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/jira"
 	"agent-overflow/internal/tracker/linear"
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -71,6 +72,12 @@ func TestClassifyFailureSortsEveryKind(t *testing.T) {
 			FailureTracker, "Jira answered HTTP 400"},
 		"a 500": {"tempo", &trackerapi.StatusError{Tracker: "tempo", Status: 500, Body: secret},
 			FailureTracker, "Tempo answered HTTP 500"},
+		"a development data answer not as measured": {"jira", fmt.Errorf("jiraprovider: development summary of 10001: %w", &jira.DevCallError{Path: "rest/dev-status/latest/issue/summary", Err: &jira.DevShapeError{Why: "it has no pull request count"}}),
+			FailureTracker, "Jira answered in a form Agent Overflow does not know (it has no pull request count); Jira does not document these endpoints, and they may have changed"},
+		"development data errors": {"jira", &jira.DevStatusError{Errors: 1},
+			FailureTracker, "Jira reported 1 error reading the site's forge integration; the ticket's development panel in Jira may say more"},
+		"development data errors and configuration errors": {"jira", &jira.DevStatusError{Errors: 2, ConfigErrors: 1},
+			FailureTracker, "Jira reported 2 errors reading the site's forge integration and 1 error in its configuration; the ticket's development panel in Jira may say more"},
 		"a body too large": {"jira", &trackerapi.BodyTooLargeError{Tracker: "jira", Limit: 1},
 			FailureTracker, "larger than Agent Overflow reads"},
 		// A Jira connection's time is answered by its linked Tempo
