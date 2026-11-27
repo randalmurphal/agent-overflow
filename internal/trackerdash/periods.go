@@ -60,7 +60,7 @@ func (p period) holds(at int64) bool { return at > p.from && at <= p.to }
 // before anything) until its until (none: still), at <= t < until. A
 // period's state is what holds at its end, a number's what holds now and
 // at the range's start; the widget and the drill both place states here
-// (placeStates).
+// (ranged.of).
 func (c contribution) holdsAt(t int64) bool {
 	return (!c.hasAt || c.at <= t) && (!c.hasUntil || t < c.until)
 }
@@ -290,25 +290,6 @@ func sprintDays(sprints []sprintRow, now time.Time, loc *time.Location) (days []
 	}
 	days[last].last = true
 	return days, label, ""
-}
-
-// placeStates sorts a state metric's rows into periods by period ID: a
-// period holds the rows that hold at its end (holdsAt), of its sprints
-// for a metric grouped by sprint. A future day holds none.
-func placeStates(m Metric, rows []contribution, periods []period) map[string][]contribution {
-	out := map[string][]contribution{}
-	for _, p := range periods {
-		if p.future {
-			continue
-		}
-		for _, c := range rows {
-			if c.holdsAt(p.to) && (m.Bucket != BucketSprint || slices.Contains(p.sprints, c.bucket)) {
-				c.period = p.label
-				out[p.id] = append(out[p.id], c)
-			}
-		}
-	}
-	return out
 }
 
 // value is rows' number in period p by r: none for a day still to come,

@@ -259,18 +259,50 @@ type contribution struct {
 }
 
 // rowSink gathers the rows of the metric that runs, charged against the
-// byte budget. One metric runs at a time on a session.
+// row limit and the byte budget. One metric runs at a time on a session.
+// A state metric's row is kept only when it holds at one of the instants
+// its widgets read (at); the limit and the budget count the rows kept.
 type rowSink struct {
 	cols columns
 	// series is the metric's declared series, which a row's series is one of.
 	series []string
+	at     heldAt
 	rows   []contribution
 	bytes  int
 	err    error
 }
 
-func (s *rowSink) reset(cols columns, series []string) {
-	s.cols, s.series, s.rows, s.bytes, s.err = cols, series, nil, 0, nil
+func (s *rowSink) reset(cols columns, series []string, at heldAt) {
+	s.cols, s.series, s.at, s.rows, s.bytes, s.err = cols, series, at, nil, 0, nil
+}
+
+// heldAt is the instants a state metric's widgets read, sorted, with
+// where they are in words for the row limit's sentence (reads.instants).
+type heldAt struct {
+	at    []int64
+	where string
+}
+
+// holdAny is whether state row c holds at one of the instants (holdsAt).
+func (in heldAt) holdAny(c contribution) bool {
+	i := 0
+	if c.hasAt {
+		i, _ = slices.BinarySearch(in.at, c.at)
+	}
+	return i < len(in.at) && c.holdsAt(in.at[i])
+}
+
+// errRows is the row limit's failure: of a state metric, the rows that
+// hold where its widgets read it, which the sentence says.
+func (in heldAt) errRows(state bool) *MetricError {
+	if !state {
+		return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows, its limit. Pick a shorter range.", maxRows), Limit: true}
+	}
+	advice := " Pick a shorter range."
+	if len(in.at) == 1 {
+		advice = ""
+	}
+	return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows that hold %s, its limit.%s", maxRows, in.where, advice), Limit: true}
 }
 
 func (s *rowSink) take() []contribution {
@@ -308,6 +340,15 @@ func (s *rowSink) add(onBoard driver.Value, args []driver.Value) error {
 		return s.err
 	}
 
+	if s.cols.state() {
+		if !s.at.holdAny(c) {
+			return nil
+		}
+	}
+	if len(s.rows) == maxRows {
+		s.err = s.at.errRows(s.cols.state())
+		return s.err
+	}
 	if len(c.note) > maxNote {
 		cut := maxNote
 		for cut > 0 && !utf8.RuneStart(c.note[cut]) {

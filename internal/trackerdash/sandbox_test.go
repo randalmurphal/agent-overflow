@@ -60,7 +60,7 @@ func runSQL(s *session, m Metric) ([]contribution, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.run(context.Background(), p, ms(testNow), 0)
+	return s.run(context.Background(), p, ms(testNow), 0, heldAt{})
 }
 
 // A metric's SQL reads the board's relations and calls the allowed
@@ -167,11 +167,11 @@ func TestTheDeadlineCountsThePrepare(t *testing.T) {
 	if p.took <= 0 || p.took > call {
 		t.Fatalf("the prepare recorded %v of a call of %v; want the time it took", p.took, call)
 	}
-	if rows, err := s.run(context.Background(), p, ms(testNow), 0); err != nil || len(rows) != 10 {
+	if rows, err := s.run(context.Background(), p, ms(testNow), 0, heldAt{}); err != nil || len(rows) != 10 {
 		t.Fatalf("the query after its own prepare: %d rows, %v", len(rows), err)
 	}
 	p.took = metricDeadline
-	_, err = s.run(context.Background(), p, ms(testNow), 0)
+	_, err = s.run(context.Background(), p, ms(testNow), 0, heldAt{})
 	var me *MetricError
 	if !errors.As(err, &me) || !me.Limit {
 		t.Fatalf("the query after a prepare that took the whole deadline: %v; want the limit's sentence", err)
@@ -507,7 +507,7 @@ func TestThePlanReaderRefusesWhatItCannotAttribute(t *testing.T) {
 		}
 		s.layout.columns["tickets"] = s.layout.columns["tickets"][:1]
 		_, err = s.prepare(metricOf(`SELECT id AS ticket FROM tickets WHERE type = 'Bug'`))
-		if err == nil || !strings.Contains(err.Error(), "could not tell what it reads of the board (Column 20 of tickets, which has 1)") {
+		if err == nil || !strings.Contains(err.Error(), "could not tell what it reads of the board (Column 21 of tickets, which has 1)") {
 			t.Errorf("a column past the layout's: %v; want the refusal naming it", err)
 		}
 		return nil

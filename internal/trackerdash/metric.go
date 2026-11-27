@@ -136,6 +136,13 @@ type Metric struct {
 	// table's columns follow; a row names one of them, and a metric that
 	// names none returns no series column.
 	Series []string `json:"series,omitempty"`
+	// Pace is a built-in's remaining work by day (the burndown): its line
+	// draws an even pace to zero and each point says what is left.
+	// Overlap is a built-in's whose series overlap, a ticket counting in
+	// several, so a table of it adds up no total. Neither is in a metric's
+	// JSON: a definition that names either is refused as an unknown field.
+	Pace    bool `json:"-"`
+	Overlap bool `json:"-"`
 }
 
 // Bounds of a metric's definition.

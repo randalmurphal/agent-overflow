@@ -20,11 +20,14 @@ import (
 )
 
 // A board's built-in dashboard at the sizes AO_TRACKER_SCALE names, one
-// board of n issues with 10 changes each and 100 sprints (the store's
-// scale fixture): the store's fill of a session alone, a whole
+// board of n issues with 10 changes each, five of them status changes,
+// and 13 dated two-week sprints, the last active (the store's fixture
+// with real times): every issue changed inside the window, and 10% of
+// them. It measures the store's fill of a session alone, a whole
 // evaluation (open, fill, seal, every metric, reduce) over the last 5
-// sprints and over this sprint, a drill's first page, the bytes of
-// each answer as JSON, and what an evaluation allocates. Each is the
+// sprints and over this sprint, a drill's first page, the bytes of each
+// answer as JSON, and what an evaluation allocates, once the burndown
+// has drawn a value and the sprint table counted a cell. Each is the
 // median and spread of 5 runs. Unset, the test is skipped.
 //
 //	AO_TRACKER_SCALE=2000 make go-test GO_TEST_PKGS=./internal/store \
@@ -39,22 +42,17 @@ func TestDashboardAtScale(t *testing.T) {
 		if err != nil || n < 100 {
 			t.Fatalf("AO_TRACKER_SCALE=%q: each size is a whole number of at least 100", env)
 		}
-		t.Run(fmt.Sprint(n), func(t *testing.T) { dashboardAtScale(t, n, 0) })
+		t.Run(fmt.Sprint(n, " all changed"), func(t *testing.T) { dashboardAtScale(t, n, 100) })
 		t.Run(fmt.Sprint(n, " recent 10%"), func(t *testing.T) { dashboardAtScale(t, n, 10) })
 	}
 }
 
-// dashboardAtScale measures a board of n issues: the scale fixture, every
-// change inside the window (the export binds none, so every change is
-// one a count can ask about), or with recent above zero the fixture with
-// real times, that percentage of the issues changed inside the window,
-// counted at its now.
+// dashboardAtScale measures a board of n issues of the fixture with real
+// times, recent percent of them changed inside the window, counted at its
+// now.
 func dashboardAtScale(t *testing.T, n, recent int) {
 	s, root, board := store.ScaleMirrorForTest(t, n, recent)
-	window, now := int64(0), time.Now
-	if recent > 0 {
-		window, now = store.BenchWindowForTest, func() time.Time { return time.UnixMilli(store.BenchNowForTest) }
-	}
+	window, now := store.BenchWindowForTest, func() time.Time { return time.UnixMilli(store.BenchNowForTest) }
 	var fills []time.Duration
 	fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
 		start := time.Now()
@@ -81,6 +79,22 @@ func dashboardAtScale(t *testing.T, n, recent int) {
 		t.Fatal(err)
 	}
 	b.Fill = fill
+	// What is measured draws the burndown and counts the sprint table.
+	drawn, err := e.Evaluate(ctx, b, trackerdash.Request{Dashboard: "overview_sprints", Range: trackerdash.RangeSprints5, TimeZone: "UTC"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range drawn.Widgets {
+		switch {
+		case w.ID == "burndown" && (w.Note != "" || len(w.Buckets) == 0 || w.Buckets[0].Cells[0].V == nil):
+			t.Fatalf("the burndown draws no start: %+v", w)
+		case w.ID == "sprint_scope" && !slices.ContainsFunc(w.Buckets, func(b trackerdash.BucketValue) bool {
+			return slices.ContainsFunc(b.Cells, func(c trackerdash.Num) bool { return c.V != nil && *c.V > 0 })
+		}):
+			t.Fatalf("the sprint table counts no cell: %+v", w.Buckets)
+		}
+	}
+	fills = nil
 	withoutIntervals := slices.DeleteFunc(slices.Clone(asked), func(r string) bool { return strings.HasSuffix(r, "_intervals") })
 	for _, copied := range []struct {
 		label     string
@@ -132,7 +146,6 @@ func dashboardAtScale(t *testing.T, n, recent int) {
 	// fixture: its first page of 100.
 	var times []time.Duration
 	var drill trackerdash.DrillAnswer
-	var err error
 	for range 5 {
 		start := time.Now()
 		drill, err = e.Drill(ctx, b, trackerdash.DrillRequest{Request: trackerdash.Request{Dashboard: "overview_sprints", Range: trackerdash.RangeSprints5, TimeZone: "UTC"}, Widget: "stuck"})

@@ -27,12 +27,14 @@ type fixture struct {
 	plansSprints bool
 	estimates    string
 	stmts        []string
+	// groups is each status's group, which its stays' open follows.
+	groups map[string]string
 	// reading is a board whose first read has not finished.
 	reading bool
 }
 
 func newFixture(plansSprints bool, estimates string) *fixture {
-	return &fixture{plansSprints: plansSprints, estimates: estimates}
+	return &fixture{plansSprints: plansSprints, estimates: estimates, groups: map[string]string{}}
 }
 
 func (f *fixture) exec(format string, args ...any) *fixture {
@@ -45,7 +47,15 @@ func (f *fixture) person(id, name string) *fixture {
 }
 
 func (f *fixture) status(id, name, group string) *fixture {
+	f.groups[id] = group
 	return f.exec(`INSERT INTO statuses VALUES ('%s', '%s', '%s')`, id, name, group)
+}
+
+// openGroup is whether a status of group counts as open, as the store's
+// rule sets tickets.open and status_intervals.open: not done, canceled or
+// left out, an unclassified status included.
+func openGroup(group string) int {
+	return map[bool]int{true: 1}[group != "done" && group != "canceled" && group != "left_out"]
 }
 
 func (f *fixture) sprint(id, name, state string, start, completed int64, position int) *fixture {
@@ -54,7 +64,8 @@ func (f *fixture) sprint(id, name, state string, start, completed int64, positio
 
 // ticket is one ticket; fields beyond the key name columns as SQL
 // literals: status, status_group, assignee, epic, created_at, updated_at,
-// points, history_from, started_at, done_at, status_since, resolved_at.
+// points, history_from, started_at, done_at, status_since, resolved_at;
+// behind is history_behind.
 // open and counts follow the group as the store's rules set them: open
 // unless done, canceled or left out; counted unless left out. A ticket
 // with a history shows its start unless startUnknown (it was in progress
@@ -63,7 +74,7 @@ type ticket struct {
 	id, key, status, group, assignee, epic                   string
 	created, updated, historyFrom, started, done, since, res int64
 	points                                                   string
-	startUnknown                                             bool
+	startUnknown, behind                                     bool
 }
 
 func (f *fixture) ticket(t ticket) *fixture {
@@ -72,14 +83,15 @@ func (f *fixture) ticket(t ticket) *fixture {
 	}
 	// The store's status interval now: the status from status_since.
 	if t.since > 0 && t.status != "" {
-		f.exec(`INSERT INTO status_intervals VALUES ('%s', '%s', %d, NULL)`, t.id, t.status, t.since)
+		f.exec(`INSERT INTO status_intervals(ticket, status, from_at, to_at, began, open) VALUES ('%s', '%s', %d, NULL, %d, %d)`,
+			t.id, t.status, t.since, t.since, openGroup(t.group))
 	}
 	return f.exec(`INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, parent, epic, created_at, updated_at,
-		resolved_at, status_since, points, history_from, started_known, started_at, done_at, open, counts)
-		VALUES ('%s', '%s', 'Title of %s', 0, '%s', '%s', %s, NULL, %s, %s, %d, %s, %d, %s, %s, %d, %s, %s, %d, %d)`,
+		resolved_at, status_since, points, history_from, history_behind, started_known, started_at, done_at, open, counts)
+		VALUES ('%s', '%s', 'Title of %s', 0, '%s', '%s', %s, NULL, %s, %s, %d, %s, %d, %s, %s, %d, %d, %s, %s, %d, %d)`,
 		t.id, t.key, t.key, t.status, t.group, quote(t.assignee), quote(t.epic), nullable(t.created), t.updated, nullable(t.res), t.since, t.points,
-		nullable(t.historyFrom), map[bool]int{true: 1}[t.historyFrom != 0 && !t.startUnknown], nullable(t.started), nullable(t.done),
-		map[bool]int{true: 1}[t.group != "done" && t.group != "canceled" && t.group != "left_out"], map[bool]int{true: 1}[t.group != "left_out"])
+		nullable(t.historyFrom), map[bool]int{true: 1}[t.behind], map[bool]int{true: 1}[t.historyFrom != 0 && !t.startUnknown], nullable(t.started),
+		nullable(t.done), openGroup(t.group), map[bool]int{true: 1}[t.group != "left_out"])
 }
 
 // dated is a sprint with its start and end dates (0 for none).
@@ -87,9 +99,17 @@ func (f *fixture) dated(id, name, state string, start, end, completed int64, pos
 	return f.exec(`INSERT INTO sprints VALUES ('%s', '%s', '%s', %s, %s, %s, %d)`, id, name, state, nullable(start), nullable(end), nullable(completed), position)
 }
 
-// stay is a ticket's status interval from from until to (0: now).
+// stay is a ticket's status interval from from until to (0: now), which
+// began at from.
 func (f *fixture) stay(ticket, status string, from, to int64) *fixture {
-	return f.exec(`INSERT INTO status_intervals VALUES ('%s', '%s', %d, %s)`, ticket, status, from, nullable(to))
+	return f.covered(ticket, status, from, to, from)
+}
+
+// covered is a ticket's status interval from from until to (0: now),
+// which began at began (0: before from, at a time not known).
+func (f *fixture) covered(ticket, status string, from, to, began int64) *fixture {
+	return f.exec(`INSERT INTO status_intervals(ticket, status, from_at, to_at, began, open) VALUES ('%s', '%s', %d, %s, %s, %d)`,
+		ticket, status, from, nullable(to), nullable(began), openGroup(f.groups[status]))
 }
 
 // stretch is a ticket's sprint interval at points (empty: none) from from
@@ -104,6 +124,13 @@ func (f *fixture) stretch(sprint, ticket, points string, from, to int64) *fixtur
 func (f *fixture) member(sprint, ticket string, done bool) *fixture {
 	f.exec(`INSERT INTO sprint_tickets VALUES ('%s', '%s')`, sprint, ticket)
 	return f.exec(`INSERT INTO sprint_finished VALUES ('%s', '%s', %d)`, sprint, ticket, map[bool]int{true: 1}[done])
+}
+
+// unsettled is a member of sprint whose status at its completion is not
+// known.
+func (f *fixture) unsettled(sprint, ticket string) *fixture {
+	f.exec(`INSERT INTO sprint_tickets VALUES ('%s', '%s')`, sprint, ticket)
+	return f.exec(`INSERT INTO sprint_finished VALUES ('%s', '%s', NULL)`, sprint, ticket)
 }
 
 func nullable(v int64) string {

@@ -128,13 +128,14 @@ CREATE TABLE main.board(name TEXT NOT NULL, plans_sprints INTEGER NOT NULL, esti
 CREATE TABLE main.statuses(id TEXT PRIMARY KEY, name TEXT NOT NULL, status_group TEXT) WITHOUT ROWID;
 -- type_level: 1 an epic, 0 a story, task or bug, -1 a subtask. assignee: a people.id. epic: an epics.id.
 -- points: the board's estimate, in board.estimates. history_from: changes are complete from then; NULL while not read.
+-- history_behind 1: it changed after its history was read; its sprint_intervals are left out until that is read again.
 -- started_known 1: the history shows when it started, started_at its first move into in_progress.
 -- done_at: its last move into done, for a ticket done now. open 1: the board counts it not done.
 -- counts 0: its status is left out of counts.
 -- type: the issue type's name (Bug); NULL on Linear, which has none: use labels. priority: its name (High), NULL for none; no order.
 CREATE TABLE main.tickets(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL, type_level INTEGER NOT NULL,
   status TEXT, status_group TEXT, assignee TEXT, parent TEXT, epic TEXT, created_at INTEGER, updated_at INTEGER, resolved_at INTEGER,
-  status_since INTEGER, points REAL, history_from INTEGER, started_known INTEGER NOT NULL, started_at INTEGER, done_at INTEGER,
+  status_since INTEGER, points REAL, history_from INTEGER, history_behind INTEGER NOT NULL, started_known INTEGER NOT NULL, started_at INTEGER, done_at INTEGER,
   open INTEGER NOT NULL, counts INTEGER NOT NULL, type TEXT, priority TEXT) WITHOUT ROWID;
 -- A ticket's labels by name, an unnamed one by its ID; a ticket with none has no row.
 CREATE TABLE main.labels(ticket TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (ticket, name)) WITHOUT ROWID;
@@ -147,14 +148,16 @@ CREATE TABLE main.sprint_tickets(sprint TEXT NOT NULL, ticket TEXT NOT NULL, PRI
 -- sprints.id as a JSON array, such as ["14","15"]) or estimate (from_number and to_number). author: a people.id.
 CREATE TABLE main.changes(ticket TEXT NOT NULL, kind TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, author TEXT,
   from_value TEXT, to_value TEXT, from_number REAL, to_number REAL, PRIMARY KEY (ticket, kind, seq)) WITHOUT ROWID;
--- Each member of a closed or active sprint; done 1 when it counted done at the sprint's completion, or for an active sprint now.
-CREATE TABLE main.sprint_finished(sprint TEXT NOT NULL, ticket TEXT NOT NULL, done INTEGER NOT NULL, PRIMARY KEY (sprint, ticket)) WITHOUT ROWID;
+-- Each member of a closed or active sprint; done 1 when it counted done at the sprint's completion, or for an active sprint now;
+-- NULL when its status at the completion is not known.
+CREATE TABLE main.sprint_finished(sprint TEXT NOT NULL, ticket TEXT NOT NULL, done INTEGER, PRIMARY KEY (sprint, ticket)) WITHOUT ROWID;
 CREATE TABLE main.people(id TEXT PRIMARY KEY, name TEXT NOT NULL) WITHOUT ROWID;
 -- status_intervals: a ticket's status from from_at until to_at (NULL: now), back to 180 days ago or an older sprint's start.
--- Where no row covers an instant, the status then is not known.
+-- Where no row covers an instant, the status then is not known. began: when the status began; NULL when before from_at,
+-- at a time not known. open 1: the board counts the status not done, as tickets.open.
 CREATE TABLE main.status_intervals(ticket TEXT NOT NULL, status TEXT NOT NULL, from_at INTEGER NOT NULL, to_at INTEGER,
-  PRIMARY KEY (ticket, from_at)) WITHOUT ROWID;
--- sprint_intervals: a ticket in a sprint at one estimate (points), likewise.
+  began INTEGER, open INTEGER NOT NULL, PRIMARY KEY (ticket, from_at)) WITHOUT ROWID;
+-- sprint_intervals: a ticket in a sprint at one estimate (points), likewise; none for a ticket whose history_behind is 1.
 CREATE TABLE main.sprint_intervals(sprint TEXT NOT NULL, ticket TEXT NOT NULL, points REAL, from_at INTEGER NOT NULL, to_at INTEGER,
   PRIMARY KEY (sprint, ticket, from_at)) WITHOUT ROWID;
 -- threads: the threads on this board's computer linked to a ticket. origin: start_work, ask, manual or agent. last_turn_at: its newest turn's start.
@@ -281,7 +284,7 @@ var mirrorExportFills = append([]mirrorExportFill{
 		strconv.Itoa(MirrorEstimateTime) + ` THEN 'time' ELSE 'none' END
 	  FROM tracker_cache_boards b WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`},
 	{relation: "tickets", name: "tickets", sql: `INSERT INTO main.tickets(id, key, title, type_level, status, status_group, assignee, parent, epic,
-	    created_at, updated_at, resolved_at, status_since, points, history_from, started_known, started_at, done_at, open, counts` + mirrorExportCardNames() + `)
+	    created_at, updated_at, resolved_at, status_since, points, history_from, history_behind, started_known, started_at, done_at, open, counts` + mirrorExportCardNames() + `)
 	  SELECT i.issue_id, i.issue_key, i.title, i.type_level, nullif(i.status_id, ''),
 	    ` + mirrorRegroupedGroupNameSQL(`coalesce((SELECT o.value FROM json_each(?3) o WHERE o.key = i.status_id),
 	      (SELECT st.status_group FROM tracker_cache_statuses st WHERE st.root_id = i.root_id AND st.status_id = i.status_id))`) + `,
@@ -290,6 +293,7 @@ var mirrorExportFills = append([]mirrorExportFill{
 	    nullif(i.created_at, 0), i.updated_at, nullif(i.resolved_at, 0), nullif(i.status_since, 0),
 	    iif(CAST(?5 AS INTEGER) = 1, ` + mirrorRowEstimate("CAST(?4 AS INTEGER)") + `, NULL),
 	    iif(i.history_for > 0, iif(i.history_from > 0, i.history_from, i.created_at), NULL),
+	    iif(i.history_for > 0 AND NOT ` + mirrorExportHistoryCurrent + `, 1, 0),
 	    iif(` + mirrorExportStartKnownSQL + `, 1, 0),
 	    iif(` + mirrorExportStartKnownSQL + `, ` + mirrorExportStatusChangeSQL("min", mirrorGroupStatusesSQL("?3", MirrorGroupInProgress)) + `, NULL),
 	    iif(i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `), ` + mirrorExportStatusChangeSQL("max", mirrorDoneStatusesSQL("?3")) + `, NULL),
@@ -332,7 +336,7 @@ var mirrorExportFills = append([]mirrorExportFill{
 	    SELECT sprint_id, completed_at FROM tracker_cache_sprints
 	     WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND state = ` + strconv.Itoa(MirrorSprintClosed) + ` AND completed_at > 0)
 	  INSERT INTO main.sprint_finished(sprint, ticket, done)
-	  SELECT l.sprint_id, i.issue_id, coalesce(` + mirrorStatusAtCompletionSQL + ` IN (` + mirrorDoneStatusesSQL("?3") + `), 0)
+	  SELECT l.sprint_id, i.issue_id, ` + mirrorStatusAtCompletionSQL + ` IN (` + mirrorDoneStatusesSQL("?3") + `)
 	  FROM l
 	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = CAST(?1 AS INTEGER) AND m.sprint_id = l.sprint_id
 	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = m.root_id AND b.board_id = ?2 AND b.issue_id = m.issue_id
