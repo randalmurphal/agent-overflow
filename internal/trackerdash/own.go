@@ -116,7 +116,7 @@ The query returns one row per ticket counted, one per bucket for a ticket in sev
 A query with no at or until, and no sprint or day bucket, counts what is true now.
 :now is now and :since where the range's periods begin, in milliseconds. days(a, b) and working_days(a, b) are the days between two instants; day(a) is its date, YYYY-MM-DD. Date functions, random and JSON functions are not available, and only SELECT reads these tables. A count stops at %v or past %d rows.
 reduce: count (distinct tickets), sum, median, average, average_of_period_sums (bucket period or sprint).
-unit: tickets, estimate (the board's points, or its time estimates in seconds), days. good: up or down, the direction that is good news; omit for neither.
+unit: tickets, estimate (the board's points, or its time estimates in seconds; each counted row is 1 ticket on a board without estimates or of a project that counts tickets), days. good: up or down, the direction that is good news; omit for neither.
 bucket: omit for none; period (needs at or until), sprint (a sprints.id), day (the active sprint's working days, needs at or until, no bucket column), person (a people.id), epic (an epics.id), text.
 series: up to %d names, the series column's values; a chart draws up to %d.
 form: number, bars, line (bucket period, sprint or day), table (needs a bucket), list. width: 3, 4, 6, 8 or 12 of 12 columns.

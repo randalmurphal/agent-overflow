@@ -1,6 +1,16 @@
 <script lang="ts" module>
-  import type { Setup, SetupView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+  import type { BoardChoice, Setup, SetupView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import type { SetupEdit } from '../../stores/trackerSetup.svelte';
+
+  /** Why a page of a Jira project's settings does not apply to a project
+   * whose boards are `boards`: it lists none, and a Jira board is added
+   * `toDo`, or only Linear ones (`linear`); null when it lists a Jira
+   * board. Its setup keeps what it holds for when it lists one (the
+   * frame's `none`). */
+  export function jiraOnly(boards: readonly Pick<BoardChoice, 'connection_kind'>[], toDo: string, linear: string): string | null {
+    if (boards.some((b) => b.connection_kind === 'jira')) return null;
+    return boards.length === 0 ? `This project lists no boards. Add a Jira board in Boards ${toDo}.` : linear;
+  }
 
   /** What a page's body is given: the project, its setup as stored, why
    * a control takes no change (empty when it does), and the save of an

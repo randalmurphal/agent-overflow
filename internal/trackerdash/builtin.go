@@ -8,11 +8,12 @@ const (
 	builtinWeeksID   = "overview_weeks"
 )
 
-// weightOf is an estimate points (an SQL expression) on a board with
-// one, a ticket on a board without, so a metric of the estimate counts
-// tickets there, as the Backlog's pace does. weight is a ticket t's.
+// weightOf is an estimate points (an SQL expression), zero for none.
+// Where the board counts tickets the evaluator counts each counted row as
+// one (evaluation.run), as the Backlog's pace does. weight is a ticket
+// t's.
 func weightOf(points string) string {
-	return `iif((SELECT estimates FROM board) = 'none', 1, coalesce(` + points + `, 0))`
+	return `coalesce(` + points + `, 0)`
 }
 
 var weight = weightOf("t.points")
@@ -214,7 +215,7 @@ func builtin(k Kind) (Dashboard, map[string]Metric) {
 			Name:  "finished_by_sprint",
 			Title: "Usual pace",
 			Words: []string{
-				"The estimate of the tickets whose status counted as done when their sprint was completed, by the board's estimates now; a board without estimates counts the tickets.",
+				"The estimate of the tickets whose status counted as done when their sprint was completed, by the board's estimates now; a board without estimates, or of a project that counts tickets, counts the tickets.",
 				"The active sprint counts the tickets done so far.",
 			},
 			SQL: `SELECT f.ticket AS ticket, ` + weight + ` AS value, f.sprint AS bucket
@@ -244,7 +245,7 @@ FROM tickets t WHERE t.id IN ` + activeMembers + ` AND t.open = 1`,
 			Name:  "finished_by_week",
 			Title: "Usual pace",
 			Words: []string{
-				"The estimate of the tickets finished each week (moved into a done status for the last time, or resolved), by the board's estimates now; a board without estimates counts the tickets.",
+				"The estimate of the tickets finished each week (moved into a done status for the last time, or resolved), by the board's estimates now; a board without estimates, or of a project that counts tickets, counts the tickets.",
 				"A done ticket whose finish time is not known is listed and not counted.",
 			},
 			SQL: `SELECT t.id AS ticket, iif(` + finishedAt + ` IS NULL, NULL, ` + weight + `) AS value, ` + finishedAt + ` AS at,

@@ -753,7 +753,18 @@ func (ev *evaluation) run(ctx context.Context, m Metric, p prepared, n narrowing
 	if err != nil {
 		return counted{}, fmt.Errorf("count metric %s: %w", m.Name, err)
 	}
-	return counted{p: p, rows: ev.keep(n, p.cols, rows)}, nil
+	rows = ev.keep(n, p.cols, rows)
+	if m.numbersUnit() == UnitEstimate && ev.estimates == "none" {
+		// The board counts tickets (it has no estimates, or its project
+		// counts tickets): each counted row is one ticket, whatever value
+		// the query gave it, and a row it did not count stays uncounted.
+		for i := range rows {
+			if rows[i].counted {
+				rows[i].value = 1
+			}
+		}
+	}
+	return counted{p: p, rows: rows}, nil
 }
 
 // opened is an evaluation begun: its session, the deadline's context, the

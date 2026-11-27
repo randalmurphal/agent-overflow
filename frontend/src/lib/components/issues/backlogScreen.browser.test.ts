@@ -60,7 +60,7 @@ const COLUMNS = [
 /** Sprint 8, active, with three rows, and a backlog of 2,000 read whole. */
 function backlogBoard(): BoardView {
   return {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' }, counts: 'points',
     columns: COLUMNS, sprints: [{ id: '8', name: 'Sprint 8', state: 'active', total: { rows: 3, estimate: 6 } }],
     all: { rows: ROWS + 3, estimate: (ROWS + 3) * 2 }, backlog: { rows: ROWS, estimate: ROWS * 2 }, sync: { read_at: 1 },
     screen: [{ kind: 'sprint', sprint: '8' }],
@@ -75,7 +75,7 @@ function backlogBoard(): BoardView {
 /** A kanban board whose To Do column holds the 2,000. */
 function columnBoard(): BoardView {
   return {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' }, counts: 'points',
     columns: [{ ...COLUMNS[0], total: { rows: ROWS, estimate: ROWS * 2 } }, COLUMNS[1]], sprints: [],
     all: { rows: ROWS, estimate: ROWS * 2 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 1 },
     screen: [0, 1].map((column) => ({ kind: 'column', column })), plan: [],
@@ -251,6 +251,21 @@ function watchRows(host: HTMLElement): { changes: () => string[]; stop: () => vo
 }
 
 describe('a ticket made at a sprint\'s foot', () => {
+  it('says a section\'s numbers in tickets for a project that counts tickets, each row keeping its points and the backlog its tickets with no estimate', async () => {
+    const view = backlogBoard();
+    const small = { ...view, counts: 'none', backlog: { rows: 2, estimate: 4, unestimated: 1 }, sections: [view.sections[0], { section: { kind: 'backlog' }, rows: MANY.slice(0, 2), next: null }] } as unknown as BoardView;
+    const { host } = await mountBacklog('jira', small);
+    const numbers = () => host.querySelector<HTMLElement>('[data-testid="issues-backlog-section"][data-list="backlog"] [data-testid="issues-backlog-numbers"]')?.textContent?.replace(/\s+/g, ' ').trim();
+    await waitFor(() => numbers() !== undefined, 'the backlog\'s numbers');
+    // A ticket with no estimate is still one: the board has estimates.
+    expect(numbers()).toBe('2 tickets · 1 without an estimate');
+    expect(host.querySelector('[data-testid="issues-backlog-row"] [data-testid="issues-card-estimate"]')?.textContent).toBe('2');
+    // Complete sprint counts what is done in tickets too.
+    host.querySelector<HTMLElement>('[data-testid="issues-backlog-section"][data-list="sprint:8"] [data-testid="issues-backlog-sprint-complete"]')!.click();
+    await waitFor(() => document.querySelector('[data-testid="sprint-complete-summary"]') !== null, 'the Complete sprint form');
+    expect(document.querySelector('[data-testid="sprint-complete-summary"]')!.textContent?.replace(/\s+/g, ' ').trim()).toMatch(/^0 of 3 tickets done\./);
+  });
+
   it('is offered its move into the sprint until the board shows it there, and the row\'s menu placing it ends the offer', async () => {
     const made = { order: 'k00003', estimate: 0, card: { id: '9001', key: 'WEB-9001', title: 'Made here', status: { id: 's1', name: 's1', group: 'todo' }, created: 0, updated: 0 } } as RowView;
     const view = backlogBoard();

@@ -644,7 +644,7 @@ describe('transport gap — the tracker board channel', () => {
     const phases: string[] = [];
     const off = onBackendRecovery((backend, phase) => phases.push(`${backend}:${phase}`));
     const view = {
-      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'none' },
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'none' }, counts: 'none',
       columns: [], sprints: [], all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {}, screen: [], sections: [],
     };
     setBindingMock('SubscribeTrackerBoard', async () => ({ id: 'sub-1', seq: 4, loaded: true, view, poll_every: 10_000 }));

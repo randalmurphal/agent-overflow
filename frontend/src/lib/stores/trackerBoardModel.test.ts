@@ -141,7 +141,7 @@ function sprintBoard(rowsBySprint: Record<string, RowView[]>, more: string[] = [
     { name: 'In Progress', statuses: [{ id: 's2', group: 'in_progress' }], total: { rows: 0, estimate: 0 } },
   ];
   const view = {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' }, counts: 'points',
     columns, sprints: [...Object.keys(rowsBySprint), ...unread].map((id) => ({ id, name: id, state: 'active', total: { rows: 0, estimate: 0 } })),
     all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {},
     screen: [...Object.keys(rowsBySprint), ...unread].map((id) => ({ kind: 'sprint', sprint: id })),
@@ -234,7 +234,7 @@ describe('a moved card on the Board screen', () => {
       { name: 'Done', statuses: [{ id: 's3', group: 'done' }], total: { rows: 0, estimate: 0 } },
     ];
     const view = {
-      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' },
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' }, counts: 'points',
       columns, sprints: [], all: { rows: 3, estimate: 6 }, backlog: { rows: 0, estimate: 0 }, sync: {}, regrouped: Object.fromEntries(leftOut.map((s) => [s, 'left_out'])),
       screen: [0, 1, 2].map((column) => ({ kind: 'column', column })),
       sections: [
@@ -331,7 +331,7 @@ function planBoard(rows: { '8': RowView[]; '9'?: RowView[]; backlog?: RowView[] 
   const sprint = (id: string, state: string) => ({ id, name: `Sprint ${id}`, state, total: { rows: 0, estimate: 0 } });
   const page = (section: object, held: RowView[]) => ({ section, rows: held, next: null });
   const view = {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' }, counts: 'points',
     columns, sprints: [sprint('8', 'active'), sprint('9', 'future')],
     all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {},
     screen: [{ kind: 'sprint', sprint: '8' }],

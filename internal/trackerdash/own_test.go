@@ -3,6 +3,7 @@ package trackerdash
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -309,4 +310,28 @@ func TestRulesNameTheFieldsAndTheRelations(t *testing.T) {
 		}
 	}
 	t.Logf("rules: %d bytes", len(rules))
+}
+
+// A widget of the estimate counts each counted row as one ticket where the
+// board counts tickets, whatever value its query gave the row, and a row
+// it did not count stays uncounted; on a points board it adds the values.
+// Of three tickets valued 2.5, 2.5 and NULL: 5 points, or 2 tickets, with
+// one not counted either way.
+func TestAnEstimateWidgetCountsTicketsWhereTheBoardCountsTickets(t *testing.T) {
+	t.Parallel()
+	m := Metric{Name: "w_1", Title: "Estimate", Words: []string{"The estimate of the tickets."}, Reduce: ReduceSum, Unit: UnitEstimate,
+		SQL: "SELECT id AS ticket, iif(key = 'WEB-3', NULL, 2.5) AS value FROM tickets"}
+	for estimates, want := range map[string]string{"points": "5, 1 not counted", "none": "2, 1 not counted"} {
+		f := newFixture(false, estimates).status("3", "In progress", "in_progress")
+		for i := 1; i <= 3; i++ {
+			f.ticket(ticket{id: fmt.Sprintf("t%d", i), key: fmt.Sprintf("WEB-%d", i), status: "3", group: "in_progress", created: ago(3)})
+		}
+		got, err := evaluator().Try(context.Background(), f.board(), Widget{Form: FormNumber, Width: 3}, m, "UTC")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if num(got.Value.Value) != want {
+			t.Errorf("on a board whose estimates are %s: %s; want %s", estimates, num(got.Value.Value), want)
+		}
+	}
 }

@@ -135,7 +135,9 @@ type FailureView struct {
 // its sections (All its rows) at its TotalsRevision, its sync state, the
 // sections the Board screen shows (Screen) and the Backlog screen shows
 // (Plan), the pace of its last finished sprints (Pace, nil for a board
-// that plans none or has finished none), and the first page of each
+// that plans none or has finished none), the unit the project counts its
+// work in (Counts: the estimate's unit, or none when the project counts
+// tickets, Estimates; a card's own estimate keeps Estimate's), and the first page of each
 // section read, at the board's Lifetime and Revision (which a patch moves
 // forward, BoardPatch). Groups is the version of the status groups the
 // project gives the board's site (StatusGroups), which the sections and
@@ -161,6 +163,7 @@ type BoardView struct {
 	Project        string            `json:"project,omitempty"`
 	PlansSprints   bool              `json:"plans_sprints"`
 	Estimate       EstimateView      `json:"estimate"`
+	Counts         string            `json:"counts"`
 	Columns        []ColumnView      `json:"columns"`
 	Sprints        []SprintView      `json:"sprints"`
 	All            SectionTotal      `json:"all"`
@@ -323,7 +326,7 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 			pages[i].Rows[j].Card, views = views[0], views[1:]
 		}
 	}
-	v := boardViewOf(snap.Structure, snap.Counts, names)
+	v := boardViewOf(snap.Structure, snap.Counts, names, groups)
 	v.Lifetime, v.Revision, v.TotalsRevision = snap.Structure.Lifetime, snap.Counts.Revision, snap.Counts.TotalsRevision
 	v.Groups, v.Regrouped = groups.version, groups.statuses
 	sync, _, err := s.store.GetMirrorSync(root, string(scope.Board), s.steady().UnixMilli())
@@ -342,12 +345,14 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 }
 
 // boardViewOf is the board view of m with the totals counts, without its
-// sync state and sections; names names the columns' statuses.
-func boardViewOf(m store.MirrorStructure, counts store.MirrorSectionCounts, names catalogNames) BoardView {
+// sync state and sections; names names the columns' statuses, and groups
+// is how the project counts the board.
+func boardViewOf(m store.MirrorStructure, counts store.MirrorSectionCounts, names catalogNames, groups StatusGroups) BoardView {
 	st := structureOf(m, tracker.Catalog{})
 	v := BoardView{
 		ID: string(st.Board.ID), Name: st.Board.Name, Project: string(st.Board.Project), PlansSprints: st.Board.Sprints,
-		Estimate: EstimateView{Unit: nameOf(unitNames[:], st.Estimate.Unit)}, All: totalOf(counts.All), Backlog: totalOf(counts.Backlog),
+		Estimate: EstimateView{Unit: nameOf(unitNames[:], st.Estimate.Unit)}, Counts: nameOf(unitNames[:], groups.unit(st.Estimate.Unit)),
+		All: totalOf(counts.All), Backlog: totalOf(counts.Backlog),
 		Columns: []ColumnView{}, Sprints: []SprintView{}, Sections: []SectionPage{},
 	}
 	for _, ch := range st.Estimate.Choices {

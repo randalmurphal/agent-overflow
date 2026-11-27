@@ -59,8 +59,12 @@ export interface BoardShape {
   /** The tracker project the board shows; empty for a board of several. */
   readonly project: string;
   readonly plansSprints: boolean;
-  /** none, points, or time (seconds). */
+  /** A card's own estimate: none, points, or time (seconds). */
   readonly unit: string;
+  /** The unit the project sums the board's work in (`BoardView.counts`):
+   * `unit`, or none when the project counts tickets. Every total, the
+   * pace and a person's load read it; a card's estimate reads `unit`. */
+  readonly counts: string;
   readonly columns: readonly ColumnView[];
   readonly sprints: readonly SprintView[];
   /** A card's address less its key; empty when cards carry their own
@@ -121,6 +125,7 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView,
       project: view.project ?? '',
       plansSprints: view.plans_sprints,
       unit: view.estimate.unit,
+      counts: view.counts,
       columns: view.columns,
       sprints: view.sprints,
       issueURL: view.issue_url ?? '',
