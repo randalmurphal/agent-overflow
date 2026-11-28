@@ -472,9 +472,9 @@
   // scrolled into view (a script's scrollIntoView, a focus move, a find) in
   // a pane still gliding in or one the strip does not show, and it would
   // leave the strip between two panes or on one nobody opened. A glide
-  // carries on over it (`yields`); a resting strip is put back in the
-  // scroll's own event, so no frame paints the move, and when a reveal
-  // ends short of its pane (`heading`). A strip at another width waits for
+  // writes its next position over it (`yields`); a resting strip is put
+  // back in the scroll's own event, and when a reveal ends short of its
+  // pane (`heading`). Either way no frame paints the move. A strip at another width waits for
   // its observer, as the measurement does.
   function restCompactStrip(): void {
     const el = hostEl;
