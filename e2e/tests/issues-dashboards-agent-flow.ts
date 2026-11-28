@@ -310,9 +310,17 @@ export function registerDashboardAgentFlow({ compact }: DashboardAgentSurface): 
     // With no provider whose agents get the tracker tools turned on, Ask
     // says which to turn on.
     await expect(screen.getByTestId('dashboard-ask')).toBeEnabled();
+    // Settings are the worker's backend's and outlive the test's reset:
+    // the providers go back on however the test ends, or a later test's
+    // agent on this backend is refused its spawn.
+    const before = await harness.rpc<{ claudeEnabled: boolean; codexEnabled: boolean }>('GetSettings');
     await harness.rpc('UpdateSettings', { claudeEnabled: false, codexEnabled: false });
-    await expect(screen.getByTestId('dashboard-ask')).toBeDisabled();
-    await expect(screen.getByTestId('dashboard-ask')).toHaveAttribute('title', 'Ask your agent needs a provider whose agents get the tracker tools, turned on in Settings and installed on this computer.');
+    try {
+      await expect(screen.getByTestId('dashboard-ask')).toBeDisabled();
+      await expect(screen.getByTestId('dashboard-ask')).toHaveAttribute('title', 'Ask your agent needs a provider whose agents get the tracker tools, turned on in Settings and installed on this computer.');
+    } finally {
+      await harness.rpc('UpdateSettings', { claudeEnabled: before.claudeEnabled, codexEnabled: before.codexEnabled });
+    }
   });
 
   test('a proposal of your logged time reads the window\'s days from the tracker, shows your hours and their change, and Refresh reads time logged in Jira since', async ({ harness, page }) => {

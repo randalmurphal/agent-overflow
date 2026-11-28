@@ -131,19 +131,18 @@ async function showTime(page: Page, compact: boolean): Promise<Locator> {
     }
   }
   await expect(time).toBeVisible({ timeout: 30_000 });
-  await expect(time).toBeInViewport({ ratio: 1 });
+  await expect(page.locator('[data-pane-kind="issues"]')).toBeInViewport({ ratio: 1 });
   return time;
 }
 
-/** A card's Review in Time, pressed: the Time screen it opens, once it is
- * wholly on screen. On compact the strip glides to the Issues pane, and a
- * tap inside it before it lands is one Playwright retries by scrolling the
- * target into view, which moves the strip back toward the thread. */
+/** A card's Review in Time, pressed: the Time screen it opens, once its
+ * pane is wholly on screen. On compact the strip glides to the Issues
+ * pane, which fills the screen only when the glide has landed. */
 async function reviewInTime(page: Page, card: Locator, compact: boolean): Promise<Locator> {
   await press(card.getByTestId('time-draft-card-review'), compact);
   const time = page.getByTestId('issues-pane').getByTestId('time-screen');
   await expect(time).toBeVisible({ timeout: 30_000 });
-  await expect(time).toBeInViewport({ ratio: 1 });
+  await expect(page.locator('[data-pane-kind="issues"]')).toBeInViewport({ ratio: 1 });
   return time;
 }
 
@@ -205,6 +204,20 @@ export function registerIssuesTimeDraftFlow({ compact }: TimeDraftSurface): void
     const banner = time.getByTestId('time-draft-banner');
     await expect(banner.getByTestId('time-draft-banner-title')).toHaveText('Your agent drafted 2 days', { timeout: 30_000 });
     await expect(banner.getByTestId('time-draft-banner-detail')).toHaveText('3 entries · 4h 30m · 1 question · from the thread "Timesheet"');
+    // A control of Time scrolled to the screen's far edge, as a tap that
+    // Playwright retries is, moves the compact strip under the pane. The
+    // strip goes back, so Time is still the pane shown when the agent
+    // drafts again below.
+    if (compact) {
+      const strip = page.getByTestId('pane-host');
+      const shown = await strip.evaluate((el) => el.scrollLeft);
+      const moved = await time.locator(`[data-testid="time-day-tab"][data-day="${D1}"]`).evaluate((el) => {
+        el.scrollIntoView({ block: 'end', inline: 'end' });
+        return el.closest('[data-testid="pane-host"]')?.scrollLeft;
+      });
+      expect(moved, 'the scroll moved the strip').not.toBe(shown);
+      await expect.poll(() => strip.evaluate((el) => el.scrollLeft)).toBe(shown);
+    }
     const d1 = await byDay(time, D1, compact);
     expect(await draftRows(d1)).toEqual(['WEB-1 1h 30m', 'WEB-2 1h']);
     await expect(d1.getByTestId('time-draft-entry').first()).toHaveAttribute('data-state', 'drafted');

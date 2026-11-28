@@ -17,6 +17,12 @@ export interface PaneStripRevealOptions {
    * The owner decides what happens to the reveal instead.
    */
   held: (paneId: string) => boolean;
+  /**
+   * Whether a glide yields to a scroll it did not make. It does on a strip
+   * a person scrolls. On one that only reveals move, it carries on to its
+   * pane from where that scroll left the strip.
+   */
+  yields: () => boolean;
 }
 
 export interface PaneStripReveal {
@@ -32,6 +38,8 @@ export interface PaneStripReveal {
   resolveAfterLayout(): void;
   /** A reveal is requested or on its way. */
   readonly active: boolean;
+  /** Whether the strip is where a reveal last put it. */
+  placed(el: HTMLElement): boolean;
 }
 
 /**
@@ -75,12 +83,20 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
   let currentLeft = 0;
   let lastTs: number | null = null;
   let frame = 0;
-  // The strip's scrollLeft as the glide last left it, read back after each
-  // write (the browser rounds). A different value on the next frame means
-  // something else scrolled the strip: a scroll-into-view, a scrollbar drag,
-  // a keyboard scroll. The glide yields to it rather than writing its own
-  // position back over the move.
-  let leftAsWritten = 0;
+  // The strip's scrollLeft as a reveal last left it (a glide's frame, its
+  // landing, a snap), read back after each write (the browser rounds). A
+  // different value means something else scrolled the strip: a
+  // scroll-into-view, a scrollbar drag, a keyboard scroll.
+  let leftAsWritten = Number.NaN;
+
+  function placed(el: HTMLElement): boolean {
+    return Math.abs(el.scrollLeft - leftAsWritten) <= 0.5;
+  }
+
+  function place(el: HTMLElement, left: number): void {
+    el.scrollLeft = left;
+    leftAsWritten = el.scrollLeft;
+  }
 
   function cancelGlide(): void {
     if (frame) paneStripRevealFrames.cancel(frame);
@@ -97,21 +113,25 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
       frame = 0;
       return;
     }
-    if (Math.abs(el.scrollLeft - leftAsWritten) > 0.5) {
-      cancelGlide();
-      return;
+    if (!placed(el)) {
+      // A glide that yields leaves the strip to the scroll rather than
+      // writing its own position back over the move.
+      if (options.yields()) {
+        cancelGlide();
+        return;
+      }
+      currentLeft = el.scrollLeft;
     }
     const dt = lastTs === null ? 16 : Math.min(GLIDE_MAX_FRAME_MS, Math.max(0, ts - lastTs));
     lastTs = ts;
     const alpha = 1 - Math.exp(-dt / GLIDE_TIME_CONSTANT_MS);
     currentLeft += (targetLeft - currentLeft) * alpha;
     if (Math.abs(targetLeft - currentLeft) < GLIDE_ARRIVED_PX) {
-      el.scrollLeft = targetLeft;
+      place(el, targetLeft);
       cancelGlide();
       return;
     }
-    el.scrollLeft = currentLeft;
-    leftAsWritten = el.scrollLeft;
+    place(el, currentLeft);
     frame = paneStripRevealFrames.request(step);
   }
 
@@ -151,7 +171,7 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
     if (!el) return;
     cancelGlide();
     const target = revealTarget(el, paneEl, el.scrollLeft);
-    if (target !== null) el.scrollLeft = clampStripScrollLeft(el, target.left);
+    if (target !== null) place(el, clampStripScrollLeft(el, target.left));
   }
 
   function glideIntoView(paneEl: HTMLElement, paneId: string): void {
@@ -219,5 +239,6 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
     get active() {
       return targetLeft !== null || pendingPaneId !== null;
     },
+    placed,
   };
 }

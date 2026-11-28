@@ -112,6 +112,7 @@
     getHostEl: () => hostEl,
     slotOf: paneSlotById,
     held: revealHeldByPromotion,
+    yields: () => !untrack(() => compact),
   });
   const promotion = createPanePromotion({
     getHostEl: () => hostEl,
@@ -214,13 +215,17 @@
     if (!el) return;
     const publishScrollPosition = (): void => {
       promotion.holdStrip(el);
+      // A scroll no reveal made does not move a compact strip.
+      if (!reveal.placed(el)) restCompactStrip();
       measureCompactShownPane();
     };
     // A horizontal wheel/trackpad gesture over the strip is user scroll
     // intent — it wins over an in-flight reveal glide. Vertical wheel
     // (timeline scrolling inside a pane) bubbles here too and must NOT
     // cancel, or reveals would abort whenever content is scrolled mid-glide.
+    // The compact strip does not scroll by wheel, so its glide lands.
     const cancelGlideOnUserScroll = (event: WheelEvent): void => {
+      if (untrack(() => compact)) return;
       if (event.deltaX !== 0 || event.shiftKey) reveal.cancelGlide();
     };
     const obs = new ResizeObserver((entries) => {
@@ -307,6 +312,7 @@
     }
     // Sections came, went or moved under the strip's position.
     measureCompactShownPane();
+    restCompactStrip();
 
     let secondHandle = 0;
     const firstHandle = requestAnimationFrame(() => {
@@ -392,14 +398,14 @@
   // (`isPaneOnScreen`) is a measurement of this strip, written only here:
   // the pane whose section holds the strip's centre. It runs wherever the
   // strip's position or its sections change: every scroll event (each
-  // glide frame, a glide's landing, a snap, a native scroll-into-view that
-  // abandons a glide), a structure change and entering compact. So it never
-  // names a pane the strip moved away from. A reveal does not write it: the
-  // reveal moves the strip and the record follows. Reads the published
-  // snapshot, no DOM walk, and the store write is a no-op unless the pane
-  // under the centre changed. A snapshot from another width says nothing
-  // about this position: the strip resized and its observer has not run,
-  // and that observer realigns to the pane recorded before the resize.
+  // glide frame, a glide's landing, a snap), a structure change and
+  // entering compact. So it never names a pane the strip moved away from.
+  // A reveal does not write it: the reveal moves the strip and the record
+  // follows. Reads the published snapshot, no DOM walk, and the store
+  // write is a no-op unless the pane under the centre changed. A snapshot
+  // from another width says nothing about this position: the strip resized
+  // and its observer has not run, and that observer realigns to the pane
+  // recorded before the resize.
   function measureCompactShownPane(): void {
     const el = hostEl;
     if (!el || !untrack(() => compact)) return;
@@ -417,8 +423,30 @@
     noteCompactPaneShown(shown);
   }
 
+  // On compact only a reveal moves the strip, which nobody can scroll by
+  // hand, and it rests on the pane recorded. Any other scroll is a control
+  // scrolled into view (a script's scrollIntoView, a focus move, a find) in
+  // a pane still gliding in or one the strip does not show, and it would
+  // leave the strip between two panes or on one nobody opened. A glide
+  // carries on over it (`yields`); a resting strip is put back in the
+  // scroll's own event, so no frame paints the move. A glide whose pane
+  // closed under it stops where it was, and the strip goes to the pane
+  // measured there. A strip at another width waits for its observer, as
+  // the measurement does.
+  function restCompactStrip(): void {
+    const el = hostEl;
+    if (!el || !untrack(() => compact) || reveal.active || promotion.shownId !== null) return;
+    if (el.clientWidth !== stripGeometry.width) return;
+    const shown = untrack(compactShownPaneId);
+    if (shown === null) return;
+    const left = stripGeometry.offsets.get(shown);
+    if (left === undefined || Math.abs(el.scrollLeft - left) <= 0.5) return;
+    const paneEl = paneSlotById(shown);
+    if (paneEl) reveal.snap(paneEl);
+  }
+
   // A resize (a rotation, the keyboard opening) keeps the pane the record
-  // measured before it, the one place the record leads the strip: the old
+  // measured before it, the other place the record leads the strip: the old
   // offset can put another pane, or two halves, under the resized strip.
   // The snap's scroll event measures the result. A reveal on its way keeps
   // its glide, which `reconcilePaneHostGeometry` re-resolved to its pane.
