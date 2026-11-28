@@ -30,6 +30,18 @@ export async function waitFor(
   }
 }
 
+// Wait until the virtual lists under `root` have placed their rows. A row
+// mounts hidden until its first measurement, and a measurement can mount
+// the next row, so a list goes on changing its rows' and its own styles
+// for several frames after it mounts, more on a slow runner. A test that
+// watches for changes under a list waits for this first.
+export function virtualRowsPlaced(root: ParentNode): Promise<void> {
+  return waitFor(
+    () => root.querySelector('[data-virtual-row]') !== null && root.querySelector('[data-virtual-row][style*="visibility"]') === null,
+    'the virtual rows placed',
+  );
+}
+
 // Assert that a predicate holds within `frames` frames: for behavior whose
 // claim is a frame count (an install inside a presentation ceiling), not
 // for waiting on a settle.
