@@ -405,7 +405,13 @@ export function registerIssuesSetupFlow({ compact }: SetupSurface): void {
   test('a setup file that cannot be read is said with its path, and one a newer build saved is said so, with no select', async ({ harness, page }) => {
     const board = await connectFakeJiraBoard(harness, 'setup-unreadable', SETUP);
     const file = await setupFile(harness, board.projectId);
+    // The computer holds the setup it read, here none, and the sync of the
+    // listed board may read it too. A file broken by hand after that is
+    // read by the next save, which is refused and leaves nothing held, so
+    // the page's read is of the file.
+    const held = await harness.rpc<{ revision: string }>('ProjectTrackerSetup', board.projectId);
     await writeSetup(file, '{"status_groups": ');
+    await expect(harness.rpc('SetProjectTrackerSetup', board.projectId, held.revision, {})).rejects.toThrow(file);
     await harness.open(page);
     const screen = await openStatusGroups(page, compact);
     const error = screen.getByTestId('settings-tracker-statuses-error');

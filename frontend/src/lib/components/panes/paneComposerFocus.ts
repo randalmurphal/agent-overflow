@@ -16,6 +16,8 @@ import {
   type PopoverCloseReason,
 } from '../../utils/popoverOwnership';
 import { focusChosen } from '../../utils/focusIntent';
+import { isCompactLayout } from '../../stores/layoutMode.svelte';
+import { revealPane } from '../../stores/panes.svelte';
 
 /** Whether an editing caret holds focus now, which a pane move carries. */
 export function isEditingFocused(): boolean {
@@ -64,6 +66,9 @@ function paneSection(paneId: string): HTMLElement | null {
  */
 export function carryCaretIntoPane(paneId: string): void {
   focusChosen();
+  // On compact a pane the strip does not show takes no focus (PaneHost):
+  // the caret goes only where the screen goes.
+  if (isCompactLayout()) revealPane(paneId);
   if (focusPaneComposer(paneId)) return;
   const section = paneSection(paneId);
   if (!section) return;

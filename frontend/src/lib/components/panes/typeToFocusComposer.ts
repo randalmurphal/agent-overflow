@@ -13,7 +13,9 @@
 // keybinding — including future user-configured bare-key chords — wins ahead
 // of the redirect.
 
-import { getFocusedPaneId, getPane, iterPanes, revealPane } from '../../stores/panes.svelte';
+import { getFocusedPaneId, getPane, iterPanes, paneCommandTarget, revealPane } from '../../stores/panes.svelte';
+import { isCompactLayout } from '../../stores/layoutMode.svelte';
+import { isPaneOnScreen } from '../../stores/paneLayout.svelte';
 import { getComposerDraftForPane } from '../../stores/composerDraftRegistry.svelte';
 import { getTerminalFocused } from '../terminal/terminalStore.svelte';
 import { focusTextareaAtEnd } from '../composer/composerKeyboard';
@@ -91,18 +93,21 @@ export function redirectTypingToFocusedComposer(
   if (isClaimedFocus(document.activeElement)) return false;
 
   // ComposerPendingUserInputPanel answers bare digits at window level from
-  // ANY pane, and registers its listener after this one — its preventDefault
-  // isn't visible here. A pending user-input prompt anywhere yields the
-  // whole feature so digit-answering stays intact.
+  // ANY pane on screen, and registers its listener after this one — its
+  // preventDefault isn't visible here. A pending user-input prompt in any
+  // such pane yields the whole feature so digit-answering stays intact.
   for (const pane of iterPanes()) {
-    if (pane.pendingUserInputs.length > 0) return false;
+    if (pane.pendingUserInputs.length > 0 && isPaneOnScreen(pane.paneId)) return false;
   }
 
   // Raw focus id on purpose (same rule as Composer's initial-focus pass): a
   // focused companion/take-control pane isn't in the ThreadPane registry and
   // must not pull its source's composer — that would fire focusin on the
-  // source section and demote the companion.
-  const paneId = getFocusedPaneId();
+  // source section and demote the companion. On compact focus stays on a
+  // pane the list screen or another pane covers, so the pane is the one on
+  // screen (paneCommandTarget): a key never types into a composer nobody
+  // sees, and none on the list screen.
+  const paneId = isCompactLayout() ? paneCommandTarget() : getFocusedPaneId();
   const pane = paneId ? getPane(paneId) : undefined;
   if (!paneId || !pane) return false;
   if (getTerminalFocused(paneId)) return false;

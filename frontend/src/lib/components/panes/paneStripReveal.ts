@@ -23,6 +23,12 @@ export interface PaneStripRevealOptions {
    * pane from where that scroll left the strip.
    */
   yields: () => boolean;
+  /**
+   * The pane a reveal is asked for or on its way to changed: that pane, or
+   * null when no reveal is. Told in the task of the request and of the
+   * write that ends the reveal.
+   */
+  heading: (paneId: string | null) => void;
 }
 
 export interface PaneStripReveal {
@@ -38,8 +44,6 @@ export interface PaneStripReveal {
   resolveAfterLayout(): void;
   /** A reveal is requested or on its way. */
   readonly active: boolean;
-  /** Whether the strip is where a reveal last put it. */
-  placed(el: HTMLElement): boolean;
 }
 
 /**
@@ -98,13 +102,26 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
     leftAsWritten = el.scrollLeft;
   }
 
-  function cancelGlide(): void {
+  let headingTold: string | null = null;
+  function tellHeading(): void {
+    const heading = pendingPaneId ?? targetPaneId;
+    if (heading === headingTold) return;
+    headingTold = heading;
+    options.heading(heading);
+  }
+
+  function endGlide(): void {
     if (frame) paneStripRevealFrames.cancel(frame);
     frame = 0;
     targetLeft = null;
     targetPaneId = null;
     targetAlignment = null;
     lastTs = null;
+  }
+
+  function cancelGlide(): void {
+    endGlide();
+    tellHeading();
   }
 
   function step(ts: number): void {
@@ -139,6 +156,7 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
     targetLeft = clampStripScrollLeft(el, left);
     targetPaneId = paneId;
     targetAlignment = alignment;
+    tellHeading();
     if (frame) return; // retargeted mid-flight: the running loop picks it up
     currentLeft = el.scrollLeft;
     leftAsWritten = el.scrollLeft;
@@ -169,9 +187,10 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
   function snap(paneEl: HTMLElement): void {
     const el = options.getHostEl();
     if (!el) return;
-    cancelGlide();
+    endGlide();
     const target = revealTarget(el, paneEl, el.scrollLeft);
     if (target !== null) place(el, clampStripScrollLeft(el, target.left));
+    tellHeading();
   }
 
   function glideIntoView(paneEl: HTMLElement, paneId: string): void {
@@ -189,18 +208,26 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
     const alreadyScheduled = pendingPaneId !== null;
     pendingPaneId = paneId;
     pendingInstant = pendingInstant || (opts?.instant ?? false);
+    tellHeading();
     if (alreadyScheduled) return;
     pendingRequestFrame = paneStripRevealFrames.request(() => {
       pendingRequestFrame = 0;
       const target = pendingPaneId;
       const instant = pendingInstant;
-      pendingPaneId = null;
       pendingInstant = false;
-      if (!target || options.held(target)) return;
-      const paneEl = options.slotOf(target);
-      if (!paneEl) return;
-      if (instant) snap(paneEl);
-      else glideIntoView(paneEl, target);
+      const paneEl = target && !options.held(target) ? options.slotOf(target) : null;
+      // The request stands until its snap or glide has taken its place, so
+      // the heading never reads as none between the two.
+      if (paneEl && target) {
+        if (instant) {
+          pendingPaneId = null;
+          snap(paneEl);
+          return;
+        }
+        glideIntoView(paneEl, target);
+      }
+      pendingPaneId = null;
+      tellHeading();
     });
   }
 
@@ -227,18 +254,18 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
     snap,
     cancelGlide,
     cancel() {
-      cancelGlide();
+      endGlide();
       if (pendingRequestFrame) {
         paneStripRevealFrames.cancel(pendingRequestFrame);
         pendingRequestFrame = 0;
       }
       pendingPaneId = null;
       pendingInstant = false;
+      tellHeading();
     },
     resolveAfterLayout,
     get active() {
       return targetLeft !== null || pendingPaneId !== null;
     },
-    placed,
   };
 }

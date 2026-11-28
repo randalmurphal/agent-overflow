@@ -44,6 +44,10 @@ belong to `stores/ticketPanes.svelte.ts`.
 - On compact only a reveal (`revealPane`) moves the strip. `PaneHost` puts
   the strip back after any other scroll of it, so show a pane by revealing
   it, never by focusing or scrolling one of its controls into view.
+- On compact a pane the strip does not show is inert
+  (`PaneHost#reachCompactPanes`, the only writer of a section's `inert`),
+  and the pane a reveal is asked for is in reach from the request. Reveal a
+  pane before focusing into it; `carryCaretIntoPane` does.
 - A promoted pane (`paneLayout.svelte#getPromotedPaneId`, animated by
   `panePromotion.svelte.ts`) keeps its section, laid over the strip, while
   a `data-pane-slot` placeholder holds its flex slot. Code that reads a

@@ -45,6 +45,9 @@
     /** When true the popup body is hidden (minimized via the activity-rail
      *  chip). The component stays mounted so entered answers are preserved. */
     collapsed?: boolean;
+    /** Whether the person can see the question's pane (`isPaneOnScreen`).
+     *  A question nobody sees takes no key from the window. */
+    onScreen?: boolean;
     /**
      * Whether an answer can reach the thread's computer (composerAccess.ts
      * `respond`). Otherwise the question still renders — it is what
@@ -65,6 +68,7 @@
     threadId,
     workspacePath = '',
     collapsed = false,
+    onScreen = true,
     access = 'granted',
   }: Props = $props();
   let ungranted = $derived(access !== 'granted');
@@ -315,7 +319,8 @@
   function handleWindowKeydown(event: KeyboardEvent): void {
     // Collapse is a visual minimize: ignore option number/arrow keys that would
     // act on the hidden body. The composer-Enter submit path stays live.
-    if (collapsed || !question || responding) return;
+    // A pane off screen is hidden whole: its composer has no focus either.
+    if (collapsed || !onScreen || !question || responding) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     // event.target is `EventTarget`, not always `Element` (window-level
     // dispatch in test environments leaves it as the Window object).

@@ -195,6 +195,40 @@ describe('<ComposerPendingUserInputPanel>', () => {
     vi.useRealTimers();
   });
 
+  it('takes no window key while its pane is off screen, and takes them again once it is on', async () => {
+    vi.useFakeTimers();
+    const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
+    const props = {
+      request: request(),
+      customAnswer: '',
+      submitSignal: 0,
+      setCustomAnswerText: vi.fn(),
+      onResolve,
+      onResolved: vi.fn(),
+      onError: vi.fn(),
+      threadId: 'thread-1',
+    };
+    const { rerender } = render(ComposerPendingUserInputPanel, { props: { ...props, onScreen: false } });
+
+    const digit = new KeyboardEvent('keydown', { key: '2', cancelable: true });
+    window.dispatchEvent(digit);
+    const arrow = new KeyboardEvent('keydown', { key: 'ArrowDown', cancelable: true });
+    window.dispatchEvent(arrow);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(digit.defaultPrevented).toBe(false);
+    expect(arrow.defaultPrevented).toBe(false);
+    expect(onResolve).not.toHaveBeenCalled();
+
+    await rerender({ ...props, onScreen: true });
+    await fireEvent.keyDown(window, { key: '2' });
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0].answers).toEqual({ framework: 'Svelte' });
+    vi.useRealTimers();
+  });
+
   it('auto-submits when Enter selects a focused option', async () => {
     vi.useFakeTimers();
     const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});

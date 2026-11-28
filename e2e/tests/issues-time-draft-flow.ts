@@ -94,7 +94,7 @@ async function draft(harness: HarnessApp, thread: Drafting): Promise<void> {
 
 /** Compact: back to the list screen, from the pane shown (the thread's, or the Issues pane's). */
 async function backToList(page: Page): Promise<void> {
-  await page.getByTestId('compact-back').filter({ visible: true }).first().click();
+  await page.locator('[data-pane-id]:not([inert])').getByTestId('compact-back').click();
   await expect(page.locator('html')).not.toHaveAttribute('data-compact-screen', 'thread');
 }
 
@@ -216,6 +216,20 @@ export function registerIssuesTimeDraftFlow({ compact }: TimeDraftSurface): void
         return el.closest('[data-testid="pane-host"]')?.scrollLeft;
       });
       expect(moved, 'the scroll moved the strip').not.toBe(shown);
+      await expect.poll(() => strip.evaluate((el) => el.scrollLeft)).toBe(shown);
+
+      // The thread, off screen, is out of reach: Shift+Tab from Time
+      // leaves the Issues pane without entering the thread before it.
+      await expect(page.locator('[data-pane-kind="thread"]')).toHaveJSProperty('inert', true);
+      await expect(page.locator('[data-pane-kind="issues"]')).toHaveJSProperty('inert', false);
+      const focusedPane = (): Promise<string | null> =>
+        page.evaluate(() => document.activeElement?.closest<HTMLElement>('[data-pane-id]')?.dataset.paneKind ?? null);
+      await time.getByRole('radio', { name: 'By ticket' }).focus();
+      expect(await focusedPane()).toBe('issues');
+      for (let i = 0; i < 20; i += 1) {
+        await page.keyboard.press('Shift+Tab');
+        expect([null, 'issues'], `after ${i + 1} Shift+Tab`).toContain(await focusedPane());
+      }
       await expect.poll(() => strip.evaluate((el) => el.scrollLeft)).toBe(shown);
     }
     const d1 = await byDay(time, D1, compact);

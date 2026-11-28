@@ -100,10 +100,17 @@ export async function failAfterPaneCloses(harness: HarnessApp, page: Page, compa
   // The review opened again has a fresh editor on that line.
   review = await openCompanion(page, compact, false);
   await expect(review.getByTestId('review-diff-stats')).toBeVisible({ timeout: 60_000 });
+  await expect(toast).toHaveCount(1);
+  // On a phone the held toast lies over the line, so it is dismissed, as
+  // a person would, before the line's button is pressed.
+  if (compact) {
+    await toast.getByRole('button', { name: 'Dismiss Notification' }).tap();
+    await expect(toast).toHaveCount(0);
+  }
   const again = await openEditor(review, 'const five', compact);
   await expect(again.locator('textarea')).toHaveValue('');
   await expect(again.getByTestId('review-editor-error')).toHaveCount(0);
-  await expect(toast).toHaveCount(1);
+  if (!compact) await expect(toast).toHaveCount(1);
   expect(await routeCalls(harness, route)).toBe(1);
   await expectEveryForgeCallHandled(harness);
 }
