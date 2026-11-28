@@ -834,6 +834,17 @@ in the built-in dashboard's pace and the Backlog's.
   the actions of those who had it are listed and not counted. While the last read of who worked on the tickets failed, every
   widget that counts credit says so with the reason, on a dashboard and
   in an agent's tried widget.
+- An approval or a comment on a pull request counts for the ticket whose
+  key the pull request's title or branch names, in the repositories the
+  project clones and, for a fork, its pull requests in the parent. The
+  forge account is matched to a person by name: the account the app's
+  own forge token belongs to is the connection's person, and any other
+  is the one person in the tracker with the name the forge shows. An
+  account that matches nobody is listed under its own heading with what
+  it did and counts nothing. A ticket whose repository is not read back
+  to its creation yet, or cannot be read, is listed and not counted,
+  with the repository and the reason; a rule that counts neither
+  comments nor approvals waits for no repository.
 
 ### Time
 

@@ -227,6 +227,10 @@ const (
 	// headingNotQualified is the drill's heading of the reviewers of a
 	// finished ticket who did not do enough of what the rule counts.
 	headingNotQualified = "Acted but did not qualify"
+	// headingUnmatched is the drill's heading of the forge accounts that
+	// reviewed a finished ticket's pull request and are no person the
+	// tracker knows.
+	headingUnmatched = "On the forge, matched to no person"
 )
 
 // creditMetric is the pace of a board whose project counts credit, by
@@ -237,9 +241,10 @@ const (
 func creditMetric(plansSprints bool) Metric {
 	// note is a row's note: why it is not counted, how a review or support
 	// time was counted, in the base the evaluator counts it from
-	// (:estimates), and what the count leaves out. heading lists a reviewer who did not qualify
-	// apart in the drill.
+	// (:estimates), and what the count leaves out. heading lists a reviewer who did not qualify,
+	// and a forge account matched to no person, apart in the drill.
 	const note = `CASE WHEN c.value IS NULL THEN c.note
+       WHEN c.unmatched IS NOT NULL THEN printf('%s: %s', c.unmatched, c.did)
        WHEN c.kind = 'review' AND c.qualified = 1 THEN printf('%d%% of %s for %s', c.review_share, CASE :estimates
            WHEN 'points' THEN printf('%g points', coalesce(c.points, 0)) WHEN 'time' THEN printf('%gh', round(coalesce(c.points, 0) / 3600.0, 2))
            ELSE 'a ticket' END, c.did) || coalesce(' · ' || c.note, '')
@@ -248,7 +253,7 @@ func creditMetric(plansSprints bool) Metric {
        WHEN c.kind = 'support' THEN printf('%gh ÷ %d = %g', round(c.hours, 2), c.hours_per_point, round(c.share, 2)) || coalesce(' · ' || c.note, '')
        ELSE c.note END`
 	series := `CASE c.kind WHEN 'finished' THEN '` + seriesFinished + `' WHEN 'review' THEN '` + seriesReview + `' ELSE '` + seriesSupport + `' END`
-	heading := `iif(c.kind = 'review' AND c.qualified = 0, '` + headingNotQualified + `', NULL)`
+	heading := `CASE WHEN c.unmatched IS NOT NULL THEN '` + headingUnmatched + `' WHEN c.kind = 'review' AND c.qualified = 0 THEN '` + headingNotQualified + `' END`
 	m := Metric{
 		Title:  "Usual pace",
 		Reduce: ReduceAverageOfPeriodSums, Unit: UnitEstimate, Good: GoodUp, Series: []string{seriesFinished, seriesReview, seriesSupport},
@@ -257,8 +262,8 @@ func creditMetric(plansSprints bool) Metric {
 		m.Name, m.Bucket = "credit_by_sprint", BucketSprint
 		m.Words = []string{
 			"Each sprint's finished tickets, by the board's estimates now, for their assignee when they moved to done; review credit, a share of a finished ticket for each other person who worked on it by the sprint's end; and support credit for time logged on support tickets.",
-			"A ticket whose status when the sprint ended, or whose comments and worklogs, are not read is listed and not counted.",
-			"A board without estimates, or of a project that counts tickets, counts a finished ticket as one and credit as its part of one.",
+			"A ticket whose status when the sprint ended, or whose comments, worklogs or pull requests, are not read is listed and not counted.",
+			"A pull request's approval or comment counts for the person its forge account is matched to, and an unmatched account is listed and counts nothing; a board without estimates, or of a project that counts tickets, counts a finished ticket as one and credit as its part of one.",
 		}
 		m.SQL = `SELECT c.ticket AS ticket, c.value AS value, c.share AS share, c.sprint AS bucket, c.person AS person, ` + series + ` AS series,
   ` + heading + ` AS heading, ` + note + ` AS note
@@ -268,8 +273,8 @@ FROM credit c WHERE c.sprint IS NOT NULL`
 	m.Name, m.Bucket = "credit_by_week", BucketPeriod
 	m.Words = []string{
 		"Each week's finished tickets, by the board's estimates now, for their assignee when they moved to done; review credit, a share of a finished ticket for each other person who worked on it; and support credit for time logged on support tickets, in the week worked.",
-		"A review counts in the week its ticket finished, whenever it was left; a ticket whose finish time, or whose comments and worklogs, are not read is listed and not counted.",
-		"A board without estimates, or of a project that counts tickets, counts a finished ticket as one and credit as its part of one.",
+		"A review counts in the week its ticket finished, whenever it was left; a ticket whose finish time, or whose comments, worklogs or pull requests, are not read is listed and not counted.",
+		"A pull request's approval or comment counts for the person its forge account is matched to, and an unmatched account is listed and counts nothing; a board without estimates, or of a project that counts tickets, counts a finished ticket as one and credit as its part of one.",
 	}
 	m.SQL = `SELECT c.ticket AS ticket, c.value AS value, c.share AS share, c.at AS at, c.person AS person, ` + series + ` AS series,
   ` + heading + ` AS heading, iif(c.at IS NULL AND c.kind = 'review', ` + finishUnknown + ` || coalesce(' · ' || ` + note + `, ''), ` + note + `) AS note

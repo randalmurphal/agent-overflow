@@ -424,6 +424,10 @@ type StatusGroups struct {
 	// credit is whether the project counts credit, whose rules regroup
 	// carries (store MirrorRegroup.WithCredit) and the version covers.
 	credit bool
+	// forge is whether a credit rule counts an act the forge holds, a
+	// comment or an approval: its boards' credit reads the forge pull
+	// request history (sync_forge.go).
+	forge bool
 }
 
 // unit is the unit the project counts a board of the site whose
@@ -1257,7 +1261,8 @@ func heldOf(setup Setup, kept keptSections, raw map[string]json.RawMessage, newe
 			return StatusGroups{}, fmt.Errorf("trackerapp: encode how %s %s is counted: %w", key.tracker, key.site, err)
 		}
 		sum := sha256.Sum256(encoded)
-		return StatusGroups{regroup: regroup, version: hex.EncodeToString(sum[:8]), statuses: site.statuses, credit: rules != nil}, nil
+		forge := slices.ContainsFunc(mirrorRules, func(r store.MirrorCreditRule) bool { return r.Commented || r.Approved })
+		return StatusGroups{regroup: regroup, version: hex.EncodeToString(sum[:8]), statuses: site.statuses, credit: rules != nil, forge: forge}, nil
 	}
 	for key, site := range sites {
 		credited, mirrorCredited := rules, mirrorRules

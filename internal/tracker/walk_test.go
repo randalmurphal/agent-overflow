@@ -172,6 +172,10 @@ func (f *probedProvider) Evidence(ctx context.Context, _ EvidenceQuery) (Evidenc
 	f.see(ctx)
 	return Evidence{}, nil
 }
+func (f *probedProvider) PersonNamed(ctx context.Context, _ string) (User, bool, error) {
+	f.see(ctx)
+	return User{}, false, nil
+}
 func (f *probedProvider) Detail(ctx context.Context, _ IssueID) (Detail, error) {
 	f.see(ctx)
 	return Detail{}, nil

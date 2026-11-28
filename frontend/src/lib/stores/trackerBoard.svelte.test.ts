@@ -320,6 +320,40 @@ describe('the board subscription', () => {
     board.release();
   });
 
+  it('reads the totals again on a recount, by one patch that names no row', async () => {
+    install();
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    const patches = held<BoardPatch>('TrackerBoardPatch');
+    applyTrackerBoardEvent(event(11, { recount: true }), HOME_BACKEND);
+    await flush();
+    expect(patches.calls.length).toBe(1);
+    expect(patches.calls[0][2]).toEqual([]);
+    // The patch names the totals held, so the computer answers them only moved.
+    expect(patches.calls[0][3]).toEqual({ lifetime: 1, revision: 1, groups: '' });
+    const pace = { sprints: [{ sprint: '7', done: 2, estimate: 8, review: 1 }] };
+    patches.answer({
+      ...patch([[]], 1),
+      totals: { revision: 2, all: { rows: 1, estimate: 1 }, backlog: { rows: 0, estimate: 0 }, sprints: [], columns: [], pace },
+    } as unknown as BoardPatch);
+    await flush();
+    expect(board.current?.held?.totals.revision).toBe(2);
+    expect(board.current?.held?.totals.pace).toEqual(pace);
+    expect(heldIds(board)).toEqual([['1']]);
+    // Nothing more is owed.
+    await flush();
+    expect(patches.calls.length).toBe(1);
+    // A recount beside named rows is one patch of those rows.
+    applyTrackerBoardEvent(event(12, { recount: true, changed: ['1'] }), HOME_BACKEND);
+    await flush();
+    expect(patches.calls.length).toBe(2);
+    expect(patches.calls[1][2]).toEqual(['1']);
+    patches.answer(patch([[row('1', 'a')]], 2));
+    await flush();
+    expect(patches.calls.length).toBe(2);
+    board.release();
+  });
+
   it("sends the project's status groups the board was read with, and after a refused patch the new ones", async () => {
     const mocks = install();
     const board = attachTrackerBoard(REF, true);

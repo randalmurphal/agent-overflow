@@ -26,9 +26,13 @@ import (
 // steps, rows, bytes), the pace and the section totals with credit on and
 // off (VM steps and time; it fails when the totals with credit on take more
 // than twice the steps, or the pace more than creditPaceSteps), and, as a board that plans no sprints, the
-// evidence listing's weeks arm and the weeks credit fill. It restores the
+// evidence listing's weeks arm and the weeks credit fill. It measures the
+// sprints' fills, pace and totals a second time with the forge history
+// credit reads beside them (creditForgeScaleSetup), under a rule that
+// counts approvals too, and the forge people's due listing, their match
+// write and a forge read's advance of the totals. It restores the
 // board's sprints, plan, estimates, update times and what its histories
-// were read for.
+// were read for, and leaves no forge source and no match.
 func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *mirrorWriteRecorder) {
 	t.Helper()
 	board := benchBoardID(0)
@@ -61,9 +65,17 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 		t.Fatal(err)
 	}
 	reset := currentEstimateReset(s, root, board)
-	for _, rows := range []string{"every row estimated", "no row estimated"} {
+	for _, rows := range []string{"every row estimated", "no row estimated", "every row estimated, forge acts", "no row estimated, forge acts"} {
+		if rows == "every row estimated, forge acts" {
+			mustExec(t, s.db, `UPDATE tracker_cache_boards SET estimate_reset_at = ? WHERE root_id = ? AND board_id = ?`, reset, root, board)
+			creditForgeScaleSetup(t, s, root, size, rec)
+			rules[0].Approved = true
+			if on, err = on.WithCredit(rules); err != nil {
+				t.Fatal(err)
+			}
+		}
 		resetAt := reset
-		if rows == "no row estimated" {
+		if strings.HasPrefix(rows, "no row estimated") {
 			resetAt = reset + 1_000_000_000_000
 			mustExec(t, s.db, `UPDATE tracker_cache_boards SET estimate_reset_at = ? WHERE root_id = ? AND board_id = ?`, resetAt, root, board)
 		}
@@ -108,6 +120,11 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 		}
 	}
 	mustExec(t, s.db, `UPDATE tracker_cache_boards SET estimate_reset_at = ? WHERE root_id = ? AND board_id = ?`, reset, root, board)
+	forgeCreditAdvanceAtScale(t, s, root, size, on, rec)
+	if _, _, err := s.SetForgeHistorySources(nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.db, `DELETE FROM tracker_cache_forge_people WHERE root_id = ?`, root)
 	// As a board that plans no sprints: its sprints out of every count, and
 	// every done ticket of the board updated in the window (a window from
 	// 0: the bench cards' times are before any real one).
@@ -156,12 +173,115 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 // a change that makes it dearer unnoticed. A change that makes it cheaper
 // lowers the number.
 var creditPaceSteps = map[string]int{
-	"1x2000, every row estimated":  133_590,
-	"1x2000, no row estimated":     65_652,
-	"1x20000, every row estimated": 609_690,
-	"1x20000, no row estimated":    271_752,
-	"5x4000, every row estimated":  186_492,
-	"5x4000, no row estimated":     88_554,
+	"1x2000, every row estimated":              154_257,
+	"1x2000, no row estimated":                 66_116,
+	"1x2000, every row estimated, forge acts":  211_847,
+	"1x2000, no row estimated, forge acts":     66_194,
+	"1x20000, every row estimated":             674_457,
+	"1x20000, no row estimated":                274_016,
+	"1x20000, every row estimated, forge acts": 1_717_547,
+	"1x20000, no row estimated, forge acts":    274_094,
+	"5x4000, every row estimated":              212_059,
+	"5x4000, no row estimated":                 89_218,
+	"5x4000, every row estimated, forge acts":  379_149,
+	"5x4000, no row estimated, forge acts":     89_296,
+}
+
+// creditForgeScaleSetup gives the root's connection one repository whose
+// pull request history its credit reads, read whole: one pull request
+// for each issue of board 0 of a mirror of size, named by the issue's
+// key and updated inside the issue's sprint, each with two approvals and
+// two comments by four accounts, three of them matched to the people of
+// the tracker's evidence and one to nobody. It stores them a read of 500
+// at a time, as the forge's reads do, and logs the due listing's cost
+// before any account is matched and after every one is.
+func creditForgeScaleSetup(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *mirrorWriteRecorder) {
+	t.Helper()
+	forgeCreditSources(t, s, root, []ForgeHistoryRef{testOrigin}, testOrigin)
+	week := 7 * benchDay
+	start := time.Now()
+	for from := 0; from < size.issues; from += 500 {
+		read := forgeWhole(testOrigin, nil)
+		for i := from; i < min(from+500, size.issues); i++ {
+			n := int64(i + 1)
+			at := BenchNowForTest - int64(benchBoardSprints-i%benchBoardSprints)*week + benchDay
+			key := "WEB-" + benchIssueID(0, i)
+			read.PRs = append(read.PRs, testPR(n, key+" Change", "change", at+benchDay, key))
+			read.Acts = append(read.Acts, approved(n, "user1", "User 1", at), approved(n, "user2", "User 2", at+1),
+				commented(n, "user3", "User 3", at+2), commented(n, "ghost", "Ghost Dev", at+3))
+		}
+		applyForge(t, s, read)
+	}
+	t.Logf("credit, forge: %d pull requests with 4 acts each stored in %v", size.issues, time.Since(start).Round(time.Millisecond))
+	listed := 0
+	listDue := func(int) error {
+		due, _, err := s.ListMirrorForgePeopleDue(root, testNow, "acc-user1")
+		listed = len(due)
+		return err
+	}
+	// One read for every match: the helper that makes one scans the mirror.
+	matchRead := nextMirrorRead(s, root)
+	match := func(int) error {
+		_, err := s.SetMirrorForgePeople(root, matchRead, []MirrorForgeMatch{
+			{MirrorForgePerson: MirrorForgePerson{Host: "github.com", Login: "user1", Name: "User 1"}, Person: "acc-user1"},
+			{MirrorForgePerson: MirrorForgePerson{Host: "github.com", Login: "user2", Name: "User 2"}, Person: "acc-user2"},
+			{MirrorForgePerson: MirrorForgePerson{Host: "github.com", Login: "user3", Name: "User 3"}, Person: "acc-user3"},
+			{MirrorForgePerson: MirrorForgePerson{Host: "github.com", Login: "ghost", Name: "Ghost Dev"}},
+		}, MirrorCatalog{}, testNow, []string{benchBoardID(0)})
+		return err
+	}
+	for _, c := range []struct {
+		name    string
+		prepare func(int)
+		want    int
+	}{{"none matched", func(int) { mustExec(t, s.db, `DELETE FROM tracker_cache_forge_people WHERE root_id = ?`, root) }, 4},
+		{"every one matched", func(int) {
+			if err := match(0); err != nil {
+				t.Fatal(err)
+			}
+		}, 0}} {
+		cost := measureScale(t, rec, c.prepare, listDue)
+		c.prepare(0)
+		var err error
+		steps := countMirrorVMSteps(t, func() { err = listDue(0) })
+		if err != nil || listed != c.want {
+			t.Fatalf("forge people due, %s: %d listed, %v; want %d", c.name, listed, err, c.want)
+		}
+		t.Logf("credit, forge: people due, %-18s %9d VM steps %s, %d listed", c.name, steps, cost, listed)
+	}
+	clear := func(int) { mustExec(t, s.db, `DELETE FROM tracker_cache_forge_people WHERE root_id = ?`, root) }
+	t.Logf("credit, forge: a match of 4 accounts                    %s", measureScale(t, rec, clear, match))
+}
+
+// forgeCreditAdvanceAtScale measures what a forge read's change costs
+// the mirror of size: AdvanceMirrorForgeCredit for board 0 under regroup
+// with the keys of a read's 500 pull requests, and with all.
+func forgeCreditAdvanceAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, regroup MirrorRegroup, rec *mirrorWriteRecorder) {
+	t.Helper()
+	boards := []MirrorActsBoard{{BoardID: benchBoardID(0), Regroup: regroup}}
+	keys := make([]string, 0, 500)
+	for i := size.issues - 500; i < size.issues; i++ {
+		keys = append(keys, "WEB-"+benchIssueID(0, i))
+	}
+	told := 0
+	for _, c := range []struct {
+		name string
+		keys []string
+		all  bool
+	}{{"500 keys", keys, false}, {"all", nil, true}} {
+		advance := func(int) error {
+			issues, err := s.AdvanceMirrorForgeCredit(root, boards, c.keys, c.all)
+			told = len(issues)
+			return err
+		}
+		cost := measureScale(t, rec, nil, advance)
+		var err error
+		steps := countMirrorVMSteps(t, func() { err = advance(0) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("credit, forge: totals advanced by %-8s %9d VM steps %s, %d tickets named", c.name, steps, cost, told)
+	}
 }
 
 // creditExportAtScale fills a copy of board's credit by regroup, its

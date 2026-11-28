@@ -135,7 +135,9 @@ func (f *gitlabForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 		return PRHistory{}, err
 	}
 	r := gitlabHistoryRead{ctx: ctx, client: client, repo: repo, stored: in.Stored, budget: b, clock: f.core.nowFn, now: f.core.nowFn()}
-	out := PRHistory{OwnHead: strconv.FormatInt(settings.ID, 10)}
+	// The login is read once per credential a while, outside the read's
+	// requests, and never fails the read (viewerLogin).
+	out := PRHistory{OwnHead: strconv.FormatInt(settings.ID, 10), Viewer: f.viewerLogin(ctx, client, repo.Host)}
 	if p := settings.ForkedFrom; p != nil && p.PathWithNamespace != "" {
 		namespace, name, err := SplitProjectForForge(repo.Forge, p.PathWithNamespace)
 		if err != nil {

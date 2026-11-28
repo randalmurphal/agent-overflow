@@ -80,6 +80,10 @@ func (f *fixture) reopen(t *testing.T, between func()) {
 func (s *fakeScenario) upgradedFrom171(t *testing.T) {
 	t.Helper()
 	s.reopen(t, func() {
+		s.sqlOnStore(t, `DROP TRIGGER trg_tracker_cache_credit_key`)
+		s.sqlOnStore(t, `DROP TABLE tracker_cache_forge_people`)
+		s.sqlOnStore(t, `DROP TABLE forge_history_uses`)
+		s.sqlOnStore(t, `DELETE FROM migration_versions WHERE version = 179`)
 		for _, table := range []string{"forge_history_keys", "forge_history_acts", "forge_history_prs", "forge_history_sources"} {
 			s.sqlOnStore(t, `DROP TABLE `+table)
 		}

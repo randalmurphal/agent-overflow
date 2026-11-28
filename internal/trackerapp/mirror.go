@@ -101,6 +101,11 @@ type MirrorStore interface {
 	GetMirrorEvidenceFailure(rootID int64) (string, error)
 	ReplaceMirrorActs(rootID, sourceGen int64, read store.MirrorRead, issues []store.MirrorIssueActs, tried []store.MirrorActsAttempt, catalog store.MirrorCatalog) (store.MirrorActsWrite, error)
 
+	ListMirrorForgePeopleDue(rootID, now int64, viewer string) ([]store.MirrorForgePersonDue, bool, error)
+	SetMirrorForgePeople(rootID int64, read store.MirrorRead, matches []store.MirrorForgeMatch, catalog store.MirrorCatalog, checkedAt int64, boards []string) (bool, error)
+	AdvanceMirrorForgeCredit(rootID int64, boards []store.MirrorActsBoard, keys []string, all bool) ([]string, error)
+	MirrorForgeFailures(rootID int64) ([]store.MirrorForgeFailure, error)
+
 	ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
 	ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay string) (store.MirrorWorklogDays, error)
 
@@ -168,6 +173,9 @@ const (
 	// UnitEvidence reads who commented on and logged time on the tickets
 	// credit counts that are due.
 	UnitEvidence Unit = "evidence"
+	// UnitPeople matches the forge accounts credit counts to the
+	// tracker's people.
+	UnitPeople Unit = "people"
 )
 
 // BoardDue names the units a board's tick runs. They run in the order of
@@ -186,6 +194,7 @@ type LinkedDue struct {
 	Names    bool `json:"names,omitempty"`
 	History  bool `json:"history,omitempty"`
 	Evidence bool `json:"evidence,omitempty"`
+	People   bool `json:"people,omitempty"`
 }
 
 // UnitResult is what one unit of a tick stored. A unit that fails part

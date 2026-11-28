@@ -29,7 +29,7 @@ func TestForgeHistoryAtScale(t *testing.T) {
 		}
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
 			s := newTestStore(t)
-			if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
+			if _, _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}, nil); err != nil {
 				t.Fatal(err)
 			}
 			id := sourceID(t, s, testOrigin)
@@ -53,7 +53,7 @@ func TestForgeHistoryAtScale(t *testing.T) {
 					read.Acts = append(read.Acts, acts(i, window+i*10)...)
 				}
 				one := time.Now()
-				if err := s.ApplyForgeHistory(read); err != nil {
+				if _, err := s.ApplyForgeHistory(read); err != nil {
 					t.Fatal(err)
 				}
 				slowest = max(slowest, time.Since(one))

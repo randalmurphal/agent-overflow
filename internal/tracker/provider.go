@@ -159,6 +159,13 @@ type Provider interface {
 	// read whole before it. Without Capabilities.Evidence it fails wrapping
 	// ErrUnsupported before any request.
 	Evidence(ctx context.Context, q EvidenceQuery) (Evidence, error)
+	// PersonNamed is the one person of the tracker whose name is name,
+	// case ignored, as a forge names the account that reviewed a pull
+	// request; ok is false when no person has the name, when several do,
+	// and when the tracker cannot say whether one does. Without
+	// Capabilities.Evidence it fails wrapping ErrUnsupported before any
+	// request.
+	PersonNamed(ctx context.Context, name string) (person User, ok bool, err error)
 
 	// Detail is one issue's detail.
 	Detail(ctx context.Context, issue IssueID) (Detail, error)

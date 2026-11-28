@@ -98,6 +98,18 @@ func (o oneCredential) Evidence(ctx context.Context, q EvidenceQuery) (Evidence,
 	return trackerapi.Walk(ctx, func(ctx context.Context) (Evidence, error) { return o.p.Evidence(ctx, q) })
 }
 
+func (o oneCredential) PersonNamed(ctx context.Context, name string) (User, bool, error) {
+	type named struct {
+		person User
+		ok     bool
+	}
+	n, err := trackerapi.Walk(ctx, func(ctx context.Context) (named, error) {
+		person, ok, err := o.p.PersonNamed(ctx, name)
+		return named{person, ok}, err
+	})
+	return n.person, n.ok, err
+}
+
 func (o oneCredential) Detail(ctx context.Context, issue IssueID) (Detail, error) {
 	return trackerapi.Walk(ctx, func(ctx context.Context) (Detail, error) { return o.p.Detail(ctx, issue) })
 }

@@ -1083,56 +1083,70 @@ the median of 5 runs, VM steps exact. The test fails when the totals
 with credit on take more than twice the VM steps of credit off, or the
 pace more than the steps below.
 
+"Forge acts" is the same board with one repository the connection's
+credit reads, read whole: one pull request for each issue of the board,
+named by the issue's key, each with two approvals and two comments by
+four accounts, three matched to the people of the tracker's evidence and
+one to nobody, under a rule that counts approvals too. Without it the
+connection's credit reads no repository.
+
 The export's `credit` fill:
 
 | Board | Rows | Bytes | VM steps | Best time |
 |---|---|---|---|---|
-| 2,000, estimated | 520 finished, 1,560 review | 167,936 | 643,286 | 11.9 ms |
-| 2,000, none estimated | 1,040 support | 73,728 | 390,543 | 9.5 ms |
-| 20,000, estimated | 5,200 finished, 1,560 review | 364,544 | 3,054,566 | 93.4 ms |
-| 20,000, none estimated | 1,040 support | 73,728 | 1,650,543 | 73.8 ms |
-| 20,000, a board without sprints, every done ticket | 8,000 finished, 660 review | 385,024 | 4,489,700 | 111.3 ms |
+| 2,000, estimated | 520 finished, 1,560 review | 172,032 | 751,513 | 13.5 ms |
+| 2,000, estimated, forge acts | 520 finished, 2,080 review | 311,296 | 1,034,481 | 19.2 ms |
+| 2,000, none estimated | 1,040 support | 73,728 | 392,687 | 9.3 ms |
+| 20,000, estimated | 5,200 finished, 1,560 review | 372,736 | 3,401,473 | 97.6 ms |
+| 20,000, estimated, forge acts | 5,200 finished, 20,800 review | 2,625,536 | 8,228,721 | 170.4 ms |
+| 20,000, none estimated | 1,040 support | 73,728 | 1,662,047 | 64.2 ms |
+| 20,000, a board without sprints, every done ticket | 8,000 finished, 660 review | 397,312 | 4,932,967 | 135.9 ms |
 
 The tickets fill of the same copy takes 658,634 steps (12.2 ms) at 2,000
 and 6,580,994 (117 ms) at 20,000.
 
 The Backlog's totals (`CountMirrorSections`, the pace's 5 closed sprints
-included), credit off and on:
+included), credit off, on, and on with forge acts:
 
-| Board | Off | On |
-|---|---|---|
-| 2,000, estimated | 207,227 steps, 4.3 ms | 326,527 steps, 6.3 ms |
-| 2,000, none estimated | 193,027 steps, 4.1 ms | 326,603 steps, 7.7 ms |
-| 20,000, estimated | 2,020,727 steps, 74.7 ms | 2,499,127 steps, 80.5 ms |
-| 20,000, none estimated | 1,878,727 steps, 69.2 ms | 2,841,203 steps, 94.6 ms |
-| 5 boards of 4,000, estimated | 408,732 steps, 9.4 ms | 567,933 steps, 13.4 ms |
-| 5 boards of 4,000, none estimated | 380,332 steps, 12.3 ms | 606,009 steps, 17.7 ms |
+| Board | Off | On | On, forge acts |
+|---|---|---|---|
+| 2,000, estimated | 207,227 steps, 4.3 ms | 347,194 steps, 6.6 ms | 404,784 steps, 8.0 ms |
+| 2,000, none estimated | 193,027 steps, 4.1 ms | 327,067 steps, 7.4 ms | 327,145 steps, 8.2 ms |
+| 20,000, estimated | 2,020,727 steps, 56.6 ms | 2,563,894 steps, 70.6 ms | 3,606,984 steps, 88.8 ms |
+| 20,000, none estimated | 1,878,727 steps, 54.3 ms | 2,843,467 steps, 89.8 ms | 2,843,545 steps, 90.0 ms |
+| 5 boards of 4,000, estimated | 408,732 steps, 10.0 ms | 593,500 steps, 13.5 ms | 760,590 steps, 17.9 ms |
+| 5 boards of 4,000, none estimated | 380,332 steps, 9.3 ms | 606,673 steps, 17.6 ms | 606,751 steps, 16.8 ms |
 
 With none estimated, most of the difference is the support rule telling
 each row of the sections, which a project counting no credit does not
-apply: 820,000 of the 950,000 steps at 20,000.
+apply: 820,000 of the 965,000 steps at 20,000. With forge acts the
+totals take at most 1.95 times the steps of credit off (2,000,
+estimated).
 
-The pace alone, credit off and on:
+The pace alone, credit off, on, and on with forge acts:
 
-| Board | Off | On |
-|---|---|---|
-| 2,000, estimated | 14,290 steps | 133,590 steps, 2.3 ms |
-| 2,000, none estimated | 14,090 steps | 65,652 steps, 1.5 ms |
-| 20,000, estimated | 131,290 steps, 5.7 ms | 609,690 steps, 20.1 ms |
-| 20,000, none estimated | 129,290 steps, 7.6 ms | 271,752 steps, 11.8 ms |
-| 5 boards of 4,000, estimated | 27,291 steps | 186,492 steps, 4.5 ms |
-| 5 boards of 4,000, none estimated | 26,891 steps | 88,554 steps, 3.0 ms |
+| Board | Off | On | On, forge acts |
+|---|---|---|---|
+| 2,000, estimated | 14,290 steps | 154,257 steps, 3.0 ms | 211,847 steps, 3.6 ms |
+| 2,000, none estimated | 14,090 steps | 66,116 steps, 1.4 ms | 66,194 steps, 1.4 ms |
+| 20,000, estimated | 131,290 steps, 4.8 ms | 674,457 steps, 19.8 ms | 1,717,547 steps, 35.6 ms |
+| 20,000, none estimated | 129,290 steps, 5.4 ms | 274,016 steps, 10.5 ms | 274,094 steps, 10.9 ms |
+| 5 boards of 4,000, estimated | 27,291 steps | 212,059 steps, 5.1 ms | 379,149 steps, 7.6 ms |
+| 5 boards of 4,000, none estimated | 26,891 steps | 89,218 steps, 3.7 ms | 89,296 steps, 3.1 ms |
 
-Reading whether each member's history covers its card and reaches back
-to its finish, which decides whether its finish and its person are
-known, adds 47,694 steps (8.5%) to the pace at 20,000, estimated; the
-reach back to the finish is 22,000 of them.
+At 20,000, estimated, the pace's 5 sprints hold 1,000 finished members,
+100 of them with evidence in the tracker. A member's four forge acts
+add 1,043 steps to it: the pull request found by the ticket's key, each
+act's account matched, and the review rows grouped and summed.
 
-Of the pace with credit at 20,000, estimated (1,000 finished members in
-its 5 sprints), measured part by part: reading the members takes about
-127,500 steps, when each moved to done 98,000, its rule, owner and
-whether its evidence is read 119,000, its review and support rows
-142,000, and the sums over them the rest.
+The forge people's due listing (`ListMirrorForgePeopleDue`, once a
+linked round) walks the keys and acts of the connection's repositories:
+238,386 steps (5.2 ms) for 2,000 pull requests with 8,000 acts and
+2,380,386 (58 ms) for 20,000 with 80,000, whether or not an account is
+matched. A match of 4 accounts writes in 0.1 ms. A forge read's advance
+of the totals (`AdvanceMirrorForgeCredit`) for the keys of 500 pull
+requests takes 19,707 steps (0.7 ms) and names 275 tickets, at 2,000 and
+at 20,000; for a change of a source's state it takes 77 steps.
 
 The evidence listing's arm for a board without sprints walks the root's
 issues updated in the window. With every issue of the root changed in

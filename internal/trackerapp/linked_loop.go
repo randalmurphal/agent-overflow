@@ -14,9 +14,9 @@ import (
 // for the first client's reads to settle (Deps.Settled), then runs a round
 // at once and every Cadence.Linked: while a client is connected
 // (Deps.ClientConnected), each connection that is on syncs its linked
-// issues' cards, the names its mirror owes, the history due and the
-// evidence credit counts that is due (SyncLinked) until no unit reports
-// More, then the mirror's cleanup runs (FinishMirrorCleanup), and then the
+// issues' cards, the names its mirror owes, the history due, the
+// evidence credit counts that is due and the forge accounts whose match
+// is due (SyncLinked) until no unit reports More, then the mirror's cleanup runs (FinishMirrorCleanup), and then the
 // forge pull request history that is due is read (Deps.ReadForgeHistory). A round
 // with no client connected is skipped whole, its cleanup included. Every read of the connections, a
 // round's included, decides whether the loop runs (followLoopLocked). A
@@ -200,7 +200,7 @@ func (s *Service) linkedRound(ctx context.Context) {
 // round's) or any other (reported to the loop), when ctx ends, and when no
 // client is connected any more.
 func (s *Service) linkedConnection(ctx context.Context, id string) {
-	due := LinkedDue{Cards: true, Names: true, History: true, Evidence: true}
+	due := LinkedDue{Cards: true, Names: true, History: true, Evidence: true, People: true}
 	for {
 		out, err := s.SyncLinked(ctx, id, due, Background)
 		switch {
@@ -226,6 +226,8 @@ func (s *Service) linkedConnection(ctx context.Context, id string) {
 				due.History = true
 			case u.Unit == UnitEvidence:
 				due.Evidence = true
+			case u.Unit == UnitPeople:
+				due.People = true
 			}
 		}
 		if due == (LinkedDue{}) || !s.clientConnected() {

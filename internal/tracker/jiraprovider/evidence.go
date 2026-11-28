@@ -320,3 +320,21 @@ func (p *Provider) tempoAuthor(ctx context.Context, account string, authors map[
 	}
 	return nil, err
 }
+
+// PersonNamed is the one person whose display name is name
+// (jira.Client.UserNamed): an active account of a person, not an app's or
+// a customer's. A search Jira withholds (the account lacks the Browse
+// users and groups permission) names nobody: Jira cannot say who has the
+// name, and the next search of it asks again.
+func (p *Provider) PersonNamed(ctx context.Context, name string) (tracker.User, bool, error) {
+	u, ok, err := p.jira.UserNamed(ctx, name)
+	switch {
+	case err != nil && aloneFailure(err):
+		return tracker.User{}, false, nil
+	case err != nil:
+		return tracker.User{}, false, fmt.Errorf("jiraprovider: the person named %q: %w", name, err)
+	case !ok:
+		return tracker.User{}, false, nil
+	}
+	return userOf(u), true, nil
+}

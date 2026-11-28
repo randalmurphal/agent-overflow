@@ -1793,6 +1793,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: trackerLabelsMigrationVersion, Name: "tracker_labels", SQL: trackerLabelsV176SQL},
 	{Version: trackerActsMigrationVersion, Name: "tracker_acts", SQL: trackerActsV177SQL},
 	{Version: forgeHistoryMigrationVersion, Name: "forge_history", SQL: forgeHistoryV178SQL},
+	{Version: forgeCreditMigrationVersion, Name: "forge_credit", SQL: forgeCreditV179SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

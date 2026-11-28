@@ -50,7 +50,7 @@ func applyForge(t *testing.T, s *Store, read ForgeHistoryRead) {
 	if read.WindowStart == 0 {
 		read.WindowStart = testWindow
 	}
-	if err := s.ApplyForgeHistory(read); err != nil {
+	if _, err := s.ApplyForgeHistory(read); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -112,7 +112,7 @@ func workRowsNamed(t *testing.T, s *Store, key string, numbers []ForgeHistoryNum
 func TestForgeHistoryStoresPullRequestsByKeyAndOnlyAddsActs(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
+	if _, _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}, nil); err != nil {
 		t.Fatal(err)
 	}
 	pr := testPR(7, "WEB-1 Retry", "web-1-retry", 2_000_000, "WEB-1")
@@ -152,7 +152,7 @@ func TestForgeHistoryStoresPullRequestsByKeyAndOnlyAddsActs(t *testing.T) {
 func TestForgeHistoryWorkReadsTheNumbersItNames(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin, testParent, testOther}); err != nil {
+	if _, _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin, testParent, testOther}, nil); err != nil {
 		t.Fatal(err)
 	}
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, OwnHead: "R_acme", Parent: testParent, Walk: []byte(`{}`),
@@ -172,7 +172,7 @@ func TestForgeHistoryWorkReadsTheNumbersItNames(t *testing.T) {
 func TestForgeHistoryStoredAnswersTheUpdateAndSeenTimes(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
+	if _, _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}, nil); err != nil {
 		t.Fatal(err)
 	}
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, PRs: []ForgeHistoryPR{testPR(3, "a", "a", 2_000_000)}})
@@ -193,7 +193,7 @@ func TestForgeHistoryStoredAnswersTheUpdateAndSeenTimes(t *testing.T) {
 func TestForgeHistoryActsAddTheEarliestAndRefuseOneOfNoPullRequest(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
+	if _, _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}, nil); err != nil {
 		t.Fatal(err)
 	}
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, PRs: []ForgeHistoryPR{testPR(3, "WEB-1 a", "a", 2_000_000, "WEB-1")}})
@@ -205,7 +205,7 @@ func TestForgeHistoryActsAddTheEarliestAndRefuseOneOfNoPullRequest(t *testing.T)
 	if got := forgeActs(t, s, testOrigin, 3); !slices.Equal(got, []string{"approved bob 2400000 Bob Li"}) {
 		t.Fatalf("acts = %v", got)
 	}
-	err := s.ApplyForgeHistory(ForgeHistoryRead{SourceID: sourceID(t, s, testOrigin), Source: testOrigin, ReadAt: 6_000_000, WindowStart: testWindow,
+	_, err := s.ApplyForgeHistory(ForgeHistoryRead{SourceID: sourceID(t, s, testOrigin), Source: testOrigin, ReadAt: 6_000_000, WindowStart: testWindow,
 		Walk: []byte(`{"moved":true}`), Acts: []ForgeHistoryAct{{Number: 99, Kind: ForgeActApproved, Login: "bob", At: 2_400_000}}})
 	if err == nil || !strings.Contains(err.Error(), "pull request 99") {
 		t.Fatalf("an act of a pull request never stored = %v", err)
@@ -226,7 +226,7 @@ func TestForgeHistoryActsAddTheEarliestAndRefuseOneOfNoPullRequest(t *testing.T)
 func TestForgeHistoryWorkReadsItsOriginsAndTheirHeadsInAParent(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin, testParent, testOther}); err != nil {
+	if _, _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin, testParent, testOther}, nil); err != nil {
 		t.Fatal(err)
 	}
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, OwnHead: "R_acme", Parent: testParent, Walk: []byte(`{}`)})
@@ -266,7 +266,7 @@ func TestForgeHistoryWorkReadsItsOriginsAndTheirHeadsInAParent(t *testing.T) {
 	// The parent no longer read as a fork's parent but as an origin of its
 	// own: its id and rows stay.
 	before := sourceID(t, s, testParent)
-	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testParent}); err != nil {
+	if _, _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testParent}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if id := sourceID(t, s, testParent); id != before {
@@ -280,7 +280,7 @@ func TestForgeHistoryWorkReadsItsOriginsAndTheirHeadsInAParent(t *testing.T) {
 func TestForgeHistoryPrunesWhatLeftTheWindowAndRemovedSources(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
+	if _, _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}, nil); err != nil {
 		t.Fatal(err)
 	}
 	applyForge(t, s, ForgeHistoryRead{Source: testOrigin, PRs: []ForgeHistoryPR{
@@ -294,7 +294,7 @@ func TestForgeHistoryPrunesWhatLeftTheWindowAndRemovedSources(t *testing.T) {
 		t.Fatalf("after the prune: %v", got)
 	}
 	id := sourceID(t, s, testOrigin)
-	changed, err := s.SetForgeHistorySources(nil)
+	changed, _, err := s.SetForgeHistorySources(nil, nil)
 	if err != nil || !changed {
 		t.Fatalf("remove = %v, %v", changed, err)
 	}
@@ -307,7 +307,7 @@ func TestForgeHistoryPrunesWhatLeftTheWindowAndRemovedSources(t *testing.T) {
 			t.Fatalf("%s keeps %d rows of a removed source", table, n)
 		}
 	}
-	err = s.ApplyForgeHistory(ForgeHistoryRead{SourceID: id, Source: testOrigin, ReadAt: 1, WindowStart: 1})
+	_, err = s.ApplyForgeHistory(ForgeHistoryRead{SourceID: id, Source: testOrigin, ReadAt: 1, WindowStart: 1})
 	if !errors.Is(err, ErrForgeHistoryGone) {
 		t.Fatalf("a read of a removed source = %v", err)
 	}
@@ -319,17 +319,17 @@ func TestForgeHistoryPrunesWhatLeftTheWindowAndRemovedSources(t *testing.T) {
 func TestForgeHistoryAReadOfARemovedSourceLandsInNoNewOne(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
+	if _, _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}, nil); err != nil {
 		t.Fatal(err)
 	}
 	old := sourceID(t, s, testOrigin)
-	if _, err := s.SetForgeHistorySources(nil); err != nil {
+	if _, _, err := s.SetForgeHistorySources(nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
+	if _, _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}, nil); err != nil {
 		t.Fatal(err)
 	}
-	err := s.ApplyForgeHistory(ForgeHistoryRead{SourceID: old, Source: testOrigin, Walk: []byte(`{}`), ReadAt: 2, WindowStart: 1})
+	_, err := s.ApplyForgeHistory(ForgeHistoryRead{SourceID: old, Source: testOrigin, Walk: []byte(`{}`), ReadAt: 2, WindowStart: 1})
 	if !errors.Is(err, ErrForgeHistoryGone) {
 		all, _ := s.ListForgeHistorySources()
 		t.Fatalf("a read begun before the source was removed = %v: %+v", err, all)
@@ -342,7 +342,7 @@ func TestForgeHistoryAReadOfARemovedSourceLandsInNoNewOne(t *testing.T) {
 func TestForgeHistoryRecordsTheWalkAndTheFailure(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	if _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}); err != nil {
+	if _, _, err := s.SetForgeHistorySources([]ForgeHistoryRef{testOrigin}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source := func() ForgeHistorySource {
@@ -406,10 +406,14 @@ func TestForgeHistoryWriterPlans(t *testing.T) {
 		probe string
 	}{
 		{"pull requests", forgeHistoryPRsSQL, []any{1, "[]", 1}, ""},
-		{"clear keys", forgeHistoryClearKeysSQL, []any{1, "[]"}, "forge_history_keys"},
+		{"head changes", forgeHistoryHeadChangesSQL, []any{1, "[]"}, "s"},
+		{"clear keys", forgeHistoryClearKeysSQL, []any{1, "[]", "[]"}, "forge_history_keys"},
 		{"keys", forgeHistoryKeysSQL, []any{1, "[]"}, ""},
 		{"orphan acts", forgeHistoryOrphanActSQL, []any{1, "[]"}, "p"},
 		{"acts", forgeHistoryActsSQL, []any{1, "[]"}, ""},
+		{"act keys", forgeHistoryActKeysSQL, []any{1, "[]"}, "k"},
+		{"moved keys", forgeHistoryMovedKeysSQL, []any{1, "[]"}, "a"},
+		{"pruned keys", forgeHistoryPrunedKeysSQL, []any{1, 1}, "k"},
 		{"prune", forgeHistoryPruneSQL, []any{1, 1}, ""},
 		{"stored", forgeHistoryStoredSQL, []any{1, "[]"}, "p"},
 		{"work sources", forgeHistoryWorkSourcesSQL, []any{"[]"}, ""},

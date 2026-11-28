@@ -814,7 +814,18 @@ moved to it, beside the error. Each pull request carries the start of
 the request that read it (`PRHistoryPR.Seen`), the time Work compares
 with its other records. Acts are only added: a read never removes a
 stored act, and the store keeps the earliest time and a stored name over
-an empty one, so a dismissed approval or a deleted comment stays.
+an empty one, so a dismissed approval or a deleted comment stays. A read
+also answers the login of the account whose token read the repository
+(`PRHistory.Viewer`), which credit takes for the tracker connection's
+own person, and whether it left acts of a pull request it read unread
+(`ActsOwed`: GitHub's follow-up pages still in the walk; never on
+GitLab, whose acts are streams with a reach). GitHub's `PullHistory`
+selects `viewer { login }` in its own request; GitLab takes the login
+from the cache its other reads share (`viewerLogin`: `GET user` at most
+once per credential and host per `gitlabCacheTTL`), outside the read's
+budget, so a round with no other GitLab read in that time costs one more
+request per host, and a login that cannot be read leaves the viewer
+empty without failing the read.
 
 The budget is one rule on both forges: a request starts only while the
 read has requests left, and a unit that cannot be split, once started,

@@ -167,7 +167,8 @@ func (s *Service) subscribedBoard(subscription string, r trackerdash.Request) (t
 // loggedFrom to the evaluation's last day and the reads of it
 // (worklog_reads.go), and while the project counts credit, why the
 // evidence unit's last read of who worked on the tickets failed as a
-// whole (UnitEvidence). The caller leaves the service when the
+// whole (UnitEvidence) and which repositories' pull requests could not
+// be read (evidenceFailure). The caller leaves the service when the
 // evaluation returns.
 func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.Board, error) {
 	if err := scope.boardOnly(); err != nil {
@@ -195,7 +196,7 @@ func (s *Service) dashboardBoard(scope Scope, groups StatusGroups) (trackerdash.
 	}
 	b := trackerdash.Board{Fill: fill, Epics: hasEpics(row.Kind), Credit: groups.credit, TimeTracking: hasTimeTracking(row.Kind), Worklogs: s.worklogsOf(row)}
 	if groups.credit {
-		if b.EvidenceFailure, err = s.store.GetMirrorEvidenceFailure(root); err != nil {
+		if b.EvidenceFailure, err = s.evidenceFailure(root, groups); err != nil {
 			s.leave()
 			return trackerdash.Board{}, fmt.Errorf("trackerapp: read the evidence read's outcome of %s: %w", scope.Connection, err)
 		}

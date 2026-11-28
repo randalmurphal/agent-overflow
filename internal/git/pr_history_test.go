@@ -52,8 +52,12 @@ type historyTestForge struct {
 	window time.Time
 }
 
+// historyViewer is the login the history tests' forge reads as.
+const historyViewer = "user9"
+
 func historyForge(t *testing.T, fixture forgefake.Fixture) *historyTestForge {
 	t.Helper()
+	fixture.Viewer = historyViewer
 	f := newFactsForge(t, fixture)
 	f.core.nowFn = func() time.Time { return historyNow }
 	return &historyTestForge{factsForge: f, stored: map[string]StoredPR{}}
@@ -286,6 +290,9 @@ func TestGitHubHistoryWalksBackInBoundedReads(t *testing.T) {
 	t.Logf("steady read: %v, %d points", cost, githubHistoryPoints(cost))
 	if !maps.Equal(cost, map[string]int{"PullHistory": 1}) || steady.Owed || steady.PRs[0].Number != 300 || steady.PRs[0].Title != "WEB-300 Renamed" {
 		t.Fatalf("steady read: %v, owed %v, first %+v", cost, steady.Owed, steady.PRs[0])
+	}
+	if steady.Viewer != historyViewer {
+		t.Fatalf("the reading account = %q; want %q", steady.Viewer, historyViewer)
 	}
 }
 
@@ -726,13 +733,16 @@ func TestGitLabHistoryReadsTheListAndTheEvents(t *testing.T) {
 	}
 	steady := f.since(firstSeen)
 	t.Logf("steady read: %v", steady)
-	if !maps.Equal(steady, map[string]int{"REST web": 1, "REST merge_requests": 1, "REST events": 2}) {
+	if !maps.Equal(steady, map[string]int{"REST web": 1, "REST user": 1, "REST merge_requests": 1, "REST events": 2}) {
 		t.Fatalf("steady read requests = %v", steady)
+	}
+	if first.Viewer != historyViewer || second.Viewer != historyViewer {
+		t.Fatalf("the reading account = %q then %q; want %q", first.Viewer, second.Viewer, historyViewer)
 	}
 }
 
 // A busy project's steady read: about 190 comment events a day for a
-// week, read every 15 minutes, costs the project, a page of the list,
+// week, read every 15 minutes, costs the project, the login, a page of the list,
 // a page of approvals, and two pages of comments: the one with the new
 // comments and the one that shows the read went past an hour before the
 // last read.
@@ -761,7 +771,7 @@ func TestGitLabHistorySteadyReadOfABusyProject(t *testing.T) {
 	h := readHistory(t, f, gitlabHistoryRepo, walk)
 	steady := f.since(walked)
 	t.Logf("steady read 15 minutes later: %v", steady)
-	if !maps.Equal(steady, map[string]int{"REST web": 1, "REST merge_requests": 1, "REST events": 3}) || !slices.Contains(actsOf(h), "1 false late L") {
+	if !maps.Equal(steady, map[string]int{"REST web": 1, "REST user": 1, "REST merge_requests": 1, "REST events": 3}) || !slices.Contains(actsOf(h), "1 false late L") {
 		t.Fatalf("steady read: %v, acts %v", steady, actsOf(h))
 	}
 }

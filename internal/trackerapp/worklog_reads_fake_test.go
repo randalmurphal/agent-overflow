@@ -240,8 +240,11 @@ func (s *timeScenario) logOutside(t *testing.T, id string, seconds int64) {
 	if site.Tempo != nil {
 		site.Tempo.Token = tempoTokenFake
 	}
-	at := s.clock.Now()
-	site.Issues[0].Worklogs = append(site.Issues[0].Worklogs, trackerfake.JiraWorklog{ID: id, Author: "acc-user1", Started: at.Add(-time.Minute), TimeSpent: seconds, Created: at, Updated: at})
+	// Started on the service's today, the day dashTime answers: the
+	// scenario's clock runs an hour behind the service's, so its own now
+	// is yesterday for the first hour of a UTC day.
+	at, today := s.clock.Now(), s.svc.now().UTC().Truncate(24*time.Hour)
+	site.Issues[0].Worklogs = append(site.Issues[0].Worklogs, trackerfake.JiraWorklog{ID: id, Author: "acc-user1", Started: today, TimeSpent: seconds, Created: at, Updated: at})
 	if err := s.e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}); err != nil {
 		t.Fatal(err)
 	}

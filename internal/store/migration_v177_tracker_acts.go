@@ -7,11 +7,9 @@ package store
 //     worklog (source 2) of an issue, its author's account (person), when
 //     it was made (at: a comment's creation, a worklog's start, Unix ms)
 //     and a worklog's time spent in seconds (0 for a comment). No text.
-//     Source 3 is a pull request approval, which has no time (at 0) and
-//     names its reviewer by account (person) or, when no single account
-//     has the name the development data gives, by that name alone
-//     (unmatched, person empty); no writer stores one yet. Each source's
-//     shape is checked on its own. idx_tracker_cache_issue_acts_worklogs
+//     Each source's shape is checked on its own; an approval or a comment
+//     on a pull request is read from the forge history, not stored here
+//     (v179). idx_tracker_cache_issue_acts_worklogs
 //     holds a root's worklogs by their start, which credit walks for the
 //     support time of a sprint's dates (mirrorCreditRowsSQL).
 //   - tracker_cache_issue_act_reads: one row per issue and source, the
@@ -55,15 +53,10 @@ CREATE TABLE tracker_cache_issue_acts (
  issue_id TEXT NOT NULL,
  source INTEGER NOT NULL,
  act_id TEXT NOT NULL CHECK(act_id <> ''),
- person TEXT NOT NULL,
- unmatched TEXT NOT NULL DEFAULT '',
- at INTEGER NOT NULL,
+ person TEXT NOT NULL CHECK(person <> ''),
+ at INTEGER NOT NULL CHECK(at > 0),
  seconds INTEGER NOT NULL,
- CHECK(CASE source
-  WHEN 1 THEN person <> '' AND unmatched = '' AND at > 0 AND seconds = 0
-  WHEN 2 THEN person <> '' AND unmatched = '' AND at > 0 AND seconds >= 0
-  WHEN 3 THEN (person = '') <> (unmatched = '') AND at = 0 AND seconds = 0
-  ELSE 0 END),
+ CHECK(CASE source WHEN 1 THEN seconds = 0 WHEN 2 THEN seconds >= 0 ELSE 0 END),
  PRIMARY KEY (root_id, issue_id, source, act_id),
  FOREIGN KEY (root_id, issue_id) REFERENCES tracker_cache_issues(root_id, issue_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
@@ -71,7 +64,7 @@ CREATE INDEX idx_tracker_cache_issue_acts_worklogs ON tracker_cache_issue_acts(r
 CREATE TABLE tracker_cache_issue_act_reads (
  root_id INTEGER NOT NULL,
  issue_id TEXT NOT NULL,
- source INTEGER NOT NULL CHECK(source IN (1, 2, 3)),
+ source INTEGER NOT NULL CHECK(source IN (1, 2)),
  read_for INTEGER NOT NULL DEFAULT 0 CHECK(read_for >= 0),
  read_at INTEGER NOT NULL DEFAULT 0 CHECK(read_at >= 0),
  read_wall INTEGER NOT NULL DEFAULT 0,

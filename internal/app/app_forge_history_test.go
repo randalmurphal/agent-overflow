@@ -213,7 +213,7 @@ func TestSearchTicketWorkSearchesWhereTheHistoryDoesNotReach(t *testing.T) {
 	}
 	src := f.sources(t)[0]
 	now := time.Now()
-	if err := f.a.store.ApplyForgeHistory(store.ForgeHistoryRead{SourceID: src.ID, Source: src.ForgeHistoryRef, OwnHead: src.OwnHead, Walk: src.Walk,
+	if _, err := f.a.store.ApplyForgeHistory(store.ForgeHistoryRead{SourceID: src.ID, Source: src.ForgeHistoryRef, OwnHead: src.OwnHead, Walk: src.Walk,
 		Reach: created - store.ForgeHistoryClockMargin.Milliseconds() + 1, ReadAt: now.UnixMilli(), WindowStart: forgeHistoryWindowStart(now).UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +366,7 @@ func TestForgeHistoryKeepsEverySourceWhileAnOriginIsUnread(t *testing.T) {
 	t.Parallel()
 	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "example/web"}, {Forge: "github", Project: "example/old"}}})
 	old := store.ForgeHistoryRef{RepoKey: "github:example/old", Forge: "github", Host: "github.com", Namespace: "example", Repo: "old"}
-	if _, err := f.a.store.SetForgeHistorySources([]store.ForgeHistoryRef{old}); err != nil {
+	if _, _, err := f.a.store.SetForgeHistorySources([]store.ForgeHistoryRef{old}, nil); err != nil {
 		t.Fatal(err)
 	}
 	broken := store.Project{ID: "project-broken", Path: t.TempDir(), Name: "broken", CreatedAt: 1, UpdatedAt: 1}
@@ -563,12 +563,12 @@ func TestTicketWorkListsOnlyItsRepositoriesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := store.ForgeHistoryRef{RepoKey: "github:other/web", Forge: "github", Host: "github.com", Namespace: "other", Repo: "web"}
-	if _, err := f.a.store.SetForgeHistorySources([]store.ForgeHistoryRef{f.sources(t)[0].ForgeHistoryRef, other}); err != nil {
+	if _, _, err := f.a.store.SetForgeHistorySources([]store.ForgeHistoryRef{f.sources(t)[0].ForgeHistoryRef, other}, nil); err != nil {
 		t.Fatal(err)
 	}
 	src := f.sources(t)[1]
 	now := time.Now()
-	if err := f.a.store.ApplyForgeHistory(store.ForgeHistoryRead{SourceID: src.ID, Source: other, OwnHead: "R_other", ReadAt: now.UnixMilli(),
+	if _, err := f.a.store.ApplyForgeHistory(store.ForgeHistoryRead{SourceID: src.ID, Source: other, OwnHead: "R_other", ReadAt: now.UnixMilli(),
 		WindowStart: forgeHistoryWindowStart(now).UnixMilli(), PRs: []store.ForgeHistoryPR{{Number: 9, URL: "https://github.com/other/web/pull/9",
 			Title: "WEB-1 Elsewhere", HeadRef: "elsewhere", State: "merged", CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli(), SeenAt: now.UnixMilli(), Keys: []string{"WEB-1"}}}}); err != nil {
 		t.Fatal(err)
@@ -786,4 +786,106 @@ func goroutinesIn(fn, state string) int {
 		}
 	}
 	return n
+}
+
+// boardTotals is the totals revision of the fixture's board.
+func (f workSearchFixture) boardTotals(t *testing.T) int64 {
+	t.Helper()
+	root, ok, err := f.a.store.GetMirrorRoot(f.conn.ID)
+	if err != nil || !ok {
+		t.Fatalf("the connection's mirror: %v, %v", ok, err)
+	}
+	counts, err := f.a.store.CountMirrorSections(root, "1", store.MirrorRegroup{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return counts.TotalsRevision
+}
+
+// The forge history tells the boards whose credit reads it, through the
+// tracker service: a round records which connection's credit reads which
+// repository and has its boards count again when that changes; a read
+// that changes what a repository covers has them count again; a read
+// that changes nothing tells nobody; and a read that adds an approval to
+// a pull request names the ticket of its key to the open board.
+func TestAForgeHistoryReadTellsTheBoardsWhoseCreditItChanges(t *testing.T) {
+	t.Parallel()
+	site := trackerBoardSite()
+	// WEB-1 is done in the active sprint, so credit counts it.
+	site.Issues[0].Status = "10002"
+	// The repository keeps its id when it is seeded again with the approval.
+	repo := forgefake.Repo{Forge: "github", Project: "example/web", ID: 4242, Pulls: []forgefake.Pull{historyPull(1, "WEB-1 Fix the login", "fix-login", "merged", 2)}}
+	f := newWorkSearchFixtureOn(t, trackerBoardSetup{site: site}, forgefake.Fixture{Repos: []forgefake.Repo{repo}})
+	view, err := f.a.ProjectTrackerSetup(f.ctx, f.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := int64(0)
+	setup := view.Setup
+	setup.Credit = &trackerapp.Credit{On: true, Support: []trackerapp.SiteSupport{},
+		Rules: []trackerapp.CreditRules{{From: &from, ReviewShare: 10, ReviewNeed: 1, ReviewActions: []string{"approved"}, HoursPerPoint: 4}}}
+	if save, err := f.a.SetProjectTrackerSetup(f.ctx, f.project, view.Revision, setup); err != nil || !save.Saved {
+		t.Fatalf("save the credit setup: %+v, %v", save, err)
+	}
+
+	totals := f.boardTotals(t)
+	if _, _, err := f.a.syncForgeHistorySources(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	uses, err := f.a.store.ListForgeHistoryUses()
+	if want := []store.ForgeHistoryUse{{ConnectionID: f.conn.ID, RepoKey: "github:example/web"}}; err != nil || !slices.Equal(uses, want) {
+		t.Fatalf("uses %+v, %v; want %+v", uses, err, want)
+	}
+	if got := f.boardTotals(t); got != totals+1 {
+		t.Fatalf("the connection's first repository moved the board's totals %d -> %d; want one advance", totals, got)
+	}
+	if _, _, err := f.a.syncForgeHistorySources(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.boardTotals(t); got != totals+1 {
+		t.Fatalf("the same repositories again moved the board's totals to %d", got)
+	}
+
+	// The first read proves how far the repository is read.
+	if err := f.a.readForgeHistory(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.boardTotals(t); got != totals+2 {
+		t.Fatalf("the first read moved the board's totals %d -> %d; want one more advance", totals, got)
+	}
+	f.at(16 * time.Minute)
+	_, ops := f.historyOps(0)
+	if err := f.a.readForgeHistory(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if read, _ := f.historyOps(ops); read["gh graphql PullHistory"] != 1 {
+		t.Fatalf("the second round asked %v; want one read of the repository", read)
+	}
+	if got := f.boardTotals(t); got != totals+2 {
+		t.Fatalf("a read that changed nothing moved the board's totals to %d", got)
+	}
+
+	// The pull request is approved.
+	approved := historyPull(1, "WEB-1 Fix the login", "fix-login", "merged", 0)
+	approved.Reviews = []forgefake.Review{{Author: "user2", AuthorName: "User 2", State: "APPROVED"}}
+	repo.Pulls = []forgefake.Pull{approved}
+	if _, err := f.engine.Seed(forgefake.Fixture{Repos: []forgefake.Repo{repo}}); err != nil {
+		t.Fatal(err)
+	}
+	f.at(32 * time.Minute)
+	// Every event so far is of the reads above.
+	for drained := false; !drained; {
+		select {
+		case <-f.events.Events():
+		default:
+			drained = true
+		}
+	}
+	if err := f.a.readForgeHistory(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.boardTotals(t); got != totals+3 {
+		t.Fatalf("the approval moved the board's totals %d -> %d; want one more advance", totals, got)
+	}
+	f.boardEvent(t, "naming the ticket whose pull request was approved", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10101") && !e.Recount })
 }

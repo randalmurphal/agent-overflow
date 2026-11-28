@@ -48,6 +48,7 @@ var mirrorTableKeys = []struct{ table, keys string }{
 	{"tracker_cache_worklogs", "rowid"},
 	{"tracker_cache_worklog_days", "author_id, day"},
 	{"tracker_cache_sync", "rowid"},
+	{"tracker_cache_forge_people", "host, login"},
 	{"tracker_cache_users", "user_id"},
 	{"tracker_cache_statuses", "status_id"},
 }

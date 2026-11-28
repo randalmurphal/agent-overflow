@@ -140,6 +140,8 @@ func deltaStep(b tracker.BoardID) step {
 //   - history is the board tick's history unit, under the same lock.
 //   - evidence reads who worked on the tickets credit counts that are
 //     due (run.evidence), one listing's page a tick (More).
+//   - people matches the forge accounts credit counts to the tracker's
+//     people (run.forgePeople), one listing's page a tick (More).
 //
 // The issues nothing keeps any more, which a thread's unlink, delete,
 // retire or transfer leaves, are removed by FinishMirrorCleanup.
@@ -165,6 +167,9 @@ func (s *Service) syncLinked(ctx context.Context, id string, due LinkedDue, u Ur
 	}
 	if due.Evidence {
 		steps = append(steps, step{unit: UnitEvidence, body: (*run).evidence})
+	}
+	if due.People {
+		steps = append(steps, step{unit: UnitPeople, body: (*run).forgePeople})
 	}
 	if len(steps) == 0 {
 		return Outcome{Ran: []UnitResult{}}, nil

@@ -42,6 +42,7 @@ var mirrorPoolReads = map[string]int{
 	"finishMirrorHistoryStagings": 1, // the dirty histories, likewise
 	"ListMirrorHistoryDue":        1, // a page of the history-due indexes, each a seek of due issues alone
 	"probeMirrorHistory":          2, // one issue's removals, and a chunk of its changes by key
+	"MirrorForgeFailures":         1, // the repositories a connection's credit reads, each by key
 }
 
 // mirrorAttachedReads are the functions that begin a transaction on a
