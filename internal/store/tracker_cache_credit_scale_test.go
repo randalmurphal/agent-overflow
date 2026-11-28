@@ -173,18 +173,18 @@ func creditAtScale(t *testing.T, s *Store, root int64, size benchMirrorSize, rec
 // a change that makes it dearer unnoticed. A change that makes it cheaper
 // lowers the number.
 var creditPaceSteps = map[string]int{
-	"1x2000, every row estimated":              154_257,
-	"1x2000, no row estimated":                 66_116,
-	"1x2000, every row estimated, forge acts":  211_847,
-	"1x2000, no row estimated, forge acts":     66_194,
-	"1x20000, every row estimated":             674_457,
-	"1x20000, no row estimated":                274_016,
-	"1x20000, every row estimated, forge acts": 1_717_547,
-	"1x20000, no row estimated, forge acts":    274_094,
-	"5x4000, every row estimated":              212_059,
-	"5x4000, no row estimated":                 89_218,
-	"5x4000, every row estimated, forge acts":  379_149,
-	"5x4000, no row estimated, forge acts":     89_296,
+	"1x2000, every row estimated":              154_259,
+	"1x2000, no row estimated":                 66_118,
+	"1x2000, every row estimated, forge acts":  220_157,
+	"1x2000, no row estimated, forge acts":     66_196,
+	"1x20000, every row estimated":             674_459,
+	"1x20000, no row estimated":                274_018,
+	"1x20000, every row estimated, forge acts": 1_800_557,
+	"1x20000, no row estimated, forge acts":    274_096,
+	"5x4000, every row estimated":              212_061,
+	"5x4000, no row estimated":                 89_220,
+	"5x4000, every row estimated, forge acts":  395_759,
+	"5x4000, no row estimated, forge acts":     89_298,
 }
 
 // creditForgeScaleSetup gives the root's connection one repository whose
@@ -192,9 +192,10 @@ var creditPaceSteps = map[string]int{
 // for each issue of board 0 of a mirror of size, named by the issue's
 // key and updated inside the issue's sprint, each with two approvals and
 // two comments by four accounts, three of them matched to the people of
-// the tracker's evidence and one to nobody. It stores them a read of 500
-// at a time, as the forge's reads do, and logs the due listing's cost
-// before any account is matched and after every one is.
+// the tracker's evidence, one of those also paired by a person, and one
+// to nobody. It stores them a read of 500 at a time, as the forge's reads
+// do, and logs the due listing's cost before any account is matched and
+// after every one is.
 func creditForgeScaleSetup(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *mirrorWriteRecorder) {
 	t.Helper()
 	forgeCreditSources(t, s, root, []ForgeHistoryRef{testOrigin}, testOrigin)
@@ -251,6 +252,12 @@ func creditForgeScaleSetup(t *testing.T, s *Store, root int64, size benchMirrorS
 	}
 	clear := func(int) { mustExec(t, s.db, `DELETE FROM tracker_cache_forge_people WHERE root_id = ?`, root) }
 	t.Logf("credit, forge: a match of 4 accounts                    %s", measureScale(t, rec, clear, match))
+	// A person paired one account, with the person its name matches: the
+	// credit measured after reads a pairing for one act in four and finds
+	// none for the rest.
+	if _, err := s.SetTrackerForgePairing(TrackerForgePairing{ConnectionID: mirrorConnection(t, s, root), Host: "github.com", Login: "user1", Person: "acc-user1", PersonName: "User 1"}, nil); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // forgeCreditAdvanceAtScale measures what a forge read's change costs

@@ -157,7 +157,7 @@ func TestThePacesDrillListsAForgeAccountMatchedToNoPerson(t *testing.T) {
 		"Finished tickets |  | 1.6 | 2",
 		"Review credit |  | 0.1, 1 not counted | 2",
 		"Review credit | Acted but did not qualify | 0 | 1",
-		"Review credit | On the forge, matched to no person | 0 | 1",
+		"Review credit | On the forge, matched to no person: say who in Settings > Points and credit | 0 | 1",
 		"Support credit |  | 0.1 | 1",
 	}
 	if !reflect.DeepEqual(rows, wantRows) || !reflect.DeepEqual(groups, wantGroups) {

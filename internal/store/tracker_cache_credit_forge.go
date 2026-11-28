@@ -11,10 +11,12 @@ import "strconv"
 //     as a ticket's Work does (ForgeHistoryForWork).
 //   - A pull request is a ticket's when it names the ticket's key
 //     (forge_history_keys). Each approval on it is an "approved" and each
-//     comment a "commented" of the person the forge account is matched to
-//     (tracker_cache_forge_people), at the act's time. An account matched
-//     to nobody is one review row of its own, listed by the forge's name
-//     for it (unmatched) and counted nothing.
+//     comment a "commented" of the person the forge account is: the one
+//     a person paired it with (tracker_forge_pairings), else the one it
+//     is matched to by name (tracker_cache_forge_people), at the act's
+//     time. An account that is nobody's is one review row of its own,
+//     listed by the forge's name for it (unmatched) and counted nothing;
+//     one paired as no person has no row.
 //   - A rule that counts neither approvals nor comments reads no forge
 //     act, and no source keeps its tickets unread.
 //   - Under a rule that counts either, a ticket's reviews are read only
@@ -76,18 +78,31 @@ func forgeCreditUnreadSQL(created, hi, closed string) string {
 	         WHERE NOT ` + forgeCreditCoversSQL("s", created, hi, closed) + ` ORDER BY s.label LIMIT 1) x)`
 }
 
+// mirrorRootConnectionSQL is the connection root ?1 mirrors, NULL for a
+// detached root: read once a statement.
+const mirrorRootConnectionSQL = `(SELECT r.connection_id FROM tracker_cache_roots r WHERE r.id = CAST(?1 AS INTEGER))`
+
 // mirrorCreditForgeActsSQL is the FROM of the forge acts of finished
 // ticket f (a row of cr_f): each act a, at or before f's end, of a pull
 // request that names f's key in a source s of cr_src, one of a parent
-// only when its head is a fork the connection uses, with the tracker
-// person its account is matched to as m (no row, or an empty person: nobody).
+// only when its head is a fork the connection uses, with who its account
+// is: the person's pairing of it as p (tracker_forge_pairings), which
+// leaves out the acts of an account paired as no person, and the name
+// match as m (tracker_cache_forge_people). mirrorCreditForgePersonSQL
+// reads the person of the two.
 const mirrorCreditForgeActsSQL = `forge_history_keys k
 	    CROSS JOIN cr_src s ON s.id = k.source_id
 	    CROSS JOIN forge_history_acts a ON a.source_id = k.source_id AND a.number = k.number
+	    LEFT JOIN tracker_forge_pairings p ON p.connection_id = ` + mirrorRootConnectionSQL + ` AND p.host = s.host AND p.login = a.login
 	    LEFT JOIN tracker_cache_forge_people m ON m.root_id = CAST(?1 AS INTEGER) AND m.host = s.host AND m.login = a.login
-	    WHERE k.key = f.issue_key AND a.at <= f.hi AND (s.every OR EXISTS (SELECT 1 FROM forge_history_prs pr
+	    WHERE k.key = f.issue_key AND a.at <= f.hi AND p.person IS NOT '' AND (s.every OR EXISTS (SELECT 1 FROM forge_history_prs pr
 	        CROSS JOIN cr_heads h ON h.source_id = pr.source_id AND h.head = pr.head_repo
 	       WHERE pr.source_id = k.source_id AND pr.number = k.number))`
+
+// mirrorCreditForgePersonSQL is the tracker person a forge act of
+// mirrorCreditForgeActsSQL counts for, "" for nobody: the pairing's, else
+// the name match's.
+const mirrorCreditForgePersonSQL = `coalesce(p.person, m.person, '')`
 
 // mirrorCreditUnmatchedSQL names a forge account (login on host, with the
 // forge's name for it, "" for none) no tracker person is matched to, as

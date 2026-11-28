@@ -267,7 +267,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 // the cleanup and the reads.
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
-	"GetMirrorSync", "GetMirrorEvidenceFailure", "ListMirrorHistoryDue", "ListMirrorActsDue", "ListMirrorForgePeopleDue", "MirrorForgeFailures", "ListMirrorBodies", "ListMirrorIssueWorklogs",
+	"GetMirrorSync", "GetMirrorEvidenceFailure", "ListMirrorHistoryDue", "ListMirrorActsDue", "ListMirrorForgePeopleDue", "ListMirrorForgeAccounts", "MirrorForgeFailures", "ListMirrorBodies", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorBoardStatuses", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorParents", "ListMirrorUnnamedParents", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections", "GetMirrorBoardPace", "ListMirrorSupport",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards", "ListMirrorSprintNames", "LastMirrorPlanRow",
 	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays",

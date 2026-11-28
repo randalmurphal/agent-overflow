@@ -743,7 +743,7 @@ const STATIC_FIELDS = [
     id: 'tracker-points.estimates',
     section: 'tracker-points',
     label: 'Estimates',
-    keywords: ['jira', 'points', 'story points', 'estimate', 'estimates', 'count tickets', 'pace', 'velocity', 'sprint planning', 'poker', 'planning poker'],
+    keywords: ['jira', 'points', 'story points', 'estimate', 'estimates', 'count tickets', 'pace', 'velocity', 'sprint planning', 'poker', 'planning poker', 'credit', 'review credit', 'support credit', 'forge accounts', 'github', 'gitlab', 'reviewer', 'bot'],
     conditional: true,
   },
   {

@@ -105,6 +105,9 @@ type MirrorStore interface {
 	SetMirrorForgePeople(rootID int64, read store.MirrorRead, matches []store.MirrorForgeMatch, catalog store.MirrorCatalog, checkedAt int64, boards []string) (bool, error)
 	AdvanceMirrorForgeCredit(rootID int64, boards []store.MirrorActsBoard, keys []string, all bool) ([]string, error)
 	MirrorForgeFailures(rootID int64) ([]store.MirrorForgeFailure, error)
+	ListMirrorForgeAccounts(connectionID string) ([]store.MirrorForgeAccount, bool, error)
+	SetTrackerForgePairing(p store.TrackerForgePairing, boards []string) (bool, error)
+	DeleteTrackerForgePairing(connectionID, host, login string, boards []string) (bool, error)
 
 	ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay, toDay string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error)
 	ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay string) (store.MirrorWorklogDays, error)

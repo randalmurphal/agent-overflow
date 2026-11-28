@@ -229,8 +229,9 @@ const (
 	headingNotQualified = "Acted but did not qualify"
 	// headingUnmatched is the drill's heading of the forge accounts that
 	// reviewed a finished ticket's pull request and are no person the
-	// tracker knows.
-	headingUnmatched = "On the forge, matched to no person"
+	// tracker knows, with where a person says who each is
+	// (trackerapp.Service.SetForgeAccount).
+	headingUnmatched = "On the forge, matched to no person: say who in Settings > Points and credit"
 )
 
 // creditMetric is the pace of a board whose project counts credit, by

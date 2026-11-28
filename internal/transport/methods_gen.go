@@ -562,6 +562,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetTrackerConnectionEnabled", ID: 3921109066, Scope: "tracker:operate", Route: "home"},                                           // main.App.SetTrackerConnectionEnabled
 	{Name: "SetTrackerConnectionTokenExpiry", ID: 2967721565, Scope: "tracker:operate", Route: "home"},                                       // main.App.SetTrackerConnectionTokenExpiry
 	{Name: "SetTrackerEstimate", ID: 2301582015, Scope: "tracker:operate", Route: "home", Budget: 3 * time.Minute},                           // main.App.SetTrackerEstimate
+	{Name: "SetTrackerForgeAccount", ID: 3552836583, Scope: "tracker:operate", Route: "home"},                                                // main.App.SetTrackerForgeAccount
 	{Name: "SetTrackerSubscriptionVisible", ID: 2154788414, Scope: "tracker:read", Route: "home"},                                            // main.App.SetTrackerSubscriptionVisible
 	{Name: "SetTrackerWidgetLimit", ID: 3937459196, Scope: "tracker:operate", Route: "home"},                                                 // main.App.SetTrackerWidgetLimit
 	{Name: "SetWSLDistroPreference", ID: 3978807241, Scope: "host", Route: "home", StepUp: true},                                             // main.App.SetWSLDistroPreference
@@ -622,10 +623,12 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "TrackerCreateFields", ID: 440800234, Scope: "tracker:read", Route: "home"},                                                       // main.App.TrackerCreateFields
 	{Name: "TrackerDashboardDrill", ID: 124644262, Scope: "tracker:read", Route: "home", CallerBound: true},                                  // main.App.TrackerDashboardDrill
 	{Name: "TrackerDashboards", ID: 3554577306, Scope: "tracker:read", Route: "home", CallerBound: true},                                     // main.App.TrackerDashboards
+	{Name: "TrackerForgeAccounts", ID: 95685002, Scope: "tracker:read", Route: "home"},                                                       // main.App.TrackerForgeAccounts
 	{Name: "TrackerIssueTypes", ID: 2749961211, Scope: "tracker:read", Route: "home"},                                                        // main.App.TrackerIssueTypes
 	{Name: "TrackerLinkTypes", ID: 2754714292, Scope: "tracker:read", Route: "home"},                                                         // main.App.TrackerLinkTypes
 	{Name: "TrackerLookup", ID: 2194444141, Scope: "tracker:read", Route: "home"},                                                            // main.App.TrackerLookup
 	{Name: "TrackerMoves", ID: 3632796459, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerMoves
+	{Name: "TrackerPeople", ID: 3642610888, Scope: "tracker:read", Route: "home"},                                                            // main.App.TrackerPeople
 	{Name: "TrackerPoker", ID: 3990595752, Scope: "tracker:read", Route: "home"},                                                             // main.App.TrackerPoker
 	{Name: "TrackerPokerSupport", ID: 4253452655, Scope: "tracker:read", Route: "home"},                                                      // main.App.TrackerPokerSupport
 	{Name: "TrackerProjectIssueTypes", ID: 2496760576, Scope: "tracker:read", Route: "home"},                                                 // main.App.TrackerProjectIssueTypes

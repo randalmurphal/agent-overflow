@@ -53,6 +53,9 @@ func (fakeProvider) Evidence(context.Context, EvidenceQuery) (Evidence, error) {
 func (fakeProvider) PersonNamed(context.Context, string) (User, bool, error) {
 	return User{}, false, nil
 }
+func (fakeProvider) People(context.Context, []ProjectID, string) (UserList, error) {
+	return UserList{}, nil
+}
 func (fakeProvider) Detail(context.Context, IssueID) (Detail, error)     { return Detail{}, nil }
 func (fakeProvider) Details(context.Context, []IssueID) (Details, error) { return Details{}, nil }
 func (fakeProvider) Moves(context.Context, IssueID) ([]Move, error)      { return nil, nil }

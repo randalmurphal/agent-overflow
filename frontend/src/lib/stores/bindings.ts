@@ -708,6 +708,12 @@ export {
   ProjectTrackerSiteFields,
   ProjectTrackerSupport,
   SetProjectTrackerSetup,
+  // Who each forge account is in a connection's tracker, a person's word
+  // on one, and the people that word picks from
+  // (stores/trackerSetup.svelte.ts).
+  TrackerForgeAccounts,
+  SetTrackerForgeAccount,
+  TrackerPeople,
   // A person's logged time and its writes (stores/trackerTime.svelte.ts,
   // stores/trackerTimeWrites.svelte.ts).
   TrackerWorklogs,

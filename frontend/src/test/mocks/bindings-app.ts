@@ -166,6 +166,7 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   ProjectTrackerStatuses: async () => ({ sites: [], places: [] }),
   ProjectTrackerPace: async () => [],
   ProjectTrackerSupport: async () => ({ issues: [] }),
+  TrackerForgeAccounts: async () => ({ accounts: [] }),
   // Custom notification sounds (stores/sounds).
   GetSoundFiles: async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }),
   // Rate limit snapshots read on every hello (stores/eventsRateLimits).
@@ -1180,6 +1181,9 @@ export const ProjectTrackerSetup = dispatch('ProjectTrackerSetup');
 export const ProjectTrackerStatuses = dispatch('ProjectTrackerStatuses');
 export const ProjectTrackerPace = dispatch('ProjectTrackerPace');
 export const ProjectTrackerSupport = dispatch('ProjectTrackerSupport');
+export const TrackerForgeAccounts = dispatch('TrackerForgeAccounts');
+export const SetTrackerForgeAccount = dispatch('SetTrackerForgeAccount');
+export const TrackerPeople = dispatch('TrackerPeople');
 export const ProjectTrackerSiteFields = dispatch('ProjectTrackerSiteFields');
 export const SetProjectTrackerSetup = dispatch('SetProjectTrackerSetup');
 export const SubscribeTrackerBoard = dispatch('SubscribeTrackerBoard');

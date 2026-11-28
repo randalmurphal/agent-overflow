@@ -7,13 +7,19 @@
 // Credit group turns credit on and off, keeping its rules; changes a rule
 // from this sprint or for every sprint; words its rules in the unit the
 // project counts; picks which tickets are support; and says a credit
-// section a newer version saved.
+// section a newer version saved. The Forge accounts item lists who each
+// forge account is while a rule counts comments or approvals, and sends a
+// person's word on one.
 
 import { tick } from 'svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
-import type { BoardPace, Credit, CreditRules, Setup, SetupView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
+import type { BoardPace, Credit, CreditRules, ForgeAccountInput, ForgeAccountView, ForgeAccountsView, Setup, SetupView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import TrackerPointsSettings from './TrackerPointsSettings.svelte';
+import ComputerSettingsPage from './ComputerSettingsPage.svelte';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { getPinnedBackend } from '../../transport/backends';
+import { setCarriedSessionScopes } from '../../transport/scopes';
 import { formatPace } from '../issues/boardFormat';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
@@ -504,5 +510,194 @@ describe('the Credit group', () => {
     render(TrackerPointsSettings);
     await screen.findByTestId('settings-tracker-points-none');
     expect(screen.queryByTestId('tracker-credit')).toBeNull();
+  });
+});
+
+describe('the Forge accounts item', () => {
+  const account = (login: string, how: string, extra: Partial<ForgeAccountView> = {}): ForgeAccountView =>
+    ({ host: 'github.com', login, how, ...extra }) as ForgeAccountView;
+  const user2 = { id: 'acc-user2', name: 'User 2' };
+  let listed: ForgeAccountView[];
+  let words: [string, ForgeAccountInput][];
+  let reads: number;
+
+  beforeEach(() => {
+    stored = setupWith(undefined, { on: true, rules: [rules()], support: [] });
+    setBindingMock('TrackerBoardProjects', async () => [{ id: '10000', key: 'WEB', name: 'Web' }]);
+    setBindingMock('TrackerProjectIssueTypes', async () => []);
+    listed = [
+      account('ghost', 'nobody', { name: 'Ghost Dev' }),
+      account('nameless', 'nobody'),
+      account('new', 'unchecked', { name: 'New Dev' }),
+      account('ci', 'not_a_person', { name: 'CI' }),
+      account('me', 'own', { name: 'User One', person: { id: 'acc-user1', name: 'User 1' } }),
+      account('u2', 'name', { name: 'User 2', person: user2 }),
+      account('alias', 'paired', { name: 'Alias', person: { id: 'acc-user3' } }),
+    ];
+    reads = 0;
+    setBindingMock('TrackerForgeAccounts', async (): Promise<ForgeAccountsView> => {
+      reads++;
+      return { accounts: listed } as ForgeAccountsView;
+    });
+    words = [];
+    // The computer answers the accounts as the word leaves them.
+    setBindingMock('SetTrackerForgeAccount', async (connection: string, word: ForgeAccountInput): Promise<ForgeAccountsView> => {
+      words.push([connection, word]);
+      listed = listed.map((a) => {
+        if (a.login !== word.login) return a;
+        if (word.who === 'person') return account(a.login, 'paired', { name: a.name, person: { id: word.person!, name: word.person_name } });
+        return account(a.login, word.who === 'not_a_person' ? 'not_a_person' : 'unchecked', { name: a.name });
+      });
+      return { accounts: listed } as ForgeAccountsView;
+    });
+  });
+
+  const row = (login: string) => screen.getAllByTestId('tracker-forge-account').find((el) => el.dataset.login === login)!;
+  const who = (login: string) => within(row(login)).getByTestId('tracker-forge-account-who').textContent?.trim();
+  const buttons = (login: string) => within(row(login)).getAllByRole('button').map((b) => b.textContent?.trim());
+
+  it('lists each account with who it is and how that is known, and the changes each offers', async () => {
+    render(TrackerPointsSettings);
+    await screen.findAllByTestId('tracker-forge-account');
+    expect(screen.getAllByTestId('tracker-forge-account').map((el) => el.textContent?.replace(/\s+/g, ' ').trim().split(' Pick a person')[0].split(' Change person')[0])).toEqual([
+      'Ghost Dev · ghost on github.com Nobody: no person in the tracker, or more than one, has this name. Its reviews count for nobody.',
+      'nameless · nameless on github.com Nobody: the forge gives this account no name. Its reviews count for nobody.',
+      'New Dev · new on github.com Not matched yet. The tracker is asked within a few minutes.',
+      'CI · ci on github.com Not a person, as set here. Its reviews count for nobody.',
+      'User One · me on github.com User 1, the account this computer reads the forge as',
+      'User 2 · u2 on github.com User 2, matched by name',
+      'Alias · alias on github.com acc-user3, as set here',
+    ]);
+    expect(buttons('ghost')).toEqual(['Pick a person…', 'Not a person']);
+    expect(buttons('ci')).toEqual(['Pick a person…', 'Match by name']);
+    expect(buttons('u2')).toEqual(['Change person…', 'Not a person']);
+    expect(buttons('alias')).toEqual(['Change person…', 'Not a person', 'Match by name']);
+    expect(reads).toBe(1);
+    expect(screen.queryByTestId('tracker-forge-accounts-more')).toBeNull();
+  });
+
+  it('shows only while credit is on and a rule counts comments or approvals', async () => {
+    stored = setupWith(undefined, { on: true, rules: [rules({ review_need: 1, review_actions: ['logged_time'] })], support: [] });
+    render(TrackerPointsSettings);
+    await screen.findByTestId('tracker-credit-review');
+    expect(screen.queryByTestId('tracker-forge-accounts')).toBeNull();
+    expect(reads, 'nothing is read for a list that does not show').toBe(0);
+
+    await fireEvent.click(screen.getAllByTestId('tracker-credit-action').find((b) => b.dataset.action === 'approved')!);
+    await screen.findAllByTestId('tracker-forge-account');
+    expect(reads).toBe(1);
+
+    await fireEvent.click(screen.getByRole('switch', { name: 'Count credit' }));
+    await waitFor(() => expect(screen.queryByTestId('tracker-forge-accounts')).toBeNull());
+  });
+
+  it("pairs an account with a person found in the tracker by the text typed, asking the boards' projects", async () => {
+    const searches: unknown[][] = [];
+    setBindingMock('TrackerPeople', async (...args: unknown[]) => {
+      searches.push(args);
+      return args[2] === '' ? { users: [], more: true } : { users: [user2, { id: 'acc-user4' }], more: false };
+    });
+    render(TrackerPointsSettings);
+    await screen.findAllByTestId('tracker-forge-account');
+    await fireEvent.click(within(row('ghost')).getByTestId('tracker-forge-account-pick'));
+    const find = await screen.findByTestId('ticket-picker-find');
+    expect(find.getAttribute('aria-label')).toBe('Find who ghost is');
+    await fireEvent.input(find, { target: { value: 'use' } });
+    const items = await screen.findAllByTestId('ticket-picker-item');
+    expect(items.map((el) => el.textContent?.trim()), 'a person with no name is listed by ID').toEqual(['User 2', 'acc-user4']);
+    expect(searches).toEqual([['jira-1', ['10000'], ''], ['jira-1', ['10000'], 'use']]);
+    await fireEvent.click(items[0]);
+    await waitFor(() => expect(who('ghost')).toBe('User 2, as set here'));
+    expect(words).toEqual([['jira-1', { host: 'github.com', login: 'ghost', who: 'person', person: 'acc-user2', person_name: 'User 2' }]]);
+    expect(buttons('ghost')).toEqual(['Change person…', 'Not a person', 'Match by name']);
+    expect(screen.queryByTestId('ticket-picker-find'), 'a pick closes the list').toBeNull();
+    expect(reads, 'the list shows the answer of the word').toBe(1);
+  });
+
+  it('says an account is no person, and has one match by name again', async () => {
+    render(TrackerPointsSettings);
+    await screen.findAllByTestId('tracker-forge-account');
+    await fireEvent.click(within(row('u2')).getByTestId('tracker-forge-account-no-person'));
+    await waitFor(() => expect(who('u2')).toBe('Not a person, as set here. Its reviews count for nobody.'));
+    await fireEvent.click(within(row('alias')).getByTestId('tracker-forge-account-by-name'));
+    await waitFor(() => expect(who('alias')).toBe('Not matched yet. The tracker is asked within a few minutes.'));
+    expect(words).toEqual([
+      ['jira-1', { host: 'github.com', login: 'u2', who: 'not_a_person' }],
+      ['jira-1', { host: 'github.com', login: 'alias', who: 'by_name' }],
+    ]);
+  });
+
+  it('says under its account a word the computer refused, until the next word on it, and shows what the computer holds', async () => {
+    render(TrackerPointsSettings);
+    await screen.findAllByTestId('tracker-forge-account');
+    let refuse = true;
+    setBindingMock('SetTrackerForgeAccount', async (_c: string, word: ForgeAccountInput) => {
+      if (refuse) throw new Error('this tracker connection is turned off');
+      listed = listed.map((a) => (a.login === word.login ? account(a.login, 'not_a_person', { name: a.name }) : a));
+      return { accounts: listed };
+    });
+    await fireEvent.click(within(row('ghost')).getByTestId('tracker-forge-account-no-person'));
+    expect((await within(row('ghost')).findByTestId('tracker-forge-account-failed')).textContent).toBe('This tracker connection is turned off.');
+    await waitFor(() => expect(reads, 'a failed word reads what the computer holds').toBe(2));
+    expect(within(row('nameless')).queryByTestId('tracker-forge-account-failed')).toBeNull();
+    refuse = false;
+    await fireEvent.click(within(row('ghost')).getByTestId('tracker-forge-account-no-person'));
+    await waitFor(() => expect(who('ghost')).toBe('Not a person, as set here. Its reviews count for nobody.'));
+    expect(within(row('ghost')).queryByTestId('tracker-forge-account-failed')).toBeNull();
+  });
+
+  it('says a read that failed and reads again when asked, and says when no account or more than it lists acted', async () => {
+    let fail = true;
+    setBindingMock('TrackerForgeAccounts', async () => {
+      reads++;
+      if (fail) throw new Error('the database is locked');
+      return { accounts: reads === 2 ? [] : listed, more: reads > 2 };
+    });
+    render(TrackerPointsSettings);
+    expect((await screen.findByTestId('tracker-forge-accounts-error')).textContent?.trim()).toBe('The forge accounts could not be read: The database is locked.');
+    fail = false;
+    await fireEvent.click(screen.getByTestId('tracker-forge-accounts-refresh'));
+    expect((await screen.findByTestId('tracker-forge-accounts-none')).textContent?.trim()).toBe(
+      "No account has approved or commented on a pull request of these boards' tickets that this computer has read.");
+    expect(screen.queryByTestId('tracker-forge-accounts-error')).toBeNull();
+    await fireEvent.click(screen.getByTestId('tracker-forge-accounts-refresh'));
+    expect((await screen.findByTestId('tracker-forge-accounts-more')).textContent?.trim()).toBe(
+      'More accounts have acted than are listed: those set here, then those matched to nobody, then the rest by name.');
+    expect(screen.getAllByTestId('tracker-forge-account')).toHaveLength(listed.length);
+  });
+
+  it("lists each connection's accounts under its site when the project's boards are of two", async () => {
+    paces = () => [paceOf(), paceOf({ connection: 'jira-2', site: 'https://example2.atlassian.net', board: '7', name: 'OPS board' }), paceOf({ board: '3', name: 'Second' })];
+    const asked: string[] = [];
+    setBindingMock('TrackerForgeAccounts', async (connection: string) => {
+      asked.push(connection);
+      return { accounts: [account(connection === 'jira-1' ? 'ghost' : 'other', 'nobody')] };
+    });
+    render(TrackerPointsSettings);
+    await waitFor(() => expect(screen.getAllByTestId('tracker-forge-account')).toHaveLength(2));
+    expect(asked.sort(), 'one read a connection, however many boards').toEqual(['jira-1', 'jira-2']);
+    expect(screen.getAllByTestId('tracker-forge-accounts-connection').map((el) => [el.dataset.connection, el.textContent?.includes('example2.atlassian.net'), within(el).getByTestId('tracker-forge-account').dataset.login]))
+      .toEqual([['jira-1', false, 'ghost'], ['jira-2', true, 'other']]);
+    await fireEvent.click(within(screen.getAllByTestId('tracker-forge-accounts-connection')[1]).getByTestId('tracker-forge-account-no-person'));
+    await waitFor(() => expect(words).toEqual([['jira-2', { host: 'github.com', login: 'other', who: 'not_a_person' }]]));
+  });
+
+  it('offers no word to a device that may not operate the trackers of an attached computer, and reads its accounts there', async () => {
+    stageBackend();
+    noteProject('p1', 'laptop');
+    setCarriedSessionScopes('laptop', ['tracker:read']);
+    const pins: (string | null)[] = [];
+    setBindingMock('TrackerForgeAccounts', async () => {
+      pins.push(getPinnedBackend());
+      return { accounts: listed };
+    });
+    render(ComputerSettingsPage, { props: { backend: 'laptop', Page: TrackerPointsSettings, needsComputer: false } });
+    await screen.findAllByTestId('tracker-forge-account');
+    expect(pins).toEqual(['laptop']);
+    const controls = within(row('alias')).getAllByRole('button') as HTMLButtonElement[];
+    expect(controls.map((b) => [b.disabled, b.title])).toEqual(
+      Array.from({ length: 3 }, () => [true, "This device may not change a project's points and credit settings on this computer."]));
+    expect((screen.getByTestId('tracker-forge-accounts-refresh') as HTMLButtonElement).disabled, 'reading again is no change').toBe(false);
+    resetStagedBackends();
   });
 });

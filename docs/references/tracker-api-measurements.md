@@ -1086,21 +1086,22 @@ pace more than the steps below.
 "Forge acts" is the same board with one repository the connection's
 credit reads, read whole: one pull request for each issue of the board,
 named by the issue's key, each with two approvals and two comments by
-four accounts, three matched to the people of the tracker's evidence and
-one to nobody, under a rule that counts approvals too. Without it the
+four accounts, three matched to the people of the tracker's evidence,
+one of those also paired by a person, and one to nobody, under a rule
+that counts approvals too. Without it the
 connection's credit reads no repository.
 
 The export's `credit` fill:
 
 | Board | Rows | Bytes | VM steps | Best time |
 |---|---|---|---|---|
-| 2,000, estimated | 520 finished, 1,560 review | 172,032 | 751,513 | 13.5 ms |
-| 2,000, estimated, forge acts | 520 finished, 2,080 review | 311,296 | 1,034,481 | 19.2 ms |
-| 2,000, none estimated | 1,040 support | 73,728 | 392,687 | 9.3 ms |
-| 20,000, estimated | 5,200 finished, 1,560 review | 372,736 | 3,401,473 | 97.6 ms |
-| 20,000, estimated, forge acts | 5,200 finished, 20,800 review | 2,625,536 | 8,228,721 | 170.4 ms |
-| 20,000, none estimated | 1,040 support | 73,728 | 1,662,047 | 64.2 ms |
-| 20,000, a board without sprints, every done ticket | 8,000 finished, 660 review | 397,312 | 4,932,967 | 135.9 ms |
+| 2,000, estimated | 520 finished, 1,560 review | 172,032 | 751,515 | 11.9 ms |
+| 2,000, estimated, forge acts | 520 finished, 2,080 review | 311,296 | 1,077,651 | 16.5 ms |
+| 2,000, none estimated | 1,040 support | 73,728 | 392,689 | 7.8 ms |
+| 20,000, estimated | 5,200 finished, 1,560 review | 372,736 | 3,401,475 | 93.7 ms |
+| 20,000, estimated, forge acts | 5,200 finished, 20,800 review | 2,625,536 | 8,660,331 | 165.7 ms |
+| 20,000, none estimated | 1,040 support | 73,728 | 1,662,049 | 55.3 ms |
+| 20,000, a board without sprints, every done ticket | 8,000 finished, 660 review | 397,312 | 4,932,969 | 125.4 ms |
 
 The tickets fill of the same copy takes 658,634 steps (12.2 ms) at 2,000
 and 6,580,994 (117 ms) at 20,000.
@@ -1110,40 +1111,41 @@ included), credit off, on, and on with forge acts:
 
 | Board | Off | On | On, forge acts |
 |---|---|---|---|
-| 2,000, estimated | 207,227 steps, 4.3 ms | 347,194 steps, 6.6 ms | 404,784 steps, 8.0 ms |
-| 2,000, none estimated | 193,027 steps, 4.1 ms | 327,067 steps, 7.4 ms | 327,145 steps, 8.2 ms |
-| 20,000, estimated | 2,020,727 steps, 56.6 ms | 2,563,894 steps, 70.6 ms | 3,606,984 steps, 88.8 ms |
-| 20,000, none estimated | 1,878,727 steps, 54.3 ms | 2,843,467 steps, 89.8 ms | 2,843,545 steps, 90.0 ms |
-| 5 boards of 4,000, estimated | 408,732 steps, 10.0 ms | 593,500 steps, 13.5 ms | 760,590 steps, 17.9 ms |
-| 5 boards of 4,000, none estimated | 380,332 steps, 9.3 ms | 606,673 steps, 17.6 ms | 606,751 steps, 16.8 ms |
+| 2,000, estimated | 207,227 steps, 4.3 ms | 347,196 steps, 5.5 ms | 413,094 steps, 6.5 ms |
+| 2,000, none estimated | 193,027 steps, 4.1 ms | 327,069 steps, 6.5 ms | 327,147 steps, 8.0 ms |
+| 20,000, estimated | 2,020,727 steps, 56.6 ms | 2,563,896 steps, 63.2 ms | 3,689,994 steps, 76.7 ms |
+| 20,000, none estimated | 1,878,727 steps, 54.3 ms | 2,843,469 steps, 95.9 ms | 2,843,547 steps, 82.8 ms |
+| 5 boards of 4,000, estimated | 408,732 steps, 10.0 ms | 593,502 steps, 13.9 ms | 777,200 steps, 22.2 ms |
+| 5 boards of 4,000, none estimated | 380,332 steps, 9.3 ms | 606,675 steps, 18.9 ms | 606,753 steps, 26.6 ms |
 
 With none estimated, most of the difference is the support rule telling
 each row of the sections, which a project counting no credit does not
 apply: 820,000 of the 965,000 steps at 20,000. With forge acts the
-totals take at most 1.95 times the steps of credit off (2,000,
+totals take at most 1.99 times the steps of credit off (2,000,
 estimated).
 
 The pace alone, credit off, on, and on with forge acts:
 
 | Board | Off | On | On, forge acts |
 |---|---|---|---|
-| 2,000, estimated | 14,290 steps | 154,257 steps, 3.0 ms | 211,847 steps, 3.6 ms |
-| 2,000, none estimated | 14,090 steps | 66,116 steps, 1.4 ms | 66,194 steps, 1.4 ms |
-| 20,000, estimated | 131,290 steps, 4.8 ms | 674,457 steps, 19.8 ms | 1,717,547 steps, 35.6 ms |
-| 20,000, none estimated | 129,290 steps, 5.4 ms | 274,016 steps, 10.5 ms | 274,094 steps, 10.9 ms |
-| 5 boards of 4,000, estimated | 27,291 steps | 212,059 steps, 5.1 ms | 379,149 steps, 7.6 ms |
-| 5 boards of 4,000, none estimated | 26,891 steps | 89,218 steps, 3.7 ms | 89,296 steps, 3.1 ms |
+| 2,000, estimated | 14,290 steps | 154,259 steps, 2.5 ms | 220,157 steps, 3.3 ms |
+| 2,000, none estimated | 14,090 steps | 66,118 steps, 1.2 ms | 66,196 steps, 1.3 ms |
+| 20,000, estimated | 131,290 steps, 4.8 ms | 674,459 steps, 21.1 ms | 1,800,557 steps, 32.1 ms |
+| 20,000, none estimated | 129,290 steps, 5.4 ms | 274,018 steps, 9.3 ms | 274,096 steps, 9.2 ms |
+| 5 boards of 4,000, estimated | 27,291 steps | 212,061 steps, 4.8 ms | 395,759 steps, 11.4 ms |
+| 5 boards of 4,000, none estimated | 26,891 steps | 89,220 steps, 4.0 ms | 89,298 steps, 4.0 ms |
 
 At 20,000, estimated, the pace's 5 sprints hold 1,000 finished members,
 100 of them with evidence in the tracker. A member's four forge acts
-add 1,043 steps to it: the pull request found by the ticket's key, each
-act's account matched, and the review rows grouped and summed.
+add 1,126 steps to it: the pull request found by the ticket's key, each
+act's account looked up in the pairings by its key and in the name
+matches, and the review rows grouped and summed.
 
 The forge people's due listing (`ListMirrorForgePeopleDue`, once a
 linked round) walks the keys and acts of the connection's repositories:
-238,386 steps (5.2 ms) for 2,000 pull requests with 8,000 acts and
-2,380,386 (58 ms) for 20,000 with 80,000, whether or not an account is
-matched. A match of 4 accounts writes in 0.1 ms. A forge read's advance
+238,458 steps (4.4 ms) for 2,000 pull requests with 8,000 acts and
+2,380,458 (64 ms) for 20,000 with 80,000 with no account matched, and
+68 fewer with every one matched. A match of 4 accounts writes in 0.1 ms. A forge read's advance
 of the totals (`AdvanceMirrorForgeCredit`) for the keys of 500 pull
 requests takes 19,707 steps (0.7 ms) and names 275 tickets, at 2,000 and
 at 20,000; for a change of a source's state it takes 77 steps.

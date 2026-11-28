@@ -30,6 +30,7 @@ type scripted struct {
 	history     func(tracker.HistoryQuery) (tracker.History, error)
 	evidence    func(tracker.EvidenceQuery) (tracker.Evidence, error)
 	personNamed func(string) (tracker.User, bool, error)
+	people      func([]tracker.ProjectID, string) (tracker.UserList, error)
 	detail      func(tracker.IssueID) (tracker.Detail, error)
 	structure   func(tracker.BoardID, time.Time) (tracker.Structure, error)
 	fields      func() ([]tracker.Field, error)
@@ -259,6 +260,21 @@ func (p *scripted) PersonNamed(ctx context.Context, name string) (tracker.User, 
 		return tracker.User{}, false, err
 	}
 	return h(name)
+}
+
+// People answers through p.people when called, one "People" call a
+// search.
+func (p *scripted) People(ctx context.Context, projects []tracker.ProjectID, text string) (tracker.UserList, error) {
+	p.mu.Lock()
+	h := p.people
+	p.mu.Unlock()
+	if !p.called(ctx, "People", func() bool { return h != nil }) {
+		return tracker.UserList{}, errUnscripted
+	}
+	if err := p.wait(ctx, "People"); err != nil {
+		return tracker.UserList{}, err
+	}
+	return h(projects, text)
 }
 
 // Details reads each issue through p.detail when called, one "Details"

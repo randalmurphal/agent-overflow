@@ -421,6 +421,12 @@ func (p *Provider) PersonNamed(context.Context, string) (tracker.User, bool, err
 	return tracker.User{}, false, fmt.Errorf("linearprovider: a person by name: %w", tracker.ErrUnsupported)
 }
 
+// People fails wrapping tracker.ErrUnsupported before any request, as
+// Evidence does.
+func (p *Provider) People(context.Context, []tracker.ProjectID, string) (tracker.UserList, error) {
+	return tracker.UserList{}, fmt.Errorf("linearprovider: people by name: %w", tracker.ErrUnsupported)
+}
+
 // Download fails wrapping tracker.ErrUnsupported: Linear holds no files.
 func (p *Provider) Download(_ context.Context, in tracker.DownloadInput) error {
 	if err := in.Check(); err != nil {
