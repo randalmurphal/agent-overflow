@@ -499,12 +499,12 @@ func TestOpeningAndClosingATicketKeepCosts(t *testing.T) {
 			sub := s.openTicket(t, conn, issue)
 			// The opening paints from the record (no body yet), then its
 			// first read stores the ticket and builds its view from the
-			// record once, as it settles; 10101's view shows other issues,
-			// whose cards it reads, and a sprint, whose name it reads.
+			// record once, as it settles; 10101's view shows its parent,
+			// whose name it reads, and a sprint, whose name it reads.
 			quiet(t, s.svc)
 			want := "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorTicketRows:1 StoreMirrorTickets:1"
 			if issue == "10101" {
-				want = "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorCards:1 ListMirrorSprintNames:1 ListMirrorTicketRows:1 StoreMirrorTickets:1"
+				want = "GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorBodies:2 ListMirrorParents:1 ListMirrorSprintNames:1 ListMirrorTicketRows:1 StoreMirrorTickets:1"
 			}
 			if got := describeCounts(cs.take()); got != want {
 				t.Fatalf("the opening cost %s; want %s", got, want)
@@ -546,24 +546,27 @@ func TestARoundReadsHistoryOnlyForATicketWithoutItsStatusTime(t *testing.T) {
 	}
 }
 
-// childShowsParentKey waits until the open child's ticket shows its
-// parent 10104 with key, after the events told before.
-func (s *fakeScenario) childShowsParentKey(t *testing.T, child TicketSubscription, told int, key string) {
+// childStillNamesItsParent fails unless the open child's ticket was told
+// nothing after the events told before and shows its parent 10104 with
+// its key: the child names it from the parent's name, which the mirror's
+// keep of the parent does not hold.
+func (s *fakeScenario) childStillNamesItsParent(t *testing.T, child TicketSubscription, told int) {
 	t.Helper()
-	s.events.waitFor(t, "the child's change", func(_ []BoardEvent, i []IssueEvent, _ []error) bool {
-		return slices.ContainsFunc(i[told:], func(e IssueEvent) bool { return e.Issue == "10101" && e.Changed })
-	})
-	if v := must[TicketView](t)(s.svc.TicketDetail(child.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Key != key {
-		t.Fatalf("the child shows its parent %+v; want the key %q", v.Detail, key)
+	_, issues, _ := s.events.snapshot()
+	if slices.ContainsFunc(issues[told:], func(e IssueEvent) bool { return e.Issue == "10101" && e.Changed }) {
+		t.Fatalf("the child was told a change: %+v", issues[told:])
+	}
+	if v := must[TicketView](t)(s.svc.TicketDetail(child.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Key != "WEB-4" {
+		t.Fatalf("the child shows its parent %+v; want WEB-4", v.Detail)
 	}
 }
 
-// Closing the ticket of a parent no board keeps and opening it again
-// before the cleanup removed its record: the reopening's keep shows the
-// record again with no write of it (its read finds the card it holds), and
-// the open child's ticket, which showed the parent without its key after
-// the close, is told and shows the key again.
-func TestReopeningAParentsTicketRebuildsItsOpenChild(t *testing.T) {
+// Closing the ticket of a parent no board keeps ends the mirror's keep of
+// it, and opening it again before the cleanup removed its record keeps it
+// again with no write of it (its read finds the card it holds). Neither
+// tells the open child's ticket anything, which names the parent with its
+// key throughout.
+func TestAParentsTicketClosedAndReopenedTellsItsOpenChildNothing(t *testing.T) {
 	t.Parallel()
 	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
 	s.syncBoard(t, scope)
@@ -571,13 +574,19 @@ func TestReopeningAParentsTicketRebuildsItsOpenChild(t *testing.T) {
 	parent := s.openTicket(t, conn, "10104")
 	quiet(t, s.svc)
 	_, told, _ := s.events.snapshot()
+	s.childStillNamesItsParent(t, child, len(told))
 	s.closeTicket(t, conn, parent, "10104")
 	quiet(t, s.svc)
-	s.childShowsParentKey(t, child, len(told), "")
-	_, told, _ = s.events.snapshot()
+	if card, _ := s.kept(t, conn, "10104"); card {
+		t.Fatal("after its ticket closed the mirror keeps the parent")
+	}
+	s.childStillNamesItsParent(t, child, len(told))
 	s.openTicket(t, conn, "10104")
 	quiet(t, s.svc)
-	s.childShowsParentKey(t, child, len(told), "WEB-4")
+	if card, _ := s.kept(t, conn, "10104"); !card {
+		t.Fatal("after its ticket opened again the mirror does not keep the parent")
+	}
+	s.childStillNamesItsParent(t, child, len(told))
 }
 
 // dropsRefused is a store whose first refuse drops of an open ticket fail.
@@ -605,10 +614,10 @@ func (d *dropsRefused) count() int {
 	return d.calls
 }
 
-// A close whose drop fails stays owed: the store keeps the parent, so the
-// open child still shows its key and nothing is told; the next run tries
-// the drop again, and once it commits the child is told and shows the
-// parent without the key, and the parent's row is gone.
+// A close whose drop fails stays owed: the store keeps the parent; the
+// next run tries the drop again, and once it commits the mirror no longer
+// keeps the parent, and the parent's row is gone. The open child, which
+// names its parent from its name, is told nothing throughout.
 func TestAFailedDropOfAClosedTicketIsRetried(t *testing.T) {
 	t.Parallel()
 	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
@@ -623,13 +632,11 @@ func TestAFailedDropOfAClosedTicketIsRetried(t *testing.T) {
 	if card, _ := s.kept(t, conn, "10104"); !card {
 		t.Fatal("the mirror stopped keeping the parent while its drop failed")
 	}
-	if v := must[TicketView](t)(s.svc.TicketDetail(child.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || v.Detail.Card.Parent.Key != "WEB-4" {
-		t.Fatalf("while the drop is owed the child shows its parent %+v; want WEB-4", v.Detail)
-	}
 	_, told, _ := s.events.snapshot()
+	s.childStillNamesItsParent(t, child, len(told))
 	s.syncBoard(t, scope)
 	quiet(t, s.svc)
-	s.childShowsParentKey(t, child, len(told), "")
+	s.childStillNamesItsParent(t, child, len(told))
 	if n := drops.count(); n != 2 {
 		t.Fatalf("the drop ran %d times; want the failure and the retry", n)
 	}
@@ -745,5 +752,157 @@ func TestStopMakesALastTryOfAFailedDrop(t *testing.T) {
 	}
 	if n := s.openTicketRows(t); n != 0 {
 		t.Fatalf("%d open-ticket rows after Stop", n)
+	}
+}
+
+// On a Jira scrum board, which lists no epics, a story's board card, its
+// ticket and the agent tools' reads of it name its epic, which no board
+// keeps, with the epic's key and title. The epic renamed shows on each
+// once a read of the story brings the new name: the open ticket is told.
+func TestAScrumBoardNamesTheEpicsItDoesNotList(t *testing.T) {
+	t.Parallel()
+	s, conn, scope := keepScenario(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
+	s.syncBoard(t, scope)
+	if card, _ := s.kept(t, conn, "10104"); card {
+		t.Fatal("the board keeps the epic")
+	}
+	parentOf := func(what string) *ParentView {
+		t.Helper()
+		v := must[BoardView](t)(s.svc.Board(scope, StatusGroups{}, []Section{{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}))
+		for _, section := range v.Sections {
+			for _, r := range section.Rows {
+				if r.Card.ID == "10101" {
+					return r.Card.Parent
+				}
+			}
+		}
+		t.Fatalf("%s: the board shows no WEB-1", what)
+		return nil
+	}
+	want := ParentView{ID: "10104", Key: "WEB-4", Title: "The epic"}
+	if p := parentOf("first read"); p == nil || *p != want {
+		t.Fatalf("the board's WEB-1 names its parent %+v; want %+v", p, want)
+	}
+	sub := s.openTicket(t, conn, "10101")
+	quiet(t, s.svc)
+	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || *v.Detail.Card.Parent != want {
+		t.Fatalf("the ticket names its parent %+v; want %+v", v.Detail, want)
+	}
+	// The epic renamed, and read alone: its own ticket opened, which keeps
+	// it. WEB-1's card does not change, and its ticket is told of the name.
+	p := s.provider(conn.ID)
+	applied(t, "rename the epic", p.Edit(t.Context(), tracker.EditInput{Issue: "10104", Fields: []tracker.FieldEdit{{Field: tracker.FieldTitle, Value: tracker.TypedValues("Checkout")}}}))
+	_, told, _ := s.events.snapshot()
+	s.openTicket(t, conn, "10104")
+	quiet(t, s.svc)
+	want.Title = "Checkout"
+	if p := parentOf("after the rename"); p == nil || *p != want {
+		t.Fatalf("after the rename the board's WEB-1 names its parent %+v; want %+v", p, want)
+	}
+	s.events.waitFor(t, "the ticket told of its parent's name", func(_ []BoardEvent, i []IssueEvent, _ []error) bool {
+		return slices.ContainsFunc(i[len(told):], func(e IssueEvent) bool { return e.Issue == "10101" && e.Changed })
+	})
+	quiet(t, s.svc)
+	if v := must[TicketView](t)(s.svc.TicketDetail(sub.ID)); v.Detail == nil || v.Detail.Card.Parent == nil || *v.Detail.Card.Parent != want {
+		t.Fatalf("after the rename the ticket names its parent %+v; want %+v", v.Detail.Card.Parent, want)
+	}
+	if c := must[IssueView](t)(s.svc.Issue(conn.ID, "10101")).Card; c.Parent == nil || *c.Parent != want {
+		t.Fatalf("the issue's card names its parent %+v; want %+v", c.Parent, want)
+	}
+	// The agent tools' reads (ticket_read, one ticket and several, and the
+	// cards of several) name it the same.
+	cards := must[[]TicketCardRead](t)(s.svc.IssueCards(t.Context(), conn.ID, []tracker.IssueID{"10101"}, Interactive))
+	if len(cards) != 1 || cards[0].Err != nil || cards[0].View.Card.Parent == nil || *cards[0].View.Card.Parent != want {
+		t.Fatalf("a tool's read of cards names the parent %+v; want %+v", cards, want)
+	}
+	if d, _, err := s.svc.UnmarkedIssueDetail(t.Context(), conn.ID, "10101", Interactive); err != nil || d.Card.Parent == nil || *d.Card.Parent != want {
+		t.Fatalf("a tool's read names the parent %+v, %v; want %+v", d.Card.Parent, err, want)
+	}
+	reads := must[[]TicketRead](t)(s.svc.UnmarkedIssueDetails(t.Context(), conn.ID, []tracker.IssueID{"10101"}, Interactive))
+	if len(reads) != 1 || reads[0].Err != nil || reads[0].View.Card.Parent == nil || *reads[0].View.Card.Parent != want {
+		t.Fatalf("a tool's read of several names the parent %+v; want %+v", reads, want)
+	}
+}
+
+// A read of a ticket the mirror does not keep (OPS-1, which no board,
+// link or open ticket keeps) names its parent as the read gave it, the
+// ticket file too: before any board read, when no name is stored, and
+// after the parent's rename, over the older name a board read stored.
+func TestAReadOfAnUnkeptTicketNamesItsParent(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name                 string
+		scenario             func(t *testing.T) (*fakeScenario, Connection, Scope)
+		issue, parent, child string
+		parentKey, title     string
+	}{
+		{
+			name: "jira",
+			scenario: func(t *testing.T) (*fakeScenario, Connection, Scope) {
+				s := newFakeScenarioWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour}, func(at time.Time) trackerfake.Fixture {
+					site := keepSite(at)
+					site.Issues[4].Parent = "10104"
+					return trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}
+				}, "example.atlassian.net")
+				conn := s.addJira()
+				s.writeToken(conn, "fake-jira-token-1")
+				return s, conn, Scope{Connection: conn.ID, Board: "1"}
+			},
+			issue: "10105", parent: "10104", child: "10101", parentKey: "WEB-4", title: "The epic",
+		},
+		{
+			name: "linear",
+			scenario: func(t *testing.T) (*fakeScenario, Connection, Scope) {
+				s := newFakeScenarioWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour}, func(at time.Time) trackerfake.Fixture {
+					ws := linearSeed(at)
+					ws.Teams = append(ws.Teams, trackerfake.LinearTeam{ID: lid(11), Key: "OPS", Name: "Ops", Timezone: "UTC", DefaultState: lid(25), Members: []string{lid(1)}})
+					ws.States = append(ws.States, trackerfake.LinearState{ID: lid(25), Team: lid(11), Name: "Todo", Type: "unstarted", Position: 0})
+					ws.Issues[1].Parent = lid(60)
+					ws.Issues = append(ws.Issues, trackerfake.LinearIssue{ID: lid(70), Team: lid(11), Number: 1, Title: "An ops task", State: lid(25),
+						Creator: lid(1), Parent: lid(60), SortOrder: 100, CreatedAt: at.Add(-48 * time.Hour), UpdatedAt: at.Add(-48 * time.Hour)})
+					return trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{ws}}
+				})
+				conn := s.addLinear()
+				s.writeToken(conn, "lin_api_fake00001")
+				return s, conn, Scope{Connection: conn.ID, Board: tracker.BoardID(lid(10))}
+			},
+			issue: lid(70), parent: lid(60), child: lid(61), parentKey: "WEB-1", title: "Fix login",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s, conn, scope := c.scenario(t)
+			s.listBoards(conn.ID, scope.Board)
+			issue := tracker.IssueID(c.issue)
+			check := func(what string, want ParentView) {
+				t.Helper()
+				d, _, err := s.svc.UnmarkedIssueDetail(t.Context(), conn.ID, issue, Interactive)
+				if err != nil || d.Card.Key != "OPS-1" || d.Card.Parent == nil || *d.Card.Parent != want {
+					t.Fatalf("%s: a tool's read of OPS-1 names its parent %+v, %v; want %+v", what, d.Card.Parent, err, want)
+				}
+				vs, err := s.svc.DetailsForThread(t.Context(), conn.ID, []tracker.IssueID{issue})
+				if err != nil {
+					t.Fatal(err)
+				}
+				v := vs[0]
+				if line := "Parent: " + want.Key + " " + want.Title; !strings.Contains(TicketFileText(v), line+"\n") {
+					t.Fatalf("%s: OPS-1's ticket file\n%s\nwants %q", what, TicketFileText(v), line)
+				}
+				if card, _ := s.kept(t, conn, issue); card {
+					t.Fatalf("%s: the mirror keeps OPS-1", what)
+				}
+			}
+			check("before any board read", ParentView{ID: c.parent, Key: c.parentKey, Title: c.title})
+			s.syncBoard(t, scope)
+			p := s.provider(conn.ID)
+			applied(t, "rename the parent", p.Edit(t.Context(), tracker.EditInput{Issue: tracker.IssueID(c.parent), Fields: []tracker.FieldEdit{{Field: tracker.FieldTitle, Value: tracker.TypedValues("Checkout")}}}))
+			want := ParentView{ID: c.parent, Key: c.parentKey, Title: "Checkout"}
+			check("after the rename", want)
+			// The parent is a child's the board keeps: the read wrote its
+			// name, and the board's child shows the read's.
+			if got := s.boardParents(t, scope)[c.child]; got != want {
+				t.Fatalf("after the read the board's child names its parent %+v; want %+v", got, want)
+			}
+		})
 	}
 }

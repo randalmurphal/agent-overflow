@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -38,12 +39,15 @@ func sealedOpen(t *testing.T) *session {
 	}
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3000)
 		INSERT INTO changes SELECT 't1', 'status', i, i, NULL, '1', '3', NULL, NULL FROM n`)
-	if _, _, err := f.fill()(ctx, s.conn, nil); err != nil {
+	if _, _, err := f.fill()(ctx, s.conn, nil, "2026-11-25"); err != nil {
 		t.Fatal(errors.Join(err, s.close()))
 	}
 	if err := s.gate(ctx); err != nil {
 		t.Fatal(errors.Join(err, s.close()))
 	}
+	// The copy holds every relation; what metricOf's metric reads of it is
+	// read from its plan on an empty session, which these tests do not do.
+	s.asked = map[string]asks{"probe": {}}
 	return s
 }
 
@@ -56,7 +60,7 @@ func runSQL(s *session, m Metric) ([]contribution, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.run(context.Background(), p, ms(testNow), 0)
+	return s.run(context.Background(), p, ms(testNow), 0, "points", kept{})
 }
 
 // A metric's SQL reads the board's relations and calls the allowed
@@ -96,7 +100,7 @@ func TestHostileQueriesAreRefused(t *testing.T) {
 		{`SELECT id AS ticket, key AS value FROM tickets`, "column value holds text"},
 		{`SELECT a.ticket AS ticket FROM changes a, changes b LIMIT 30000`, "more than 20000 rows, its limit"},
 		{`SELECT a.ticket AS ticket, printf('%.*c', 60000, 'x') AS person FROM changes a`, "passed 4 MiB"},
-		{`SELECT ?3 AS ticket`, "failed"},
+		{`SELECT ?4 AS ticket`, "failed"},
 		{`SELECT 'WEB-999' AS ticket`, `returned ticket "WEB-999", which is not one of this board's tickets`},
 		{`SELECT id AS ticket, 'Doing' AS series FROM tickets`, "names no series, so its query returns no series column"},
 		{`SELECT id AS ticket, 1e308 * 10 AS value FROM tickets`, `ticket "t1"'s value is +Inf, past 1e+12 either way`},
@@ -163,11 +167,11 @@ func TestTheDeadlineCountsThePrepare(t *testing.T) {
 	if p.took <= 0 || p.took > call {
 		t.Fatalf("the prepare recorded %v of a call of %v; want the time it took", p.took, call)
 	}
-	if rows, err := s.run(context.Background(), p, ms(testNow), 0); err != nil || len(rows) != 10 {
+	if rows, err := s.run(context.Background(), p, ms(testNow), 0, "points", kept{}); err != nil || len(rows) != 10 {
 		t.Fatalf("the query after its own prepare: %d rows, %v", len(rows), err)
 	}
 	p.took = metricDeadline
-	_, err = s.run(context.Background(), p, ms(testNow), 0)
+	_, err = s.run(context.Background(), p, ms(testNow), 0, "points", kept{})
 	var me *MetricError
 	if !errors.As(err, &me) || !me.Limit {
 		t.Fatalf("the query after a prepare that took the whole deadline: %v; want the limit's sentence", err)
@@ -201,8 +205,8 @@ func TestLikePatternsAreBounded(t *testing.T) {
 func TestGateRefusesAConnectionHoldingAnotherDatabase(t *testing.T) {
 	t.Parallel()
 	f := teamBoard()
-	leaky := func(ctx context.Context, conn *sql.Conn, _ []string) (store.MirrorExport, bool, error) {
-		export, ok, err := f.fill()(ctx, conn, nil)
+	leaky := func(ctx context.Context, conn *sql.Conn, _ []string, _ string) (store.MirrorExport, bool, error) {
+		export, ok, err := f.fill()(ctx, conn, nil, "2026-11-25")
 		if err != nil {
 			return export, ok, err
 		}
@@ -218,7 +222,7 @@ func TestGateRefusesAConnectionHoldingAnotherDatabase(t *testing.T) {
 	if !errors.As(err, &r) || r.Code != "dashboard_unsealed" || !strings.Contains(err.Error(), `still holds database "mirror_file"`) {
 		t.Fatalf("evaluate with a database left attached = %v; want the gate's refusal", err)
 	}
-	failing := func(context.Context, *sql.Conn, []string) (store.MirrorExport, bool, error) {
+	failing := func(context.Context, *sql.Conn, []string, string) (store.MirrorExport, bool, error) {
 		return store.MirrorExport{}, false, errors.New("store: detach the database after exporting board 10: busy")
 	}
 	if _, err := e.Evaluate(context.Background(), Board{Fill: failing}, utcSprints3); err == nil || !strings.Contains(err.Error(), "detach") {
@@ -279,7 +283,7 @@ func TestOneStatementReadsStringsAndComments(t *testing.T) {
 
 // The functions a session uses are registered once per zone and outlive
 // no session's state: across opens, counts, failed fills, refused gates
-// and closes in two zones, each zone's driver registered its four
+// and closes in two zones, each zone's driver registered its five
 // functions once and no session's sink is left in the registry. A key
 // that names no open session fails the statement that uses it. Not
 // parallel: it reads the registry, which parallel tests' sessions fill.
@@ -290,11 +294,11 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := evaluator()
-	failing := func(context.Context, *sql.Conn, []string) (store.MirrorExport, bool, error) {
+	failing := func(context.Context, *sql.Conn, []string, string) (store.MirrorExport, bool, error) {
 		return store.MirrorExport{}, false, errors.New("the fill failed")
 	}
-	unsealed := func(ctx context.Context, conn *sql.Conn, _ []string) (store.MirrorExport, bool, error) {
-		export, ok, err := teamBoard().fill()(ctx, conn, nil)
+	unsealed := func(ctx context.Context, conn *sql.Conn, _ []string, _ string) (store.MirrorExport, bool, error) {
+		export, ok, err := teamBoard().fill()(ctx, conn, nil, "2026-11-25")
 		if err == nil {
 			_, err = conn.ExecContext(ctx, `ATTACH 'file::memory:' AS left_open`)
 		}
@@ -314,7 +318,7 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 		if _, err := e.Drill(ctx, teamBoard().board(), DrillRequest{Request: utcSprints3, Widget: "stuck_list"}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := e.Dashboards(ctx, Kind{PlansSprints: true}); err != nil {
+		if _, err := e.Dashboards(ctx, Kind{PlansSprints: true}, store.MirrorEstimatePoints, Own{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -330,8 +334,8 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 	_, hasUTC := zoneDrivers.m["UTC"]
 	_, hasYork := zoneDrivers.m["America/New_York"]
 	zoneDrivers.mu.Unlock()
-	if !hasUTC || !hasYork || registrations != 4*zones {
-		t.Errorf("%d registrations over %d zone drivers (UTC %v, New York %v); want 4 a zone", registrations, zones, hasUTC, hasYork)
+	if !hasUTC || !hasYork || registrations != 5*zones {
+		t.Errorf("%d registrations over %d zone drivers (UTC %v, New York %v); want 5 a zone", registrations, zones, hasUTC, hasYork)
 	}
 	sessionSinks.mu.Lock()
 	left := len(sessionSinks.m)
@@ -364,7 +368,7 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 func TestZoneDriversStopAtTheirBound(t *testing.T) {
 	ctx := context.Background()
 	zoneDrivers.mu.Lock()
-	before := map[string]bool{}
+	before, registered := map[string]bool{}, zoneDrivers.registrations
 	for name := range zoneDrivers.m {
 		before[name] = true
 	}
@@ -375,9 +379,9 @@ func TestZoneDriversStopAtTheirBound(t *testing.T) {
 		for name := range zoneDrivers.m {
 			if !before[name] {
 				delete(zoneDrivers.m, name)
-				zoneDrivers.registrations -= 4
 			}
 		}
+		zoneDrivers.registrations = registered
 	})
 	held := func() int {
 		zoneDrivers.mu.Lock()
@@ -452,4 +456,92 @@ func TestASessionThatCannotConnectLeavesNothing(t *testing.T) {
 			t.Errorf("%d database connection openers run after the session failed to open; its database was not closed", n)
 		}
 	})
+}
+
+// emptyFor runs f on an empty session whose layout readLayout read, its
+// relations made by schema.
+func emptyFor(t *testing.T, schema string, f func(*session) error) error {
+	t.Helper()
+	ctx := context.Background()
+	s, err := openSession(ctx, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := s.close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err := s.conn.ExecContext(ctx, schema); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.readLayout(ctx); err != nil {
+		return err
+	}
+	if err := s.gate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return f(s)
+}
+
+// The plan reader fails loudly where its reading would ask for less: a
+// relation stored in a second b-tree, whose index could hold a column
+// outside the table's own cursor, fails the layout; a cursor on a b-tree
+// the layout does not know and a column past a relation's records refuse
+// the widget, saying so.
+func TestThePlanReaderRefusesWhatItCannotAttribute(t *testing.T) {
+	t.Parallel()
+	if err := emptyFor(t, store.MirrorExportSchema+`CREATE INDEX main.by_type ON tickets(type);`, func(*session) error { return nil }); err == nil ||
+		!strings.Contains(err.Error(), "relation tickets is stored in 2 b-trees") {
+		t.Errorf("a layout with an index on tickets: %v; want its refusal", err)
+	}
+	err := emptyFor(t, store.MirrorExportSchema, func(s *session) error {
+		for root, table := range s.layout.roots {
+			if table == "labels" {
+				delete(s.layout.roots, root)
+			}
+		}
+		_, err := s.prepare(metricOf(`SELECT ticket FROM labels`))
+		if err == nil || !strings.Contains(err.Error(), "could not tell what it reads of the board (OpenRead opens b-tree") {
+			t.Errorf("a cursor on a b-tree the layout does not know: %v; want the refusal naming OpenRead", err)
+		}
+		s.layout.columns["tickets"] = s.layout.columns["tickets"][:1]
+		_, err = s.prepare(metricOf(`SELECT id AS ticket FROM tickets WHERE type = 'Bug'`))
+		if err == nil || !strings.Contains(err.Error(), "could not tell what it reads of the board (Column 21 of tickets, which has 1)") {
+			t.Errorf("a column past the layout's: %v; want the refusal naming it", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A WITHOUT ROWID relation stores its key's columns first: the layout reads
+// a column at its place in the stored row, so a key not declared first
+// still names the column a Column reads, and a card column in the key,
+// which a key comparison reads without a Column, fails the layout.
+func TestTheLayoutReadsAKeyNotDeclaredFirst(t *testing.T) {
+	t.Parallel()
+	tickets := func(key string) string {
+		schema := strings.Replace(store.MirrorExportSchema, "tickets(id TEXT PRIMARY KEY,", "tickets(id TEXT NOT NULL,", 1)
+		return strings.Replace(schema, "type TEXT, priority TEXT) WITHOUT ROWID;", "type TEXT, priority TEXT, extra TEXT, PRIMARY KEY ("+key+")) WITHOUT ROWID;", 1)
+	}
+	err := emptyFor(t, tickets("id, extra"), func(s *session) error {
+		p, err := s.prepare(metricOf(`SELECT id AS ticket FROM tickets WHERE type = 'Bug'`))
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(p.asks.columns, []string{"tickets.type"}) {
+			t.Errorf("a type read with the key (id, extra) asks for %v; want tickets.type", p.asks.columns)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := emptyFor(t, tickets("priority, id"), func(*session) error { return nil }); err == nil ||
+		!strings.Contains(err.Error(), "column tickets.priority is part of its relation's key") {
+		t.Errorf("a layout whose key holds priority: %v; want its refusal", err)
+	}
 }

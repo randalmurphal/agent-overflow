@@ -22,7 +22,9 @@ import (
 //	        | id (> | !=) <n> | id in (<n>, ...)
 //	        | key in ("<key>", ...)
 //	        | statusCategory (= | !=) <category>
-//	        | sprint in (<n>, ...)
+//	        | sprint in (<n>, ...) | sprint in openSprints()
+//	        | assignee = currentUser()
+//	        | status = "<name>"
 //	        | text ~ "<text search>"
 //	        | project = "<key or ID>"
 //	        | filter = <n>
@@ -34,17 +36,21 @@ import (
 //
 // Measured: an epoch-millisecond literal compares at millisecond
 // precision with no time zone, `ORDER BY updated ASC, id ASC` sorts at
-// that precision, and the board lists read the same JQL.
+// that precision, and the board lists read the same JQL. Measured on a
+// site: openSprints() holds the started sprints only, and no issue is in
+// both it and futureSprints().
 
 // jqlQuery is a parsed query: a filter and an order. An empty order is
 // the search's default.
 type jqlQuery struct {
 	where func(s *jiraSite, is *JiraIssue) bool
 	order []jqlOrder
-	// sprints are the sprint IDs a sprint in clause names, and filters
-	// the saved filter IDs a filter clause names.
-	sprints []int64
-	filters []string
+	// sprints are the sprint IDs a sprint in clause names, filters the
+	// saved filter IDs a filter clause names, and statuses the status
+	// names a status clause names.
+	sprints  []int64
+	filters  []string
+	statuses []string
 }
 
 type jqlOrder struct {
@@ -128,10 +134,14 @@ func lexJQL(src string) ([]jqlToken, error) {
 }
 
 type jqlParser struct {
-	toks    []jqlToken
-	pos     int
-	sprints []int64
-	filters []string
+	toks []jqlToken
+	pos  int
+	// viewer is the account currentUser() names, empty where no one
+	// signed in asks (a board's sub-query, read when seeded).
+	viewer   string
+	sprints  []int64
+	filters  []string
+	statuses []string
 }
 
 func (p *jqlParser) peek() jqlToken { return p.toks[p.pos] }
@@ -152,13 +162,13 @@ func (p *jqlParser) keyword(w string) bool {
 	return false
 }
 
-// parseJQL reads src in the forms the fake implements.
-func parseJQL(src string) (jqlQuery, error) {
+// parseJQL reads src in the forms the fake implements, as viewer asks it.
+func parseJQL(src, viewer string) (jqlQuery, error) {
 	toks, err := lexJQL(src)
 	if err != nil {
 		return jqlQuery{}, err
 	}
-	p := &jqlParser{toks: toks}
+	p := &jqlParser{toks: toks, viewer: viewer}
 	q := jqlQuery{where: func(*jiraSite, *JiraIssue) bool { return true }}
 	t := p.peek()
 	if order := t.kind == 'w' && strings.EqualFold(t.text, "ORDER"); t.kind != 0 && !order {
@@ -192,7 +202,7 @@ func parseJQL(src string) (jqlQuery, error) {
 	if t := p.peek(); t.kind != 0 {
 		return jqlQuery{}, &jqlError{fmt.Sprintf("text from %q on is not implemented", t.text)}
 	}
-	q.sprints, q.filters = p.sprints, p.filters
+	q.sprints, q.filters, q.statuses = p.sprints, p.filters, p.statuses
 	return q, nil
 }
 
@@ -237,6 +247,14 @@ func (p *jqlParser) unary() (jqlFilter, error) {
 	return p.clause()
 }
 
+// call reads the empty argument list of a JQL function named name.
+func (p *jqlParser) call(name string) error {
+	if open, closed := p.next(), p.next(); open.kind != 'p' || open.text != "(" || closed.kind != 'p' || closed.text != ")" {
+		return &jqlError{fmt.Sprintf("%s with arguments is not implemented", name)}
+	}
+	return nil
+}
+
 // list reads a parenthesized list of values of kind.
 func (p *jqlParser) list(kind byte) ([]string, error) {
 	if t := p.next(); t.kind != 'p' || t.text != "(" {
@@ -267,6 +285,15 @@ func (p *jqlParser) clause() (jqlFilter, error) {
 		return nil, &jqlError{fmt.Sprintf("clause at %q is not implemented", field.text)}
 	}
 	form := name + " " + strings.ToLower(op.text)
+	if t := p.peek(); form == "sprint in" && t.kind == 'w' && strings.EqualFold(t.text, "openSprints") {
+		p.next()
+		if err := p.call(t.text); err != nil {
+			return nil, err
+		}
+		return func(s *jiraSite, is *JiraIssue) bool {
+			return slices.ContainsFunc(is.Sprints, func(id int64) bool { sp := s.sprint(id); return sp != nil && sp.State == "active" })
+		}, nil
+	}
 	if form == "id in" || form == "key in" || form == "sprint in" || form == "status in" {
 		kind := byte('n')
 		if name == "key" {
@@ -309,6 +336,24 @@ func (p *jqlParser) clause() (jqlFilter, error) {
 		}
 		eq := op.text == "="
 		return func(s *jiraSite, is *JiraIssue) bool { return (s.status(is.Status).Category == cat) == eq }, nil
+	case form == "assignee =" && v.kind == 'w' && strings.EqualFold(v.text, "currentUser"):
+		if err := p.call(v.text); err != nil {
+			return nil, err
+		}
+		if p.viewer == "" {
+			return nil, &jqlError{"currentUser() where no one signed in asks is not implemented"}
+		}
+		who := p.viewer
+		return func(_ *jiraSite, is *JiraIssue) bool { return is.Assignee == who }, nil
+	case form == "status =" && v.kind == 's':
+		// Jira compares a status name with case ignored (unverified); a
+		// name no status has is the query's error (undefinedStatuses).
+		named := v.text
+		p.statuses = append(p.statuses, named)
+		return func(s *jiraSite, is *JiraIssue) bool {
+			st := s.status(is.Status)
+			return st != nil && strings.EqualFold(st.Name, named)
+		}, nil
 	case form == "text ~" && v.kind == 's':
 		terms, err := textTerms(v.text)
 		if err != nil {
@@ -368,6 +413,19 @@ func inFilter(name string, vals []string) jqlFilter {
 		}
 		return slices.ContainsFunc(is.Sprints, func(id int64) bool { return slices.Contains(vals, strconv.FormatInt(id, 10)) })
 	}
+}
+
+// undefinedStatuses are Jira's errors for the status names q names that
+// no status of the site has, as Jira refuses such a query with a 400
+// (message unverified, written as the fake's other undefined values).
+func (s *jiraSite) undefinedStatuses(q jqlQuery) []string {
+	var out []string
+	for _, name := range q.statuses {
+		if !slices.ContainsFunc(s.Statuses, func(st JiraStatus) bool { return strings.EqualFold(st.Name, name) }) {
+			out = append(out, fmt.Sprintf("The value '%s' does not exist for the field 'status'.", name))
+		}
+	}
+	return out
 }
 
 // categoryNamed is the status category key a JQL value names, by name or

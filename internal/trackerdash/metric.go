@@ -27,13 +27,25 @@ const (
 	// ColumnAt is when the row happened (milliseconds), which places it in
 	// the range and its periods.
 	ColumnAt = "at"
+	// ColumnUntil makes the row a state: it holds from at (NULL: before
+	// anything) until until (NULL: still), and is counted at each instant
+	// it holds (contribution.holdsAt).
+	ColumnUntil = "until"
+	// ColumnShare is the part of a ticket a counted row counts where the
+	// board counts tickets (no estimates, or a project that counts
+	// tickets), for a metric in the board's estimate: 1 when absent or
+	// NULL (evaluation.run).
+	ColumnShare = "share"
 	// ColumnNote is a short text the ticket list and the drill show beside
 	// the row. A row not counted is listed as "Not counted: " and its
 	// note, so its note says only why.
 	ColumnNote = "note"
+	// ColumnHeading is the heading a drill lists the row under within its
+	// series, after the rows with none (Drill, DrillGroup).
+	ColumnHeading = "heading"
 )
 
-var metricColumns = []string{ColumnTicket, ColumnValue, ColumnBucket, ColumnSeries, ColumnPerson, ColumnEpic, ColumnAt, ColumnNote}
+var metricColumns = []string{ColumnTicket, ColumnValue, ColumnShare, ColumnBucket, ColumnSeries, ColumnHeading, ColumnPerson, ColumnEpic, ColumnAt, ColumnUntil, ColumnNote}
 
 // Reducer is how a metric's rows become one number.
 type Reducer string
@@ -72,6 +84,10 @@ const (
 	BucketPerson Bucket = "person"
 	BucketEpic   Bucket = "epic"
 	BucketText   Bucket = "text"
+	// BucketDay groups rows by the working days of the board's active
+	// sprints, whatever the range: their start, then each working day's
+	// end (sprintDays).
+	BucketDay Bucket = "day"
 )
 
 // Unit is what a metric's number counts.
@@ -84,7 +100,19 @@ const (
 	// board with no estimate.
 	UnitEstimate Unit = "estimate"
 	UnitDays     Unit = "days"
+	// UnitTime is logged time, in seconds.
+	UnitTime Unit = "time"
 )
+
+// numbersUnit is the unit m's numbers are in, the one every reader of
+// them (the widget, its drill, the tool's answer) draws them in: a
+// count's are tickets, whatever its unit.
+func (m Metric) numbersUnit() Unit {
+	if m.Reduce == ReduceCount {
+		return UnitTickets
+	}
+	return m.Unit
+}
 
 // Good is the direction of a change that is good news.
 type Good string
@@ -97,26 +125,34 @@ const (
 )
 
 // Metric is one named query and how its rows are reduced. The same struct
-// holds the app's metrics and, with authoring, an agent's; Validate is the
+// holds the app's metrics and an agent's; Validate is the
 // one check both pass.
 type Metric struct {
-	// Name is the metric's immutable machine name.
-	Name string
+	// Name is the metric's immutable machine name; a project's metric is
+	// named by its widget, so it is not part of the metric's JSON.
+	Name string `json:"-"`
 	// Title is what a widget of it is called.
-	Title string
+	Title string `json:"title"`
 	// Words say in plain words what it counts, at most three sentences.
-	Words []string
+	Words []string `json:"words"`
 	// SQL is the one SELECT.
-	SQL string
+	SQL string `json:"sql"`
 	// Reduce, Unit, Good and Bucket are as their types say.
-	Reduce Reducer
-	Unit   Unit
-	Good   Good
-	Bucket Bucket
+	Reduce Reducer `json:"reduce"`
+	Unit   Unit    `json:"unit"`
+	Good   Good    `json:"good,omitempty"`
+	Bucket Bucket  `json:"bucket,omitempty"`
 	// Series is the series it names, in the order a chart's legend and a
 	// table's columns follow; a row names one of them, and a metric that
 	// names none returns no series column.
-	Series []string
+	Series []string `json:"series,omitempty"`
+	// Pace is a built-in's remaining work by day (the burndown): its line
+	// draws an even pace to zero and each point says what is left.
+	// Overlap is a built-in's whose series overlap, a ticket counting in
+	// several, so a table of it adds up no total. Neither is in a metric's
+	// JSON: a definition that names either is refused as an unknown field.
+	Pace    bool `json:"-"`
+	Overlap bool `json:"-"`
 }
 
 // Bounds of a metric's definition.
@@ -159,9 +195,9 @@ func (m Metric) Validate() error {
 		return fmt.Errorf("metric %s reduces by %q, which is none of count, sum, median, average or average_of_period_sums", m.Name, m.Reduce)
 	}
 	switch m.Unit {
-	case UnitTickets, UnitEstimate, UnitDays:
+	case UnitTickets, UnitEstimate, UnitDays, UnitTime:
 	default:
-		return fmt.Errorf("metric %s counts %q, which is none of tickets, estimate or days", m.Name, m.Unit)
+		return fmt.Errorf("metric %s counts %q, which is none of tickets, estimate, days or time", m.Name, m.Unit)
 	}
 	switch m.Good {
 	case GoodUp, GoodDown, GoodNone:
@@ -169,9 +205,9 @@ func (m Metric) Validate() error {
 		return fmt.Errorf("metric %s calls %q good, which is neither up nor down", m.Name, m.Good)
 	}
 	switch m.Bucket {
-	case BucketNone, BucketPeriod, BucketSprint, BucketPerson, BucketEpic, BucketText:
+	case BucketNone, BucketPeriod, BucketSprint, BucketPerson, BucketEpic, BucketText, BucketDay:
 	default:
-		return fmt.Errorf("metric %s groups by %q, which is none of period, sprint, person, epic or text", m.Name, m.Bucket)
+		return fmt.Errorf("metric %s groups by %q, which is none of period, sprint, day, person, epic or text", m.Name, m.Bucket)
 	}
 	if m.Reduce == ReduceAverageOfPeriodSums && m.Bucket != BucketPeriod && m.Bucket != BucketSprint {
 		return fmt.Errorf("metric %s averages its periods' sums, so it groups by period or sprint", m.Name)
@@ -204,12 +240,14 @@ func metricColumnsOf(m Metric, names []string) (columns, error) {
 		return columns{}, fmt.Errorf("the query returns no ticket column; each row names the ticket it counts")
 	}
 	switch {
-	case m.Bucket == BucketPeriod && !c.has(ColumnAt):
-		return columns{}, fmt.Errorf("metric %s groups by period, so its query returns an at column", m.Name)
-	case m.Bucket != BucketNone && m.Bucket != BucketPeriod && !c.has(ColumnBucket):
+	case (m.Bucket == BucketPeriod || m.Bucket == BucketDay) && !c.has(ColumnAt) && !c.has(ColumnUntil):
+		return columns{}, fmt.Errorf("metric %s groups by %s, so its query returns an at or an until column", m.Name, m.Bucket)
+	case c.has(ColumnUntil) && m.Reduce == ReduceAverageOfPeriodSums:
+		return columns{}, fmt.Errorf("metric %s returns until, so each row is a state counted where it holds; a state's periods are not added up, so reduce it by count, sum, median or average", m.Name)
+	case m.Bucket != BucketNone && m.Bucket != BucketPeriod && m.Bucket != BucketDay && !c.has(ColumnBucket):
 		return columns{}, fmt.Errorf("metric %s groups by %s, so its query returns a bucket column", m.Name, m.Bucket)
-	case m.Bucket == BucketNone && c.has(ColumnBucket):
-		return columns{}, fmt.Errorf("metric %s groups by nothing, so its query returns no bucket column", m.Name)
+	case (m.Bucket == BucketNone || m.Bucket == BucketDay) && c.has(ColumnBucket):
+		return columns{}, fmt.Errorf("metric %s groups by %s, so its query returns no bucket column", m.Name, cmpOr(string(m.Bucket), "nothing"))
 	case len(m.Series) == 0 && c.has(ColumnSeries):
 		return columns{}, fmt.Errorf("metric %s names no series, so its query returns no series column", m.Name)
 	}
@@ -221,12 +259,17 @@ func (c columns) has(name string) bool {
 	return ok
 }
 
-// periodBound is whether a metric's rows fall in the range's periods: it
-// has an at, or groups by sprint. Any other metric counts now, and its
-// number has no previous range and no trend.
+// periodBound is whether a metric's rows fall in the range's periods (or
+// the sprint's days): it has an at or an until, or groups by sprint or
+// day. Any other metric counts now, and its number has no previous range
+// and no trend.
 func (c columns) periodBound(m Metric) bool {
-	return c.has(ColumnAt) || m.Bucket == BucketSprint
+	return c.has(ColumnAt) || c.has(ColumnUntil) || m.Bucket == BucketSprint || m.Bucket == BucketDay
 }
+
+// state is whether a metric's rows are states (an until column), counted
+// at the instants they hold instead of in the period they happen in.
+func (c columns) state() bool { return c.has(ColumnUntil) }
 
 func validName(s string) bool {
 	if s == "" || len(s) > 64 {
@@ -289,8 +332,8 @@ func checkWidget(w Widget, m Metric) error {
 		if m.Bucket == BucketNone {
 			return fmt.Errorf("widget %s draws %s, but metric %s groups by nothing", w.ID, w.Form, m.Name)
 		}
-		if w.Form == FormLine && m.Bucket != BucketPeriod && m.Bucket != BucketSprint {
-			return fmt.Errorf("widget %s draws a line, so metric %s groups by period or sprint", w.ID, m.Name)
+		if w.Form == FormLine && m.Bucket != BucketPeriod && m.Bucket != BucketSprint && m.Bucket != BucketDay {
+			return fmt.Errorf("widget %s draws a line, so metric %s groups by period, sprint or day", w.ID, m.Name)
 		}
 		if len(m.Series) > maxChartSeries {
 			return fmt.Errorf("widget %s draws %d series; a chart draws at most %d", w.ID, len(m.Series), maxChartSeries)

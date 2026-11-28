@@ -132,8 +132,8 @@ var errEnded = errors.New("trackerapp: the connection's mirror ended")
 // start takes a hold on connection id for one tick or read, or fails:
 // with errEnded for a connection turned off or removed, ErrNoProvider for
 // a Tempo connection, ErrStopped after Stop, the context's error when ctx
-// has ended, and the error of the delete of an earlier process's open
-// tickets when that failed (dropEarlierTickets). It first tries again the
+// has ended, and the error of the recovery of what an earlier process
+// left when that failed (recoverEarlier). It first tries again the
 // drops of closed tickets that failed (payOwedDrops). The caller ends the
 // run with finish.
 func (s *Service) start(ctx context.Context, id string, u Urgency) (*run, error) {
@@ -143,7 +143,7 @@ func (s *Service) start(ctx context.Context, id string, u Urgency) (*run, error)
 	if err := s.enter(); err != nil {
 		return nil, err
 	}
-	if err := s.dropEarlierTickets(); err != nil {
+	if err := s.recoverEarlier(); err != nil {
 		s.leave()
 		return nil, err
 	}
@@ -213,16 +213,26 @@ func (s *Service) hold(id string) (*run, error) {
 	return r, nil
 }
 
-// dropEarlierTickets deletes the open-ticket rows an earlier process left
-// (store DropMirrorTicketsOfOtherSessions), once per process: every run
-// passes it as it starts, and every bind of an open ticket is made in a
-// run (bindTickets), so the delete has completed before any row of this
-// process is written and never removes one. Every read of a view passes
-// it too (readRoot), so no view shows an issue that only an earlier
-// process's row keeps. Concurrent first runs wait for one delete. A delete
-// that fails fails the run or the read that tried it, which is retried as
-// a failure outside the tracker is, and the next one tries it again.
-func (s *Service) dropEarlierTickets() error {
+// recoverEarlier settles, once per process, what an earlier process left
+// mid-way, before this process reads or writes any of it:
+//
+//   - The open-ticket rows (store DropMirrorTicketsOfOtherSessions). Every
+//     run passes this as it starts, and every bind of an open ticket is
+//     made in a run (bindTickets), so the delete has completed before any
+//     row of this process is written and never removes one. Every read of
+//     a view passes it too (readRoot), so no view shows an issue that only
+//     an earlier process's row keeps.
+//   - The time entries it was sending (store RecoverEarlierTimeSends),
+//     which become unknown: their post may have happened. Every mark is
+//     made in a run, and every read or change of entries outside one
+//     passes this first (enterTime), so sent means this process is
+//     sending the entry, to every reader.
+//
+// Concurrent first callers wait for one pass. A pass that fails fails the
+// run or the call that tried it, which is retried as a failure outside the
+// tracker is, and the next one tries it again; both steps are idempotent
+// until the pass completes, since no mark is made before.
+func (s *Service) recoverEarlier() error {
 	s.earlier.Lock()
 	defer s.earlier.Unlock()
 	if s.earlier.done {
@@ -231,7 +241,20 @@ func (s *Service) dropEarlierTickets() error {
 	if _, err := s.store.DropMirrorTicketsOfOtherSessions(s.session); err != nil {
 		return fmt.Errorf("trackerapp: drop the open tickets an earlier process left: %w", err)
 	}
+	recovered, err := s.store.RecoverEarlierTimeSends(millis(s.now()))
+	if err != nil {
+		return fmt.Errorf("trackerapp: %w", err)
+	}
 	s.earlier.done = true
+	type owner struct{ connection, author string }
+	byOwner := map[owner][]store.TimeEntry{}
+	for _, e := range recovered {
+		o := owner{e.Connection, e.Author}
+		byOwner[o] = append(byOwner[o], e)
+	}
+	for o, es := range byOwner {
+		s.timeEntriesChanged(o.connection, o.author, es)
+	}
 	return nil
 }
 

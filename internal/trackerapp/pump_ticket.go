@@ -528,7 +528,7 @@ type owedDrop struct {
 // dropTicket ends tp's keep as its goroutine returns, and no bind follows
 // it (dropKeep). A drop that fails stays owed: the next run retries it
 // (payOwedDrops), and Stop makes a last try, after which the next process
-// drops the row (dropEarlierTickets).
+// drops the row (recoverEarlier).
 func (s *Service) dropTicket(tp *ticketPump) {
 	s.opMu.Lock()
 	tp.dropped = true
@@ -542,7 +542,7 @@ func (s *Service) dropTicket(tp *ticketPump) {
 
 // dropKeep deletes d's keep (store DropMirrorTicket) under opMu, the lock
 // of every write of the row. When the issue is kept no longer, the change
-// reaches every subscription that shows it as another's parent or link
+// reaches every subscription that shows it as another's link
 // (Changes.Visibility). A drop that fails is logged with retry, what
 // follows it, and owed until a later try commits.
 func (s *Service) dropKeep(d owedDrop, retry string) {

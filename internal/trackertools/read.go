@@ -32,8 +32,10 @@ const maxKeyRunes = 128
 // writes it, with no site.
 type ticket struct {
 	connection, site, issue, key string
-	// title is the ticket's title when the lookup that found it gave one.
+	// title and kind are the ticket's title and type when the lookup that
+	// found it gave them.
 	title string
+	kind  *trackerapp.IssueTypeView
 	// linked is the thread's own ticket.
 	linked bool
 }
@@ -218,10 +220,11 @@ func (s *Server) read(ctx context.Context, caller Caller, raw json.RawMessage) (
 }
 
 // qualifier is how answers write the keys of site's tickets: as the
-// tracker does when one connection is on, and as site/KEY when several
-// are, so every key an answer gives opens that ticket again.
+// tracker does when the one connection on is site's, and as site/KEY when
+// several are on or the one on is another site's, so every key an answer
+// gives opens that ticket again.
 func qualifier(sources []trackerapp.TicketSource, site string) func(string) string {
-	if len(sources) < 2 {
+	if len(sources) == 0 || len(sources) == 1 && sources[0].Site == site {
 		return func(key string) string { return key }
 	}
 	return func(key string) string {

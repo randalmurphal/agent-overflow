@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/threadmcp"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/trackerapp"
+	"agent-overflow/internal/trackerdash"
 	"agent-overflow/internal/trackertools"
 )
 
@@ -31,10 +32,12 @@ import (
 const trackerMCPName = trackertools.MCPServerName
 
 // trackerMCPAccess is what one capability URL acts as: the session it was
-// issued to.
+// issued to, and whether that session was given the time tools, which a
+// Jira connection on as it started gives (trackertools.Tools).
 type trackerMCPAccess struct {
 	ThreadID     string
 	SessionToken string
+	Time         bool
 }
 
 type appTrackerMCP struct {
@@ -52,8 +55,8 @@ const TrackerToolsAllowedTool = "mcp__" + trackerMCPName + "__*"
 func (a *App) trackerMCPServer() *threadmcp.Server[trackerMCPAccess] {
 	a.trackerMCP.once.Do(func() {
 		a.trackerMCP.tools = trackertools.New(trackerToolsAdapter{a}, trackerToolsHost{a})
-		a.trackerMCP.server = threadmcp.New(trackerMCPName, trackertools.Instructions, func(trackerMCPAccess) []map[string]any {
-			return a.trackerMCP.tools.Tools()
+		a.trackerMCP.server = threadmcp.New(trackerMCPName, trackertools.Instructions, func(access trackerMCPAccess) []map[string]any {
+			return a.trackerMCP.tools.Tools(access.Time)
 		}, a.callTrackerMCP)
 		// Antigravity sessions do not get these tools (SupportsTrackerMCP).
 		a.trackerMCP.server.OmitAlwaysLoad()
@@ -63,29 +66,33 @@ func (a *App) trackerMCPServer() *threadmcp.Server[trackerMCPAccess] {
 
 // trackerToolsFor reports whether a session of thread starting now gets the
 // tracker tools: a project thread on a provider that takes them, on a
-// computer with a Jira or Linear connection turned on. An App built without
-// the tracker service (Start builds it before any session) has no source.
-// The connection rows are read first: a computer with none on decides
-// without resolving the session's scope.
-func (a *App) trackerToolsFor(thread store.Thread, scope sessionScope) (bool, error) {
+// computer with a Jira or Linear connection turned on; and whether it
+// gets the time tools, which a Jira connection turned on gives. An App
+// built without the tracker service (Start builds it before any session)
+// has no source. The connection rows are read first: a computer with none
+// on decides without resolving the session's scope.
+func (a *App) trackerToolsFor(thread store.Thread, scope sessionScope) (given, time bool, err error) {
 	if !provider.CapabilitiesForProvider(thread.Provider).SupportsTrackerMCP || a.trackers == nil {
-		return false, nil
+		return false, false, nil
 	}
-	if sources, err := a.trackers.TicketSources(); err != nil || len(sources) == 0 {
-		return false, err
+	sources, err := a.trackers.TicketSources()
+	if err != nil || len(sources) == 0 {
+		return false, false, err
 	}
-	_, ok, err := scope()
-	return ok, err
+	if _, ok, err := scope(); err != nil || !ok {
+		return false, false, err
+	}
+	return true, slices.ContainsFunc(sources, func(src trackerapp.TicketSource) bool { return src.Kind == store.TrackerKindJira }), nil
 }
 
 // trackerMCPConfigForThread registers the thread's session and returns its
 // server entry, or none when the thread does not get the tools.
 func (a *App) trackerMCPConfigForThread(thread store.Thread, sessionToken string, scope sessionScope) (map[string]any, error) {
-	ok, err := a.trackerToolsFor(thread, scope)
+	ok, time, err := a.trackerToolsFor(thread, scope)
 	if err != nil || !ok {
 		return nil, err
 	}
-	return a.trackerMCPServer().RegisterThread(thread.ID, sessionToken, trackerMCPAccess{ThreadID: thread.ID, SessionToken: sessionToken})
+	return a.trackerMCPServer().RegisterThread(thread.ID, sessionToken, trackerMCPAccess{ThreadID: thread.ID, SessionToken: sessionToken, Time: time})
 }
 
 // callTrackerMCP runs one tool. The session must still be the one the
@@ -102,7 +109,7 @@ func (a *App) callTrackerMCP(w http.ResponseWriter, ctx context.Context, req thr
 		threadmcp.WriteError(w, req.ID, http.StatusOK, -32602, "invalid tools/call params")
 		return
 	}
-	result, err := a.trackerMCP.tools.Call(ctx, trackertools.Caller{Thread: access.ThreadID, Session: access.SessionToken}, call.Name, call.Arguments)
+	result, err := a.trackerMCP.tools.Call(ctx, trackertools.Caller{Thread: access.ThreadID, Session: access.SessionToken, Time: access.Time}, call.Name, call.Arguments)
 	if err != nil {
 		if _, _, public := errorsx.PublicDetails(err); !public {
 			log.Printf("tracker tools: %s on %s: %v", call.Name, access.ThreadID, err)
@@ -126,7 +133,7 @@ func (a *App) withTrackerMCPRow(thread store.Thread, rows []ThreadMCPServer, liv
 		has, source = a.trackerMCPServer().HoldsSession(thread.ID, liveSession), mcpRowSourceSession
 	} else {
 		var err error
-		if has, err = a.trackerToolsFor(thread, scope); err != nil {
+		if has, _, err = a.trackerToolsFor(thread, scope); err != nil {
 			log.Printf("tracker tools: menu row for %s: %v", thread.ID, err)
 		}
 	}
@@ -230,6 +237,14 @@ func (t trackerToolsAdapter) TicketsOfKey(key string) ([]trackerapp.KeyedTicket,
 	return svc.TicketsOfKey(key)
 }
 
+func (t trackerToolsAdapter) ThreadJiraTickets(threadIDs []string) (map[string]trackerapp.JiraTicket, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return nil, err
+	}
+	return svc.ThreadJiraTickets(threadIDs)
+}
+
 func (t trackerToolsAdapter) BoardSummary(connection, board string) (trackerapp.BoardSummary, error) {
 	svc, err := t.a.trackerService()
 	if err != nil {
@@ -252,6 +267,48 @@ func (t trackerToolsAdapter) MirrorIssue(connection, issue string) (trackerapp.I
 
 func (t trackerToolsAdapter) IssueTypes(ctx context.Context, connection, project string) ([]trackerapp.IssueTypeView, error) {
 	return t.a.TrackerIssueTypes(ctx, connection, project)
+}
+
+// ReadTime is bounded as RefreshTrackerWorklogs, the read it makes when
+// the days were not read moments ago.
+func (t trackerToolsAdapter) ReadTime(ctx context.Context, connection, from, to string) (trackerapp.WorklogDays, error) {
+	return trackerFormRead(t.a, ctx, "RefreshTrackerWorklogs", "Reading the logged time", func(ctx context.Context, svc *trackerapp.Service) (trackerapp.WorklogDays, error) {
+		return svc.ReadTime(ctx, connection, from, to)
+	})
+}
+
+// DraftTime stores the draft, with no tracker call; a refusal of its
+// entries is the sentence alone, as the tools word theirs.
+func (t trackerToolsAdapter) DraftTime(connection string, in trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return trackerapp.TimeDraftView{}, err
+	}
+	out, err := svc.DraftTime(connection, in)
+	if errors.Is(err, trackerapp.ErrInvalidRequest) {
+		return out, errorsx.Public(trackertools.CodeInvalidRequest, refusedInput(err), err)
+	}
+	return out, trackerError(err)
+}
+
+// OpenTimeEntries reads the store, with no tracker call; a refusal is
+// worded as DraftTime's.
+func (t trackerToolsAdapter) OpenTimeEntries(connection string, days []string) ([]trackerapp.TimeEntryView, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return nil, err
+	}
+	out, err := svc.OpenTimeEntries(connection, days)
+	if errors.Is(err, trackerapp.ErrInvalidRequest) {
+		return out, errorsx.Public(trackertools.CodeInvalidRequest, refusedInput(err), err)
+	}
+	return out, trackerError(err)
+}
+
+// PostTime is the person's approval of a post, bounded and worded as the
+// Time screen's (PostTrackerTimeEntries).
+func (t trackerToolsAdapter) PostTime(ctx context.Context, connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
+	return t.a.PostTrackerTimeEntries(ctx, connection, in)
 }
 
 func (t trackerToolsAdapter) CreateFields(ctx context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error) {
@@ -283,6 +340,18 @@ func (t trackerToolsAdapter) MoveToSprint(ctx context.Context, connection string
 
 func (t trackerToolsAdapter) AddComment(ctx context.Context, connection string, in trackerapp.CommentRequest) (trackerapp.WriteView, error) {
 	return t.a.AddTrackerComment(ctx, connection, in)
+}
+
+// TryWidget counts an agent's widget as the dashboards count, under the
+// evaluator's own deadline, and answers its refusal as the dashboard
+// methods do (dashboardError).
+func (t trackerToolsAdapter) TryWidget(ctx context.Context, project, connection, board string, w trackerapp.KeptWidget, marks trackerapp.TileMarks, thread string, show bool) (trackerdash.Tried, error) {
+	svc, err := t.a.trackerService()
+	if err != nil {
+		return trackerdash.Tried{}, err
+	}
+	out, err := svc.TryWidget(ctx, project, trackerapp.Scope{Connection: connection, Board: tracker.BoardID(board)}, w, marks, thread, show)
+	return out, dashboardError(err)
 }
 
 // EndWrites runs a call's refresh within a write's budget

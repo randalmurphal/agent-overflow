@@ -6,8 +6,9 @@
 // Covered on both: the tab opens the board's built-in dashboard, counted
 // from the board's copy once it has synced; the pace says why it is not
 // compared when the copy holds too few earlier sprints, and with This
-// sprint shows its change from the last sprint colored as bad news; a
-// widget that counts now shows "Now" and no change mark; a bar opens its
+// sprint shows its change from the last sprint colored as bad news;
+// Stuck, which counts what holds now, compares it with what held where the
+// range began; a bar opens its
 // tickets, 100 a page, and the pages move; Team to Mine narrows every
 // number to the person's tickets; a person in the table narrows the page
 // with a chip that clears; a ticket's history reaches the count; a
@@ -19,18 +20,35 @@
 // "not counted" that opens the whole chart; a drill's rows carry a
 // count's no value, the period a row counts in and its note beside the
 // title (under it on compact); Unassigned's cell and No epic's bar open
-// their tickets; while a range is counted the grid takes no click; the
+// their tickets; an epic the scrum board does not list counts its child's
+// open work, its label narrows the page, and the child's card, backlog row
+// and ticket name it, the ticket opening it; while a range is counted the
+// grid takes no click; the
 // board's first read not finished is said on the screen and in a drill
 // until its reconcile completes; on a kanban board with more epics and
 // people than its bars and table show, More opens the rows of the epics
-// and people left out, two epics tied across the cut. On desktop: four
-// opens and closes of the screen leave the page's heap and DOM as they
-// were.
+// and people left out, two epics tied across the cut, and the board, which
+// plans no sprints, shows no burndown and no sprint table; the active
+// sprint's burndown draws its open work by day against an even pace, its
+// points say what is left beside the pace and open their tickets, and How
+// this is counted names the sprint; the sprint table counts each finished
+// sprint's committed, added, removed and completed work, a cell opening
+// its tickets; an active sprint with no dates leaves the burndown a
+// sentence that says so. On desktop: four opens and closes of the screen
+// leave the page's heap and DOM as they were, and a board on a paired
+// computer draws its burndown here.
+
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { Locator, Page } from '@playwright/test';
 
-import type { HarnessApp } from '../src/harness.js';
+import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
+import { pairOwnDevice } from './headless-pairing-helpers.js';
+import { openBacklog } from './issues-backlog-flow.js';
+import { startTogether } from './launch-helpers.js';
 import {
   connectFakeJira, connectFakeJiraBoard, JIRA_SITE, openIssuesPane, press, renameJiraIssue, seedFakeJira, type ConnectedBoard, type ExtraJira,
 } from './tracker-helpers.js';
@@ -47,7 +65,12 @@ const BOARD_ISSUES = 'GET rest/software/1.0/board/{board}/issue';
 /** EvaluateTrackerDashboard's method ID on the wire. */
 const EVALUATE_TRACKER_DASHBOARD = 2206254666;
 const FIRST_READ = "This board's first read has not finished: these numbers count the tickets read so far.";
-const iso = (offset: number) => new Date(Date.now() + offset).toISOString();
+// Every time the seed names counts from one reading of the clock, so two
+// at the same offset are one instant: WEB-20's update and its move into
+// In Progress. A change the tracker dates after the ticket's update is of
+// a later version, and the store leaves it out of when the status began.
+const SEEDED_AT = Date.now();
+const iso = (offset: number) => new Date(SEEDED_AT + offset).toISOString();
 const POINTS = 'customfield_10016';
 
 let changeId = 30000;
@@ -67,9 +90,10 @@ const DONE: [string, string] = ['10002', 'Done'];
 // 2's 52 / 5 = 10.4. Sprint 1 holds the seed's WEB-1 and WEB-2 (no
 // estimate, nobody's), WEB-20 (User 2, 3 points, in progress for 6
 // days: stuck), WEB-21 (User 1, 2 points, done yesterday) and WEB-22
-// (User 1, 5 points, to do): This sprint's pace is 2 points, down 103
+// (User 1, 5 points, to do, under the epic WEB-30 "Checkout", which the
+// scrum board does not list): This sprint's pace is 2 points, down 103
 // from Sprint E's 105.
-const SPRINT_E = 15;
+export const SPRINT_E = 15;
 const DASHBOARDS: ExtraJira = {
   projects: [],
   boards: [],
@@ -104,8 +128,9 @@ const DASHBOARDS: ExtraJira = {
     },
     {
       id: '10122', key: 'WEB-22', project: 'WEB', type: '10002', status: '10000', summary: 'Waiting for User 1', sprints: [1],
-      assignee: 'acc-user1', created: iso(-10 * DAY), values: { [POINTS]: 5 },
+      assignee: 'acc-user1', created: iso(-10 * DAY), values: { [POINTS]: 5 }, parent: '10130',
     },
+    { id: '10130', key: 'WEB-30', project: 'WEB', type: '10000', status: '10000', summary: 'Checkout', created: iso(-20 * DAY) },
   ],
 };
 
@@ -135,7 +160,7 @@ const KANBAN: ExtraJira = {
   ],
 };
 
-function widget(screen: Locator, id: string): Locator {
+export function widget(screen: Locator, id: string): Locator {
   return screen.locator(`[data-testid="dashboard-widget"][data-widget="${id}"]`);
 }
 
@@ -159,6 +184,48 @@ async function pickRange(page: Page, screen: Locator, id: string, compact: boole
   await expect(screen.getByTestId('dashboard-counting')).toHaveCount(0, { timeout: 15_000 });
 }
 
+/**
+ * Sprint 1's burndown on the seeded board. At its start WEB-20 (3
+ * points), WEB-21 (2) and WEB-22 (5) were open, and WEB-1 and WEB-2 count
+ * no estimate: 10 points, the even pace's start. WEB-21 was done a day
+ * before the seed: on a working day today's point is 8 points so far. A
+ * Saturday or Sunday is no sprint day and has no point so far; the last
+ * working day counts 8 when WEB-21 was done on it (today is Saturday) and
+ * 10 when it was done on Saturday (today is Sunday), a weekend's change
+ * counting on the next working day. The days are the browser's. Start
+ * opens the tickets it counted.
+ */
+async function expectBurndown(page: Page, screen: Locator, compact: boolean): Promise<void> {
+  const burndown = widget(screen, 'burndown');
+  await expect(burndown.getByTestId('dashboard-pace')).toHaveCount(1, { timeout: 30_000 });
+  const start = burndown.locator('[data-testid="dashboard-point"][data-bucket="day:start"]');
+  await expect(start).toHaveAttribute('aria-label', 'Start, 10 points left');
+  if (compact) await start.focus();
+  else await start.hover();
+  await expect(burndown.getByTestId('dashboard-hover')).toContainText('Start, 10 points left');
+  await expect(burndown.getByTestId('dashboard-hover-pace')).toHaveText('On pace would be 10 points');
+  const today = burndown.locator('[data-testid="dashboard-point"][aria-label$="(so far)"]');
+  const [day, doneDay] = await page.evaluate((done) => [new Date().getDay(), new Date(done).getDay()], SEEDED_AT - DAY);
+  if (day === 0 || day === 6) {
+    const left = doneDay === 0 || doneDay === 6 ? 10 : 8;
+    await expect(today).toHaveCount(0);
+    await expect(burndown.locator('[data-testid="dashboard-point"][aria-label$=" left"]').last()).toHaveAttribute('aria-label', new RegExp(`, ${left} points left$`));
+  } else {
+    await expect(today).toHaveAttribute('aria-label', /, 8 points left \(so far\)$/);
+  }
+  await press(burndown.getByTestId('dashboard-how-toggle'), compact);
+  await expect(burndown.getByTestId('dashboard-how')).toContainText('It counts Sprint 1 at its start and at the end of each working day');
+  await press(burndown.getByTestId('dashboard-how-toggle'), compact);
+  await press(start, compact);
+  const drill = page.getByTestId('dashboard-drill');
+  await expect(page.getByRole('dialog', { name: 'Burndown, Start' })).toBeVisible();
+  await expect(drill.getByTestId('dashboard-drill-value')).toHaveText('10 points');
+  await expect(drill.getByTestId('dashboard-drill-row').first()).toBeVisible();
+  expect((await drill.getByTestId('dashboard-drill-row').locator('span.font-mono').allTextContents()).sort()).toEqual(['WEB-1', 'WEB-2', 'WEB-20', 'WEB-21', 'WEB-22']);
+  await page.keyboard.press('Escape');
+  await expect(drill).toHaveCount(0);
+}
+
 async function spans(screen: Locator): Promise<Record<string, number>> {
   return screen.getByTestId('dashboard-cell-span').evaluateAll((els) => Object.fromEntries(els.map((el) => [
     el.querySelector<HTMLElement>('[data-testid="dashboard-widget"]')?.dataset.widget ?? '',
@@ -166,9 +233,10 @@ async function spans(screen: Locator): Promise<Record<string, number>> {
   ])));
 }
 
-async function openBoardDashboards(harness: HarnessApp, page: Page, name: string, compact: boolean): Promise<{ board: ConnectedBoard; pane: Locator; screen: Locator }> {
-  const board = await connectFakeJiraBoard(harness, name, DASHBOARDS);
-  await harness.open(page);
+/** The board's Overview: `harness` holds the board, `shown` opens the page. */
+export async function openBoardDashboards(harness: HarnessApp, page: Page, name: string, compact: boolean, jira = DASHBOARDS, shown = harness): Promise<{ board: ConnectedBoard; pane: Locator; screen: Locator }> {
+  const board = await connectFakeJiraBoard(harness, name, jira);
+  await shown.open(page);
   const pane = await openIssuesPane(page, compact);
   await expect(pane.locator('[data-testid="issues-card"][data-issue="10101"]')).toBeVisible({ timeout: 30_000 });
   const screen = await openDashboards(page, pane, compact);
@@ -192,11 +260,12 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     const pace = widget(screen, 'pace');
     await expect(pace.getByTestId('dashboard-change-gap')).toHaveText('Not compared: This computer keeps fewer than 5 finished sprints before these to compare with.');
     await expect(pace.getByTestId('dashboard-change')).toHaveCount(0);
-    // A number that counts now has no change mark.
+    // Stuck counts what holds now and compares it with what held where the
+    // range began, before WEB-20 was made: more stuck work is bad news.
     const stuck = widget(screen, 'stuck');
-    await expect(stuck.getByTestId('dashboard-now')).toBeVisible();
-    await expect(stuck.getByTestId('dashboard-change')).toHaveCount(0);
-    await expect(stuck.getByTestId('dashboard-change-gap')).toHaveCount(0);
+    await expect(stuck.getByTestId('dashboard-now')).toHaveCount(0);
+    await expect(stuck.getByTestId('dashboard-change')).toHaveText('Up 1 ticket from 0, when the range began');
+    await expect(stuck.getByTestId('dashboard-change')).toHaveAttribute('data-tone', 'bad');
     await expect(widget(screen, 'stuck_list').getByTestId('dashboard-list-row')).toHaveText([/WEB-20\s*Stuck in progress/]);
     await expect(widget(screen, 'finished').getByTestId('dashboard-bar')).toHaveCount(5);
 
@@ -297,6 +366,23 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
       const oneScreen = Math.min(...opens.map((open) => open.heldKB - before.heldKB));
       expect(after.heldKB - before.heldKB).toBeLessThan(oneScreen / 2);
       await cdp.detach();
+    });
+
+    test('A board on a paired computer draws its burndown here', async ({ page }) => {
+      test.setTimeout(240_000);
+      const root = await mkdtemp(join(tmpdir(), 'ao-issues-dashboards-'));
+      let home: HarnessApp | undefined;
+      let remote: HarnessApp | undefined;
+      try {
+        [home, remote] = await startTogether(launchHarness(), launchHarness({ dataDir: join(root, 'state') }));
+        await pairOwnDevice(home, remote, 'Laptop');
+        const { screen } = await openBoardDashboards(remote, page, name('remote'), compact, DASHBOARDS, home);
+        await expectBurndown(page, screen, compact);
+      } finally {
+        await remote?.close();
+        await home?.close();
+        await rm(root, { recursive: true, force: true });
+      }
     });
   }
 
@@ -421,23 +507,24 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await expect(drill.getByTestId('dashboard-drill-row')).toHaveText([/WEB-1\s*First story/]);
     await closeDrill();
 
-    // No epic's bar lists the open tickets in no epic: on a scrum board
-    // every one, since the board's copy keeps no epic.
+    // No epic's bar lists the open tickets in no epic: every one but
+    // WEB-22, whose epic the scrum board does not list.
     const noEpic = widget(screen, 'open_by_epic').locator('[data-testid="dashboard-bar"][data-bucket=""]');
     await press(noEpic, compact);
     await expect(drill.getByTestId('dashboard-drill-row').first()).toBeVisible();
     const noEpicKeys = await drill.getByTestId('dashboard-drill-row').locator('span.font-mono').allTextContents();
-    expect(noEpicKeys.sort()).toEqual(['WEB-1', 'WEB-2', 'WEB-20', 'WEB-22']);
+    expect(noEpicKeys.sort()).toEqual(['WEB-1', 'WEB-2', 'WEB-20']);
     await closeDrill();
 
     // While This sprint is counted, the grid shows the last 5 sprints'
-    // numbers and takes no click: a click on Sprint E's bar opens nothing.
+    // numbers and they take no click: a click on Sprint E's bar opens
+    // nothing.
     holding = true;
     await press(screen.getByTestId('dashboard-range'), compact);
     await press(page.getByTestId('dashboard-range-this_sprint'), compact);
     await expect.poll(() => held.length).toBe(1);
     await expect(screen.getByTestId('dashboard-counting')).toBeVisible();
-    await expect(screen.getByTestId('dashboard-grid')).toHaveAttribute('inert', '');
+    await expect(widget(screen, 'finished').getByTestId('dashboard-widget-body')).toHaveAttribute('inert', '');
     const bar = (await widget(screen, 'finished').locator(`[data-testid="dashboard-bar"][data-bucket="sprint:${SPRINT_E}"]`).boundingBox())!;
     if (compact) await page.touchscreen.tap(bar.x + bar.width / 2, bar.y + bar.height / 2);
     else await page.mouse.click(bar.x + bar.width / 2, bar.y + bar.height / 2);
@@ -448,7 +535,94 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await expect(screen.getByTestId('dashboard-counting')).toHaveCount(0, { timeout: 15_000 });
     await expect(widget(screen, 'pace').getByTestId('dashboard-number-value')).toHaveText('2');
     await expect(drill).toHaveCount(0);
-    await expect(screen.getByTestId('dashboard-grid')).not.toHaveAttribute('inert', '');
+    await expect(widget(screen, 'finished').getByTestId('dashboard-widget-body')).not.toHaveAttribute('inert', '');
+  });
+
+  test('The burndown draws the sprint\'s open work against an even pace, and the sprint table counts each finished sprint', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    const { screen } = await openBoardDashboards(harness, page, name('burndown'), compact);
+    await expectBurndown(page, screen, compact);
+
+    // Sprints A to D each kept their 4 points from the start; Sprint E's
+    // 105 tickets were made after it started, so they were added, and
+    // their histories from then are enough to count them.
+    const scope = widget(screen, 'sprint_scope');
+    const row = (sprint: number) => scope.locator(`[data-testid="dashboard-table-row"][data-bucket="sprint:${sprint}"]`).getByTestId('dashboard-cell');
+    await expect(scope.getByTestId('dashboard-table-row')).toHaveCount(5);
+    await expect(row(11)).toHaveText(['4', '0', '0', '4']);
+    await expect(row(SPRINT_E)).toHaveText(['0', '105', '0', '105']);
+    await press(row(SPRINT_E).nth(1), compact);
+    const drill = page.getByTestId('dashboard-drill');
+    await expect(page.getByRole('dialog', { name: 'Committed, added, removed and completed, Sprint E, Added' })).toBeVisible();
+    await expect(drill.getByTestId('dashboard-drill-count')).toHaveText('105 tickets');
+    await expect(drill.getByTestId('dashboard-drill-value')).toHaveText('105 points');
+  });
+
+  test('An active sprint with no dates leaves the burndown a sentence that says so', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    const undated: ExtraJira = { ...DASHBOARDS, sprints: [...DASHBOARDS.sprints!, { id: 20, name: 'Sprint X', state: 'active' }] };
+    const { screen } = await openBoardDashboards(harness, page, name('undated'), compact, undated);
+    const burndown = widget(screen, 'burndown');
+    await expect(burndown.getByTestId('dashboard-widget-note')).toHaveText('Sprint 1, Sprint X has no start or end date, so it has no days to count.');
+    await expect(burndown.getByTestId('dashboard-point')).toHaveCount(0);
+  });
+
+  test('An epic no board row holds counts its open work, narrows the page, and names its child on the board, the backlog and the ticket', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    const { pane, screen } = await openBoardDashboards(harness, page, name('epic'), compact);
+    const drill = page.getByTestId('dashboard-drill');
+    const keys = async () => {
+      await expect(drill.getByTestId('dashboard-drill-row').first()).toBeVisible();
+      const got = (await drill.getByTestId('dashboard-drill-row').locator('span.font-mono').allTextContents()).sort();
+      await page.keyboard.press('Escape');
+      await expect(drill).toHaveCount(0);
+      return got;
+    };
+
+    // WEB-30's bar holds WEB-22 alone, and No epic the rest.
+    const epics = widget(screen, 'open_by_epic');
+    const checkout = epics.locator('[data-testid="dashboard-bar"][data-bucket="10130"]');
+    await expect(checkout).toHaveCount(1, { timeout: 30_000 });
+    await press(checkout, compact);
+    await expect(page.getByRole('dialog', { name: 'Open work by epic, WEB-30 Checkout' })).toBeVisible();
+    expect(await keys()).toEqual(['WEB-22']);
+    await press(epics.locator('[data-testid="dashboard-bar"][data-bucket=""]'), compact);
+    expect(await keys()).toEqual(['WEB-1', 'WEB-2', 'WEB-20']);
+
+    // Its label narrows the page to the epic: WEB-20, stuck, is not in it.
+    await press(epics.getByTestId('dashboard-bar-label').filter({ hasText: 'WEB-30 Checkout' }), compact);
+    const chip = screen.getByTestId('dashboard-chip');
+    await expect(chip).toHaveText('WEB-30 Checkout');
+    await expect(widget(screen, 'stuck').getByTestId('dashboard-number-value')).toHaveText('0', { timeout: 15_000 });
+    await expect(epics.getByTestId('dashboard-bar')).toHaveCount(1);
+    await press(chip.getByTestId('dashboard-chip-clear'), compact);
+    await expect(widget(screen, 'stuck').getByTestId('dashboard-number-value')).toHaveText('1', { timeout: 15_000 });
+
+    // The backlog's row and the board's card name the epic by its title.
+    const backlog = await openBacklog(page, pane, compact);
+    const sprint = backlog.locator('[data-testid="issues-backlog-section"][data-list="sprint:1"]');
+    if ((await sprint.getAttribute('data-open')) === null) await press(sprint.getByTestId('issues-backlog-fold'), compact);
+    await expect(backlog.locator('[data-testid="issues-backlog-row"][data-issue="10122"]').getByTestId('issues-card-parent')).toHaveText('Checkout', { timeout: 15_000 });
+    const picker = pane.getByTestId('issues-tabs-picker');
+    if (await picker.isVisible()) {
+      await press(picker, compact);
+      await press(page.getByTestId('issues-tab-option').filter({ hasText: /^\s*Board\s*$/ }), compact);
+    } else {
+      await press(pane.locator('[data-testid="issues-tab"][data-screen="board"]'), compact);
+    }
+    // On compact the board shows one column: WEB-22 is in To Do.
+    if (compact) await press(pane.getByRole('tablist', { name: 'Columns' }).getByRole('tab', { name: /^To Do/ }), compact);
+    const card = pane.locator('[data-testid="issues-card"][data-issue="10122"]');
+    await expect(card.getByTestId('issues-card-parent')).toHaveText('Checkout', { timeout: 15_000 });
+
+    // The ticket names its parent, which opens though no board keeps it.
+    await press(card.getByTestId('issues-card-open'), compact);
+    const ticket = pane.getByTestId('ticket-screen');
+    await expect(ticket).toHaveAttribute('data-issue', '10122', { timeout: 15_000 });
+    await expect(ticket.getByTestId('ticket-parent')).toHaveText('WEB-30 Checkout');
+    await press(ticket.getByTestId('ticket-parent'), compact);
+    await expect(ticket).toHaveAttribute('data-issue', '10130', { timeout: 15_000 });
+    await expect(ticket.getByTestId('ticket-title')).toHaveText('Checkout', { timeout: 15_000 });
   });
 
   test('Dashboards opens the epics and people a chart and a table left out from their More', async ({ harness, page }) => {
@@ -467,11 +641,18 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
 
     const epics = widget(screen, 'open_by_epic');
     await expect(epics.getByTestId('dashboard-bar')).toHaveCount(12, { timeout: 60_000 });
+    // A board that plans no sprints shows no burndown and no sprint table.
+    await expect(screen.getByTestId('dashboard-widget')).not.toHaveCount(0);
+    await expect(widget(screen, 'burndown')).toHaveCount(0);
+    await expect(widget(screen, 'sprint_scope')).toHaveCount(0);
+    await expect(screen.getByTestId('dashboard-widget-note')).toHaveCount(0);
     await expect(epics.locator('[data-testid="dashboard-bar"][data-bucket="10610"]')).toHaveCount(1);
     await expect(epics.locator('[data-testid="dashboard-bar"][data-bucket="10611"]')).toHaveCount(0);
     await press(epics.getByTestId('dashboard-more'), compact);
     await expect(page.getByRole('dialog', { name: 'Open work by epic, 2 more epics' })).toBeVisible();
-    await expect(drill.getByTestId('dashboard-drill-count')).toHaveText('3 tickets');
+    // The board counts tickets, so the value is the count and is said once.
+    await expect(drill.getByTestId('dashboard-drill-value')).toHaveText('3 tickets');
+    await expect(drill.getByTestId('dashboard-drill-count')).toHaveCount(0);
     expect(await keys()).toEqual(['WEB-756', 'WEB-757', 'WEB-758']);
     await page.keyboard.press('Escape');
     await expect(drill).toHaveCount(0);

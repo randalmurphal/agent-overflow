@@ -134,40 +134,67 @@ func (c *Client) Worklogs(ctx context.Context, q WorklogQuery) (WorklogList, err
 // worklogs is one walk of Worklogs.
 func (c *Client) worklogs(ctx context.Context, q WorklogQuery) (WorklogList, error) {
 	var out WorklogList
+	err := worklogPages(ctx, c, q, func(j worklogJSON) error {
+		out.Worklogs = append(out.Worklogs, j.worklog())
+		return nil
+	})
+	out.Complete = err == nil
+	return out, err
+}
+
+// maxWorklogPage is the most worklogs a page asks for.
+const maxWorklogPage = 1000
+
+// worklogPages is one walk of the pages of q's issue's worklogs, each
+// decoded as J and given to each in Jira's order, oldest first: the one
+// walk every read of an issue's worklogs makes. It ends at the total the
+// pages name, and fails at a page that names none, at an empty page
+// before it, and at an error of each. A page over the transport's bound
+// is asked again with half as many (trackerapi.Halved), and the pages
+// after it keep the smaller size.
+func worklogPages[J any](ctx context.Context, c *Client, q WorklogQuery, each func(J) error) error {
 	path, err := issuePath(q.Issue)
 	if err != nil {
-		return out, err
+		return err
 	}
-	v := url.Values{"maxResults": {"1000"}}
+	v := url.Values{}
 	if !q.StartedAfter.IsZero() {
 		v.Set("startedAfter", strconv.FormatInt(q.StartedAfter.UnixMilli(), 10))
 	}
 	if !q.StartedBefore.IsZero() {
 		v.Set("startedBefore", strconv.FormatInt(q.StartedBefore.UnixMilli(), 10))
 	}
+	size := maxWorklogPage
 	for start := 0; ; {
 		v.Set("startAt", strconv.Itoa(start))
+		v.Set("maxResults", strconv.Itoa(size))
 		var page struct {
-			Worklogs []worklogJSON `json:"worklogs"`
-			Total    *int          `json:"total"`
+			Worklogs []J  `json:"worklogs"`
+			Total    *int `json:"total"`
 		}
-		if err := c.get(ctx, path+"/worklog", v, &page); err != nil {
-			return out, fmt.Errorf("jira: worklogs of %s: %w", q.Issue, err)
+		err := c.get(ctx, path+"/worklog", v, &page)
+		if half, ok := trackerapi.Halved(size, err); ok {
+			size = half
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("jira: worklogs of %s: %w", q.Issue, err)
 		}
 		for _, j := range page.Worklogs {
-			out.Worklogs = append(out.Worklogs, j.worklog())
+			if err := each(j); err != nil {
+				return fmt.Errorf("jira: worklogs of %s: %w", q.Issue, err)
+			}
 		}
 		if page.Total == nil {
 			// Only the total ends the walk; without it the end is unknown.
-			return out, fmt.Errorf("jira: worklogs of %s: %w", q.Issue, &AnswerError{Message: "a worklog page names no total"})
+			return fmt.Errorf("jira: worklogs of %s: %w", q.Issue, &AnswerError{Message: "a worklog page names no total"})
 		}
 		start += len(page.Worklogs)
 		switch {
 		case start >= *page.Total:
-			out.Complete = true
-			return out, nil
+			return nil
 		case len(page.Worklogs) == 0:
-			return out, fmt.Errorf("jira: worklogs of %s: an empty page at %d of %d", q.Issue, start, *page.Total)
+			return fmt.Errorf("jira: worklogs of %s: an empty page at %d of %d", q.Issue, start, *page.Total)
 		}
 	}
 }

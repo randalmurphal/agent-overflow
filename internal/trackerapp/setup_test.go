@@ -21,7 +21,7 @@ import (
 )
 
 // setupPathOf is the setup file of project id.
-func (m *mirrorFixture) setupPathOf(t *testing.T, id string) string {
+func (m *fixture) setupPathOf(t *testing.T, id string) string {
 	t.Helper()
 	p, err := m.st.GetProject(id)
 	if err != nil {
@@ -32,7 +32,7 @@ func (m *mirrorFixture) setupPathOf(t *testing.T, id string) string {
 
 // writeSetupFile puts data in project id's setup file, as a person
 // editing it by hand would.
-func (m *mirrorFixture) writeSetupFile(t *testing.T, id, data string) string {
+func (m *fixture) writeSetupFile(t *testing.T, id, data string) string {
 	t.Helper()
 	path := m.setupPathOf(t, id)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -77,22 +77,29 @@ func (m *mirrorFixture) listIn(t *testing.T, id string) {
 	}
 }
 
-// subscribeShown subscribes project id to the fixture's board, showing
-// the backlog, waits for the board's first read when the mirror held
-// none, and hides it, so the pump of hidden handles ticks no more and
-// every later event is one a test caused.
+// subscribeShown subscribes project id to the fixture's board with the
+// backlog's first page, its handle hidden: a board the mirror holds is
+// never shown, so its pump reads nothing, and one it does not is shown
+// for its first read alone. Every later event is one a test caused.
 func (m *mirrorFixture) subscribeShown(t *testing.T, id string) BoardSubscription {
 	t.Helper()
-	sub, err := m.svc.SubscribeBoard(id, m.scope(), []Section{{Kind: SectionBacklog}}, true, untied)
+	sub, err := m.svc.SubscribeBoard(id, m.scope(), []Section{{Kind: SectionBacklog}}, false, untied)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sub.Loaded && loadedOrEnded(t, m, sub.Seq) {
+	if sub.Loaded {
+		return sub
+	}
+	show := func(visible bool) {
+		if err := m.svc.SetSubscriptionVisible(sub.ID, visible); err != nil {
+			t.Fatal(err)
+		}
+	}
+	show(true)
+	if loadedOrEnded(t, m, sub.Seq) {
 		t.Fatal("the board ended at its first read")
 	}
-	if err := m.svc.SetSubscriptionVisible(sub.ID, false); err != nil {
-		t.Fatal(err)
-	}
+	show(false)
 	return sub
 }
 
@@ -101,6 +108,19 @@ func (m *mirrorFixture) subscribeShown(t *testing.T, id string) BoardSubscriptio
 func (m *mirrorFixture) readAgainSince(n int) bool {
 	boards, _, _ := m.events.snapshot()
 	return slices.ContainsFunc(boards[n:], func(e BoardEvent) bool { return e.Scope == m.scope() && e.ReadAgain })
+}
+
+// dashboardsSince is what the board events of the fixture's board after
+// the first n tell of a project's dashboards (BoardEvent.Dashboards).
+func (m *mirrorFixture) dashboardsSince(n int) []ProjectDashboards {
+	boards, _, _ := m.events.snapshot()
+	var out []ProjectDashboards
+	for _, e := range boards[n:] {
+		if e.Scope == m.scope() && e.Dashboards != nil {
+			out = append(out, *e.Dashboards)
+		}
+	}
+	return out
 }
 
 func (m *mirrorFixture) boardEventCount() int {
@@ -234,6 +254,17 @@ func TestAnUnreadableSetupRefusesItsProjectOnly(t *testing.T) {
 		"a field of no name":   `{"ticket_pins": {"version": 1, "sites": [], "extra": true}}`,
 		"a version before one": `{"status_groups": {"version": 0, "sites": []}}`,
 		"over the bound":       `{"x": "` + strings.Repeat("a", setupMaxBytes) + `"}`,
+		"a built-in's name as a widget's": `{"dashboards": {"version": 1, "boards": [{"tracker": "jira", "site": "x", "board": "1", "dashboards": [` +
+			`{"id": "d_1", "title": "Mine", "widgets": [{"id": "stuck_list", "form": "list", "width": 6, "metric": {}}]}]}]}}`,
+		"a widget twice": `{"dashboards": {"version": 1, "boards": [{"tracker": "jira", "site": "x", "board": "1", "dashboards": [` +
+			`{"id": "d_1", "title": "Mine", "widgets": [{"id": "w_1", "form": "list", "width": 6, "metric": {}}]},` +
+			`{"id": "d_2", "title": "Yours", "widgets": [{"id": "w_1", "form": "list", "width": 6, "metric": {}}]}]}]}}`,
+		"a dashboard of no title": `{"dashboards": {"version": 1, "boards": [{"tracker": "jira", "site": "x", "board": "1", "dashboards": [{"id": "d_1", "title": " ", "widgets": []}]}]}}`,
+		// A built-in's pace and overlap are no part of a metric's JSON.
+		"a metric that draws a pace": `{"dashboards": {"version": 1, "boards": [{"tracker": "jira", "site": "x", "board": "1", "dashboards": [` +
+			`{"id": "d_1", "title": "Mine", "widgets": [{"id": "w_1", "form": "line", "width": 6, "metric": {"title": "Left", "pace": true}}]}]}]}}`,
+		"a metric whose series overlap": `{"dashboards": {"version": 1, "boards": [{"tracker": "jira", "site": "x", "board": "1", "dashboards": [` +
+			`{"id": "d_1", "title": "Mine", "widgets": [{"id": "w_1", "form": "table", "width": 6, "metric": {"title": "Scope", "overlap": true}}]}]}]}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -902,6 +933,97 @@ func TestStartWorkDefaultsAreSavedPerTrackerProject(t *testing.T) {
 	}
 }
 
+// A project's agent rules are its threads' built-in ones (changes allowed,
+// several tickets asked) until set; each rule set off is kept apart from
+// one not set and read back after a restart; a Start work entry that only
+// turns off naming the branch is kept; and the rules of a setup that
+// cannot be read, or whose agents section a newer version saved, are
+// refused rather than taken as the built-in ones.
+func TestAgentRulesAreSavedWithTheirDefaults(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	rules, err := m.svc.ProjectAgentRules(m.project())
+	if err != nil || !rules.Changes() || !rules.Asks() {
+		t.Fatalf("the rules of a project with no setup = %+v, %v; want changes and asks", rules, err)
+	}
+	off := false
+	save := m.saveSetup(t, m.project(), Setup{
+		Agents:    &AgentRules{ChangeTickets: &off},
+		StartWork: []StartWorkDefaults{{Tracker: "jira", Site: m.conn.Site, Project: "WEB", NameBranch: &off}},
+	})
+	if a := save.Stored.Setup.Agents; a == nil || a.ChangeTickets == nil || *a.ChangeTickets || a.AskSeveral != nil {
+		t.Fatalf("the rules as stored: %+v", a)
+	}
+	if sw := save.Stored.Setup.StartWork; len(sw) != 1 || sw[0].NameBranch == nil || *sw[0].NameBranch {
+		t.Fatalf("a Start work entry that only turns off naming the branch: %+v", sw)
+	}
+	data, err := os.ReadFile(m.setupPathOf(t, m.project()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"agents": {`) || !strings.Contains(string(data), `"change_tickets": false`) ||
+		strings.Contains(string(data), "ask_several") || !strings.Contains(string(data), `"name_branch": false`) {
+		t.Fatalf("the file:\n%s", data)
+	}
+	m.restart(t)
+	rules, err = m.svc.ProjectAgentRules(m.project())
+	if err != nil || rules.Changes() || !rules.Asks() {
+		t.Fatalf("the rules after a restart = %+v, %v; want no changes, asks", rules, err)
+	}
+	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	cleared := m.saveSetup(t, m.project(), Setup{StartWork: stored.Setup.StartWork, Agents: &AgentRules{}})
+	if cleared.Stored.Setup.Agents != nil {
+		t.Fatalf("rules cleared are stored as %+v", cleared.Stored.Setup.Agents)
+	}
+	if after, _ := os.ReadFile(m.setupPathOf(t, m.project())); strings.Contains(string(after), `"agents"`) {
+		t.Fatalf("rules cleared left their section:\n%s", after)
+	}
+
+	// A rule or naming the branch turned on, written by hand or sent, is
+	// the built-in rule and is stored as none.
+	on := true
+	m.writeSetupFile(t, m.project(), `{"agents": {"version": 1, "change_tickets": true, "ask_several": false}, "start_work": {"version": 1, "projects": [{"tracker": "jira", "site": "`+m.conn.Site+`", "project": "WEB", "name_branch": true}]}}`)
+	m.restart(t)
+	hand := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	resaved := m.saveSetup(t, m.project(), hand.Setup)
+	if a := resaved.Stored.Setup.Agents; a == nil || a.ChangeTickets != nil || a.AskSeveral == nil || *a.AskSeveral {
+		t.Fatalf("a hand edit saved again keeps %+v", a)
+	}
+	if sw := resaved.Stored.Setup.StartWork; len(sw) != 0 {
+		t.Fatalf("an entry that only names the branch, as by default, is kept: %+v", sw)
+	}
+	// A site whose last field was unpinned, and that opens no sections of
+	// its own, pins nothing: it is stored as no entry. No section open is
+	// a choice, and is kept.
+	none := []string{}
+	unpinned := m.saveSetup(t, m.project(), Setup{TicketPins: []SitePins{
+		{Tracker: "jira", Site: m.conn.Site, Fields: &none},
+		{Tracker: "jira", Site: "https://other.atlassian.net", Fields: &none, Sections: &none},
+	}})
+	if tp := unpinned.Stored.Setup.TicketPins; len(tp) != 1 || tp[0].Site != "https://other.atlassian.net" || tp[0].Fields != nil || tp[0].Sections == nil || len(*tp[0].Sections) != 0 {
+		t.Fatalf("pins with no field left are stored as %+v", tp)
+	}
+	allOn := m.saveSetup(t, m.project(), Setup{Agents: &AgentRules{ChangeTickets: &on, AskSeveral: &on}})
+	if allOn.Stored.Setup.Agents != nil {
+		t.Fatalf("rules all on are stored as %+v", allOn.Stored.Setup.Agents)
+	}
+
+	m.writeSetupFile(t, m.project(), `{"agents": {"version": 2, "rules": ["any"]}}`)
+	m.restart(t)
+	if _, err := m.svc.ProjectAgentRules(m.project()); !errors.Is(err, ErrSetupNewer) {
+		t.Fatalf("the rules a newer version saved: %v; want ErrSetupNewer", err)
+	}
+	newer := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	if _, err := m.svc.SetProjectSetup(m.project(), newer.Revision, Setup{Agents: &AgentRules{AskSeveral: &off}}); !errors.Is(err, ErrSetupNewer) {
+		t.Fatalf("rules saved over a newer agents section: %v", err)
+	}
+	m.writeSetupFile(t, m.project(), `{"agents": {"version": 1, "change_tickets": "no"}}`)
+	m.restart(t)
+	if _, err := m.svc.ProjectAgentRules(m.project()); !errors.Is(err, ErrSetupUnreadable) {
+		t.Fatalf("the rules of an unreadable setup: %v; want ErrSetupUnreadable", err)
+	}
+}
+
 // A project's statuses are its listed boards' columns as this computer
 // read them, once each in picker and column order with the tracker's
 // group, one site for two connections to it; a board not read yet is
@@ -920,7 +1042,7 @@ func TestProjectStatusesListTheBoardsStatuses(t *testing.T) {
 	}
 	site := func() SiteStatuses {
 		t.Helper()
-		got := must[[]SiteStatuses](t)(m.svc.ProjectStatuses(m.project()))
+		got := must[ProjectStatuses](t)(m.svc.ProjectStatuses(m.project())).Sites
 		if len(got) != 1 || got[0].Tracker != store.TrackerKindJira || got[0].Site != m.conn.Site {
 			t.Fatalf("the sites: %+v", got)
 		}
@@ -971,6 +1093,137 @@ func TestProjectStatusesListTheBoardsStatuses(t *testing.T) {
 	}
 }
 
+// Starting work's places are each tracker project a listed board names,
+// then each with saved defaults, each once. A Jira project offers every
+// status the project's boards on its site show, whichever project the
+// board was listed through, and the boards of the site not read yet; a
+// Linear team offers its own boards' statuses alone.
+func TestProjectStatusesOfferEachPlaceItsStatuses(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	linear := m.addLinear()
+	second := m.add(NewConnection{Kind: store.TrackerKindJira, Site: jiraSiteIn, Account: "user2@example.com"})
+	m.p.set(func(s *scripted) {
+		s.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+			st := webStructure(b)
+			switch b {
+			case "team-a":
+				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"a-doing"}}}
+				st.Statuses = []tracker.Status{{ID: "a-doing", Name: "In Progress", Group: tracker.GroupInProgress}}
+			case "team-b":
+				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"b-doing"}}}
+				st.Statuses = []tracker.Status{{ID: "b-doing", Name: "In Progress", Group: tracker.GroupInProgress}}
+			}
+			return st, nil
+		}
+	})
+	listed := []store.ProjectTrackerBoard{
+		{ConnectionID: m.conn.ID, BoardID: string(testBoard), TrackerProject: "WEB"},
+		{ConnectionID: m.conn.ID, BoardID: "2", TrackerProject: "WEB"},
+		// The same board, not read yet, listed through a second account.
+		{ConnectionID: second.ID, BoardID: "2", TrackerProject: "WEB"},
+		{ConnectionID: linear.ID, BoardID: "team-a", TrackerProject: "ALP"},
+		{ConnectionID: linear.ID, BoardID: "team-b", TrackerProject: "BET"},
+	}
+	current, err := m.st.ListProjectTrackerBoards(m.project())
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := make([]store.HeldTrackerBoard, len(current))
+	for i, b := range current {
+		held[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+	}
+	// A board kept keeps the tracker project it was listed with: list
+	// them anew.
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), held, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), nil, listed); err != nil {
+		t.Fatal(err)
+	}
+	m.saveSetup(t, m.project(), Setup{StartWork: []StartWorkDefaults{{Tracker: "jira", Site: m.conn.Site, Project: "OPS", Branch: "ops/{key}"}}})
+	m.subscribeShown(t, m.project())
+	for _, board := range []tracker.BoardID{"team-a", "team-b"} {
+		scope := Scope{Connection: linear.ID, Board: board}
+		if _, err := m.svc.SubscribeBoard(m.project(), scope, []Section{{Kind: SectionBacklog}}, true, untied); err != nil {
+			t.Fatal(err)
+		}
+		m.events.waitFor(t, "the read of "+string(board), func(boards []BoardEvent, _ []IssueEvent, _ []error) bool {
+			return slices.ContainsFunc(boards, func(e BoardEvent) bool { return e.Scope == scope && e.ReadAgain })
+		})
+	}
+	view := must[ProjectStatuses](t)(m.svc.ProjectStatuses(m.project()))
+	unread := []UnreadBoard{{Board: "2"}}
+	if jira := view.Sites[0]; jira.Tracker != "jira" || !reflect.DeepEqual(jira.Unread, unread) {
+		t.Fatalf("the Jira site's boards not read: %+v; want board 2 once", jira.Unread)
+	}
+	got := view.Places
+	want := []StartPlace{
+		{Tracker: "jira", Site: m.conn.Site, Project: "WEB", Statuses: []string{"s1", "s2", "s3"}, Unread: unread},
+		{Tracker: "linear", Site: linear.Site, Project: "ALP", Statuses: []string{"a-doing"}},
+		{Tracker: "linear", Site: linear.Site, Project: "BET", Statuses: []string{"b-doing"}},
+		{Tracker: "jira", Site: m.conn.Site, Project: "OPS", Statuses: []string{"s1", "s2", "s3"}, Unread: unread},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the places:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// A Jira project's place lists its own boards' statuses first: two
+// Jira projects of one site with their own workflows, the other's board
+// listed first, still turn Move on with the place's own in-progress
+// status.
+func TestProjectStatusesListAPlacesOwnBoardsStatusesFirst(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	m.p.set(func(s *scripted) {
+		s.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+			st := webStructure(b)
+			if b == "2" {
+				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"ops-doing"}}}
+				st.Statuses = []tracker.Status{{ID: "ops-doing", Name: "Working", Group: tracker.GroupInProgress}}
+			}
+			return st, nil
+		}
+	})
+	current, err := m.st.ListProjectTrackerBoards(m.project())
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := make([]store.HeldTrackerBoard, len(current))
+	for i, b := range current {
+		held[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+	}
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), held, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), nil, []store.ProjectTrackerBoard{
+		{ConnectionID: m.conn.ID, BoardID: "2", TrackerProject: "OPS"},
+		{ConnectionID: m.conn.ID, BoardID: string(testBoard), TrackerProject: "WEB"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, board := range []tracker.BoardID{"2", testBoard} {
+		scope := Scope{Connection: m.conn.ID, Board: board}
+		if _, err := m.svc.SubscribeBoard(m.project(), scope, []Section{{Kind: SectionBacklog}}, true, untied); err != nil {
+			t.Fatal(err)
+		}
+		m.events.waitFor(t, "the read of board "+string(board), func(boards []BoardEvent, _ []IssueEvent, _ []error) bool {
+			return slices.ContainsFunc(boards, func(e BoardEvent) bool { return e.Scope == scope && e.ReadAgain })
+		})
+	}
+	view := must[ProjectStatuses](t)(m.svc.ProjectStatuses(m.project()))
+	want := []StartPlace{
+		{Tracker: "jira", Site: m.conn.Site, Project: "OPS", Statuses: []string{"ops-doing", "s1", "s2", "s3"}},
+		{Tracker: "jira", Site: m.conn.Site, Project: "WEB", Statuses: []string{"s1", "s2", "s3", "ops-doing"}},
+	}
+	if !reflect.DeepEqual(view.Places, want) {
+		t.Fatalf("the places:\n got %+v\nwant %+v", view.Places, want)
+	}
+}
+
 // The statuses read takes a read board's column statuses alone, never its
 // whole structure (GetMirrorBoard: its data, columns and sprints).
 func TestProjectStatusesReadNoBoardStructure(t *testing.T) {
@@ -981,11 +1234,234 @@ func TestProjectStatusesReadNoBoardStructure(t *testing.T) {
 	}
 	cs := newCountingStore(svc.store.(*store.Store))
 	svc.store = cs
-	sites, err := svc.ProjectStatuses("boards-" + scope.Connection)
+	view, err := svc.ProjectStatuses("boards-" + scope.Connection)
+	sites := view.Sites
 	if err != nil || len(sites) != 1 || len(sites[0].Statuses) == 0 || len(sites[0].Unread) != 0 {
 		t.Fatalf("statuses: %+v, %v", sites, err)
 	}
 	if n := cs.take()["GetMirrorBoard"]; n != 0 {
 		t.Errorf("the read took the board's whole structure %d times", n)
+	}
+}
+
+// A project's time tickets are saved by site and key, each site as its
+// connection names it, and read back after a restart; refusing epics is
+// the built-in rule, stored only when turned off; a section that sets
+// nothing is none; and a ticket that is not a Jira ticket key is refused
+// with why, writing nothing.
+func TestTimeSettingsAreSavedWithTheirDefaults(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	if view := must[SetupView](t)(m.svc.ProjectSetup(m.project())); view.Setup.Time != nil {
+		t.Fatalf("a project with no setup has time settings %+v", view.Setup.Time)
+	}
+	spelled := strings.TrimSuffix(strings.ToUpper(m.conn.Site), "/") + "/"
+	off := false
+	save := m.saveSetup(t, m.project(), Setup{Time: &TimeSettings{
+		Meetings: &TimeTicket{Tracker: "jira", Site: spelled, Key: "OPS-1"},
+		TimeOff:  &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-2"},
+	}})
+	want := TimeSettings{Meetings: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-1"}, TimeOff: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-2"}}
+	if got := save.Stored.Setup.Time; got == nil || !reflect.DeepEqual(*got, want) || !got.RefusesEpics() {
+		t.Fatalf("the time settings as stored: %+v", got)
+	}
+	data, err := os.ReadFile(m.setupPathOf(t, m.project()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"time": {`) || !strings.Contains(string(data), `"version": 1`) || strings.Contains(string(data), "never_epics") {
+		t.Fatalf("the file:\n%s", data)
+	}
+	m.restart(t)
+	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	if got := stored.Setup.Time; got == nil || !reflect.DeepEqual(*got, want) {
+		t.Fatalf("the time settings after a restart: %+v", got)
+	}
+	if got, err := m.svc.ProjectTimeSettings(m.project()); err != nil || !reflect.DeepEqual(got, want) || got.Meetings.SiteName() != strings.TrimPrefix(m.conn.Site, "https://") {
+		t.Fatalf("ProjectTimeSettings = %+v, %v", got, err)
+	}
+	epics := m.saveSetup(t, m.project(), Setup{Time: &TimeSettings{Meetings: want.Meetings, NeverEpics: &off}})
+	if got := epics.Stored.Setup.Time; got == nil || got.TimeOff != nil || got.RefusesEpics() {
+		t.Fatalf("time off cleared and epics allowed: %+v", got)
+	}
+	on := true
+	cleared := m.saveSetup(t, m.project(), Setup{Time: &TimeSettings{NeverEpics: &on}})
+	if cleared.Stored.Setup.Time != nil {
+		t.Fatalf("time settings that set nothing are stored as %+v", cleared.Stored.Setup.Time)
+	}
+	if after, _ := os.ReadFile(m.setupPathOf(t, m.project())); strings.Contains(string(after), `"time"`) {
+		t.Fatalf("time settings cleared left their section:\n%s", after)
+	}
+
+	// A key is the Jira parser's (IsTicketKey), stored in capitals.
+	for key, stored := range map[string]string{"ops-1": "OPS-1", "A-1": "A-1"} {
+		got := m.saveSetup(t, m.project(), Setup{Time: &TimeSettings{TimeOff: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: key}}})
+		if tt := got.Stored.Setup.Time; tt == nil || tt.TimeOff == nil || tt.TimeOff.Key != stored {
+			t.Errorf("the key %s is stored as %+v; want %s", key, tt, stored)
+		}
+	}
+
+	for name, tc := range map[string]struct {
+		ticket TimeTicket
+		says   string
+	}{
+		"a Linear ticket": {TimeTicket{Tracker: "linear", Site: "example", Key: "ENG-1"}, "time is logged on Jira only"},
+		"no key":          {TimeTicket{Tracker: "jira", Site: m.conn.Site}, "not a ticket key"},
+		"a project alone": {TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS"}, "not a ticket key"},
+		"a number alone":  {TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "10101"}, "not a ticket key"},
+		"no site":         {TimeTicket{Tracker: "jira", Key: "OPS-1"}, "empty jira site"},
+	} {
+		ticket := tc.ticket
+		before, _ := os.ReadFile(m.setupPathOf(t, m.project()))
+		_, err := m.svc.SetProjectSetup(m.project(), setupRevision(before), Setup{Time: &TimeSettings{TimeOff: &ticket}})
+		if !errors.Is(err, ErrInvalidSetup) || !strings.Contains(err.Error(), tc.says) {
+			t.Errorf("%s: %v; want a refusal saying %q", name, err, tc.says)
+		}
+		if after, _ := os.ReadFile(m.setupPathOf(t, m.project())); string(after) != string(before) {
+			t.Errorf("%s: a refused save wrote the file", name)
+		}
+	}
+}
+
+// Time settings are a Jira project's: with the last Jira board taken off
+// for a Linear one, the project has the built-in settings and its file
+// keeps the tickets; with a Jira board listed again, they apply again.
+func TestTimeSettingsApplyOnlyWhileAJiraBoardIsListed(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	want := TimeSettings{Meetings: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-1"}}
+	m.saveSetup(t, m.project(), Setup{Time: &want})
+	linear := m.addLinear()
+	relist := func(boards ...store.ProjectTrackerBoard) {
+		t.Helper()
+		current, err := m.st.ListProjectTrackerBoards(m.project())
+		if err != nil {
+			t.Fatal(err)
+		}
+		held := make([]store.HeldTrackerBoard, len(current))
+		for i, b := range current {
+			held[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+		}
+		if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), held, boards); err != nil {
+			t.Fatal(err)
+		}
+	}
+	relist(store.ProjectTrackerBoard{ConnectionID: linear.ID, BoardID: "team-1"})
+	if got, err := m.svc.ProjectTimeSettings(m.project()); err != nil || !reflect.DeepEqual(got, TimeSettings{}) || !got.RefusesEpics() {
+		t.Fatalf("the time settings of a Linear-only project = %+v, %v; want the built-in ones", got, err)
+	}
+	if data, _ := os.ReadFile(m.setupPathOf(t, m.project())); !strings.Contains(string(data), `"OPS-1"`) {
+		t.Fatalf("the file lost the tickets:\n%s", data)
+	}
+	relist(store.ProjectTrackerBoard{ConnectionID: linear.ID, BoardID: "team-1"}, store.ProjectTrackerBoard{ConnectionID: m.conn.ID, BoardID: string(testBoard)})
+	if got, err := m.svc.ProjectTimeSettings(m.project()); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("the time settings with a Jira board listed again = %+v, %v", got, err)
+	}
+}
+
+// A time section a newer version saved is kept from a save of the other
+// sections, and a change to it is refused.
+func TestTimeSettingsANewerVersionSavedAreKept(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	newer := `{"version": 2, "calendar": "on"}`
+	m.writeSetupFile(t, m.project(), `{"time": `+newer+`}`)
+	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	if !slices.Equal(stored.Newer, []string{"time"}) || stored.Setup.Time != nil {
+		t.Fatalf("a time section a newer version saved: %+v", stored)
+	}
+	if _, err := m.svc.ProjectTimeSettings(m.project()); !errors.Is(err, ErrSetupNewer) {
+		t.Fatalf("the time settings a newer version saved: %v; want ErrSetupNewer", err)
+	}
+	if _, err := m.svc.ProjectAgentRules(m.project()); err != nil {
+		t.Fatalf("the agent rules beside a newer time section: %v", err)
+	}
+	if _, err := m.svc.SetProjectSetup(m.project(), stored.Revision, Setup{Time: &TimeSettings{Meetings: &TimeTicket{Tracker: "jira", Site: m.conn.Site, Key: "OPS-1"}}}); !errors.Is(err, ErrSetupNewer) {
+		t.Fatalf("a change of a newer time section: %v", err)
+	}
+	save := m.saveSetup(t, m.project(), m.regrouped(map[string]string{"s1": "done"}))
+	if data, _ := os.ReadFile(m.setupPathOf(t, m.project())); !strings.Contains(string(data), `"time": `+newer) || !slices.Equal(save.Stored.Newer, []string{"time"}) {
+		t.Fatalf("the kept section as written:\n%s", data)
+	}
+}
+
+// An estimates section stores only what turns a built-in rule off:
+// counting tickets and poker off. Counting by estimates and poker on are
+// none, and a count of anything else is refused.
+func TestEstimatesAreSavedWithTheirDefaults(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	off, on := false, true
+	save := m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets", Poker: &off}})
+	if got := save.Stored.Setup.Estimates; got == nil || got.Count != "tickets" || got.Poker == nil || *got.Poker {
+		t.Fatalf("the estimates as stored: %+v", got)
+	}
+	m.restart(t)
+	if got := must[SetupView](t)(m.svc.ProjectSetup(m.project())).Setup.Estimates; got == nil || got.Count != "tickets" || got.Poker == nil || *got.Poker {
+		t.Fatalf("the estimates after a restart: %+v", got)
+	}
+	cleared := m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "estimates", Poker: &on}})
+	if cleared.Stored.Setup.Estimates != nil {
+		t.Fatalf("estimates that set nothing are stored as %+v", cleared.Stored.Setup.Estimates)
+	}
+	if data, _ := os.ReadFile(m.setupPathOf(t, m.project())); strings.Contains(string(data), `"estimates"`) {
+		t.Fatalf("estimates cleared left their section:\n%s", data)
+	}
+	before, _ := os.ReadFile(m.setupPathOf(t, m.project()))
+	if _, err := m.svc.SetProjectSetup(m.project(), setupRevision(before), Setup{Estimates: &Estimates{Count: "hours"}}); !errors.Is(err, ErrInvalidSetup) || !strings.Contains(err.Error(), "neither estimates nor tickets") {
+		t.Fatalf("a count of hours: %v", err)
+	}
+}
+
+// A project that counts tickets reads its Jira board's work in tickets
+// while its cards keep their points; the save has the open board read
+// again, and counting by estimates again reads it in points. Another
+// project that lists the board counts by its own setup.
+func TestAProjectThatCountsTicketsReadsItsBoardInTickets(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	m.listIn(t, "other")
+	mine := m.subscribeShown(t, m.project())
+	theirs := m.subscribeShown(t, "other")
+	if v := m.viewOf(t, mine.ID); v.Estimate.Unit != "points" || v.Counts != "points" {
+		t.Fatalf("the board before: estimate %q, counts %q", v.Estimate.Unit, v.Counts)
+	}
+	n := m.boardEventCount()
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
+	if got := m.dashboardsSince(n); !m.readAgainSince(n) || !slices.Equal(got, []ProjectDashboards{{Project: m.project(), Counts: true}}) {
+		t.Fatalf("the project began counting tickets: read again %v, dashboards told %+v", m.readAgainSince(n), got)
+	}
+	if v := m.viewOf(t, mine.ID); v.Estimate.Unit != "points" || v.Counts != "none" {
+		t.Fatalf("the board counting tickets: estimate %q, counts %q", v.Estimate.Unit, v.Counts)
+	}
+	if v := m.viewOf(t, theirs.ID); v.Counts != "points" {
+		t.Fatalf("the other project's board: counts %q", v.Counts)
+	}
+	n = m.boardEventCount()
+	off := false
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets", Poker: &off}})
+	if m.readAgainSince(n) || len(m.dashboardsSince(n)) != 0 {
+		t.Fatal("turning poker off read the board or its dashboards again")
+	}
+	n = m.boardEventCount()
+	if _, err := m.svc.SetProjectSetup(m.project(), must[SetupView](t)(m.svc.ProjectSetup(m.project())).Revision, Setup{}); err != nil {
+		t.Fatal(err)
+	}
+	if !m.readAgainSince(n) || m.viewOf(t, mine.ID).Counts != "points" {
+		t.Fatal("counting by estimates again did not read the board again in points")
+	}
+}
+
+// Counting tickets is a Jira board's rule: a Linear board of the project
+// keeps its estimates.
+func TestOnlyAJiraBoardIsCountedInTickets(t *testing.T) {
+	t.Parallel()
+	held := must[*heldSetup](t)(heldOf(Setup{Estimates: &Estimates{Count: "tickets"}}, keptSections{}, nil, nil, ""))
+	if g := held.counting(siteKey{store.TrackerKindJira, "https://example.atlassian.net"}); g.unit(tracker.UnitPoints) != tracker.UnitNone {
+		t.Error("a Jira board of a project counting tickets is not counted in tickets")
+	}
+	if g := held.counting(siteKey{store.TrackerKindLinear, "example"}); g.unit(tracker.UnitPoints) != tracker.UnitPoints {
+		t.Error("a Linear board of a project counting tickets is counted in tickets")
 	}
 }

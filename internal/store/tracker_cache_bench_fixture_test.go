@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/testutil/fixturedir"
 )
@@ -23,13 +24,51 @@ const (
 )
 
 // benchMirrorSize is a bench mirror's shape: how many boards, each with
-// how many issues of its own.
-type benchMirrorSize struct{ boards, issues int }
+// how many issues of its own, and whether its issues have parents
+// (benchParented) and a scrum board's sprint history (benchSprintHistory).
+// recent, when above zero, gives a parented board real times instead
+// (benchRecentBoard): that percentage of its issues changed inside the
+// history window, the rest long before it.
+type benchMirrorSize struct {
+	boards, issues int
+	parents        bool
+	recent         int
+}
 
 // benchDefaultSize is the mirror the benchmarks run against.
 var benchDefaultSize = benchMirrorSize{boards: benchBoards, issues: benchBoardIssues}
 
-func (z benchMirrorSize) String() string { return fmt.Sprintf("%dx%d", z.boards, z.issues) }
+func (z benchMirrorSize) String() string {
+	if z.recent > 0 {
+		return fmt.Sprintf("%dx%d-parents-recent%d", z.boards, z.issues, z.recent)
+	}
+	if z.parents {
+		return fmt.Sprintf("%dx%d-parents", z.boards, z.issues)
+	}
+	return fmt.Sprintf("%dx%d", z.boards, z.issues)
+}
+
+// benchEpics is how many epics the stories of a parented board name.
+const benchEpics = 50
+
+// benchParented is row as a Jira scrum board reads it, which lists no
+// epics: every fourth issue a sub-task of the story before it, and four
+// of five others a story under one of benchEpics epics no board lists,
+// each read naming its parent.
+func benchParented(row MirrorRow, board, i int) MirrorRow {
+	c := &row.Card
+	switch {
+	case i%4 == 3:
+		story := benchIssueID(board, i-1)
+		c.TypeLevel, c.ParentID = -1, story
+		c.ParentName = &MirrorParentName{Key: "WEB-" + story, Title: "Story " + story}
+	case i%5 != 0:
+		epic := strconv.Itoa(800000 + board*1000 + (i/5)%benchEpics)
+		c.ParentID = epic
+		c.ParentName = &MirrorParentName{Key: "WEB-" + epic, Title: "Epic " + epic, TypeLevel: 1}
+	}
+	return row
+}
 
 // benchMirrorFixtures holds the fixture of each size, by size.
 var benchMirrorFixtures sync.Map
@@ -41,14 +80,23 @@ func benchIssueID(board, i int) string { return strconv.Itoa(100000 + board*10_0
 
 func benchBoardID(board int) string { return strconv.Itoa(10 + board) }
 
-// benchCard is a card the size of a real one: its data holds a title,
-// labels and the fields the pane shows that no query reads.
+// CardShapeForTest is the shape of the card blobs these tests write
+// (benchCard), trackerapp's version 2.
+var CardShapeForTest = MirrorCardShape{Version: 2, VersionMember: "v", Type: "type_name", Priority: "priority_name",
+	Labels: "labels", LabelID: "id", LabelName: "name"}
+
+// benchLabels are the labels of every benchCard.
+var benchLabels = []string{"frontend", "auth"}
+
+// benchCard is a card whose data blob is of the shape trackerapp writes
+// (CardShapeForTest): its type, priority, two labels and its web address.
 func benchCard(id string, updated int64, board, i int) MirrorCard {
 	return MirrorCard{IssueID: id, Key: "WEB-" + id, ProjectID: "100", TypeID: "10001", TypeLevel: 0,
 		StatusID: strconv.Itoa(1 + i%5), AssigneeID: fmt.Sprint("acc-user", i%20), PriorityID: "3", ParentID: "",
 		CreatedAt: 1_700_000_000_000, UpdatedAt: updated, Sprints: []string{fmt.Sprint(board*benchBoardSprints + i%benchBoardSprints)},
-		Data: []byte(`{"summary":"Make the login page remember the last account used ` + id + `","labels":["frontend","auth"],` +
-			`"components":["web"],"fixVersions":["2026.11"],"flagged":false,"commentCount":3,"attachmentCount":1}`)}
+		Labels: slices.Clone(benchLabels),
+		Data: []byte(`{"v":2,"type_name":"Story","priority_name":"Medium","labels":[{"id":"frontend","name":"frontend"},{"id":"auth","name":"auth"}],` +
+			`"url":"https://example.atlassian.net/browse/WEB-` + id + `"}`)}
 }
 
 func benchRow(board, i int, updated int64) MirrorRow {
@@ -89,6 +137,73 @@ func benchHistory(id string, at int64, n int) MirrorHistory {
 	return answeredHistory(h)
 }
 
+// benchSprintHistory is h with what a scrum board's issue i records after
+// its benchChanges: its move into sprint and its first estimate, the
+// changes its sprint intervals are rebuilt from.
+func benchSprintHistory(h MirrorHistory, board, i int, sprint string) MirrorHistory {
+	estimate := float64(i % 8)
+	at := h.Changes[len(h.Changes)-1].At
+	h.Changes = append(h.Changes,
+		MirrorChange{Kind: MirrorChangeSprint, At: at + 1, AuthorID: "acc-user1", FromSprints: []string{}, ToSprints: []string{sprint}},
+		MirrorChange{Kind: MirrorChangeEstimate, At: at + 2, AuthorID: "acc-user1", BoardID: benchBoardID(board), ToNumber: &estimate})
+	h.AnsweredAt = at + 2
+	return answeredHistory(h)
+}
+
+// The real times of a recent fixture (benchRecentBoard): its now, a day,
+// and the start of the history window it is exported with.
+const (
+	BenchNowForTest    = int64(1_767_225_600_000) // 2026-01-01 UTC
+	benchDay           = int64(86_400_000)
+	BenchWindowForTest = BenchNowForTest - 180*benchDay
+	benchRecentSprints = 13
+)
+
+// BenchLoggedForTest is the days of logged time the fixture is exported
+// with: from the day before the history window's, as trackerapp's
+// loggedFrom gives it, to the fixture's today in UTC.
+var BenchLoggedForTest = MirrorLoggedDays{From: time.UnixMilli(BenchWindowForTest).UTC().AddDate(0, 0, -1).Format(time.DateOnly), Through: time.UnixMilli(BenchNowForTest).UTC().Format(time.DateOnly)}
+
+// benchRecentStructure is board's structure as a recent fixture keeps it:
+// 12 closed two-week sprints inside the window and an active one.
+func benchRecentStructure(board int) MirrorStructure {
+	st := benchStructure(board)
+	st.Sprints = nil
+	for k := range benchRecentSprints {
+		start := BenchWindowForTest + 5*benchDay + int64(k)*14*benchDay
+		sp := MirrorSprint{ID: strconv.Itoa(board*benchBoardSprints + k), OriginBoardID: benchBoardID(board), Name: fmt.Sprint("WEB Sprint ", k),
+			State: MirrorSprintClosed, StartAt: start, EndAt: start + 14*benchDay, CompletedAt: start + 14*benchDay}
+		if k == benchRecentSprints-1 {
+			sp.State, sp.CompletedAt = MirrorSprintActive, 0
+		}
+		st.Sprints = append(st.Sprints, sp)
+	}
+	return st
+}
+
+// benchRecentBoard is issue i of board in a recent fixture of percent
+// recent issues: its row and its history, each change benchHistory's and
+// benchSprintHistory's, its card in the status its history ends in. A
+// recent issue (every one whose i mod 100 is below the percentage)
+// changed inside the window and is in one of its sprints; the others
+// changed long before it, in a sprint the board no longer keeps.
+func benchRecentBoard(board, i, recent int) (MirrorRow, MirrorHistory) {
+	id := benchIssueID(board, i)
+	base := BenchWindowForTest - int64(30+i%300)*benchDay
+	sprint, sprints := "closed-before-the-window", []string(nil)
+	if i%100 < recent {
+		base = BenchWindowForTest + int64(5+i%170)*benchDay
+		sprint = strconv.Itoa(board*benchBoardSprints + (i/100)%benchRecentSprints)
+		sprints = []string{sprint}
+	}
+	h := benchSprintHistory(benchHistory(id, base, benchChanges), board, i, sprint)
+	h.For = 0 // read for the card's version (dueHistories), so its status time is final
+	row := benchParented(benchRow(board, i, base+benchChanges+2), board, i)
+	row.Card.CreatedAt, row.Card.Sprints = base-benchDay, sprints
+	row.Card.StatusID = h.Changes[benchChanges-2].To
+	return row, h
+}
+
 // buildBenchMirror writes a fixture of size through the store's own
 // writers.
 func buildBenchMirror(tb testing.TB, path string, size benchMirrorSize) error {
@@ -123,23 +238,33 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 		return err
 	}
 	for board := range size.boards {
-		if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, benchStructure(board))); err != nil {
+		structure := benchStructure(board)
+		if size.recent > 0 {
+			structure = benchRecentStructure(board)
+		}
+		if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, structure)); err != nil {
 			return err
 		}
 		rows := make([]MirrorRow, 0, size.issues)
+		histories := make([]MirrorHistory, 0, size.issues)
 		for i := range size.issues {
-			rows = append(rows, benchRow(board, i, 1000))
+			row := benchRow(board, i, 1000)
+			h := benchHistory(benchIssueID(board, i), 100, benchChanges)
+			switch {
+			case size.recent > 0:
+				row, h = benchRecentBoard(board, i, size.recent)
+			case size.parents:
+				row = benchParented(row, board, i)
+				h = benchSprintHistory(h, board, i, strconv.Itoa(board*benchBoardSprints+i%benchBoardSprints))
+			}
+			rows, histories = append(rows, row), append(histories, h)
 		}
 		for page := range slices.Chunk(rows, 100) {
 			if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: benchBoardID(board), Rows: page, ReadAt: mirrorReadAt(1)}), []byte("cursor")); err != nil {
 				return err
 			}
 		}
-		for first := 0; first < size.issues; first += mirrorHistoryBatch {
-			batch := make([]MirrorHistory, 0, mirrorHistoryBatch)
-			for i := first; i < min(first+mirrorHistoryBatch, size.issues); i++ {
-				batch = append(batch, benchHistory(benchIssueID(board, i), 100, benchChanges))
-			}
+		for batch := range slices.Chunk(histories, mirrorHistoryBatch) {
 			if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch), MirrorCatalog{}, nextMirrorRead(s, root)); err != nil {
 				return err
 			}

@@ -2,17 +2,23 @@ package app
 
 import (
 	"context"
+	"database/sql/driver"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"modernc.org/sqlite"
 
 	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/entityid"
 	gitops "agent-overflow/internal/git"
-	"agent-overflow/internal/harness/trackerfake"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/trackerapp"
@@ -22,7 +28,8 @@ import (
 // ticketThreadFixture is a board fixture whose project is a git checkout
 // and whose App stores attachments, over a store file the test can open:
 // what StartTicketThread makes a thread with. Its site adds OPS-1, the
-// parent of board 1's row 10102.
+// parent of board 1's row 10102 and WEB-1's linked ticket
+// (withParentTicket).
 type ticketThreadFixture struct {
 	*trackerBoardFixture
 	ctx    context.Context
@@ -32,12 +39,7 @@ type ticketThreadFixture struct {
 
 func newTicketThreadFixture(t *testing.T) *ticketThreadFixture {
 	t.Helper()
-	site := trackerBoardSite()
-	site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10001", Key: "OPS", Name: "Ops"})
-	day := site.Issues[0].Created
-	site.Issues = append(site.Issues, trackerfake.JiraIssue{ID: "20001", Key: "OPS-1", Project: "OPS", Type: "10000", Summary: "The epic",
-		Status: "10000", Created: day, Updated: day})
-	site.Issues[1].Parent = "20001"
+	site := withParentTicket(trackerBoardSite())
 	path := storetest.ClonePath(t)
 	st, err := store.New(path)
 	if err != nil {
@@ -48,7 +50,7 @@ func newTicketThreadFixture(t *testing.T) *ticketThreadFixture {
 			t.Error(err)
 		}
 	})
-	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site, store: st})
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site, store: st, settings: settings.NewService(t.TempDir())})
 	attachments, err := attachmentstore.NewStore(attachmentstore.Config{RootDir: t.TempDir()}, f.a.store)
 	if err != nil {
 		t.Fatal(err)
@@ -157,19 +159,33 @@ func TestStartWorkUsesTheWorktreeThatHasTheBranch(t *testing.T) {
 }
 
 // A step that fails after the thread is linked deletes the thread, which
-// ends its link and tells the boards that showed the ticket as kept by it,
-// and takes back the worktree and the branch the call cut.
+// ends its link, and takes back the worktree and the branch the call cut;
+// the board whose row has the ticket as parent still names it, and the
+// open ticket that shows it as a linked ticket, which showed the card the
+// link kept, shows it as its own read gave it once the link ended.
 func TestStartTicketThreadThatFailsLeavesNothing(t *testing.T) {
 	t.Parallel()
 	f := newTicketThreadFixture(t)
-	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse BEFORE INSERT ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected failure'); END`)
+	linking := f.openLinkingTicket(t, f.ctx)
+	hold := sqlHold(t)
+	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse BEFORE INSERT ON thread_drafts BEGIN SELECT ao_test_hold('`+hold.name+`'); SELECT RAISE(ABORT, 'injected failure'); END`)
 
-	_, err := f.a.StartTicketThread(f.ctx, f.project, StartTicketThreadRequest{ConnectionID: f.conn.ID, IssueID: "20001", Origin: store.TicketOriginStartWork, Branch: "OPS-1-the-epic"})
+	started := make(chan error, 1)
+	go func() {
+		_, err := f.a.StartTicketThread(f.ctx, f.project, StartTicketThreadRequest{ConnectionID: f.conn.ID, IssueID: "20001", Origin: store.TicketOriginStartWork, Branch: "OPS-1-the-epic"})
+		started <- err
+	}()
+	// The draft's write, the step that fails, waits until the open ticket
+	// shows the card the link kept.
+	hold.reached(t)
+	f.linkShows(t, f.ctx, linking, "while the start's link keeps OPS-1", linkKept)
+	hold.release()
+	err := <-started
+	f.linkShows(t, f.ctx, linking, "after the failed start", linkUnkept)
 	if err == nil || !strings.Contains(err.Error(), "injected failure") || strings.Contains(err.Error(), "delete branch") || strings.Contains(err.Error(), "undo the worktree") {
 		t.Fatalf("StartTicketThread = %v; want the draft's failure, rolled back", err)
 	}
-	f.boardEvent(t, "for the parent's card", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
-	f.boardEvent(t, "for the parent no longer kept", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	f.parentNamed(t, "after the failed start")
 	if threads, err := f.a.store.ListThreadsByProject(f.project); err != nil || len(threads) != 0 {
 		t.Fatalf("threads left = %+v, %v", threads, err)
 	}
@@ -178,6 +194,142 @@ func TestStartTicketThreadThatFailsLeavesNothing(t *testing.T) {
 	}
 	if worktrees, err := f.a.gitCore().ListWorktrees(f.repo); err != nil || len(worktrees) != 1 {
 		t.Fatalf("worktrees = %+v (%v); want the main checkout alone", worktrees, err)
+	}
+}
+
+// A thread on several tickets is made in the project's checkout, titled
+// with their keys, linked to none, with each ticket's file attached in the
+// order named and the text in its draft, unsent; a thread on one is titled
+// and linked as that ticket's Ask.
+func TestStartTicketsThreadMakesOneThreadWithEveryTicket(t *testing.T) {
+	t.Parallel()
+	f := newTicketThreadFixture(t)
+
+	several, err := f.a.StartTicketsThread(f.ctx, f.project, StartTicketsThreadRequest{
+		ConnectionID: f.conn.ID, IssueIDs: []string{"10102", "10101", "20001"}, Text: "find out why these are stuck"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if several.Title != "WEB-2, WEB-1 and OPS-1" || several.WorktreePath != "" || several.TicketLink != nil {
+		t.Fatalf("the thread = %q in %q linked %+v", several.Title, several.WorktreePath, several.TicketLink)
+	}
+	if listed, err := f.a.store.ThreadListed(several.ID); err != nil || !listed {
+		t.Fatalf("the thread is listed: %v, %v", listed, err)
+	}
+	draft, err := f.a.GetDraft(several.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.Content != "find out why these are stuck" {
+		t.Fatalf("the draft = %q", draft.Content)
+	}
+	var names []string
+	for _, id := range draft.AttachmentIDs {
+		record, path, ok, err := f.a.attachments.Get(id)
+		if err != nil || !ok || record.ThreadID != several.ID {
+			t.Fatalf("attachment %s = %+v (%v, %v)", id, record, ok, err)
+		}
+		text, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := strings.TrimSuffix(filepath.Base(path), ".md")
+		if !strings.HasPrefix(string(text), key+" as its tracker holds it") {
+			t.Fatalf("%s's file reads\n%s", key, text)
+		}
+		names = append(names, key)
+	}
+	if !slices.Equal(names, []string{"WEB-2", "WEB-1", "OPS-1"}) {
+		t.Fatalf("the files = %v; want each ticket's in the order named", names)
+	}
+
+	one, err := f.a.StartTicketsThread(f.ctx, f.project, StartTicketsThreadRequest{ConnectionID: f.conn.ID, IssueIDs: []string{"10101"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.Title != "WEB-1 First story" || one.TicketLink == nil || one.TicketLink.Origin != store.TicketOriginAsk || one.TicketLink.Key != "WEB-1" {
+		t.Fatalf("the thread on one ticket = %q linked %+v", one.Title, one.TicketLink)
+	}
+	if draft, _ := f.draftOf(t, one.ID); draft.Content != "" {
+		t.Fatalf("the draft on one ticket = %q", draft.Content)
+	}
+}
+
+// Five tickets or more name the first three keys and count the rest.
+func TestTicketThreadTitleNamesTheFirstThreeKeys(t *testing.T) {
+	t.Parallel()
+	details := func(keys ...string) []trackerapp.DetailView {
+		out := make([]trackerapp.DetailView, len(keys))
+		for i, key := range keys {
+			out[i].Card.Key, out[i].Card.Title = key, "Title of "+key
+		}
+		return out
+	}
+	for want, in := range map[string][]trackerapp.DetailView{
+		"WEB-1 Title of WEB-1":           details("WEB-1"),
+		"WEB-1 and WEB-2":                details("WEB-1", "WEB-2"),
+		"WEB-1, WEB-2, WEB-3 and 1 more": details("WEB-1", "WEB-2", "WEB-3", "WEB-4"),
+		"WEB-1, WEB-2, WEB-3 and 2 more": details("WEB-1", "WEB-2", "WEB-3", "WEB-4", "WEB-5"),
+	} {
+		if got := ticketThreadTitle(in); got != want {
+			t.Errorf("title of %d tickets = %q; want %q", len(in), got, want)
+		}
+	}
+}
+
+// A request naming no ticket, more than a message carries, an empty ID or
+// one ticket twice is refused before anything is read or made.
+func TestStartTicketsThreadRefusesABadSelection(t *testing.T) {
+	t.Parallel()
+	f := newTicketThreadFixture(t)
+	tooMany := make([]string, MaxThreadTickets+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprint(10101 + i)
+	}
+	for want, ids := range map[string][]string{
+		"names at least one ticket":   nil,
+		"at most 8 tickets":           tooMany,
+		"one was empty":               {"10101", " "},
+		"issue 10101 was named twice": {"10101", "10102", "10101"},
+	} {
+		_, err := f.a.StartTicketsThread(f.ctx, f.project, StartTicketsThreadRequest{ConnectionID: f.conn.ID, IssueIDs: ids})
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("StartTicketsThread(%v) = %v; want %q", ids, err, want)
+		}
+	}
+	if threads, err := f.a.store.ListThreadsByProject(f.project); err != nil || len(threads) != 0 {
+		t.Fatalf("threads = %+v, %v", threads, err)
+	}
+}
+
+// A failure at any step leaves no thread: a ticket that cannot be read
+// before anything is made, and the thread, a ticket's file or the draft
+// after the thread is made, which deletes it with the files it had.
+func TestStartTicketsThreadThatFailsLeavesNothing(t *testing.T) {
+	t.Parallel()
+	for step, refuse := range map[string]string{
+		"the ticket read": "",
+		"the thread":      `CREATE TRIGGER refuse BEFORE INSERT ON threads BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
+		"a file":          `CREATE TRIGGER refuse BEFORE INSERT ON attachments WHEN (SELECT count(*) FROM attachments WHERE thread_id = NEW.thread_id) >= 1 BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
+		"the draft":       `CREATE TRIGGER refuse BEFORE INSERT ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected failure'); END`,
+	} {
+		t.Run(step, func(t *testing.T) {
+			t.Parallel()
+			f := newTicketThreadFixture(t)
+			ids, want := []string{"10101", "10102"}, "injected failure"
+			if refuse == "" {
+				ids, want = []string{"10101", "99999"}, "99999"
+			} else {
+				execOnStore(t, f.dbPath, refuse)
+			}
+			_, err := f.a.StartTicketsThread(f.ctx, f.project, StartTicketsThreadRequest{ConnectionID: f.conn.ID, IssueIDs: ids, Text: "why"})
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("StartTicketsThread = %v; want %q", err, want)
+			}
+			if threads, err := f.a.store.ListThreadsByProject(f.project); err != nil || len(threads) != 0 {
+				t.Fatalf("threads left = %+v, %v", threads, err)
+			}
+		})
 	}
 }
 
@@ -326,3 +478,57 @@ func samePathForTest(a, b string) bool {
 	rb, errB := filepath.EvalSymlinks(b)
 	return errA == nil && errB == nil && ra == rb
 }
+
+// sqlHolds are the holds of ao_test_hold, by name.
+var sqlHolds sync.Map
+
+// sqlHoldOf is a hold a test's trigger waits on: ao_test_hold(name)
+// closes reached and waits for release.
+type sqlHoldOf struct {
+	name      string
+	reach     chan struct{}
+	open      chan struct{}
+	reachOnce sync.Once
+	openOnce  sync.Once
+}
+
+func init() {
+	sqlite.MustRegisterFunction("ao_test_hold", &sqlite.FunctionImpl{
+		NArgs: 1,
+		Scalar: func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			name, _ := args[0].(string)
+			h, ok := sqlHolds.Load(name)
+			if !ok {
+				return nil, fmt.Errorf("ao_test_hold: no hold %q", name)
+			}
+			hold := h.(*sqlHoldOf)
+			hold.reachOnce.Do(func() { close(hold.reach) })
+			<-hold.open
+			return nil, nil
+		},
+	})
+}
+
+// sqlHold makes a hold, released when the test ends at the latest.
+func sqlHold(t *testing.T) *sqlHoldOf {
+	t.Helper()
+	h := &sqlHoldOf{name: uuid.NewString(), reach: make(chan struct{}), open: make(chan struct{})}
+	sqlHolds.Store(h.name, h)
+	t.Cleanup(func() {
+		h.release()
+		sqlHolds.Delete(h.name)
+	})
+	return h
+}
+
+// reached waits until a statement waits on h.
+func (h *sqlHoldOf) reached(t *testing.T) {
+	t.Helper()
+	select {
+	case <-h.reach:
+	case <-time.After(20 * time.Second):
+		t.Fatal("no statement reached the hold")
+	}
+}
+
+func (h *sqlHoldOf) release() { h.openOnce.Do(func() { close(h.open) }) }

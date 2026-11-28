@@ -65,6 +65,7 @@ var readRows = map[string]call{
 	"GET rest/software/1.0/board/{board}/backlog/approximate-count": jiraReq("GET", "/rest/software/1.0/board/1/backlog/approximate-count", ""),
 	"GET 4/worklogs/user/{account}":                                 tempoReq("GET", "/4/worklogs/user/acc-user1?from=2026-11-01&to=2026-11-30", ""),
 	"GET 4/worklogs/{id}":                                           tempoReq("GET", "/4/worklogs/501", ""),
+	"POST 4/worklogs/search":                                        tempoReq("POST", "/4/worklogs/search", `{"issueIds":[10101]}`),
 	"GET 4/work-attributes":                                         tempoReq("GET", "/4/work-attributes", ""),
 	"GET 4/globalconfiguration":                                     tempoReq("GET", "/4/globalconfiguration", ""),
 	"POST 4/accounts/search":                                        tempoReq("POST", "/4/accounts/search", `{}`),

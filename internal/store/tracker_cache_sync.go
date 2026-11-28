@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -135,12 +136,25 @@ var (
 		   OR author_id IS NOT excluded.author_id OR day IS NOT excluded.day
 		   OR spent_seconds IS NOT excluded.spent_seconds OR description IS NOT excluded.description
 		   OR updated_at IS NOT excluded.updated_at
-		RETURNING worklog_id, day`
+		RETURNING worklog_id, day, issue_id`
 	mirrorWorklogsRemoveSQL = `DELETE FROM tracker_cache_worklogs
 		WHERE root_id = CAST(?1 AS INTEGER) AND author_id = ?2 AND day BETWEEN ?3 AND ?4
 		  AND worklog_id NOT IN (SELECT w.value ->> 'i' FROM json_each(?6) w)
 		  AND NOT ` + fmt.Sprintf(mirrorWorklogDaySupersededSQL, `tracker_cache_worklogs.day`) + `
-		RETURNING worklog_id, day`
+		RETURNING worklog_id, day, issue_id`
+	// mirrorWorklogsMovedSQL is the issues the worklogs of ?6 are stored
+	// on when the read found them on another.
+	mirrorWorklogsMovedSQL = `SELECT o.issue_id FROM json_each(?6) w
+		CROSS JOIN tracker_cache_worklogs o ON o.root_id = CAST(?1 AS INTEGER) AND o.worklog_id = w.value ->> 'i'
+		WHERE o.issue_id IS NOT w.value ->> 's'`
+	// mirrorWorklogActsDueSQL makes the worklog evidence of each issue of
+	// ?2 (a JSON list) due again (ListMirrorActsDue): a receipt from a read
+	// that began before ?3, this worklog read, certifies no card update
+	// and orders at ?3, so an evidence read that began earlier is
+	// superseded.
+	mirrorWorklogActsDueSQL = `UPDATE tracker_cache_issue_act_reads SET read_for = 0, read_at = ?3
+		WHERE root_id = CAST(?1 AS INTEGER) AND source = ` + strconv.Itoa(MirrorActWorklog) + ` AND read_at > 0 AND read_at < ?3
+		  AND issue_id IN (SELECT value FROM json_each(?2))`
 	// mirrorWorklogDaysSQL records the read as the latest of each day ?4
 	// (a JSON list) it replaced, empty or unchanged days included.
 	mirrorWorklogDaysSQL = `INSERT INTO tracker_cache_worklog_days(root_id, author_id, day, read_at)
@@ -168,6 +182,12 @@ var (
 // another generation is refused with ErrTrackerCacheSourceChanged in the
 // write's transaction: the source changed since, and the change deleted
 // the root's worklogs and read days (migration v168).
+//
+// It owns the rule that a changed worklog makes its ticket's evidence of
+// who worked on it due (ListMirrorActsDue), whoever made the change: in
+// the same transaction, each issue a worklog is added to, changed on,
+// moved from or to, or removed from has its worklog receipt of a read
+// that began before this one made due (mirrorWorklogActsDueSQL).
 func (s *Store) ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay, toDay string, read MirrorRead, logs []MirrorWorklog) (changes MirrorWorklogChanges, err error) {
 	times, err := read.in(rootID)
 	if err != nil {
@@ -211,6 +231,18 @@ func (s *Store) ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay
 		if changes.SupersededDays, err = queryIDs(tx, mirrorWorklogSupersededDaysSQL, args[:5]...); err != nil {
 			return fmt.Errorf("read superseded days: %w", err)
 		}
+		// The issues whose worklogs this write adds, changes, moves or
+		// removes, whose evidence of who worked on them is due again.
+		issues := map[string]bool{}
+		err = scanMirrorRows(tx, mirrorWorklogsMovedSQL, args, func(r rowScanner) error {
+			var issue string
+			err := r.Scan(&issue)
+			issues[issue] = true
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("read moved worklogs: %w", err)
+		}
 		for _, step := range []struct {
 			what  string
 			query string
@@ -220,13 +252,23 @@ func (s *Store) ReplaceMirrorWorklogs(rootID, sourceGen int64, authorID, fromDay
 			{"remove worklogs", mirrorWorklogsRemoveSQL, &changes.Removed},
 		} {
 			err := scanMirrorRows(tx, step.query, args, func(r rowScanner) error {
-				var id, day string
-				err := r.Scan(&id, &day)
+				var id, day, issue string
+				err := r.Scan(&id, &day, &issue)
 				*step.out = append(*step.out, id)
+				issues[issue] = true
 				return err
 			})
 			if err != nil {
 				return fmt.Errorf("%s: %w", step.what, err)
+			}
+		}
+		if len(issues) > 0 {
+			due, err := encodeMirrorIDs(slices.Sorted(maps.Keys(issues)))
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(mirrorWorklogActsDueSQL, rootID, due, readAt); err != nil {
+				return fmt.Errorf("make the changed worklogs' evidence due: %w", err)
 			}
 		}
 		if _, err := tx.Exec(mirrorWorklogDaysSQL, rootID, authorID, readAt, rangeDays); err != nil {
@@ -266,6 +308,9 @@ type MirrorWorklogDays struct {
 	Logs     []MirrorWorklog
 	More     bool
 	ReadDays []string
+	// Entries are the author's time entries of the range on the
+	// connection (migration v173), by day and ID.
+	Entries []TimeEntry
 }
 
 // ReadMirrorWorklogDays reads connectionID's row, and its mirror's
@@ -284,6 +329,9 @@ func (s *Store) ReadMirrorWorklogDays(connectionID, authorID, fromDay, toDay str
 			return out, fmt.Errorf("read the connection: %w", err)
 		}
 		out.Connection, out.Found = row, true
+		if out.Entries, err = scanTimeEntries(q.Query(timeEntriesOfSQL, connectionID, authorID, fromDay, toDay)); err != nil {
+			return out, fmt.Errorf("read the time entries: %w", err)
+		}
 		var root int64
 		err = q.QueryRow(`SELECT id FROM tracker_cache_roots WHERE connection_id = ?`, connectionID).Scan(&root)
 		switch {

@@ -3,6 +3,8 @@ package trackertools
 import (
 	"context"
 	"encoding/json"
+
+	"agent-overflow/internal/trackerapp"
 )
 
 // Instructions is the guide the model reads once per session. Claude reads
@@ -22,19 +24,25 @@ type toolSpec struct {
 	description string
 	properties  map[string]any
 	required    []string
-	call        func(s *Server, ctx context.Context, caller Caller, args json.RawMessage) (any, error)
+	// time is a tool a session is given only when a Jira connection was
+	// on as it started (Caller.Time).
+	time bool
+	call func(s *Server, ctx context.Context, caller Caller, args json.RawMessage) (any, error)
 }
 
 // toolTable is every tool, in the order tools/list returns them.
 var toolTable = []toolSpec{
 	{
 		name:        "ticket_find",
-		description: "Search tickets by text, 20 at a time.",
+		description: "Search tickets, 20 at a time.",
 		properties: map[string]any{
-			"text": property("string", ""),
-			"next": property("string", "From the previous answer, for the next 20."),
+			"text":   property("string", ""),
+			"mine":   property("boolean", "Assigned to the user."),
+			"status": property("string", "A status name."),
+			"group":  map[string]any{"type": "string", "enum": trackerapp.SearchGroups()},
+			"sprint": map[string]any{"type": "string", "enum": []string{activeSprint}},
+			"next":   property("string", "Repeat the search arguments with this."),
 		},
-		required: []string{"text"},
 		call: func(s *Server, ctx context.Context, _ Caller, args json.RawMessage) (any, error) {
 			return s.find(ctx, args)
 		},
@@ -73,29 +81,75 @@ var toolTable = []toolSpec{
 		},
 		call: (*Server).update,
 	},
+	{
+		name:        "dashboard_widget",
+		description: "Count a dashboard widget; show proposes it to the user. Call with no widget for the rules.",
+		properties: map[string]any{
+			"board":  property("string", ""),
+			"widget": property("object", ""),
+			"show":   property("boolean", ""),
+		},
+		call: (*Server).dashboardWidget,
+	},
+	{
+		name:        "time_read",
+		description: "The user's logged and drafted time by day, this week unless given.",
+		properties: map[string]any{
+			"from": property("string", "YYYY-MM-DD"),
+			"to":   property("string", ""),
+		},
+		time: true,
+		call: (*Server).timeRead,
+	},
+	{
+		name:        "time_draft",
+		description: "Give entries to replace this thread's drafts for their days, or post with up to 7 YYYY-MM-DD dates to log those days' drafts after user approval.",
+		properties: map[string]any{
+			"entries": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
+				"day":    property("string", ""),
+				"key":    property("string", "Leave out to ask the user which ticket."),
+				"hours":  property("number", ""),
+				"reason": property("string", "The worklog's description; with no key, what the time was."),
+				"offer":  map[string]any{"type": "array", "items": property("string", ""), "maxItems": maxOfferKeys},
+			}}},
+			"post": map[string]any{"type": "array", "items": property("string", "")},
+		},
+		time: true,
+		call: (*Server).timeDraft,
+	},
 }
+
+// maxOfferKeys is the most tickets a question offers (trackerapp's bound).
+const maxOfferKeys = 5
 
 // maxUpdateKeys is the most tickets one ticket_update changes.
 const maxUpdateKeys = 20
 
-// ToolNames is every tool, in table order.
-func ToolNames() []string {
-	names := make([]string, len(toolTable))
-	for i, spec := range toolTable {
-		names[i] = spec.name
+// ToolNames is every tool a session is given, in table order: with the
+// time tools when withTime.
+func ToolNames(withTime bool) []string {
+	var names []string
+	for _, spec := range toolTable {
+		if withTime || !spec.time {
+			names = append(names, spec.name)
+		}
 	}
 	return names
 }
 
-// Tools returns every tool's definition, in table order.
-func (s *Server) Tools() []map[string]any {
-	tools := make([]map[string]any, len(toolTable))
-	for i, spec := range toolTable {
+// Tools returns the definition of every tool a session is given, in
+// table order: with the time tools when withTime.
+func (s *Server) Tools(withTime bool) []map[string]any {
+	var tools []map[string]any
+	for _, spec := range toolTable {
+		if spec.time && !withTime {
+			continue
+		}
 		required := spec.required
 		if required == nil {
 			required = []string{}
 		}
-		tools[i] = map[string]any{
+		tools = append(tools, map[string]any{
 			"name":        spec.name,
 			"description": spec.description,
 			"inputSchema": map[string]any{
@@ -104,7 +158,7 @@ func (s *Server) Tools() []map[string]any {
 				"required":             required,
 				"additionalProperties": false,
 			},
-		}
+		})
 	}
 	return tools
 }

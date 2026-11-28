@@ -16,6 +16,9 @@ import (
 // package-level values.
 type Document struct {
 	forge, operation, text string
+	// maxBody bounds the answer's body (Request.MaxBodyBytes); zero takes
+	// the client's default (WithMaxBody).
+	maxBody int64
 }
 
 var (
@@ -44,6 +47,14 @@ func NewDocument(forge, text string) Document {
 		panic(fmt.Sprintf("forgeapi: two %s GraphQL documents define operation %s", forge, operation))
 	}
 	documents = append(documents, d)
+	return d
+}
+
+// WithMaxBody is d with its answer's body bounded by n bytes in place of
+// the client's default, for a document whose largest answer can pass it;
+// n is at most the transport's ceiling (Request.MaxBodyBytes).
+func (d Document) WithMaxBody(n int64) Document {
+	d.maxBody = n
 	return d
 }
 

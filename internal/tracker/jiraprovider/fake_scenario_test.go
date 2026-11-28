@@ -223,7 +223,7 @@ func TestFakeScenario(t *testing.T) {
 	// Logged time through Tempo.
 	tt := s.p.Time()
 	today := scenarioMust[tracker.Date](t)(tracker.DateOf(t0))
-	allApplied(t, "worklog add", tt.AddWorklog(s.ctx, tracker.WorklogInput{Issue: "10102", Day: today, Spent: 30 * time.Minute, Description: "Review"}))
+	allApplied(t, "worklog add", tt.AddWorklogs(s.ctx, []tracker.WorklogInput{{Issue: "10102", Day: today, Spent: 30 * time.Minute, Description: "Review"}}))
 	wls := scenarioMust[[]tracker.Worklog](t)(tt.Worklogs(s.ctx, tracker.WorklogQuery{Author: "acc-user1", From: today, To: today}))
 	if len(wls) != 1 || wls[0].Issue != "10102" || wls[0].Spent != 30*time.Minute {
 		t.Fatalf("worklogs %+v", wls)
@@ -282,7 +282,7 @@ func TestFakeScenarioJiraWorklogs(t *testing.T) {
 	s := newScenario(t, false)
 	tt := s.p.Time()
 	today := scenarioMust[tracker.Date](t)(tracker.DateOf(s.clock.Now()))
-	allApplied(t, "worklog add", tt.AddWorklog(s.ctx, tracker.WorklogInput{Issue: "10102", Day: today, Spent: 30 * time.Minute, Description: "Review"}))
+	allApplied(t, "worklog add", tt.AddWorklogs(s.ctx, []tracker.WorklogInput{{Issue: "10102", Day: today, Spent: 30 * time.Minute, Description: "Review"}}))
 	q := tracker.WorklogQuery{Author: "acc-user1", From: today, To: today}
 	wls := scenarioMust[[]tracker.Worklog](t)(tt.Worklogs(s.ctx, q))
 	if len(wls) != 1 || wls[0].Issue != "10102" || wls[0].Spent != 30*time.Minute {
@@ -396,4 +396,40 @@ func TestFakeBoardOfTwoProjects(t *testing.T) {
 	if len(rows.Rows) != 1 || len(rows.Missing) != 0 {
 		t.Fatalf("the APP issue's row %+v", rows)
 	}
+}
+
+// A card whose issue has a parent names it with the parent's key, summary
+// and hierarchy level, as Jira's parent field gives them, on a board row,
+// a card read and a detail: the read that reads the card, no request more.
+// An issue with no parent names none.
+func TestFakeCardsNameTheirParent(t *testing.T) {
+	s := newEditedScenario(t, nil, func(site *trackerfake.JiraSite) {
+		site.Tempo = nil
+		epic := site.Issues[2]
+		epic.ID, epic.Key, epic.Type, epic.Summary, epic.Sprints = "10130", "WEB-30", "10000", "Checkout", nil
+		site.Issues = append(site.Issues, epic)
+		site.Issues[0].Parent = "10130"
+	})
+	want := tracker.ParentName{Key: "WEB-30", Title: "Checkout", Level: 1}
+	named := func(what string, c tracker.Card) {
+		t.Helper()
+		switch {
+		case c.ID == "10101" && (c.Parent != "10130" || c.ParentName == nil || *c.ParentName != want):
+			t.Errorf("%s: WEB-1 names its parent %q as %+v; want %+v", what, c.Parent, c.ParentName, want)
+		case c.ID != "10101" && c.ParentName != nil:
+			t.Errorf("%s: %s names a parent %+v", what, c.Key, c.ParentName)
+		}
+	}
+	listing := scenarioMust[tracker.Listing](t)(s.p.BoardIssues(s.ctx, "1", s.clock.Now().Add(-30*24*time.Hour)))
+	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", []tracker.IssueID{"10101", "10102"}, listing.Rule))
+	if len(rows.Rows) != 2 {
+		t.Fatalf("rows %+v", rows)
+	}
+	for _, r := range rows.Rows {
+		named("a board row", r.Card)
+	}
+	for _, c := range scenarioMust[tracker.Cards](t)(s.p.Cards(s.ctx, []tracker.IssueID{"10101"})).Cards {
+		named("a card read", c)
+	}
+	named("a detail", s.detail(t, "10101").Card)
 }

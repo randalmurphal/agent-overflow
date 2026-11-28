@@ -248,6 +248,9 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 			return Identity{}, fmt.Errorf("store: restore: copy %s: %w", table, err)
 		}
 	}
+	if _, err := tx.Exec(deleteOrphanTimeEntriesSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: delete the time entries of connections the snapshot lacks: %w", err)
+	}
 	// A counter follows the table it numbers, including revisions already acknowledged.
 	names, err := json.Marshal(copied)
 	if err != nil {
@@ -353,6 +356,13 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 // request another computer is already running, and the receipt that will
 // answer it, are promises this store made outside the history the snapshot
 // describes, and so are the owner operations owed to a paired computer.
+// The time draft joins them too: an entry posted or sent since the
+// snapshot would be offered again, and approving it would log the time
+// twice. The activity the recorder measured joins them: it is this
+// computer's record of the person's day since the snapshot, which the
+// snapshot cannot hold. Its entries of a connection the snapshot lacks are deleted after
+// the copy (deleteOrphanTimeEntriesSQL), as the connection's cascade
+// would have, since the copy runs with foreign keys off.
 //
 // The `thread_search*` family is skipped for the opposite reason: it is
 // derived, and an FTS5 table's shadow tables have no meaning apart from the
@@ -362,7 +372,8 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 func restoreSkipsTable(table string) bool {
 	switch table {
 	case "thread_transfers", "thread_transfer_sessions", "remote_jobs", "remote_watches",
-		"thread_requests", "thread_request_receipts", "thread_owner_ops", "spawn_revisions":
+		"thread_requests", "thread_request_receipts", "thread_owner_ops", "spawn_revisions",
+		"tracker_time_entries", "activity_spans", "thread_days":
 		return true
 	}
 	return strings.HasPrefix(table, "thread_search")
@@ -452,3 +463,8 @@ func attachedTables(s *Store) (map[string]bool, error) {
 func isNoSuchTable(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no such table")
 }
+
+// deleteOrphanTimeEntriesSQL deletes the time entries whose connection the
+// restored tracker_connections lacks.
+const deleteOrphanTimeEntriesSQL = `DELETE FROM main.tracker_time_entries
+ WHERE NOT EXISTS (SELECT 1 FROM main.tracker_connections c WHERE c.id = tracker_time_entries.connection_id)`

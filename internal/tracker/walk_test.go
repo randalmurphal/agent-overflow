@@ -120,6 +120,10 @@ func (f *probedProvider) LinkTypes(ctx context.Context) ([]LinkType, error) {
 	f.see(ctx)
 	return nil, nil
 }
+func (f *probedProvider) Fields(ctx context.Context) ([]Field, error) {
+	f.see(ctx)
+	return nil, nil
+}
 func (f *probedProvider) Boards(ctx context.Context, _ ProjectID) ([]Board, error) {
 	f.see(ctx)
 	return nil, nil
@@ -129,6 +133,10 @@ func (f *probedProvider) BoardProjects(ctx context.Context, _ BoardID) ([]Projec
 	return nil, nil
 }
 func (f *probedProvider) IssueTypes(ctx context.Context, _ ProjectID) ([]IssueType, error) {
+	f.see(ctx)
+	return nil, nil
+}
+func (f *probedProvider) ProjectIssueTypes(ctx context.Context, _ ProjectID) ([]IssueType, error) {
 	f.see(ctx)
 	return nil, nil
 }
@@ -159,6 +167,18 @@ func (f *probedProvider) Cards(ctx context.Context, _ []IssueID) (Cards, error) 
 func (f *probedProvider) History(ctx context.Context, _ HistoryQuery) (History, error) {
 	f.see(ctx)
 	return History{}, nil
+}
+func (f *probedProvider) Evidence(ctx context.Context, _ EvidenceQuery) (Evidence, error) {
+	f.see(ctx)
+	return Evidence{}, nil
+}
+func (f *probedProvider) PersonNamed(ctx context.Context, _ string) (User, bool, error) {
+	f.see(ctx)
+	return User{}, false, nil
+}
+func (f *probedProvider) People(ctx context.Context, _ []ProjectID, _ string) (UserList, error) {
+	f.see(ctx)
+	return UserList{}, nil
 }
 func (f *probedProvider) Detail(ctx context.Context, _ IssueID) (Detail, error) {
 	f.see(ctx)
@@ -257,7 +277,7 @@ func (f *probedTime) Worklogs(ctx context.Context, _ WorklogQuery) ([]Worklog, e
 	f.see(ctx)
 	return nil, nil
 }
-func (f *probedTime) AddWorklog(ctx context.Context, _ WorklogInput) Result {
+func (f *probedTime) AddWorklogs(ctx context.Context, _ []WorklogInput) Result {
 	f.see(ctx)
 	return Result{}
 }

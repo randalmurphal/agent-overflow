@@ -14,8 +14,10 @@ import (
 // for the first client's reads to settle (Deps.Settled), then runs a round
 // at once and every Cadence.Linked: while a client is connected
 // (Deps.ClientConnected), each connection that is on syncs its linked
-// issues' cards and the history due (SyncLinked) until no unit reports
-// More, and then the mirror's cleanup runs (FinishMirrorCleanup). A round
+// issues' cards, the names its mirror owes, the history due, the
+// evidence credit counts that is due and the forge accounts whose match
+// is due (SyncLinked) until no unit reports More, then the mirror's cleanup runs (FinishMirrorCleanup), and then the
+// forge pull request history that is due is read (Deps.ReadForgeHistory). A round
 // with no client connected is skipped whole, its cleanup included. Every read of the connections, a
 // round's included, decides whether the loop runs (followLoopLocked). A
 // failure is reported to Deps.LoopFailed and logged, and the loop goes on.
@@ -155,6 +157,9 @@ func (s *Service) runLinkedLoop(ctx context.Context, done chan struct{}) {
 			if err := s.FinishMirrorCleanup(); err != nil && !errors.Is(err, ErrStopped) {
 				s.loopFailure(err)
 			}
+			if err := s.readForgeHist(ctx); err != nil && ctx.Err() == nil {
+				s.loopFailure(fmt.Errorf("trackerapp: read the forge pull request history: %w", err))
+			}
 		}
 		next.Reset(s.cadence.Linked)
 	}
@@ -195,7 +200,7 @@ func (s *Service) linkedRound(ctx context.Context) {
 // round's) or any other (reported to the loop), when ctx ends, and when no
 // client is connected any more.
 func (s *Service) linkedConnection(ctx context.Context, id string) {
-	due := LinkedDue{Cards: true, History: true}
+	due := LinkedDue{Cards: true, Names: true, History: true, Evidence: true, People: true}
 	for {
 		out, err := s.SyncLinked(ctx, id, due, Background)
 		switch {
@@ -215,11 +220,17 @@ func (s *Service) linkedConnection(ctx context.Context, id string) {
 			case !u.More:
 			case u.Unit == UnitCards:
 				due.Cards = true
+			case u.Unit == UnitNames:
+				due.Names = true
 			case u.Unit == UnitHistory:
 				due.History = true
+			case u.Unit == UnitEvidence:
+				due.Evidence = true
+			case u.Unit == UnitPeople:
+				due.People = true
 			}
 		}
-		if !due.Cards && !due.History || !s.clientConnected() {
+		if due == (LinkedDue{}) || !s.clientConnected() {
 			return
 		}
 	}

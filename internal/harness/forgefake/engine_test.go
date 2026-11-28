@@ -140,11 +140,18 @@ func TestSeedRejectsMalformedFixtures(t *testing.T) {
 		"event time":          `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","events":[{"kind":"reopened","at":"yesterday"}]}]}]}`,
 		"event without ref":   `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","events":[{"kind":"base_changed"}]}]}]}`,
 		"gitlab event method": `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","events":[{"kind":"auto_merge_set","method":"squash"}]}]}]}`,
+		"review of no review": `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","threads":[{"path":"f","side":"file","comments":[{"author":"a","body":"b","review":7}]}]}]}]}`,
+		"another's review":    `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","reviews":[{"id":7,"author":"b","state":"APPROVED"}],"threads":[{"path":"f","side":"file","comments":[{"author":"a","body":"b","review":7}]}]}]}]}`,
+		"gitlab review":       `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","reviews":[{"id":7,"author":"a","state":"APPROVED"}],"threads":[{"path":"f","side":"file","comments":[{"author":"a","body":"b","review":7}]}]}]}]}`,
 	}
 	for name, raw := range cases {
 		if _, err := seedJSON(New(Options{}), raw); err == nil {
 			t.Errorf("%s: seeded without error", name)
 		}
+	}
+	// The line comment of its author's own review seeds.
+	if _, err := seedJSON(New(Options{}), `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","reviews":[{"id":7,"author":"a","state":"APPROVED"}],"threads":[{"path":"f","side":"file","comments":[{"author":"a","body":"b","review":7}]}]}]}]}`); err != nil {
+		t.Errorf("a line comment of its author's review: %v", err)
 	}
 }
 
@@ -392,9 +399,9 @@ func TestCreateOpensAPullForTheCheckoutsBranch(t *testing.T) {
 		t.Fatalf("gh pr create = %d %q %q", created.ExitCode, created.Stdout, created.Stderr)
 	}
 	srv := testServer(t, e)
-	open := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "acme", "name": "widgets", "head": branch})
+	open := graphQL(t, srv, "github.com", "PRsByHead", map[string]any{"owner": "acme", "name": "widgets", "head": branch, "states": []string{"OPEN"}})
 	if !strings.Contains(open.body, `"number":8,"state":"OPEN","title":"Topic","url":"https://github.com/acme/widgets/pull/8"}]`) ||
-		!strings.Contains(open.body, `"isCrossRepository":false,"number":8`) || !strings.Contains(open.body, `"id":"PR_ao`) {
+		!strings.Contains(open.body, `"isCrossRepository":false,"isDraft":true,"number":8`) || !strings.Contains(open.body, `"id":"PR_ao`) {
 		t.Fatalf("open pulls after create = %s", open.body)
 	}
 	var created8 struct {
@@ -1778,8 +1785,8 @@ func TestGitLabOpenMergeRequestsIncludeForks(t *testing.T) {
 	}
 }
 
-// OpenPRsByHead lists a head's open pulls; MergedPRs pages merged ones
-// by first and after.
+// PRsByHead lists a head's pulls in the states asked; MergedPRs pages
+// merged ones by first and after.
 func TestGitHubPullLists(t *testing.T) {
 	t.Parallel()
 	e := New(Options{APIToken: testAPIToken})
@@ -1793,7 +1800,7 @@ func TestGitHubPullLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := testServer(t, e)
-	open := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "a", "name": "b", "head": "topic"})
+	open := graphQL(t, srv, "github.com", "PRsByHead", map[string]any{"owner": "a", "name": "b", "head": "topic", "states": []string{"OPEN"}})
 	// Each node names its head repository: the repository's own, a fork's
 	// generated id.
 	var ids struct {
@@ -1814,8 +1821,8 @@ func TestGitHubPullLists(t *testing.T) {
 	if nodes := ids.Data.Repository.PullRequests.Nodes; len(nodes) != 2 || nodes[0].HeadRepository.ID != ids.Data.Repository.ID || nodes[1].HeadRepository.ID == ids.Data.Repository.ID || nodes[1].HeadRepository.ID == "" {
 		t.Fatalf("head repositories = %+v of %s", nodes, ids.Data.Repository.ID)
 	}
-	if !strings.Contains(open.body, `"id":"PR_one","isCrossRepository":false,"number":1,"state":"OPEN","title":"open","url":"https://github.com/a/b/pull/1"},`) ||
-		!strings.Contains(open.body, `"id":"PR_fork","isCrossRepository":true,"number":6,"state":"OPEN","title":"fork","url":"https://github.com/a/b/pull/6"}]`) ||
+	if !strings.Contains(open.body, `"id":"PR_one","isCrossRepository":false,"isDraft":false,"number":1,"state":"OPEN","title":"open","url":"https://github.com/a/b/pull/1"},`) ||
+		!strings.Contains(open.body, `"id":"PR_fork","isCrossRepository":true,"isDraft":false,"number":6,"state":"OPEN","title":"fork","url":"https://github.com/a/b/pull/6"}]`) ||
 		!strings.Contains(open.body, `"parent":null`) ||
 		!strings.Contains(open.body, `"pageInfo":{"endCursor":"cursor:2","hasNextPage":false}`) {
 		t.Fatalf("open = %s", open.body)
@@ -1823,8 +1830,15 @@ func TestGitHubPullLists(t *testing.T) {
 	if _, err := seedJSON(e, `{"repos":[{"forge":"github","project":"a/c","pulls":[{"number":1,"title":"self","headRepo":"a/c"}]}]}`); err == nil {
 		t.Fatal("a pull whose headRepo is its own repository was seeded")
 	}
-	if none := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "a", "name": "b", "head": "other"}); !strings.Contains(none.body, `"nodes":[]`) {
+	if none := graphQL(t, srv, "github.com", "PRsByHead", map[string]any{"owner": "a", "name": "b", "head": "other", "states": []string{"OPEN"}}); !strings.Contains(none.body, `"nodes":[]`) {
 		t.Fatalf("no open pull = %s", none.body)
+	}
+	every := graphQL(t, srv, "github.com", "PRsByHead", map[string]any{"owner": "a", "name": "b", "head": "topic", "states": []string{"OPEN", "CLOSED", "MERGED"}})
+	if !strings.Contains(every.body, `"number":2,"state":"CLOSED"`) || strings.Count(every.body, `"number":`) != 3 {
+		t.Fatalf("every state = %s", every.body)
+	}
+	if odd := graphQL(t, srv, "github.com", "PRsByHead", map[string]any{"owner": "a", "name": "b", "head": "topic", "states": []string{"DRAFT"}}); odd.status != 404 {
+		t.Fatalf("a state that is no PullRequestState answered %d: %s", odd.status, odd.body)
 	}
 	type merged struct {
 		Data struct {

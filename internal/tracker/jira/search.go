@@ -81,7 +81,8 @@ type SearchPage struct {
 }
 
 // Search runs one page of q on the enhanced search endpoint. Recent
-// writes may not show yet.
+// writes may not show yet. Jira's 400 to the search is a
+// *QueryRefusedError.
 func (c *Client) Search(ctx context.Context, q SearchQuery) (SearchPage, error) {
 	if err := c.admit(ctx); err != nil {
 		return SearchPage{}, err
@@ -112,7 +113,7 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) (SearchPage, error) 
 		Method: http.MethodPost, Path: apiPath + "search/jql", Body: body, ReadOnly: true,
 	}, &v)
 	if err != nil {
-		return SearchPage{}, fmt.Errorf("jira: search: %w", err)
+		return SearchPage{}, fmt.Errorf("jira: search: %w", refusedQuery(err))
 	}
 	if len(v.Issues) == 0 {
 		var u unnamed
@@ -291,50 +292,9 @@ func (c *Client) BulkFetchByID(ctx context.Context, ids []string, fields ...stri
 
 // bulkFetch is one walk of BulkFetch, of BulkFetchByID when byID.
 func (c *Client) bulkFetch(ctx context.Context, refs, fields []string, byID bool) (BulkResult, error) {
-	named := make(map[string]bool, len(refs))
-	distinct := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		if err := checkIssue(ref); err != nil {
-			return BulkResult{}, err
-		}
-		if k := strings.ToUpper(ref); !named[k] {
-			named[k] = true
-			distinct = append(distinct, ref)
-		}
-	}
-	refs = distinct
-	returned := make(map[string]bool, len(refs))
-	var (
-		out  BulkResult
-		left unnamed
-	)
-	size := min(bulkFetchCapacity(fields), bulkFetchBatch)
-	for start := 0; start < len(refs); start += size {
-		batch := refs[start:min(start+size, len(refs))]
-		body := map[string]any{"issueIdsOrKeys": batch}
-		if len(fields) > 0 {
-			body["fields"] = fields
-		}
-		var v bulkAnswer
-		epoch := c.projects.epoch()
-		resp, err := c.call(ctx, trackerapi.Request{
-			Method: http.MethodPost, Path: apiPath + "issue/bulkfetch", Body: body, ReadOnly: true,
-		}, &v)
-		if err == nil {
-			err = v.check()
-		}
-		if err != nil {
-			return out, fmt.Errorf("jira: bulk fetch from %s: %w", batch[0], err)
-		}
-		issues, failed := *v.Issues, *v.Errors
-		if len(issues)+len(failed) < len(batch) {
-			left.note(resp)
-		}
-		if byID {
-			if err := checkAnswered(batch, issues); err != nil {
-				return out, fmt.Errorf("jira: bulk fetch from %s: %w", batch[0], err)
-			}
-		}
+	returned := map[string]bool{}
+	var out BulkResult
+	asked, failed, left, err := bulkFetchEach(ctx, c, refs, fields, byID, func(issues []issueJSON, resp *trackerapi.Response, epoch uint64) {
 		for _, is := range issues {
 			got := is.decode()
 			if got.Project != nil {
@@ -345,22 +305,115 @@ func (c *Client) bulkFetch(ctx context.Context, refs, fields []string, byID bool
 				out.Issues = append(out.Issues, got)
 			}
 		}
-		for _, e := range failed {
-			out.Failed = append(out.Failed, BulkFailure(e))
-		}
+	})
+	out.Failed = failed
+	if err != nil {
+		return out, err
 	}
 	if err := c.prove(ctx, "a bulk fetch", left); err != nil {
 		return BulkResult{}, err
 	}
-	out.Complete = len(out.Failed) == 0 && len(out.Issues) == len(refs)
+	out.Complete = len(out.Failed) == 0 && len(out.Issues) == asked
 	return out, nil
+}
+
+// OversizedIssueError is a bulk fetch of one issue whose answer is over
+// the transport's bound with the fields asked: the bulk fetch read the
+// issues before it and stopped at it.
+type OversizedIssueError struct {
+	ID  string
+	Err error
+}
+
+func (e *OversizedIssueError) Error() string {
+	return fmt.Sprintf("jira: bulk fetch of %s: %v", e.ID, e.Err)
+}
+
+func (e *OversizedIssueError) Unwrap() error { return e.Err }
+
+// bulkIssue is an issue of a bulk fetch's answer as one reader decodes
+// it: whatever it keeps, it names the issue's ID.
+type bulkIssue interface{ issueID() string }
+
+func (v issueJSON) issueID() string { return v.ID }
+
+// bulkFetchEach is one walk of a bulk fetch of refs with fields, each
+// answer's issues decoded as T, the one walk every bulk fetch makes: refs
+// checked and each sent once (a key in any case), in batches of the fewer
+// of bulkFetchBatch and as many as Jira takes with fields
+// (bulkFetchCapacity), each answer checked (bulkAnswer.check, and with
+// byID checkAnswered) before each is given its issues, with the answer and
+// the projects cache's epoch from before the request. It returns how many
+// distinct references it asked, the issues Jira could not return, and the
+// answers that left out issues they were asked for, which the caller
+// proves the user's (Client.prove) before it reads an absence as one; a
+// failure after some requests returns what was given each so far with
+// the error. An answer over the transport's bound is asked again in
+// batches of half as many (trackerapi.Halved); one of a single issue
+// fails with an *OversizedIssueError naming it, every issue before it
+// given to each.
+func bulkFetchEach[T bulkIssue](ctx context.Context, c *Client, refs, fields []string, byID bool,
+	each func(issues []T, resp *trackerapi.Response, epoch uint64)) (asked int, failed []BulkFailure, left unnamed, err error) {
+	named := make(map[string]bool, len(refs))
+	distinct := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if err := checkIssue(ref); err != nil {
+			return 0, nil, nil, err
+		}
+		if k := strings.ToUpper(ref); !named[k] {
+			named[k] = true
+			distinct = append(distinct, ref)
+		}
+	}
+	refs = distinct
+	size := min(bulkFetchCapacity(fields), bulkFetchBatch)
+	for start := 0; start < len(refs); start += size {
+		batch := refs[start:min(start+size, len(refs))]
+		body := map[string]any{"issueIdsOrKeys": batch}
+		if len(fields) > 0 {
+			body["fields"] = fields
+		}
+		var v bulkAnswer[T]
+		epoch := c.projects.epoch()
+		resp, err := c.call(ctx, trackerapi.Request{
+			Method: http.MethodPost, Path: apiPath + "issue/bulkfetch", Body: body, ReadOnly: true,
+		}, &v)
+		if err == nil {
+			err = v.check()
+		}
+		if half, ok := trackerapi.Halved(len(batch), err); ok {
+			// The same issues again, in batches of half as many.
+			size, start = half, start-half
+			continue
+		}
+		if _, large := errors.AsType[*trackerapi.BodyTooLargeError](err); large {
+			return len(refs), failed, left, &OversizedIssueError{ID: batch[0], Err: err}
+		}
+		if err != nil {
+			return len(refs), failed, left, fmt.Errorf("jira: bulk fetch from %s: %w", batch[0], err)
+		}
+		issues, errs := *v.Issues, *v.Errors
+		if len(issues)+len(errs) < len(batch) {
+			left.note(resp)
+		}
+		if byID {
+			if err := checkAnswered(batch, issues); err != nil {
+				return len(refs), failed, left, fmt.Errorf("jira: bulk fetch from %s: %w", batch[0], err)
+			}
+		}
+		each(issues, resp, epoch)
+		for _, e := range errs {
+			failed = append(failed, BulkFailure(e))
+		}
+	}
+	return len(refs), failed, left, nil
 }
 
 // bulkAnswer is a bulk fetch's answer: the issues returned and those Jira
 // could not return. An issue in neither does not exist or is hidden from
 // the user, so both lists are what an absence is read from.
-type bulkAnswer struct {
-	Issues *[]issueJSON `json:"issues"`
+type bulkAnswer[T any] struct {
+	Issues *[]T `json:"issues"`
 	Errors *[]struct {
 		ID      string `json:"id"`
 		Message string `json:"errorMessage"`
@@ -372,7 +425,7 @@ type bulkAnswer struct {
 // no issue asked exists, so an answer without them (an empty object, an
 // error envelope) says nothing of the issues asked and must not read as
 // every one absent.
-func (a bulkAnswer) check() error {
+func (a bulkAnswer[T]) check() error {
 	switch {
 	case a.Issues == nil:
 		return &AnswerError{Message: "malformed answer: a bulk fetch answered with no issues list"}
@@ -384,18 +437,19 @@ func (a bulkAnswer) check() error {
 
 // checkAnswered refuses issues, the answer to a bulk fetch of the IDs
 // asked, when one has no ID, an ID not asked, or an ID answered before.
-func checkAnswered(asked []string, issues []issueJSON) error {
+func checkAnswered[T bulkIssue](asked []string, issues []T) error {
 	seen := make(map[string]bool, len(issues))
 	for _, is := range issues {
+		id := is.issueID()
 		switch {
-		case is.ID == "":
+		case id == "":
 			return errors.New("malformed answer: an issue with no ID")
-		case !slices.Contains(asked, is.ID):
-			return fmt.Errorf("malformed answer: issue %s, which was not asked", is.ID)
-		case seen[is.ID]:
-			return fmt.Errorf("malformed answer: issue %s twice", is.ID)
+		case !slices.Contains(asked, id):
+			return fmt.Errorf("malformed answer: issue %s, which was not asked", id)
+		case seen[id]:
+			return fmt.Errorf("malformed answer: issue %s twice", id)
 		}
-		seen[is.ID] = true
+		seen[id] = true
 	}
 	return nil
 }

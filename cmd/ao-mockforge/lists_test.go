@@ -113,7 +113,12 @@ func TestProjectPRListsThroughTheAppsForgeCode(t *testing.T) {
 	if err != nil || len(mrs) != 3 {
 		t.Fatalf("glab ListProjectPRs = %+v, %v", mrs, err)
 	}
-	wanted, mrFork, mrMine := mrs[0], mrs[1], mrs[2]
+	// The list is newest update first; the rows are read by number.
+	byNumber := map[int]gitops.PRListRow{}
+	for _, mr := range mrs {
+		byNumber[mr.Ref.Number] = mr
+	}
+	wanted, mrFork, mrMine := byNumber[9], byNumber[8], byNumber[7]
 	if mrMine.Ref.Number != 7 || !mrMine.Draft || !mrMine.ViewerIsAuthor || mrMine.ViewerIsReviewer || mrMine.HeadSHA != strings.Repeat("7", 40) ||
 		mrMine.UpdatedAt != "2026-10-05T00:00:00Z" || mrMine.MergeStatus != "draft_status" || mrMine.NodeID != "" || mrMine.Commits != 0 {
 		t.Errorf("glab own draft = %+v", mrMine)

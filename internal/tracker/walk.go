@@ -50,6 +50,10 @@ func (o oneCredential) IssueTypes(ctx context.Context, project ProjectID) ([]Iss
 	return trackerapi.Walk(ctx, func(ctx context.Context) ([]IssueType, error) { return o.p.IssueTypes(ctx, project) })
 }
 
+func (o oneCredential) ProjectIssueTypes(ctx context.Context, project ProjectID) ([]IssueType, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) ([]IssueType, error) { return o.p.ProjectIssueTypes(ctx, project) })
+}
+
 func (o oneCredential) Boards(ctx context.Context, project ProjectID) ([]Board, error) {
 	return trackerapi.Walk(ctx, func(ctx context.Context) ([]Board, error) { return o.p.Boards(ctx, project) })
 }
@@ -60,6 +64,10 @@ func (o oneCredential) Structure(ctx context.Context, board BoardID, window time
 
 func (o oneCredential) LinkTypes(ctx context.Context) ([]LinkType, error) {
 	return trackerapi.Walk(ctx, o.p.LinkTypes)
+}
+
+func (o oneCredential) Fields(ctx context.Context) ([]Field, error) {
+	return trackerapi.Walk(ctx, o.p.Fields)
 }
 
 func (o oneCredential) ChangedRows(ctx context.Context, q DeltaQuery) (RowPage, error) {
@@ -84,6 +92,26 @@ func (o oneCredential) Cards(ctx context.Context, issues []IssueID) (Cards, erro
 
 func (o oneCredential) History(ctx context.Context, q HistoryQuery) (History, error) {
 	return trackerapi.Walk(ctx, func(ctx context.Context) (History, error) { return o.p.History(ctx, q) })
+}
+
+func (o oneCredential) Evidence(ctx context.Context, q EvidenceQuery) (Evidence, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) (Evidence, error) { return o.p.Evidence(ctx, q) })
+}
+
+func (o oneCredential) PersonNamed(ctx context.Context, name string) (User, bool, error) {
+	type named struct {
+		person User
+		ok     bool
+	}
+	n, err := trackerapi.Walk(ctx, func(ctx context.Context) (named, error) {
+		person, ok, err := o.p.PersonNamed(ctx, name)
+		return named{person, ok}, err
+	})
+	return n.person, n.ok, err
+}
+
+func (o oneCredential) People(ctx context.Context, projects []ProjectID, text string) (UserList, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) (UserList, error) { return o.p.People(ctx, projects, text) })
 }
 
 func (o oneCredential) Detail(ctx context.Context, issue IssueID) (Detail, error) {
@@ -175,8 +203,8 @@ func (o oneCredentialTime) Worklogs(ctx context.Context, q WorklogQuery) ([]Work
 	return trackerapi.Walk(ctx, func(ctx context.Context) ([]Worklog, error) { return o.t.Worklogs(ctx, q) })
 }
 
-func (o oneCredentialTime) AddWorklog(ctx context.Context, in WorklogInput) Result {
-	return o.t.AddWorklog(ctx, in)
+func (o oneCredentialTime) AddWorklogs(ctx context.Context, ins []WorklogInput) Result {
+	return o.t.AddWorklogs(ctx, ins)
 }
 
 func (o oneCredentialTime) EditWorklog(ctx context.Context, in WorklogEdit) Result {

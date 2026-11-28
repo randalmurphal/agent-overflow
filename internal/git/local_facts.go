@@ -762,12 +762,16 @@ func (s *batchStream) Write(p []byte) (int, error) {
 	for len(p) > 0 && s.err == nil {
 		switch {
 		case s.remaining > 0:
-			take := int(min(int64(len(p)), s.remaining))
-			if s.sink != nil {
-				s.sink.write(p[:take])
+			// The object's bytes in p: all of p, or its first remaining.
+			chunk := p
+			if s.remaining < int64(len(chunk)) {
+				chunk = chunk[:s.remaining]
 			}
-			s.remaining -= int64(take)
-			p = p[take:]
+			if s.sink != nil {
+				s.sink.write(chunk)
+			}
+			s.remaining -= int64(len(chunk))
+			p = p[len(chunk):]
 			s.trailer = s.remaining == 0
 		case s.trailer:
 			if p[0] != '\n' {

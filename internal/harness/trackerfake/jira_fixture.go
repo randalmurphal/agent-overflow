@@ -68,6 +68,10 @@ type JiraUser struct {
 	// privacy setting, this may be returned as null"). TimeZone still
 	// places the user's Tempo days.
 	HidesTimeZone bool `json:"hidesTimeZone,omitempty"`
+	// OmitsAccountType is a user whose JSON names no accountType, as
+	// Jira's published worklog example shows; the service, measured,
+	// always names it.
+	OmitsAccountType bool `json:"omitsAccountType,omitempty"`
 }
 
 // JiraStatus is a workflow status; Category is new, indeterminate or done.
@@ -251,9 +255,13 @@ type JiraIssue struct {
 	Values            map[string]json.RawMessage `json:"values,omitempty"`
 	Comments          []JiraComment              `json:"comments,omitempty"`
 	Worklogs          []JiraWorklog              `json:"worklogs,omitempty"`
-	Attachments       []JiraAttachment           `json:"attachments,omitempty"`
-	RemoteLinks       []JiraRemoteLink           `json:"remoteLinks,omitempty"`
-	Watchers          []string                   `json:"watchers,omitempty"`
+	// BulkError, when set, is the message a bulk fetch answers for the
+	// issue in issueErrors in place of the issue, as Jira answers an
+	// issue it could not read ("Jira is busy").
+	BulkError   string           `json:"bulkError,omitempty"`
+	Attachments []JiraAttachment `json:"attachments,omitempty"`
+	RemoteLinks []JiraRemoteLink `json:"remoteLinks,omitempty"`
+	Watchers    []string         `json:"watchers,omitempty"`
 	// Changelog is the issue's history, oldest first; every write that
 	// changes a field adds an entry.
 	Changelog []JiraChange `json:"changelog,omitempty"`

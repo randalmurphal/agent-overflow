@@ -95,12 +95,13 @@
     ticketCommentOrder,
     ticketSectionOpen,
     type TicketPlacement,
+    type TicketPullRequestOpen,
     type TicketSeed,
   } from '../../stores/issuesPane.svelte';
   import { opensTicketPane, ticketPanesOffered } from '../../stores/ticketPanes.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { getProjectLabelText } from '../../stores/projects.svelte';
-  import { acquireTrackerSetup, editTrackerSetup, trackerRegroupsOf, trackerSetupOf } from '../../stores/trackerSetup.svelte';
+  import { acquireTrackerSetup, editTrackerSetup, pokerOn, trackerRegroupsOf, trackerSetupOf } from '../../stores/trackerSetup.svelte';
   import { markGroup } from '../../stores/statusMarkGroup';
   import { projectScopeGrant } from '../../transport/entityScopes';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
@@ -189,9 +190,12 @@
     /** Opens another issue of the connection from this ticket: here, or in
      * a pane of its own. */
     onOpenIssue: (issue: string, seed: TicketSeed, ownPane: boolean) => void;
+    /** Shows a pull request of the ticket's Work in the ticket's place
+     * (`TicketTrail.openPullRequest`). */
+    onOpenPullRequest: (pr: TicketPullRequestOpen) => void;
   }
 
-  let { attachment, seed, board, computerName, project, onProject, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, startWorkAsked, onStartWorkEnded, onBack, onClose, onOwnPane, onOpenIssue }: Props = $props();
+  let { attachment, seed, board, computerName, project, onProject, offline, compact, shown, trail, placement, pane, focusAsked, onFocusTaken, startWorkAsked, onStartWorkEnded, onBack, onClose, onOwnPane, onOpenIssue, onOpenPullRequest }: Props = $props();
   setTicketWriteSurface(() => shown);
 
   // The ticket a person opened takes the focus, so a key or a paste of
@@ -226,9 +230,11 @@
   const CARD_TARGETS = ['status', fieldTarget('assignee'), fieldTarget('priority'), 'points'] as const;
 
   // Undefined until the screen measured itself: until then it lays out
-  // wide whatever its width.
+  // wide whatever its width, without Work, whose mount reads the ticket's
+  // pull requests and which a narrow screen would unmount at once.
   let width = $state<number | undefined>();
-  const narrow = $derived(width !== undefined && width > 0 && width < NARROW_PX);
+  const measured = $derived(width !== undefined);
+  const narrow = $derived(measured && width! > 0 && width! < NARROW_PX);
   let railOpen = $state(false);
   $effect(() => {
     if (!narrow) railOpen = false;
@@ -241,7 +247,7 @@
   $effect(() => {
     if (narrow && startWorkAsked) railOpen = true;
   });
-  const workAsked = $derived(startWorkAsked && width !== undefined);
+  const workAsked = $derived(startWorkAsked && measured);
   function closeDetails(): void {
     railOpen = false;
     if (startWorkAsked) onStartWorkEnded();
@@ -373,21 +379,31 @@
     attach(files);
   }
 
-  // Planning poker, on a Jira site that has it: the store's poker support
+  // The setup of the ticket's project, held below (the project's pins).
+  const setupState = $derived(project ? trackerSetupOf(project) : null);
+  // Planning poker is on unless the project turned it off (Settings >
+  // Issues > Points and credit). Until the setup is read, and while it
+  // cannot be, nothing is asked, so a project that turned it off asks
+  // nothing.
+  const pokerAllowed = $derived(!project || (setupState?.view != null && pokerOn(setupState.view.setup)));
+
+  // Planning poker, on a Jira site that has it, unless the ticket's
+  // project turned it off (`pokerAllowed`): the store's poker support
   // rules decide when it is asked. The ticket asks when it shows its body;
   // a reconnect drops the body and the store's answer, so the body's return
-  // asks again.
+  // asks again. Off, the section and the menu's entries are not there, so
+  // the votes are not followed and the ticket store drops those it held.
   const hasDetail = $derived(!!detail);
   const pokerSupport = $derived(!jira ? null : trackerPokerSupport(attachment.ref.backend, attachment.ref.connection));
   function askPokerSupport(): void {
     askTrackerPokerSupport(attachment.ref.backend, attachment.ref.connection);
   }
   $effect(() => {
-    if (!jira || !hasDetail) return;
+    if (!jira || !hasDetail || !pokerAllowed) return;
     untrack(askPokerSupport);
   });
-  const pokerOffered = $derived(hasDetail && pokerSupport !== null && typeof pokerSupport === 'object' && 'available' in pokerSupport && pokerSupport.available);
-  const pokerSupportFailure = $derived(hasDetail && pokerSupport !== null && typeof pokerSupport === 'object' && 'failed' in pokerSupport ? pokerSupport.failed : null);
+  const pokerOffered = $derived(hasDetail && pokerAllowed && pokerSupport !== null && typeof pokerSupport === 'object' && 'available' in pokerSupport && pokerSupport.available);
+  const pokerSupportFailure = $derived(hasDetail && pokerAllowed && pokerSupport !== null && typeof pokerSupport === 'object' && 'failed' in pokerSupport ? pokerSupport.failed : null);
   const pokerOpen = $derived(ticketSectionOpen(section('poker'), false));
   const pokerPending = $derived(ticketWrite(ctx.key, 'poker')?.pending ?? false);
   // A revealed round's values, which the menu offers as the estimate as
@@ -436,7 +452,6 @@
     if (!p) return;
     return untrack(() => acquireTrackerSetup(p));
   });
-  const setupState = $derived(project ? trackerSetupOf(project) : null);
   const pinsNewer = $derived(setupState?.view?.newer?.includes('ticket_pins') ?? false);
   const NO_PINS: TicketPins = { fields: null, sections: null };
   const pins = $derived(tracker && !pinsNewer ? ticketPinsOf(setupState?.view?.setup, tracker.kind, tracker.site) : NO_PINS);
@@ -730,7 +745,9 @@
       {/if}
     {/if}
   </div>
-  <TicketWork {attachment} {project} {onProject} me={account} startWorkAsked={workAsked} onStartWorkTaken={onStartWorkEnded} />
+  {#if measured}
+    <TicketWork {attachment} {project} {onProject} me={account} startWorkAsked={workAsked} onStartWorkTaken={onStartWorkEnded} {onOpenPullRequest} />
+  {/if}
 {/snippet}
 
 {#snippet content()}

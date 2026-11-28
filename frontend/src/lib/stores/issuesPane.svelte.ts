@@ -27,10 +27,11 @@ import {
   type TrackerBoardRef,
 } from './trackerBoard.svelte';
 import { attachTrackerTicket, trackerTicketKey, type TrackerTicketAttachment, type TrackerTicketRef } from './trackerTicket.svelte';
-import { closeTicketPane, sameTicketRef, setTicketPaneTicket, takeTicketPaneHandoff, ticketPaneRecord } from './ticketPanes.svelte';
+import { closeTicketPane, sameTicketRef, setTicketPanePullRequest, setTicketPaneTicket, takeTicketPaneHandoff, ticketPaneRecord } from './ticketPanes.svelte';
 import { createOpenFocusRequest, type OpenFocusRequest } from '../utils/openFocusRequest.svelte';
 import { holdTicketDrafts } from './trackerTicketWrites.svelte';
 import type { CommentOrder } from './trackerTicketModel';
+import { mondayOf } from './trackerTimeModel';
 import {
   acquireTrackerBoardChoices,
   isBoardChoiceOpenable,
@@ -44,6 +45,7 @@ import {
 import { pageGrantsKnownTracked, scopeGrant } from '../transport/scopes';
 import type { CapturedError } from './errorReports.svelte';
 import type { BoardChoice, CardView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { PRRef } from '../utils/prReference';
 
 /** A card field the Display menu turns on and off. Title always shows. */
 export type CardField = 'type' | 'key' | 'parent' | 'labels' | 'priority' | 'estimate' | 'assignee' | 'days';
@@ -361,6 +363,16 @@ export interface OpenTicket {
   readonly project: string | null;
 }
 
+/** A pull request a ticket's Work row shows in the ticket's place: its
+ * reference, the project of the ticket's computer whose checkout shows it
+ * (`TicketPullRequest.reviewProjectId`), and its link and title for the
+ * bar over the review. */
+export interface TicketPullRequestOpen {
+  readonly pr: PRRef;
+  readonly projectId: string;
+  readonly url: string;
+}
+
 /** A ticket a surface outside the pane asked it to open (a thread's
  * link): its ticket, what to draw until it is read, and the project the
  * ask came from, whose boards are tried first. `unplaced` runs when no
@@ -373,27 +385,45 @@ export interface TicketOpenRequest {
   readonly unplaced: (failure: CapturedError | null) => void;
 }
 
-// The one ticket asked for and not yet taken by a pane; a later ask
-// replaces it.
-let ticketOpenRequest = $state.raw<TicketOpenRequest | null>(null);
+/** The Time screen a surface outside the pane asked for (a thread's
+ * draft card): the week of `day` on a board of the connection, which
+ * `unplaced` says has none, as a ticket's ask does. */
+export interface TimeOpenRequest {
+  readonly time: { readonly backend: string; readonly connection: string; readonly day: string };
+  readonly project: string | null;
+  readonly unplaced: (failure: CapturedError | null) => void;
+}
+
+/** What a surface outside the pane asked it to open. */
+export type PaneOpenRequest = TicketOpenRequest | TimeOpenRequest;
+
+// The one open asked for and not yet taken by a pane, a ticket or a
+// week; a later ask replaces it.
+let openRequest = $state.raw<PaneOpenRequest | null>(null);
 
 /** Asks the Issues pane to open a ticket, which the pane takes when it
  * mounts or at once when it is open. */
 export function requestTicketOpen(request: TicketOpenRequest): void {
-  ticketOpenRequest = request;
+  openRequest = request;
 }
 
-/** The ticket asked for, taken: the next call answers null. Reactive
- * until taken. */
-export function takeTicketOpenRequest(): TicketOpenRequest | null {
-  const request = ticketOpenRequest;
-  if (request) ticketOpenRequest = null;
+/** Asks the Issues pane to show a week on the Time screen, taken as a
+ * ticket's ask is. */
+export function requestTimeOpen(request: TimeOpenRequest): void {
+  openRequest = request;
+}
+
+/** The open asked for, taken: the next call answers null. Reactive until
+ * taken. */
+export function takePaneOpenRequest(): PaneOpenRequest | null {
+  const request = openRequest;
+  if (request) openRequest = null;
   return request;
 }
 
-/** Whether a ticket is asked for and not yet taken; reactive. */
-export function ticketOpenRequested(): boolean {
-  return ticketOpenRequest !== null;
+/** Whether an open is asked for and not yet taken; reactive. */
+export function paneOpenRequested(): boolean {
+  return openRequest !== null;
 }
 
 /**
@@ -498,6 +528,12 @@ export interface BoardSelection {
    * screen's list, or from the ticket open now, which Back then returns
    * to. */
   openTicket(issue: string, seed: TicketSeed, from: 'list' | 'ticket'): void;
+  /** A week asked for from outside the pane (`TimeOpenRequest`), which the
+   * Time screen moves to and then takes (`takeAskedWeek`), so a Time
+   * screen shown again later opens on this week; null while none waits. */
+  readonly askedWeek: { readonly monday: string } | null;
+  /** The Time screen moved to the week asked for. */
+  takeAskedWeek(): void;
   /** Opens a ticket asked for from outside the pane, on the Board or
    * Backlog screen, whichever shows: over the board shown when it is of the ticket's computer and
    * connection, else over the board `boardForTicket` picks once that
@@ -506,7 +542,7 @@ export interface BoardSelection {
    * that either. No such board runs the request's `unplaced`. The ticket
    * already open stays open, and the project the request names becomes
    * its project unless the person picked one (`TicketTrail.project`). */
-  openRequested(request: TicketOpenRequest): void;
+  openRequested(request: PaneOpenRequest): void;
   /** Back: the ticket this one was opened from, else closes it. */
   stepBack(): void;
   destroy(): void;
@@ -540,10 +576,15 @@ export interface TicketTrailState {
   readonly ticket: OpenTicket | null;
   /** Reactive; oldest first. */
   readonly trail: readonly OpenTicket[];
+  /** A `ticket` other than the one shown ends `pullRequest`. */
   set(ticket: OpenTicket, trail: readonly OpenTicket[]): void;
   /** No ticket shown here: the Issues pane shows its list, a ticket pane
    * closes. */
   close(): void;
+  /** The pull request shown in the ticket's place; null for none. Not
+   * saved. Reactive. */
+  readonly pullRequest: TicketPullRequestOpen | null;
+  setPullRequest(pr: TicketPullRequestOpen | null): void;
   readonly focus: OpenFocusRequest<OpenTicket>;
   /** What held the ticket until this trail subscribed it, taken. */
   takeHandoff(): (() => void) | null;
@@ -565,9 +606,20 @@ export interface TicketTrail {
   readonly depth: number;
   /** The ticket shown and those on the trail. Reactive. */
   readonly held: readonly OpenTicket[];
-  /** The pane is on screen now, so the person sees the ticket it shows
-   * (`TicketTrailOptions.shown`). Reactive. */
+  /** The person sees the ticket it shows: the pane is on screen
+   * (`TicketTrailOptions.shown`) and no pull request covers the ticket.
+   * The ticket's subscription votes this. Reactive. */
   readonly shown: boolean;
+  /** The pull request shown in the ticket's place, over the ticket, which
+   * stays mounted under it; null for none (`TicketTrailState.pullRequest`).
+   * It belongs to the open it was opened from: a new open, Back, Close and
+   * any open or show of the ticket itself end it, the ticket pane's own
+   * open from anywhere (`openTicketPane`) included. Reactive. */
+  readonly pullRequest: TicketPullRequestOpen | null;
+  /** A person opens `pr` from the ticket shown's Work. */
+  openPullRequest(pr: TicketPullRequestOpen): void;
+  /** Back from the pull request to the ticket, which asks for the focus. */
+  closePullRequest(): void;
   /** The project of the ticket shown, which its Ask and Start work make
    * their thread in and whose setup holds its Start work defaults: the
    * one the person picked for it, else the one its last opener that named
@@ -617,16 +669,23 @@ export interface TicketTrail {
 export function localTicketTrailState(): TicketTrailState {
   let ticket = $state.raw<OpenTicket | null>(null);
   let trail = $state.raw<readonly OpenTicket[]>([]);
+  let pullRequest = $state.raw<TicketPullRequestOpen | null>(null);
   return {
     get ticket() { return ticket; },
     get trail() { return trail; },
     set(next, nextTrail) {
+      if (next !== ticket) pullRequest = null;
       ticket = next;
       trail = nextTrail;
     },
     close() {
       ticket = null;
       trail = [];
+      pullRequest = null;
+    },
+    get pullRequest() { return pullRequest; },
+    setPullRequest(pr) {
+      pullRequest = pr;
     },
     focus: createOpenFocusRequest<OpenTicket>(),
     takeHandoff: () => null,
@@ -646,6 +705,10 @@ export function ticketPaneTrailState(paneId: string): TicketTrailState {
     },
     close() {
       closeTicketPane(paneId);
+    },
+    get pullRequest() { return ticketPaneRecord(paneId)?.pullRequest ?? null; },
+    setPullRequest(pr) {
+      setTicketPanePullRequest(paneId, pr);
     },
     focus,
     takeHandoff: () => takeTicketPaneHandoff(paneId),
@@ -685,6 +748,10 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
   const project = $derived(!ticket ? null : projectWord?.open === ticket ? projectWord.project : ticket.project ?? defaultProject());
   // The open whose Start work form was asked for, until Work takes it.
   let startAsk = $state.raw<OpenTicket | null>(null);
+  // The state ends the pull request with the ticket it was opened from,
+  // so a new open, Back and Close end it with no write of their own.
+  const pullRequest = $derived(state.pullRequest);
+  const ticketShown = $derived(shown() && pullRequest === null);
 
   const stop = $effect.root(() => {
     $effect(() => {
@@ -696,7 +763,7 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
         if (computer === 'gone') untrack(() => state.takeHandoff()?.());
         return;
       }
-      const attachment = untrack(() => attachTrackerTicket(open.ref, shown()));
+      const attachment = untrack(() => attachTrackerTicket(open.ref, ticketShown));
       view = { open, attachment };
       untrack(() => state.takeHandoff()?.());
       return () => attachment.release();
@@ -704,7 +771,7 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
 
     $effect(() => {
       const held = view?.attachment;
-      const on = shown();
+      const on = ticketShown;
       if (held) untrack(() => held.setShown(on));
     });
   });
@@ -714,7 +781,16 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
     get view() { return view; },
     get computer() { return computer; },
     get depth() { return state.trail.length; },
-    get shown() { return shown(); },
+    get shown() { return ticketShown; },
+    get pullRequest() { return pullRequest; },
+    openPullRequest(pr) {
+      if (state.ticket) state.setPullRequest(pr);
+    },
+    closePullRequest() {
+      const open = state.ticket;
+      state.setPullRequest(null);
+      if (open) state.focus.ask(open);
+    },
     get project() { return project; },
     setProject(next) {
       if (ticket) projectWord = { open: ticket, project: next, picked: true };
@@ -737,6 +813,8 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
     open(ref, seed, from) {
       const current = state.ticket;
       if (current && sameTicketRef(current.ref, ref)) {
+        // The person asked for the ticket: it shows, not its pull request.
+        state.setPullRequest(null);
         state.focus.ask(current);
         return;
       }
@@ -758,6 +836,7 @@ export function createTicketTrail({ state, shown, defaultProject = () => null }:
         state.set(open, []);
         return;
       }
+      state.setPullRequest(null);
       state.set(current, []);
       if (open.project !== null && !(projectWord?.open === current && projectWord.picked)) {
         projectWord = { open: current, project: open.project, picked: false };
@@ -817,9 +896,11 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
   const computer = $derived(board ? trackerComputer(board.backend) : 'waiting');
   const tickets = createTicketTrail({ state: localTicketTrailState(), shown: opts.shown, defaultProject: () => board?.projectId ?? null });
   const ticket = $derived(tickets.ticket);
-  // A ticket asked for from outside the pane, while it waits on its
-  // computer's boards (openRequested).
-  let requested = $state.raw<TicketOpenRequest | null>(null);
+  // A ticket or a week asked for from outside the pane, while it waits on
+  // its computer's boards (openRequested).
+  let requested = $state.raw<PaneOpenRequest | null>(null);
+  // The week asked for last; a new object on each ask.
+  let askedWeek = $state.raw<{ readonly monday: string } | null>(null);
   // The asked-for ticket the board switched to for it opens, in place of
   // the none a board change leaves.
   let arriving: OpenTicket | null = null;
@@ -924,27 +1005,36 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     // when that board is of its computer and connection; otherwise, once
     // that computer's boards are known, the board switches to
     // boardForTicket's and the ticket opens with it (`arriving`, which the
-    // board change installs). The switch from Time is not saved: the next
-    // pane opens on the screen the person picked.
+    // board change installs). A requested week opens the Time screen over
+    // the same board, with the ticket open closed. The switch of screen is
+    // not saved: the next pane opens on the screen the person picked.
     $effect(() => {
       const request = requested;
       if (!request) return;
-      const { ref } = request;
-      const open: OpenTicket = { ref, seed: request.seed, project: request.project };
+      const at = 'time' in request ? request.time : request.ref;
+      const land = (): void => {
+        if ('time' in request) {
+          screen = 'time';
+          tickets.close();
+          askedWeek = { monday: mondayOf(request.time.day) };
+          return;
+        }
+        if (!showsBoard(screen)) screen = 'board';
+      };
       const shown = board;
-      if (shown && shown.backend === ref.backend && shown.connection === ref.connection) {
+      if (shown && shown.backend === at.backend && shown.connection === at.connection) {
         untrack(() => {
           requested = null;
-          if (!showsBoard(screen)) screen = 'board';
-          tickets.show(open);
+          land();
+          if (!('time' in request)) tickets.show({ ref: request.ref, seed: request.seed, project: request.project });
         });
         return;
       }
-      // A computer not connected opens the ticket when it connects, as a
-      // board picked last does.
-      const state = trackerBoardChoicesOf(ref.backend);
+      // A computer not connected opens it when it connects, as a board
+      // picked last does.
+      const state = trackerBoardChoicesOf(at.backend);
       if (state?.kind === 'reading' || state?.kind === 'offline') return;
-      const next = boardForTicket(state?.rows ?? [], ref.backend, ref.connection, request.project);
+      const next = boardForTicket(state?.rows ?? [], at.backend, at.connection, request.project);
       untrack(() => {
         requested = null;
         if (!next) {
@@ -952,8 +1042,8 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
           return;
         }
         unconfirmed = false;
-        if (!showsBoard(screen)) screen = 'board';
-        arriving = open;
+        land();
+        if (!('time' in request)) arriving = { ref: request.ref, seed: request.seed, project: request.project };
         board = next;
       });
     });
@@ -987,6 +1077,8 @@ export function createBoardSelection(opts: BoardSelectionOptions): BoardSelectio
     get boardShown() { return boardShown; },
     get timeShown() { return timeShown; },
     get dashboardsShown() { return dashboardsShown; },
+    get askedWeek() { return askedWeek; },
+    takeAskedWeek() { askedWeek = null; },
     setScreen(next) {
       writeFrontendValue(SCREEN_KEY, next);
       if (next === screen) return;
@@ -1033,5 +1125,5 @@ export function resetIssuesPaneForTest(): void {
   backlogFolds = new Map();
   createChoices.clear();
   commentOrder = 'oldest';
-  ticketOpenRequest = null;
+  openRequest = null;
 }

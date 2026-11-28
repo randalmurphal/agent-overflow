@@ -2,43 +2,26 @@
 // build added answer `method_not_found`, and the thread actions whose result
 // this build added (ArchiveThread, DeleteThread) answer a success with
 // `null`, as that release's dispatcher encodes a method that returns only
-// an error. The list is the generated bindings at the tag against head.
+// an error. The methods it lacks are the generated bindings less the
+// release's methods, frozen from its tag (internal/olderrelease).
 
+import generated from '../../../bindings/agent-overflow/app.ts?raw';
+import released from '../../../../internal/olderrelease/methods.txt?raw';
 import { setBindingMock } from '../mocks/bindings-app';
 import { TransportError } from '../../lib/transport/wsClient';
 import type { Settings } from '../../lib/types/settings';
 import { makeSettings } from './settings';
 
-/** The App methods this build has and v0.0.19 does not. */
-export const METHODS_AFTER_V0_0_19 = [
-  'AgentRosterSeeds', 'CancelThreadWake', 'CheckAgentProfiles', 'CreateAssistant', 'DeleteThreads',
-  'FinishProviderAccountReset',
-  'GetDeleteDependents', 'GetGitBlobImage', 'GetNativeMemoryStatus', 'GetStandingAgent',
-  'GetThreadAgentRows', 'GetThreadRequestStates', 'GetThreadWakeDetail',
-  'GetThreadWorkerSummary', 'ListAssistantPastThreads', 'ListStandingAgentWakes',
-  'ListThreadAgentRows', 'ListThreadPastAgentRows', 'ListThreadRecurringJobs',
-  'ListThreadWakes', 'ListThreadWorkerSummaries', 'MarkThreadsRead', 'ResolveForgeFacts',
-  'SaveGitBlobImage', 'SendExternalThreadMessage', 'SetAssistantProjects', 'SetThreadPlacement',
-  'SpendProviderAccountReset',
-  'StartNextAssistantThread', 'StopThreadAgentIncoming', 'StopThreadAgentRows',
-  'StopThreadAgentRow', 'ThreadToolWatch', 'WakeThreadWakeNow', 'WorkflowPauseItemAndEndSessions',
-  'TrackerConnections', 'AddTrackerConnection', 'RenameTrackerConnection', 'SetTrackerConnectionEnabled',
-  'SetTrackerConnectionTokenExpiry', 'RemoveTrackerConnection', 'VerifyTrackerConnection',
-  'EditTrackerKeyFile', 'OpenTrackerTokenPage', 'TrackerProjects', 'TrackerBoards',
-  'ProjectTrackerBoards', 'SetProjectTrackerBoards', 'TrackerBoardChoices', 'ProjectTrackerSetup', 'ProjectTrackerStatuses', 'SetProjectTrackerSetup',
-  'SubscribeTrackerBoard', 'TrackerBoard', 'TrackerSectionRows', 'TrackerBoardPatch',
-  'SetTrackerSubscriptionVisible', 'RefreshTrackerSubscription', 'ReleaseTrackerSubscription',
-  'SubscribeTrackerTicket', 'TrackerTicket', 'TrackerComments', 'TrackerAssignableUsers', 'TrackerChoices',
-  'EditTrackerIssue', 'MoveTrackerIssue', 'SetTrackerEstimate', 'AddTrackerComment', 'EditTrackerComment',
-  'DeleteTrackerComment', 'TrackerMoves', 'RankTrackerIssues', 'MoveTrackerIssuesToSprint',
-  'CreateTrackerIssue', 'TrackerBoardProjects', 'TrackerIssueTypes', 'TrackerCreateFields', 'CreateTrackerSprint', 'StartTrackerSprint', 'CompleteTrackerSprint',
-  'EditTrackerSprint', 'EditTrackerWorklog', 'DeleteTrackerWorklog', 'TrackerWorklogs', 'RefreshTrackerWorklogs',
-  'MintTrackerAttachmentUploadTicket', 'MintTrackerAttachmentDownloadTicket',
-  'SaveTrackerAttachment', 'TrackerLinkTypes', 'LinkTrackerIssues', 'UnlinkTrackerIssues', 'TrackerPokerSupport',
-  'FollowTrackerPoker', 'TrackerPoker', 'VoteTrackerPoker', 'RevealTrackerPoker', 'ClearTrackerPokerVotes',
-  'SetThreadTicket', 'ClearThreadTicket', 'ThreadsForTicket', 'GetTicketWork', 'StartTicketThread',
-  'TrackerDashboards', 'EvaluateTrackerDashboard', 'TrackerDashboardDrill',
-] as const;
+/** The App methods v0.0.19 has (internal/olderrelease/methods.txt). */
+export const METHODS_AT_V0_0_19: ReadonlySet<string> = new Set(
+  released.split('\n').filter((line) => line !== '' && !line.startsWith('#')),
+);
+
+/** The App methods this build has and v0.0.19 does not, sorted. */
+export const METHODS_AFTER_V0_0_19: readonly string[] = [...generated.matchAll(/^export function (\w+)\(/gm)]
+  .map((match) => match[1])
+  .filter((name) => !METHODS_AT_V0_0_19.has(name))
+  .sort();
 
 /**
  * What v0.0.19 grants a device it gives full access: every scope that

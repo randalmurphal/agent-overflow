@@ -2545,7 +2545,7 @@ export function createReviewPaneState(
       // checkout. Same request shape, two different subjects.
       const result = scope === 'edits'
         ? await GetEditDiffContextLines(editsThreadId(), req)
-        : await GetDiffContextLines(workspace, req);
+        : await withBackendTarget(backend, () => GetDiffContextLines(workspace, req));
       // The diff reloaded underneath the fetch — its line numbering may
       // no longer be the one this slice was addressed against.
       if (seq !== loadSeq || disposed) return;

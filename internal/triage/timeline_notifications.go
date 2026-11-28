@@ -351,6 +351,10 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		addAbandonedBlocksNotificationMeta(meta, raw)
 	case trackerWriteNotificationKind:
 		addTrackerWriteNotificationMeta(meta, raw)
+	case timeDraftNotificationKind:
+		addTimeDraftNotificationMeta(meta, raw)
+	case timePostNotificationKind:
+		addTimePostNotificationMeta(meta, raw)
 	}
 
 	encoded, err := json.Marshal(meta)
@@ -405,6 +409,78 @@ func addTrackerWriteNotificationMeta(meta map[string]any, raw json.RawMessage) {
 	meta["tickets"] = tickets
 	if row.Created {
 		meta["created"] = true
+	}
+}
+
+// timeDraftNotificationKind is the row of a time_draft call that changed
+// the user's time draft, which the app writes once per call: the call
+// that names its entries, their connection and days. The entries are
+// read live by the call (app ThreadTimeEntries); the row is never
+// rewritten.
+const timeDraftNotificationKind = "time_draft"
+
+// maxTimeDraftDays bounds a time draft row's days, persisted from the
+// app's input: a draft covers at most 31 days.
+const maxTimeDraftDays = 31
+
+func addTimeDraftNotificationMeta(meta map[string]any, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var row struct {
+		Call       string   `json:"call"`
+		Connection string   `json:"connection"`
+		Days       []string `json:"days"`
+	}
+	if json.Unmarshal(raw, &row) != nil {
+		return
+	}
+	cut := func(s string) string { return truncateRunes(strings.TrimSpace(s), maxTrackerWriteRunes) }
+	days := make([]string, 0, min(len(row.Days), maxTimeDraftDays))
+	for _, d := range row.Days[:min(len(row.Days), maxTimeDraftDays)] {
+		days = append(days, cut(d))
+	}
+	meta["call"], meta["connection"], meta["days"] = cut(row.Call), cut(row.Connection), days
+}
+
+// timePostNotificationKind is the row of a time_draft post that ran,
+// which the app writes once per call with the count it ended with: the
+// call, the connections it posted on, its days, how many of the entries
+// the approval offered were logged, and how many of those may have been.
+// It is never rewritten.
+const timePostNotificationKind = "time_post"
+
+// maxTimePostConnections bounds a time post row's connections, persisted
+// from the app's input: one per Jira connection on.
+const maxTimePostConnections = 20
+
+func addTimePostNotificationMeta(meta map[string]any, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var row struct {
+		Call        string   `json:"call"`
+		Connections []string `json:"connections"`
+		Days        []string `json:"days"`
+		Posted      int      `json:"posted"`
+		Of          int      `json:"of"`
+		Uncertain   int      `json:"uncertain"`
+	}
+	if json.Unmarshal(raw, &row) != nil {
+		return
+	}
+	cut := func(s string) string { return truncateRunes(strings.TrimSpace(s), maxTrackerWriteRunes) }
+	list := func(in []string, most int) []string {
+		out := make([]string, 0, min(len(in), most))
+		for _, v := range in[:min(len(in), most)] {
+			out = append(out, cut(v))
+		}
+		return out
+	}
+	meta["call"], meta["connections"], meta["days"] = cut(row.Call), list(row.Connections, maxTimePostConnections), list(row.Days, maxTimeDraftDays)
+	meta["posted"], meta["of"] = max(row.Posted, 0), max(row.Of, 0)
+	if row.Uncertain > 0 {
+		meta["uncertain"] = row.Uncertain
 	}
 }
 

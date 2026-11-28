@@ -135,7 +135,9 @@ type FailureView struct {
 // its sections (All its rows) at its TotalsRevision, its sync state, the
 // sections the Board screen shows (Screen) and the Backlog screen shows
 // (Plan), the pace of its last finished sprints (Pace, nil for a board
-// that plans none or has finished none), and the first page of each
+// that plans none or has finished none), the unit the project counts its
+// work in (Counts: the estimate's unit, or none when the project counts
+// tickets, Estimates; a card's own estimate keeps Estimate's), and the first page of each
 // section read, at the board's Lifetime and Revision (which a patch moves
 // forward, BoardPatch). Groups is the version of the status groups the
 // project gives the board's site (StatusGroups), which the sections and
@@ -149,7 +151,9 @@ type FailureView struct {
 // of no one project. IssueURL is the address of a card of the board less
 // its key, which completes it escaped as a path segment
 // (jiraprovider.IssueURLPrefix); empty on a tracker whose cards carry
-// their own (CardView.URL).
+// their own (CardView.URL). Pins is the widgets the project pins to the
+// board's summary row, by widget ID in the row's order (BoardTiles), when
+// a project's read fills it (boardViewOf); none when it pins none.
 type BoardView struct {
 	ID             string            `json:"id"`
 	Lifetime       int64             `json:"lifetime"`
@@ -161,6 +165,7 @@ type BoardView struct {
 	Project        string            `json:"project,omitempty"`
 	PlansSprints   bool              `json:"plans_sprints"`
 	Estimate       EstimateView      `json:"estimate"`
+	Counts         string            `json:"counts"`
 	Columns        []ColumnView      `json:"columns"`
 	Sprints        []SprintView      `json:"sprints"`
 	All            SectionTotal      `json:"all"`
@@ -171,33 +176,70 @@ type BoardView struct {
 	Pace           *PaceView         `json:"pace,omitempty"`
 	Sections       []SectionPage     `json:"sections"`
 	IssueURL       string            `json:"issue_url,omitempty"`
+	Pins           []string          `json:"pins,omitempty"`
 }
 
 // PaceView is what a board's last finished sprints (at most
 // store.MirrorPaceSprints, one with no member on the board as zero)
 // finished on average: how many sprints it averages, the tickets whose
 // status counted as done when their sprint was completed, and the sum of
-// their estimates as the board holds them now. No credit rule is applied.
-// It is part of the section totals (BoardTotals), read with them.
+// their estimates as the board holds them now. While the project counts
+// credit, Rows and Estimate add each sprint's review and support credit
+// (in tickets and in the estimate), and Credit says what each part adds
+// and how many tickets' credit is not counted. It is part of the section
+// totals (BoardTotals), read with them.
 type PaceView struct {
-	Sprints  int     `json:"sprints"`
+	Sprints  int         `json:"sprints"`
+	Rows     float64     `json:"rows"`
+	Estimate float64     `json:"estimate"`
+	Credit   *PaceCredit `json:"credit,omitempty"`
+}
+
+// PaceCredit is a pace's parts while its project counts credit, each an
+// average over the pace's sprints in tickets (Rows) and in the estimate
+// (Estimate): the finished tickets, their review credit and the support
+// credit; and Unread, the tickets of those sprints whose review or
+// support credit is not counted because who worked on them is not read.
+type PaceCredit struct {
+	Finished PaceAmount `json:"finished"`
+	Review   PaceAmount `json:"review"`
+	Support  PaceAmount `json:"support"`
+	Unread   int        `json:"unread"`
+}
+
+// PaceAmount is a part of a pace in tickets and in the estimate.
+type PaceAmount struct {
 	Rows     float64 `json:"rows"`
 	Estimate float64 `json:"estimate"`
 }
 
-// paceOf is the average of finished, nil for none.
-func paceOf(finished []store.MirrorSprintFinished) *PaceView {
+// paceOf is the average of finished, nil for none; with credit, the
+// project's credit is part of it.
+func paceOf(finished []store.MirrorSprintFinished, credit bool) *PaceView {
 	if len(finished) == 0 {
 		return nil
 	}
-	var p PaceView
+	var c PaceCredit
 	for _, f := range finished {
-		p.Rows += float64(f.Done)
-		p.Estimate += f.Estimate
+		c.Finished.Rows += float64(f.Done)
+		c.Finished.Estimate += f.Estimate
+		c.Review.Rows += f.ReviewShares
+		c.Review.Estimate += f.Review
+		c.Support.Rows += f.SupportShares
+		c.Support.Estimate += f.Support
+		c.Unread += f.Unread
 	}
-	p.Sprints = len(finished)
-	p.Rows /= float64(p.Sprints)
-	p.Estimate /= float64(p.Sprints)
+	n := float64(len(finished))
+	for _, a := range []*PaceAmount{&c.Finished, &c.Review, &c.Support} {
+		a.Rows /= n
+		a.Estimate /= n
+	}
+	p := PaceView{Sprints: len(finished), Rows: c.Finished.Rows, Estimate: c.Finished.Estimate}
+	if credit {
+		p.Rows += c.Review.Rows + c.Support.Rows
+		p.Estimate += c.Review.Estimate + c.Support.Estimate
+		p.Credit = &c
+	}
 	return &p
 }
 
@@ -323,7 +365,7 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 			pages[i].Rows[j].Card, views = views[0], views[1:]
 		}
 	}
-	v := boardViewOf(snap.Structure, snap.Counts, names)
+	v := boardViewOf(snap.Structure, snap.Counts, names, groups)
 	v.Lifetime, v.Revision, v.TotalsRevision = snap.Structure.Lifetime, snap.Counts.Revision, snap.Counts.TotalsRevision
 	v.Groups, v.Regrouped = groups.version, groups.statuses
 	sync, _, err := s.store.GetMirrorSync(root, string(scope.Board), s.steady().UnixMilli())
@@ -331,7 +373,7 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)
 	}
 	v.Sync = syncViewOf(sync.MirrorSyncOutcome)
-	v.Screen, v.Plan, v.Pace = screen, plan, paceOf(snap.Counts.Pace)
+	v.Screen, v.Plan, v.Pace = screen, plan, paceOf(snap.Counts.Pace, groups.credit)
 	v.Sections = pages
 	row, err := s.viewRow(scope.Connection)
 	if err != nil {
@@ -342,12 +384,14 @@ func (s *Service) Board(scope Scope, groups StatusGroups, sections []Section) (B
 }
 
 // boardViewOf is the board view of m with the totals counts, without its
-// sync state and sections; names names the columns' statuses.
-func boardViewOf(m store.MirrorStructure, counts store.MirrorSectionCounts, names catalogNames) BoardView {
+// sync state and sections; names names the columns' statuses, and groups
+// is how the project counts the board.
+func boardViewOf(m store.MirrorStructure, counts store.MirrorSectionCounts, names catalogNames, groups StatusGroups) BoardView {
 	st := structureOf(m, tracker.Catalog{})
 	v := BoardView{
 		ID: string(st.Board.ID), Name: st.Board.Name, Project: string(st.Board.Project), PlansSprints: st.Board.Sprints,
-		Estimate: EstimateView{Unit: nameOf(unitNames[:], st.Estimate.Unit)}, All: totalOf(counts.All), Backlog: totalOf(counts.Backlog),
+		Estimate: EstimateView{Unit: nameOf(unitNames[:], st.Estimate.Unit)}, Counts: nameOf(unitNames[:], groups.unit(st.Estimate.Unit)),
+		All: totalOf(counts.All), Backlog: totalOf(counts.Backlog),
 		Columns: []ColumnView{}, Sprints: []SprintView{}, Sections: []SectionPage{},
 	}
 	for _, ch := range st.Estimate.Choices {
@@ -428,7 +472,7 @@ func sectionOf(section Section, page store.MirrorSectionPage, groups string) (Se
 			out.Stale = append(out.Stale, m.Card.IssueID)
 		}
 		cards[i] = shownCard{card: row.Card, since: m.Card.StatusSince}
-		out.Rows[i] = RowView{Order: string(row.Order), Estimate: row.Estimate}
+		out.Rows[i] = RowView{Order: string(row.Order), Estimate: row.Estimate, Support: m.Support}
 	}
 	if page.More {
 		out.Next = &SectionCursor{Order: page.Next.OrderKey, Issue: page.Next.IssueID, Lifetime: page.Next.Lifetime, Revision: page.Next.Revision,

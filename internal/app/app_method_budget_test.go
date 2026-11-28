@@ -66,6 +66,9 @@ var methodServerBounds = map[string]time.Duration{
 	// The ticket's read, bounded by the default budget, then the
 	// worktree's add.
 	"StartTicketThread": hooked + 2*transport.DefaultMethodBudget,
+	// The tickets' one read, bounded by the default budget, then the
+	// thread, its files and its draft.
+	"StartTicketsThread": 2 * transport.DefaultMethodBudget,
 	// The primary provider, then the fallback, after the diff reads.
 	"GenerateCommitMessage": 2*commitmsg.Timeout + transport.DefaultMethodBudget,
 	"FinishDictation":       dictation.TranscribeBudget,
@@ -90,6 +93,7 @@ var methodServerBounds = map[string]time.Duration{
 	"FetchForgeAttachment":    gitops.ForgeAttachmentTimeout + transport.DefaultMethodBudget,
 	"SaveForgeAttachment":     gitops.ForgeAttachmentTimeout + transport.DefaultMethodBudget,
 	// withinMethodBudget.
+	"SearchTicketWork":         transport.MethodBudget("SearchTicketWork"),
 	"SaveCIArtifacts":          transport.MethodBudget("SaveCIArtifacts"),
 	"SavePRCIJobLog":           transport.MethodBudget("SavePRCIJobLog"),
 	"AgentRemoteFetchArtifact": transport.MethodBudget("AgentRemoteFetchArtifact"),
@@ -127,6 +131,7 @@ var methodServerBounds = map[string]time.Duration{
 	"EditTrackerSprint":         transport.MethodBudget("EditTrackerSprint"),
 	"EditTrackerWorklog":        transport.MethodBudget("EditTrackerWorklog"),
 	"DeleteTrackerWorklog":      transport.MethodBudget("DeleteTrackerWorklog"),
+	"PostTrackerTimeEntries":    transport.MethodBudget("PostTrackerTimeEntries"),
 	"VoteTrackerPoker":          transport.MethodBudget("VoteTrackerPoker"),
 	"RevealTrackerPoker":        transport.MethodBudget("RevealTrackerPoker"),
 	"ClearTrackerPokerVotes":    transport.MethodBudget("ClearTrackerPokerVotes"),

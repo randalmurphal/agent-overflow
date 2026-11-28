@@ -1,10 +1,13 @@
 package trackerapp
 
 import (
+	"cmp"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
+	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -80,12 +83,43 @@ type cardBlob struct {
 	URL      string       `json:"url,omitempty"`
 }
 
+// cardShape is where cardBlob holds what a dashboard's copy of a board
+// reads from it (store.MirrorCardShape): each member named by the json
+// tag of its field of cardBlob or choiceBlob.
+var cardShape = store.MirrorCardShape{
+	Version:       cardBlobVersion,
+	VersionMember: jsonMember[cardBlob]("V"),
+	Type:          jsonMember[cardBlob]("TypeName"),
+	Priority:      jsonMember[cardBlob]("Priority"),
+	Labels:        jsonMember[cardBlob]("Labels"),
+	LabelID:       jsonMember[choiceBlob]("ID"),
+	LabelName:     jsonMember[choiceBlob]("Name"),
+}
+
+// jsonMember is the JSON member that field of T encodes to, as its json
+// tag names it. It panics when T has no such field or the tag no name,
+// which every test of this package runs into at its start.
+func jsonMember[T any](field string) string {
+	f, ok := reflect.TypeFor[T]().FieldByName(field)
+	name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+	if !ok || name == "" || name == "-" {
+		panic(fmt.Sprintf("trackerapp: %v has no field %s with a json member name", reflect.TypeFor[T](), field))
+	}
+	return name
+}
+
 // mirrorCard is c as the store holds it. Its sprints are sorted, as the
 // store reads them back.
 func mirrorCard(c tracker.Card) (store.MirrorCard, error) {
 	blob := cardBlob{V: cardBlobVersion, TypeName: c.Type.Name, Priority: c.Priority.Name, URL: c.URL}
+	var labels []string
 	for _, l := range c.Labels {
 		blob.Labels = append(blob.Labels, choiceBlob(l))
+		// A label is named by its name, else its ID, as the export names
+		// it (store MirrorExportSchema's labels).
+		if name := cmp.Or(l.Name, l.ID); name != "" {
+			labels = append(labels, name)
+		}
 	}
 	data, err := encodeBlob("card", blob)
 	if err != nil {
@@ -99,8 +133,17 @@ func mirrorCard(c tracker.Card) (store.MirrorCard, error) {
 		StatusID: string(c.Status), AssigneeID: string(c.Assignee),
 		PriorityID: c.Priority.ID, ParentID: string(c.Parent),
 		CreatedAt: millis(c.Created), UpdatedAt: millis(c.Updated), ResolvedAt: millis(c.Resolved),
-		Sprints: sprints, Data: data,
+		Sprints: sprints, Data: data, Labels: labels, ParentName: mirrorParentName(c),
 	}, nil
+}
+
+// mirrorParentName is the name of c's parent that c's read gave, as the
+// store holds it; nil when it gave none.
+func mirrorParentName(c tracker.Card) *store.MirrorParentName {
+	if c.Parent == "" || c.ParentName == nil {
+		return nil
+	}
+	return &store.MirrorParentName{Key: c.ParentName.Key, Title: c.ParentName.Title, TypeLevel: c.ParentName.Level}
 }
 
 // cardOf is the card m holds. ok is false when its blob is a miss: the

@@ -131,14 +131,7 @@ Other:
   ([staff reply](https://community.developer.atlassian.com/t/rest-graphql-api-for-issue-pull-requests/56965)).
   Reviewer and merge data comes from this app's forge integration, matched
   by ticket key. Remote issue links can be read and written with a token.
-  Measured: the web UI's own endpoints answer a classic token.
-  `GET /rest/dev-status/latest/issue/summary?issueId=` returns counts per
-  instance type, and
-  `.../issue/detail?issueId=&applicationType=<instance type>&dataType=pullrequest`
-  or `branch` returns pull requests (author, reviewers with approval,
-  source and destination branch, status, URL, last update) and branches
-  (last commit, repository). They are undocumented and can change without
-  notice.
+
 - A forge can be searched for a ticket key. GitLab's merge request list
   takes `search` with `in=title,description`, and `source_branch`
   ([merge requests API](https://docs.gitlab.com/17.9/api/merge_requests)).
@@ -344,6 +337,14 @@ Other:
   (of the issue type, priority, status, status category, assignee, parent
   and project) and the project's `avatarUrls`. The rank and every other
   value were equal.
+- Measured 2026-11-26, read-only, on three issues with a parent.
+  `POST /rest/api/3/search/jql` and `POST /issue/bulkfetch`, asked for
+  `parent`, both name the parent with `id`, `key`, `fields.summary`,
+  `fields.status` (`id`, `name`, `description`, `statusCategory`),
+  `fields.priority` (`id`, `name`) and `fields.issuetype` (`id`, `name`,
+  `description`, `avatarId`, `hierarchyLevel`). The three parents had
+  `hierarchyLevel` 1. A board's issue list answers as `bulkfetch` does
+  (above); a single issue read was not probed.
 - Measured the same day, on who an answer was made for. Every answer to
   a request with a valid token carried `X-AAccountId`, equal to
   `myself.accountId`: a search, a board configuration, a board issue list
@@ -361,6 +362,11 @@ Other:
   `updated`. A board configuration's `location.id` is a string. An
   embedded changelog with fewer than 100 entries reports `maxResults`
   equal to the number embedded (20 of 20).
+- <a id="jira-open-sprints"></a>Measured on 2026-11-26, counts only,
+  through `search/approximate-count`. `sprint in openSprints()` and
+  `sprint in futureSprints()` each matched issues, and both together
+  matched none. So `openSprints()` holds started sprints only, not future
+  ones, and `sprint in openSprints()` alone is the active sprint.
 - Mentions of the user are found with `comment ~ currentUser()`
   ([JRACLOUD-27594](https://jira.atlassian.com/browse/JRACLOUD-27594)).
   Neither spec has a notification inbox endpoint.
@@ -536,6 +542,10 @@ Source for schema facts: the
   10 and 50. Without the catalog, `issues(first: 10)` with the team's ID
   and name, the assignee's and the state's IDs cost 4, and with only
   issue IDs 2.
+- Not measured: the cost of a parent's `identifier` and `title` beside its
+  `id` in an issue page or search. By the fitted cost model
+  (`internal/harness/trackerfake/linear_cost.go`) scalars on an object already
+  selected cost no points.
 - Measured the same day with throwaway issues. A walk ordered by creation
   pages by cursor safely: with six open issues read two at a time, the
   continuation was right after the cursor's issue was completed (leaving
@@ -614,6 +624,15 @@ Source for schema facts: the
   after it. So a nested history entity is still answered for a trashed
   issue; other kinds (an archived label, cycle, project or team, a
   deactivated user) were not measured.
+- <a id="linear-search-filter"></a>Measured on 2026-11-26 with two
+  throwaway issues sharing one word, one assigned to the key's user.
+  `searchIssues(term:, filter:)` accepted `assignee: {isMe: {eq: true}}`,
+  `assignee: {null: true}`, `state: {type: {nin: [...]}}`,
+  `state: {type: {in: [...]}}` and `cycle: {isActive: {eq: true}}` with no
+  error, and returned the found issue only when it matched the filter. The
+  search with no filter returned only one of the two issues after two
+  minutes of polling, in both runs, so a fresh issue is not always found
+  by text.
 
 ## Tempo
 
@@ -629,6 +648,13 @@ API v4.
   `api.us.tempo.io`); the wrong one returns an authorization error.
 - The spec lists `200` for `POST /4/worklogs` and `PUT /4/worklogs/{id}`
   and `204` for `DELETE /4/worklogs/{id}`.
+- `POST /4/worklogs/search` takes `WorklogSearchInput` (`issueIds`,
+  `authorIds`, `projectIds`, `from`, `to`, `updatedFrom`, `orderBy`, none
+  required) and `offset` and `limit` (default 50, no maximum stated), and
+  answers `PageableWorklog`, ordered by start and ID when no order is
+  given. A worklog's `startDateTimeUtc` is not required. Not measured:
+  whether one person's token sees other people's worklogs there, and the
+  largest page it answers.
 - Worklogs take the numeric issue ID, not the key, and identify the author
   by Atlassian account ID
   ([v4 comparison](https://help.tempo.io/planner/latest/tempo-api-version-4-0-vs-version-3-0-a-comparison)).
@@ -771,7 +797,8 @@ encodes BLOBs by SQL type without the `iif`: it wrote `x'00ff'` as
 
 ### The built-in dashboard
 
-Measured on this branch with modernc.org/sqlite v1.63.0 under WSL2 on a
+Measured before the sprint history widgets, whose cost is in [Sprint
+history](#sprint-history), with modernc.org/sqlite v1.63.0 under WSL2 on a
 developer machine, each figure the median and spread of 5 runs. The
 board is the store's scale fixture: one board of n issues with 10
 changes each (20,000 at 2,000 issues), 100 sprints and 20 people
@@ -784,7 +811,7 @@ changes each (20,000 at 2,000 issues), 100 sprints and 20 people
 | of which the store's fill | 30 ms (27 to 44) | 249 ms (244 to 277) |
 | Evaluation, this sprint | 38 ms (36 to 56) | 335 ms (309 to 370) |
 | Drill of the stuck tickets, first page of 100 rows | 23 ms (22 to 25) | 146 ms (142 to 158) |
-| Answer as JSON | 12,516 bytes | 12,518 bytes |
+| Answer as JSON (values only; the layout is the list's, measured after the list took it) | 2,147 bytes | 2,149 bytes |
 | Drill page as JSON | 17,924 bytes | 17,928 bytes |
 | Go allocations of one evaluation, last 5 sprints | 2.8 MB in 37,639 | 30.2 MB in 351,076 |
 
@@ -814,6 +841,39 @@ replaced), and what each closed sprint finished, the pace's
 done-at-completion rule the Board's sprint sections share. A Stuck drill
 copies the tickets and their statuses, so the tickets fill is most of
 its 146 ms.
+
+A ticket's type and priority names and its labels are in its card blob,
+which the copy decodes only for a query that reads them
+(`TestMirrorExportFillsAtScale` in `internal/store`, the same fixture
+with a version 2 blob of about 160 bytes and two labels a ticket; the
+best of 5 runs, two runs each, and the VM steps, which do not vary):
+
+| Tickets fill | 2,000 issues | 20,000 issues |
+|---|---|---|
+| Before the columns existed | 621,287 steps; 14.6 and 15.0 ms | 6,208,487 steps; 195.8 and 126.9 ms |
+| A query that reads neither column | 629,287 steps; 18.2 and 13.8 ms | 6,288,487 steps; 155.7 and 164.2 ms |
+| A query that reads `type` alone | 647,292 steps; 24.1 and 21.1 ms | 6,468,492 steps; 219.3 and 176.8 ms |
+| A query that reads `type` and `priority` | 665,295 steps; 17.5 and 19.9 ms | 6,648,495 steps; 186.7 and 243.9 ms |
+| `labels`, filled beside it when a query reads it | 134,026 steps; 7.6 and 6.7 ms | 1,340,026 steps; 77.6 and 67.6 ms |
+
+A query that reads neither column decodes no blob, whatever it
+multiplies or counts with `*`: the plan of the statement the count runs
+reads no `Column` of it, and the fill selects NULL for the rest, 4 VM
+steps a ticket. Each column read costs 9 steps a ticket,
+which is why the fill does not decode them for every count. The times
+of these runs spread more than the columns cost.
+
+A join SQLite drops from the program copies nothing: `SELECT DISTINCT
+t.id AS ticket FROM tickets t LEFT JOIN changes c ON c.ticket = t.id`
+copies what a query of tickets alone does. A read the program holds and
+never runs is still copied: the same join of changes grouped by ticket
+first keeps its materialization, and copies the history. Copying the history it does
+not read would add 24,160,468 VM steps at 20,000 issues (the changes,
+the statuses and the people they name; 202, 64 and 110 ms in one run),
+and labels 1,340,026. Reading a metric's plan costs 48 to 91 µs for
+each built-in metric and 175 µs for the empty session's layout (best of
+20, on the developer machine), once per kind for the built-ins and once
+per count for a project's own widgets.
 
 The fill is still most of an evaluation and grows with the board; the
 metrics and the reduction take about 10 ms at 2,000 issues and 55 ms at
@@ -867,6 +927,273 @@ temporary files at 62.5 to 65.0 MB while it ran) left nothing once
 closed: 3.2 MB in use, 2 goroutines and 8 open files before it opened,
 8.7 MB and 3 goroutines with its four queries stopped, and 3.3 MB, 2
 goroutines and the same 8 files after it closed.
+
+### Support tickets in the totals
+
+A project's support rule ([Project setup](../architecture/tracker-backend.md#project-setup))
+reads a row's type and labels only for a row with no estimate, so its
+cost shows on a board whose rows have none. Measured with
+`TestMirrorAtScale` in `internal/store` at 20,000 issues (15,000 rows on
+board 0 at that step) and five boards of 4,000, the median of five runs,
+with the labels read from the card's data (the build before v176) and
+from the `labels` column v176 adds, on the development machine of [Costs
+at scale](../architecture/tracker-backend.md#costs-at-scale), its load
+average between 15 and 23 for the column's run. The last column is the
+build that also gives the sprint totals only the support rows in a
+sprint, reads no labels in a card read, and has the trigger that
+advances a board's `totals_revision` on an issue's `type_id` or `labels`
+(`trg_tracker_cache_totals_support`), with the issue-update index of
+v175, one run at a load average between 8 and 22:
+
+| No row estimated | Card's data | `labels` column | With the trigger |
+|---|---|---|---|
+| Section counts, no rule | 32.2 ms | 31.2 ms | 37.0 ms |
+| Section counts, 2 labels no card has | 77.7 ms | 45.7 ms | 44.8 ms |
+| Section counts, a label every card has | 97.7 ms | 51.0 ms | 60.2 ms |
+| Section counts, a type no card has | 33.9 ms | 43.0 ms | 54.0 ms |
+| Section counts, the board | 39.6 ms | 40.1 ms | 55.9 ms |
+| Board view of 3 sections, no rule | 34.6 ms | 35.6 ms | 39.5 ms |
+| Board view of 3 sections, 2 labels no card has | 92.0 ms | 49.4 ms | 48.9 ms |
+| Board view of 3 sections, a label every card has | 98.3 ms | 56.4 ms | 69.2 ms |
+| Five boards, section counts, no rule | 8.7 ms | 5.8 ms | 6.6 ms |
+| Five boards, section counts, 2 labels no card has | 25.1 ms | 8.9 ms | 8.3 ms |
+| Five boards, section counts, a label every card has | 19.8 ms | 16.2 ms | 11.8 ms |
+
+With every row estimated, a rule costs nothing: the section counts took
+31.0 to 33.3 ms on the card's data and 31.0 to 37.0 ms on the column,
+with and without a rule, and 32.3 to 34.8 ms with the trigger. v176
+fills the column of 20,000 stored cards in 139 ms
+(`TestTrackerLabelsMigration`).
+
+The trigger is a test of two columns on each card a write updates. A
+delta tick of 100 changed cards at 20,000 issues took 14.4 ms (11.1 to
+19.1 ms over five runs) with it and 10.6 ms (9.2 to 11.8 ms over four)
+without it, the runs interleaved, at a load average between 8 and 22.
+
+### Sprint history
+
+The Overview of a sprint board copies `status_intervals` and
+`sprint_intervals` for Stuck, the burndown and the sprint table.
+Measured on the store's scale fixture with real times (one board, 10
+changes an issue, distinct dated sprints, the active one running now)
+under WSL2 on a developer machine, modernc.org/sqlite v1.63.0, in two
+cases:
+
+- **All changed:** every issue changed inside the 180-day window and is
+  in one of its sprints, so every history is read. This is the upper
+  bound.
+- **10% changed:** 10% of the issues changed inside the window, the
+  rest last changed before it. The share of a real board's issues
+  changed in 180 days was not measured; 10% is an assumption.
+
+Each case draws a burndown and counts a sprint table cell
+(`TestDashboardAtScale` fails otherwise). "Before" is the branch before
+the fix round that made every interval evidence of the card's version
+(16a4f70e3), on the same fixture.
+
+The fills (`TestMirrorExportFillsAtScale`, reading the history from the
+file; VM steps do not vary between runs, times are the best of 5):
+
+| Fill | Rows | VM steps before | VM steps after | Time before | Time after |
+|---|---|---|---|---|---|
+| status_intervals, 2,000, 10% changed | 3,000 | 166,702 | 276,390 | 3.3 ms | 4.6 ms |
+| sprint_intervals, 2,000, 10% changed | 400 | 123,418 | 130,818 | 2.2 ms | 2.2 ms |
+| status_intervals, 2,000, all changed | 12,000 | 854,302 | 1,230,390 | 19.3 ms | 22.9 ms |
+| sprint_intervals, 2,000, all changed | 4,000 | 1,133,218 | 1,207,218 | 22.2 ms | 23.7 ms |
+| status_intervals, 20,000, 10% changed | 30,000 | 1,664,302 | 2,760,390 | 45.4 ms | 63.2 ms |
+| sprint_intervals, 20,000, 10% changed | 4,000 | 1,223,218 | 1,297,218 | 29.6 ms | 30.2 ms |
+| status_intervals, 20,000, all changed | 120,000 | 8,540,302 | 12,300,390 | 241 ms | 298 ms |
+| sprint_intervals, 20,000, all changed | 40,000 | 11,321,218 | 12,061,218 | 283 ms | 289 ms |
+
+When the same copy holds `changes`, each fill reads them from it instead
+of the file (at 20,000 with 10% changed: 2,520,386 steps and 60.6 ms,
+and 1,137,215 steps and 24.2 ms). The status fill takes about 55 steps a
+ticket more than before at 10% changed. Of those, each row's `open` (the
+store's done rule for its status) is about 15 and the probe of each
+ticket whose status time is not known, for a status change up to its
+card, about 17, each measured by leaving it out at 2,000; the rest, not
+measured apart, is `began` and the cut at the card's version.
+
+An evaluation of the last 5 sprints (`TestDashboardAtScale`, median and
+spread of 5 runs, before and after run back to back):
+
+| Case | Before | After | Answer as JSON | Allocated |
+|---|---|---|---|---|
+| 2,000, 10% changed | 55.5 ms (42.5 to 65.1) | 52.4 ms (51.1 to 55.8) | 3,823 bytes | 1.7 MB |
+| 2,000, all changed | 126 ms (124 to 165) | 143 ms (137 to 146) | 3,847 bytes | 5.8 MB |
+| 20,000, 10% changed | 393 ms (380 to 405) | 452 ms (437 to 467) | 3,847 bytes | 14.3 MB |
+| 20,000, all changed | 1,235 and 1,288 ms | 1,355 and 1,309 ms | 3,867 bytes | 67.8 MB |
+
+The answer and the allocation are the same before and after. At 20,000
+all changed the two rows are two pairs of runs, before then after, each
+the median of 5; the copy as the Overview asks took 756 and 789 ms
+before and 816 and 799 ms after. An evaluation of this sprint answers
+2,309 to 2,313 bytes. A drill of the stuck tickets takes 76 ms at 2,000
+all changed and 733 ms at 20,000 (the fixture has no stuck ticket, so
+this is its copy).
+
+A state's rows are placed only where a widget reads them: a number at
+now, where the range begins and at each period's end, a list now, a
+chart at each period's end, each period's rows picked when the period is
+read. On this fixture that saves nothing, since its states hold few
+rows. On a board of Stuck's worst shape
+(`TestStuckWithPastStaysAtScale` in `internal/trackerdash`, a kanban
+board whose tickets are each stuck now and stuck twice before in the
+range before, the weeks Overview, three runs each):
+
+| Tickets | Before | After |
+|---|---|---|
+| 6,000 | 6,000 stuck; 145 to 167 ms, 69.2 MB | 6,000 stuck; 165 to 222 ms, 48.6 MB |
+| 10,001 | refused at the 20,000-row limit; 136 to 138 ms, 74.7 MB | 10,001 stuck; 245 to 291 ms, 103.5 MB |
+
+Before, the past stays' rows filled the limit, which counted every row
+the query returned; after, only the rows that hold at an instant a
+widget reads count.
+
+`idx_tracker_cache_issues_updated` (v175), which the fills seek issues
+updated in the window by, took 7.2, 6.4 and 6.6 ms to build on a mirror
+of 20,050 issues. A card write of 100 cards took 5.40, 5.24 and 6.00 ms
+with it and 5.64, 5.22 and 5.53 ms without it, no difference beyond the
+runs' spread. On the release upgrade corpus (a v0.0.16 database at scale
+0.1, 43,083 items) the mirror is empty when v175 runs, because v167
+empties it: migrating from schema 139 and booting took 1,325 ms through
+v175 and 1,158 ms through v174, one run each.
+
+A walk of the issues updated since an instant
+(`store.mirrorUpdatedSinceSQL`) started at the index's own bound, an
+update time above zero, until the bound was written first, so it visited
+every issue of the root. With it fixed, each intervals fill at 10%
+changed takes 9,648 fewer VM steps at 2,000 and 94,248 fewer at 20,000
+than the table's after column (status_intervals 266,742 and 2,666,142,
+sprint_intervals 121,170 and 1,202,970).
+
+### Credit
+
+`TestMirrorAtScale` measures credit on its fixture with 26 weekly
+sprints inside a 182-day window (25 closed and the active one), every
+member done at its completion and changed inside its sprint, and 520
+tickets with evidence (two comments and two worklogs by three people
+each), every member's history read for its card; at 20,000 the other
+members are read with no evidence. The rules
+are 10% for 2 of commented and logged time, and 4 hours a point. With
+no row estimated, every row is a support ticket, which credit counts by
+its time alone. Credit off is a project that counts none, so it names
+no support tickets either. Same machine and SQLite as above; times are
+the median of 5 runs, VM steps exact. The test fails when the totals
+with credit on take more than twice the VM steps of credit off, or the
+pace more than the steps below.
+
+"Forge acts" is the same board with one repository the connection's
+credit reads, read whole: one pull request for each issue of the board,
+named by the issue's key, each with two approvals and two comments by
+four accounts, three matched to the people of the tracker's evidence,
+one of those also paired by a person, and one to nobody, under a rule
+that counts approvals too. Without it the
+connection's credit reads no repository.
+
+The export's `credit` fill:
+
+| Board | Rows | Bytes | VM steps | Best time |
+|---|---|---|---|---|
+| 2,000, estimated | 520 finished, 1,560 review | 172,032 | 751,515 | 11.9 ms |
+| 2,000, estimated, forge acts | 520 finished, 2,080 review | 311,296 | 1,077,651 | 16.5 ms |
+| 2,000, none estimated | 1,040 support | 73,728 | 392,689 | 7.8 ms |
+| 20,000, estimated | 5,200 finished, 1,560 review | 372,736 | 3,401,475 | 93.7 ms |
+| 20,000, estimated, forge acts | 5,200 finished, 20,800 review | 2,625,536 | 8,660,331 | 165.7 ms |
+| 20,000, none estimated | 1,040 support | 73,728 | 1,662,049 | 55.3 ms |
+| 20,000, a board without sprints, every done ticket | 8,000 finished, 660 review | 397,312 | 4,932,969 | 125.4 ms |
+
+The tickets fill of the same copy takes 658,634 steps (12.2 ms) at 2,000
+and 6,580,994 (117 ms) at 20,000.
+
+The Backlog's totals (`CountMirrorSections`, the pace's 5 closed sprints
+included), credit off, on, and on with forge acts:
+
+| Board | Off | On | On, forge acts |
+|---|---|---|---|
+| 2,000, estimated | 207,227 steps, 4.3 ms | 347,196 steps, 5.5 ms | 413,094 steps, 6.5 ms |
+| 2,000, none estimated | 193,027 steps, 4.1 ms | 327,069 steps, 6.5 ms | 327,147 steps, 8.0 ms |
+| 20,000, estimated | 2,020,727 steps, 56.6 ms | 2,563,896 steps, 63.2 ms | 3,689,994 steps, 76.7 ms |
+| 20,000, none estimated | 1,878,727 steps, 54.3 ms | 2,843,469 steps, 95.9 ms | 2,843,547 steps, 82.8 ms |
+| 5 boards of 4,000, estimated | 408,732 steps, 10.0 ms | 593,502 steps, 13.9 ms | 777,200 steps, 22.2 ms |
+| 5 boards of 4,000, none estimated | 380,332 steps, 9.3 ms | 606,675 steps, 18.9 ms | 606,753 steps, 26.6 ms |
+
+With none estimated, most of the difference is the support rule telling
+each row of the sections, which a project counting no credit does not
+apply: 820,000 of the 965,000 steps at 20,000. With forge acts the
+totals take at most 1.99 times the steps of credit off (2,000,
+estimated).
+
+The pace alone, credit off, on, and on with forge acts:
+
+| Board | Off | On | On, forge acts |
+|---|---|---|---|
+| 2,000, estimated | 14,290 steps | 154,259 steps, 2.5 ms | 220,157 steps, 3.3 ms |
+| 2,000, none estimated | 14,090 steps | 66,118 steps, 1.2 ms | 66,196 steps, 1.3 ms |
+| 20,000, estimated | 131,290 steps, 4.8 ms | 674,459 steps, 21.1 ms | 1,800,557 steps, 32.1 ms |
+| 20,000, none estimated | 129,290 steps, 5.4 ms | 274,018 steps, 9.3 ms | 274,096 steps, 9.2 ms |
+| 5 boards of 4,000, estimated | 27,291 steps | 212,061 steps, 4.8 ms | 395,759 steps, 11.4 ms |
+| 5 boards of 4,000, none estimated | 26,891 steps | 89,220 steps, 4.0 ms | 89,298 steps, 4.0 ms |
+
+At 20,000, estimated, the pace's 5 sprints hold 1,000 finished members,
+100 of them with evidence in the tracker. A member's four forge acts
+add 1,126 steps to it: the pull request found by the ticket's key, each
+act's account looked up in the pairings by its key and in the name
+matches, and the review rows grouped and summed.
+
+The forge people's due listing (`ListMirrorForgePeopleDue`, once a
+linked round) walks the keys and acts of the connection's repositories:
+238,458 steps (4.4 ms) for 2,000 pull requests with 8,000 acts and
+2,380,458 (64 ms) for 20,000 with 80,000 with no account matched, and
+68 fewer with every one matched. A match of 4 accounts writes in 0.1 ms. A forge read's advance
+of the totals (`AdvanceMirrorForgeCredit`) for the keys of 500 pull
+requests takes 19,707 steps (0.7 ms) and names 275 tickets, at 2,000 and
+at 20,000; for a change of a source's state it takes 77 steps.
+
+The evidence listing's arm for a board without sprints walks the root's
+issues updated in the window. With every issue of the root changed in
+it, the upper bound, a listing with every source read takes 1,118,560
+steps (37.5 ms) at 20,000 and 715,362 (24.9 ms) for one board of five
+of 4,000; with none read it stops at its first page, 27,800 steps.
+
+A board read that writes every card of a board again at a later update
+time, in pages of 100, with and without the trigger that moves the
+totals when a card passes its evidence receipt, or its history while it
+is a member of a closed sprint (`trg_tracker_cache_credit_card_moved`):
+
+| Board | Passed | Without the trigger | With it |
+|---|---|---|---|
+| 20,000 | every card's receipts | 139,673,797 steps, 3.66 s | 141,533,796 steps, 3.89 s |
+| 20,000 | every card's history (19,800 in a closed sprint) | 99,634,197 steps, 3.39 s | 102,141,396 steps, 3.19 s |
+| 20,000 | neither | 99,574,197 steps, 3.51 s | 99,954,197 steps, 2.92 s |
+| 2,000 | every card's receipts | 3,167,377 steps, 163 ms | 3,353,376 steps, 168 ms |
+| 2,000 | every card's history (1,980 in a closed sprint) | 2,763,417 steps, 153 ms | 3,014,136 steps, 177 ms |
+| 2,000 | neither | 2,757,417 steps, 157 ms | 2,795,417 steps, 172 ms |
+
+The trigger costs 93 steps a card whose receipt it passes, 127 a closed
+sprint's member whose history it passes, and 19 a card that passes
+neither; the times differ by less than their spread.
+
+### Thread links and logged time
+
+The fills of `threads`, `worklogs` and `worklog_days`
+(`TestMirrorExportFillsAtScale`, the sprint history's dated fixture with
+2,000 threads linked to its tickets, two turns each, 1,000 worklogs of
+the viewer's and 1,000 of another person's, and 180 read days of each:
+`seedRelationsAtScale`). VM steps are the same in all 12 exports of a
+size (all changed and 10% changed, each with no column, one and every
+column, with and without `changes`); a time is the range of those
+exports' best of 5:
+
+| Fill | Rows | 2,000 tickets | 20,000 tickets |
+|---|---|---|---|
+| threads | 2,000 | 158,303 steps, 4.0 to 5.0 ms | 158,303 steps, 4.2 to 8.3 ms |
+| worklogs | 1,000 | 27,042 steps, 0.88 to 1.1 ms | 27,042 steps, 0.91 to 1.5 ms |
+| worklog_days | 180 | 2,740 steps, 32 to 44 µs | 2,740 steps, 36 to 64 µs |
+
+The steps follow the links and the viewer's worklogs, not the board's
+tickets: about 79 a link (each with its newest turn) and 27 a worklog of
+the viewer's; the other person's are not read.
 
 ## Planning poker add-on
 

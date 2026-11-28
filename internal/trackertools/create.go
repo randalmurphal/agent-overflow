@@ -70,7 +70,7 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.h.Writable(caller.Thread); err != nil {
+	if _, err := s.h.WritePolicy(caller.Thread); err != nil {
 		return nil, err
 	}
 	tg, err := s.createTarget(caller.Thread, args.Project)
@@ -90,7 +90,7 @@ func (s *Server) create(ctx context.Context, caller Caller, raw json.RawMessage)
 	}
 	// The create is admitted now: a thread made read-only while the call
 	// read the project sends nothing.
-	if err := s.h.Writable(caller.Thread); err != nil {
+	if _, err := s.h.WritePolicy(caller.Thread); err != nil {
 		return nil, err
 	}
 	id := s.newID()
@@ -223,7 +223,7 @@ func createRefused(tg createTarget, v trackerapp.WriteView) error {
 
 // createTarget is the connection and board a create in project (KEY or
 // site/KEY) goes through, chosen once over every board this computer
-// lists of that project (Host.CreateBoards) on the connections asked: a
+// lists of that project (Host.Boards) on the connections asked: a
 // board the mirror holds that the thread's project lists, else any board
 // the mirror holds. A project whose chosen boards are on two sites is
 // refused as ambiguous; one whose boards the mirror holds none of is
@@ -250,13 +250,16 @@ func (s *Server) createTarget(threadID, project string) (createTarget, error) {
 				"No connection on this computer reaches %s; the sites on are %s.", strings.TrimSpace(site), siteList(sources)), nil)
 		}
 	}
-	boards, err := s.h.CreateBoards(threadID, key)
+	_, boards, err := s.h.Boards(threadID)
 	if err != nil {
 		return createTarget{}, err
 	}
 	var thread, any []createTarget
 	unread := ""
 	for _, b := range boards {
+		if !strings.EqualFold(b.TrackerProject, key) {
+			continue
+		}
 		i := slices.IndexFunc(asked, func(src trackerapp.TicketSource) bool { return src.ID == b.Connection })
 		if i < 0 {
 			continue

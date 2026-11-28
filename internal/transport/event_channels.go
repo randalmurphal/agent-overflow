@@ -1358,6 +1358,19 @@ var channelPolicies = []ChannelPolicy{
 			"Scope: ProjectTrackerSetup, the pull half, is tracker:read.",
 	},
 	{
+		Channel:   eventchan.ActivityRecording,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeTrackerRead,
+		Why: "The activity recorder's whole state (activity.Status): since " +
+			"when its writes fail and why, or zero once they write again. " +
+			"Each frame replaces the last, so a reconnect wants only the " +
+			"newest. Unkeyed. Scope: GetActivityRecording, the pull half, is " +
+			"tracker:read, as the time draft the activity feeds is. " +
+			"Audience: a remote client's Time screen shows this computer's " +
+			"recording.",
+	},
+	{
 		Channel:   eventchan.TrackerBoardUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
@@ -1381,6 +1394,18 @@ var channelPolicies = []ChannelPolicy{
 			"thread. Scope: its pull half, TrackerTicket, is tracker:read. " +
 			"Audience: a remote client opens tickets of this computer's " +
 			"tracker connections.",
+	},
+	{
+		Channel:   eventchan.TrackerTimeEntriesUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeTrackerRead,
+		Why: "A time draft's change nudge (trackerapp.TimeEntriesEvent): " +
+			"the connection, the author, the days and the drafting threads, " +
+			"never an entry. Every frame names its own days, so a reconnect " +
+			"replays them all: never latest-only. Unkeyed by thread: the Time " +
+			"screen holds days, not threads. Scope: its pull halves, " +
+			"TrackerWorklogs and ThreadTimeEntries, are tracker:read.",
 	},
 	{
 		Channel:   eventchan.TerminalEndFailed,

@@ -12,8 +12,8 @@
 //
 // Who owns what:
 // - Running: the layout item owns that the pane exists, its place and its
-//   width; the record owns which ticket it shows. Nothing else names the
-//   ticket.
+//   width; the record owns which ticket it shows, and the pull request a
+//   Work row shows in the ticket's place. Nothing else names the ticket.
 // - Saving: the layout's save reads the record of each ticket item
 //   (`ticketPaneCarrier`: computer, connection, issue); an item with no
 //   record is saved with no ticket.
@@ -38,6 +38,9 @@
 // - One pane per ticket for a person's open: opening a ticket a pane shows
 //   focuses and reveals that pane. A pane that steps to a ticket another
 //   pane shows is not merged with it.
+// - The pull request shown over the ticket belongs to the ticket shown:
+//   a change of the ticket, and a person's open of the ticket itself (a
+//   focus of this pane from anywhere), end it. It is not saved.
 // - Only a person's open asks for the focus (Ctrl/Cmd+click or "Open in
 //   its own pane", which opens a pane or focuses the one showing the
 //   ticket, and the pane's own open of a linked ticket, Back and Escape);
@@ -51,7 +54,7 @@
 // every ticket a record names (`ticketPaneRefs`, `onTicketPanesChanged`).
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { OpenTicket } from './issuesPane.svelte';
+import type { OpenTicket, TicketPullRequestOpen } from './issuesPane.svelte';
 import { isCompactLayout } from './layoutMode.svelte';
 import {
   addPaneLayoutItem,
@@ -78,6 +81,8 @@ export interface TicketPaneRecord {
   readonly trail: readonly OpenTicket[];
   /** The board it was opened from; null after a reload. */
   readonly board: string | null;
+  /** The pull request shown in the ticket's place; null for none. */
+  readonly pullRequest: TicketPullRequestOpen | null;
   /** The focus the pane's opens ask for. */
   readonly focus: OpenFocusRequest<OpenTicket>;
 }
@@ -142,6 +147,8 @@ export function openTicketPane(open: OpenTicket, options: OpenTicketPaneOptions)
   for (const [paneId, record] of records) {
     if (!sameTicketRef(record.ticket.ref, open.ref)) continue;
     options.handoff?.();
+    // The person asked for the ticket: it shows, not its pull request.
+    if (record.pullRequest) records.set(paneId, { ...record, pullRequest: null });
     focusPane(paneId);
     revealPane(paneId);
     record.focus.ask(record.ticket);
@@ -149,7 +156,7 @@ export function openTicketPane(open: OpenTicket, options: OpenTicketPaneOptions)
   }
   const paneId = `ticket-${randomId()}`;
   const focus = createOpenFocusRequest<OpenTicket>();
-  records.set(paneId, { ticket: open, trail: [], board: options.board, focus });
+  records.set(paneId, { ticket: open, trail: [], board: options.board, pullRequest: null, focus });
   if (options.handoff) handoffs.set(paneId, options.handoff);
   notePaneLayoutMutation();
   addPaneLayoutItem({ id: paneId, paneId, kind: 'ticket', widthPx: averagePaneWidthPx() }, resolveNewPaneInsertIndex());
@@ -166,14 +173,21 @@ export function ticketPaneRecord(paneId: string): TicketPaneRecord | null {
 }
 
 /** The pane now shows `ticket` with `trail` behind it. A change of the
- * ticket is saved with the layout. */
+ * ticket ends its pull request and is saved with the layout. */
 export function setTicketPaneTicket(paneId: string, ticket: OpenTicket, trail: readonly OpenTicket[]): void {
   const record = records.get(paneId);
   if (!record) throw new Error(`setTicketPaneTicket: ${paneId} is not a ticket pane`);
   if (record.ticket === ticket && record.trail === trail) return;
-  records.set(paneId, { ...record, ticket, trail });
+  records.set(paneId, { ...record, ticket, trail, pullRequest: record.ticket === ticket ? record.pullRequest : null });
   if (record.ticket !== ticket) requestPaneLayoutPersistence();
   changed();
+}
+
+/** The pane shows `pr` in its ticket's place, or the ticket again. */
+export function setTicketPanePullRequest(paneId: string, pr: TicketPullRequestOpen | null): void {
+  const record = records.get(paneId);
+  if (!record) throw new Error(`setTicketPanePullRequest: ${paneId} is not a ticket pane`);
+  if (record.pullRequest !== pr) records.set(paneId, { ...record, pullRequest: pr });
 }
 
 /** What holds the pane's ticket until its body subscribes it, taken: the
@@ -226,7 +240,7 @@ export function restoreTicketPane(paneId: string, carrier: TicketPaneCarrier): v
     project: null,
   };
   records.get(paneId)?.focus.end();
-  records.set(paneId, { ticket, trail: [], board: null, focus: createOpenFocusRequest<OpenTicket>() });
+  records.set(paneId, { ticket, trail: [], board: null, pullRequest: null, focus: createOpenFocusRequest<OpenTicket>() });
   changed();
 }
 

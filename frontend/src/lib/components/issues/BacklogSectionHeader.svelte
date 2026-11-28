@@ -13,12 +13,15 @@
   import ReviewAvatar from '../review/ReviewAvatar.svelte';
   import type { BacklogSection, SectionNumbers } from '../../stores/trackerBacklogModel';
   import { measureOf } from '../../stores/trackerBacklogModel';
-  import { formatEstimateSum, sectionLine } from './boardFormat';
+  import { formatEstimateSum, paceCreditWords, sectionLine } from './boardFormat';
 
   interface Props {
     sec: BacklogSection;
     numbers: SectionNumbers;
+    /** The unit the project counts the board in (`BoardShape.counts`). */
     unit: string;
+    /** The board's own estimate unit (`BoardShape.unit`). */
+    estimates: string;
     open: boolean;
     /** Now, to the minute. */
     now: number;
@@ -28,7 +31,7 @@
     controls?: Snippet;
   }
 
-  let { sec, numbers, unit, open, now, target, onFold, controls }: Props = $props();
+  let { sec, numbers, unit, estimates, open, now, target, onFold, controls }: Props = $props();
 
   const DAY_MS = 86_400_000;
   const estimated = $derived(unit === 'points' || unit === 'time');
@@ -59,7 +62,7 @@
     return estimated ? (formatEstimateSum(n, unit) ?? '0') : String(n);
   }
 
-  const line = $derived(sectionLine(sec.kind, numbers, unit));
+  const line = $derived(sectionLine(sec.kind, numbers, unit, estimates));
   const pace = $derived(numbers.pace ? measureOf(numbers.pace, unit) : null);
   const fill = $derived(pace ? Math.min(100, (measureOf(numbers.total, unit) / pace) * 100) : 0);
 </script>
@@ -92,7 +95,7 @@
       {/each}
     </span>
   {/if}
-  <span class="shrink-0 text-[0.75rem] tabular-nums text-fg-muted" data-testid="issues-backlog-numbers">
+  <span class="shrink-0 text-[0.75rem] tabular-nums text-fg-muted" title={paceCreditWords(numbers.pace, unit) || undefined} data-testid="issues-backlog-numbers">
     {#if sec.unread}
       Not read yet
     {:else}

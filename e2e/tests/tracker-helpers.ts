@@ -105,6 +105,9 @@ export interface ExtraJira {
   sprints?: Array<{ id: number; board?: number; name: string; state: 'future' | 'active' | 'closed'; goal?: string; start?: string; end?: string; complete?: string }>;
   /** The add-on, with the votes already cast (trackerfake.JiraPoker). */
   poker?: { rounds?: Array<{ issue: string; revealed?: boolean; votes?: Array<{ id: string; account: string; vote: number; created: string }> }> };
+  /** More Jira sites served beside this one, whole (trackerfake.JiraSite):
+   * the servers serve only the sites the first seed after a reset names. */
+  sites?: Array<Record<string, unknown>>;
 }
 
 /**
@@ -176,7 +179,7 @@ export async function seedFakeJira(harness: HarnessApp, extra?: ExtraJira): Prom
         ...(extra?.issues ?? []).map((issue) => ({ ...issue, created: issue.created ?? day, updated: issue.updated ?? issue.created ?? day })),
       ],
       ...(extra?.poker ? { poker: extra.poker } : {}),
-    }],
+    }, ...(extra?.sites ?? [])],
   });
   const jiraURL = origins.jira[JIRA_SITE];
   if (!jiraURL) throw new Error(`HarnessTrackerSeed served no ${JIRA_SITE}: ${JSON.stringify(origins)}`);
@@ -204,6 +207,12 @@ export async function renameJiraIssue(board: ConnectedBoard, key: string, summar
 export async function editJiraIssue(board: ConnectedBoard, key: string, fields: Record<string, unknown>): Promise<void> {
   const resp = await inJira(board.jiraURL, 'PUT', `issue/${key}`, { fields });
   if (resp.status !== 204) throw new Error(`the fake Jira refused the edit of ${key}: HTTP ${resp.status} ${await resp.text()}`);
+}
+
+/** Moves an issue in the fake Jira by its workflow's `transition`, as a person working in Jira would. */
+export async function moveJiraIssue(board: ConnectedBoard, key: string, transition: string): Promise<void> {
+  const resp = await inJira(board.jiraURL, 'POST', `issue/${key}/transitions`, { transition: { id: transition } });
+  if (resp.status !== 204) throw new Error(`the fake Jira refused the move of ${key}: HTTP ${resp.status} ${await resp.text()}`);
 }
 
 /**
@@ -287,4 +296,14 @@ export async function openIssuesPage(page: Page, name: 'Connections' | 'Boards')
     await page.getByTestId('sidebar-settings-button').click();
   }
   await page.getByRole('tablist', { name: 'Settings Sections' }).getByRole('tab', { name, exact: true }).click();
+}
+
+/** The day two days back on this computer, YYYY-MM-DD, and how a row's title writes it ("Tue Nov 24"). */
+export function twoDaysAgo(): { day: string; label: string } {
+  const at = new Date(Date.now() - 2 * 24 * 3600_000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const day = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+  const noon = new Date(`${day}T12:00:00Z`);
+  const label = `${noon.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })} ${noon.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' })} ${noon.getUTCDate()}`;
+  return { day, label };
 }

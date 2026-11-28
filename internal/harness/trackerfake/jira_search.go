@@ -80,9 +80,12 @@ func searchJQL(c *jiraCall) answer {
 	if err := c.decode(&in, false); err != nil {
 		return unhandledf("%v", err)
 	}
-	q, err := parseJQL(in.JQL)
+	q, err := parseJQL(in.JQL, c.viewer)
 	if err != nil {
 		return jqlAnswer(err)
+	}
+	if errs := c.s.undefinedStatuses(q); len(errs) > 0 {
+		return jiraErrors(http.StatusBadRequest, errs...)
 	}
 	offset, err := readPageToken("search "+in.JQL, in.NextPageToken)
 	if err != nil {
@@ -104,9 +107,12 @@ func countJQL(c *jiraCall) answer {
 	if err := c.decode(&in, false); err != nil {
 		return unhandledf("%v", err)
 	}
-	q, err := parseJQL(in.JQL)
+	q, err := parseJQL(in.JQL, c.viewer)
 	if err != nil {
 		return jqlAnswer(err)
+	}
+	if errs := c.s.undefinedStatuses(q); len(errs) > 0 {
+		return jiraErrors(http.StatusBadRequest, errs...)
 	}
 	return jsonAnswer(http.StatusOK, map[string]any{"count": len(c.indexed(c.s.search(q)))})
 }
@@ -142,15 +148,20 @@ func bulkFetch(c *jiraCall) answer {
 		return jiraErrors(http.StatusBadRequest, fmt.Sprintf("The number of issues must be between 1 and %d.", n))
 	}
 	sel := parseFields(in.Fields, selectNavigable)
-	issues := []any{}
+	issues, errs := []any{}, []any{}
 	seen := map[string]bool{}
 	for _, ref := range in.IssueIDsOrKeys {
-		if is := c.s.issue(ref); is != nil && !seen[is.ID] {
+		switch is := c.s.issue(ref); {
+		case is == nil || seen[is.ID]:
+		case is.BulkError != "":
+			seen[is.ID] = true
+			errs = append(errs, map[string]any{"id": is.ID, "errorMessage": is.BulkError, "status": http.StatusServiceUnavailable})
+		default:
 			seen[is.ID] = true
 			issues = append(issues, c.s.issueJSON(is, sel, c.viewer))
 		}
 	}
-	return jsonAnswer(http.StatusOK, map[string]any{"expand": "", "issues": issues, "issueErrors": []any{}})
+	return jsonAnswer(http.StatusOK, map[string]any{"expand": "", "issues": issues, "issueErrors": errs})
 }
 
 // matchJQL answers which of the issues each query matches, judged on the
@@ -172,11 +183,11 @@ func matchJQL(c *jiraCall) answer {
 	}
 	matches := []any{}
 	for _, src := range in.JQLs {
-		q, err := parseJQL(src)
+		q, err := parseJQL(src, c.viewer)
 		if err != nil {
 			return jqlAnswer(err)
 		}
-		matched, errs := []int64{}, []string{}
+		matched, errs := []int64{}, c.s.undefinedStatuses(q)
 		for _, f := range q.filters {
 			if c.s.boardOfFilter(f) == nil {
 				errs = append(errs, fmt.Sprintf("The value '%s' does not exist for the field 'filter'.", f))

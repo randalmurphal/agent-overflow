@@ -62,19 +62,48 @@ var (
 // reads them, BoardPatch); ReadAgain says the change moved rows it does
 // not name (the board's structure, a status's name or group) or named more
 // than maxEventIssues (Truncated), and the client reads the board view
-// again. Sync is the board's sync state; Failure in it is sent once when
-// it starts or changes and once when it clears. Ended is the last event:
+// again. Pins are one project's pins that changed, which its subscribers
+// hold with no read, and Dashboards a change of one project's dashboards
+// of the board, on which they list them again. Recount says what its
+// dashboards count changed beyond the rows the event names, on which
+// they count again (tellRecount): the reads of the connection's logged
+// time ended (worklog_reads.go), or how the last read of who worked on
+// its tickets ended changed (sync_evidence.go). Sync is the board's sync state; Failure in it is sent
+// once when it starts or changes and once when it clears. Ended is the
+// last event:
 // the subscription ended (the connection was turned off or removed, or the
 // board is no longer listed), and every handle on it with it.
 type BoardEvent struct {
-	Scope     Scope             `json:"scope"`
-	Seq       uint64            `json:"seq"`
-	Changed   []tracker.IssueID `json:"changed,omitempty"`
-	Removed   []tracker.IssueID `json:"removed,omitempty"`
-	Truncated bool              `json:"truncated,omitempty"`
-	ReadAgain bool              `json:"read_again,omitempty"`
-	Sync      SyncView          `json:"sync"`
-	Ended     bool              `json:"ended,omitempty"`
+	Scope      Scope              `json:"scope"`
+	Seq        uint64             `json:"seq"`
+	Changed    []tracker.IssueID  `json:"changed,omitempty"`
+	Removed    []tracker.IssueID  `json:"removed,omitempty"`
+	Truncated  bool               `json:"truncated,omitempty"`
+	ReadAgain  bool               `json:"read_again,omitempty"`
+	Pins       *ProjectPins       `json:"pins,omitempty"`
+	Dashboards *ProjectDashboards `json:"dashboards,omitempty"`
+	Recount    bool               `json:"recount,omitempty"`
+	Sync       SyncView           `json:"sync"`
+	Ended      bool               `json:"ended,omitempty"`
+}
+
+// ProjectPins is the widgets a project now pins to a board's summary row,
+// in the row's order (BoardView.Pins), told on the board's event: a
+// board's pump holds the handles of every project that lists the board,
+// and only the subscriptions of Project take them.
+type ProjectPins struct {
+	Project string   `json:"project"`
+	Pins    []string `json:"pins"`
+}
+
+// ProjectDashboards tells, on a board's event, that a project's
+// dashboards of the board changed: a widget kept, dismissed, removed or
+// proposed, a limit set, or the unit the project counts in. With Counts
+// what they count changed too; a limit's change does not, as it changes
+// how a number is drawn. Only the subscriptions of Project take it.
+type ProjectDashboards struct {
+	Project string `json:"project"`
+	Counts  bool   `json:"counts"`
 }
 
 // IssueEvent tells an open ticket's subscribers, of Issue on Connection,
@@ -144,6 +173,9 @@ type handle struct {
 	// setup names the status groups a board handle's reads apply: its
 	// project's, for its connection's site.
 	setup setupKey
+	// project is the project a board handle was subscribed for, whose
+	// thread Ask your agent makes (DashboardAsk).
+	project string
 }
 
 // Tie ties a subscription's handle to the client that holds it as the
@@ -246,16 +278,23 @@ func (s *Service) SubscriptionBoard(id string) (Scope, StatusGroups, error) {
 // boardHandle is board handle id's scope and the status groups it reads
 // with.
 func (s *Service) boardHandle(id string) (Scope, setupKey, error) {
+	scope, key, _, err := s.boardHandleProject(id)
+	return scope, key, err
+}
+
+// boardHandleProject is boardHandle with the project the handle was
+// subscribed for.
+func (s *Service) boardHandleProject(id string) (Scope, setupKey, string, error) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	h := s.subs.handles[id]
 	switch {
 	case h == nil:
-		return Scope{}, setupKey{}, fmt.Errorf("%w: %s", ErrUnknownSubscription, id)
+		return Scope{}, setupKey{}, "", fmt.Errorf("%w: %s", ErrUnknownSubscription, id)
 	case h.board == nil:
-		return Scope{}, setupKey{}, fmt.Errorf("%w: subscription %s is a ticket's, not a board's", ErrInvalidRequest, id)
+		return Scope{}, setupKey{}, "", fmt.Errorf("%w: subscription %s is a ticket's, not a board's", ErrInvalidRequest, id)
 	}
-	return h.board.scope, h.setup, nil
+	return h.board.scope, h.setup, h.project, nil
 }
 
 // SubscriptionCountsForTesting reports the board and ticket handles the

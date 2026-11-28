@@ -135,7 +135,13 @@ func deltaStep(b tracker.BoardID) step {
 //   - cards reads the cards of the linked issues no shown board has a
 //     row of (store ListMirrorOffBoardLinkedIssues), every page of the
 //     listing, readBatch issues a read, and records a read.
+//   - names reads the cards of the parents the mirror's worklist owes the
+//     names of (run.unnamedParents), namesBatches reads a tick (More).
 //   - history is the board tick's history unit, under the same lock.
+//   - evidence reads who worked on the tickets credit counts that are
+//     due (run.evidence), one listing's page a tick (More).
+//   - people matches the forge accounts credit counts to the tracker's
+//     people (run.forgePeople), one listing's page a tick (More).
 //
 // The issues nothing keeps any more, which a thread's unlink, delete,
 // retire or transfer leaves, are removed by FinishMirrorCleanup.
@@ -153,8 +159,17 @@ func (s *Service) syncLinked(ctx context.Context, id string, due LinkedDue, u Ur
 	if due.Cards {
 		steps = append(steps, step{unit: UnitCards, body: (*run).linkedCards, records: true})
 	}
+	if due.Names {
+		steps = append(steps, step{unit: UnitNames, body: (*run).unnamedParents})
+	}
 	if due.History {
 		steps = append(steps, step{unit: UnitHistory, body: func(r *run) (UnitResult, error) { return r.history(first...) }, history: true})
+	}
+	if due.Evidence {
+		steps = append(steps, step{unit: UnitEvidence, body: (*run).evidence})
+	}
+	if due.People {
+		steps = append(steps, step{unit: UnitPeople, body: (*run).forgePeople})
 	}
 	if len(steps) == 0 {
 		return Outcome{Ran: []UnitResult{}}, nil

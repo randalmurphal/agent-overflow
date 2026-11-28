@@ -347,6 +347,59 @@ var walkCases = map[string]walkCase{
 			return ids(l.Worklogs, func(w Worklog) string { return w.ID }), err
 		}, "201,202",
 	},
+	"WorklogActs": {
+		func(s *walkSite) {
+			s.route("GET", "/rest/api/3/issue/WEB-1/worklog", func(u string, r *http.Request, _ []byte) string {
+				start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+				return fmt.Sprintf(`{"startAt":%d,"total":2,"worklogs":[{"id":"%d","started":"2026-11-10T10:00:00.000+0000","timeSpentSeconds":60}]}`,
+					start, uid(u, start+1))
+			})
+		},
+		func(ctx context.Context, c *Client) (string, error) {
+			l, err := c.WorklogActs(ctx, WorklogQuery{Issue: "WEB-1"})
+			return ids(l, func(a Act) string { return a.ID }), err
+		}, "201,202",
+	},
+	"CommentActs": {
+		func(s *walkSite) {
+			s.route("GET", "/rest/api/3/issue/WEB-1/comment", func(u string, r *http.Request, _ []byte) string {
+				start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+				return fmt.Sprintf(`{"startAt":%d,"total":2,"comments":[{"id":"%d","created":"2026-11-10T10:00:00.000+0000"}]}`, start, uid(u, start+1))
+			})
+		},
+		func(ctx context.Context, c *Client) (string, error) {
+			l, err := c.CommentActs(ctx, "WEB-1")
+			return ids(l, func(a Act) string { return a.ID }), err
+		}, "201,202",
+	},
+	"BulkActs": {
+		func(s *walkSite) {
+			s.route("POST", "/rest/api/3/issue/bulkfetch", func(u string, _ *http.Request, b []byte) string {
+				var v struct {
+					Refs []string `json:"issueIdsOrKeys"`
+				}
+				_ = json.Unmarshal(b, &v)
+				var out []string
+				for i, ref := range v.Refs {
+					out = append(out, fmt.Sprintf(`{"id":"%s","fields":{"updated":"2026-11-10T10:00:00.000+0000",`+
+						`"comment":{"startAt":0,"total":1,"comments":[{"id":"%d","created":"2026-11-10T10:00:00.000+0000"}]}}}`, ref, uid(u, 0)*10000+i))
+				}
+				return `{"issues":[` + strings.Join(out, ",") + `],"issueErrors":[]}`
+			})
+		},
+		func(ctx context.Context, c *Client) (string, error) {
+			ids := make([]string, bulkFetchCapacity([]string{"comment"})+1)
+			for i := range ids {
+				ids[i] = strconv.Itoa(10001 + i)
+			}
+			res, _, err := c.BulkActs(ctx, ids, true, false)
+			users := map[byte]int{}
+			for _, is := range res {
+				users[is.Comments.Acts[0].ID[0]]++
+			}
+			return fmt.Sprint(users), err
+		}, fmt.Sprintf("map[50:%d]", bulkFetchCapacity([]string{"comment"})+1),
+	},
 	"UpdatedWorklogs": {
 		func(s *walkSite) { s.route("GET", "/rest/api/3/worklog/updated", worklogFeed) },
 		func(ctx context.Context, c *Client) (string, error) {
@@ -426,6 +479,29 @@ var walkCases = map[string]walkCase{
 			u, err := c.FindUser(ctx, "Same Name")
 			return u.AccountID, err
 		}, "acc-b2",
+	},
+	"UserNamed": {
+		func(s *walkSite) {
+			s.route("GET", "/rest/api/3/user/search", func(u string, r *http.Request, _ []byte) string {
+				start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+				user := func(id, name string) string {
+					return fmt.Sprintf(`[{"accountId":%q,"displayName":%q,"active":true,"accountType":"atlassian"}]`, id, name)
+				}
+				switch {
+				case u == "a" && start == 0:
+					return user("acc-a1", "Same Name")
+				case start == 0:
+					return user("acc-"+u+"1", "Other")
+				case start == 1:
+					return user("acc-"+u+"2", "Same Name")
+				}
+				return `[]`
+			})
+		},
+		func(ctx context.Context, c *Client) (string, error) {
+			u, ok, err := c.UserNamed(ctx, "Same Name")
+			return fmt.Sprintln(u.AccountID, ok), err
+		}, "acc-b2 true\n",
 	},
 }
 

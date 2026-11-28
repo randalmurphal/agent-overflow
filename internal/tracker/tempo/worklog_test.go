@@ -185,3 +185,35 @@ func TestDecodeErrorsAreScrubbed(t *testing.T) {
 		t.Errorf("problem message: %q", msg)
 	}
 }
+
+// A page of the worklog search over the transport's bound is asked again
+// with half the limit, and the pages after it keep that limit.
+func TestIssueWorklogsHalveAPageOverTheBound(t *testing.T) {
+	f := tempotest.NewServer(t, testToken)
+	issues := newIssues()
+	opts, err := transportOptions(Options{BaseURL: f.URL(), Version: "test", Issues: issues,
+		Credentials: trackerapi.StaticCredentials(trackerapi.Bearer(secret.New([]byte(testToken))))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.MaxPerSecond, opts.MaxBodyBytes = 0, 5000
+	c, err := newClient(opts, issues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	big := func(id int64) string {
+		return wl{id: id, issue: 10001, author: "acc-user1", date: "2026-11-09", start: "09:00:00", spent: 60, desc: strings.Repeat("x", 1500)}.json()
+	}
+	body := `{"issueIds":[10001]}`
+	f.On("POST", "/4/worklogs/search", q("offset", "0", "limit", "1000"), body, 200, pageOf(0, false, big(1), big(2), big(3)))
+	f.On("POST", "/4/worklogs/search", q("offset", "0", "limit", "500"), body, 200, pageOf(0, true, big(1), big(2)))
+	f.On("POST", "/4/worklogs/search", q("offset", "2", "limit", "500"), body, 200, pageOf(2, false, big(3)))
+	got, err := c.IssueWorklogs(t.Context(), IssueWorklogQuery{Issues: []int64{10001}})
+	if err != nil || len(got) != 3 || got[2].ID != 3 {
+		t.Fatalf("worklogs %+v, %v", got, err)
+	}
+	if n := len(f.Requests()); n != 3 {
+		t.Fatalf("%d requests: %v", n, f.Requests())
+	}
+}

@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/trackerapp"
+	"agent-overflow/internal/trackerdash"
 )
 
 // fakeTracker answers the tools' reads from what a test set, and records
@@ -29,6 +30,10 @@ type fakeTracker struct {
 	// the service's does.
 	honorCtx bool
 	details  map[string]trackerapp.DetailView // connection/issue
+	// onDetail, when set, runs as each detail read starts; onLookup as
+	// each key lookup does.
+	onDetail func()
+	onLookup func()
 	comments func(connection, issue, page string) (trackerapp.CommentPageView, error)
 	asked    []string
 
@@ -54,6 +59,96 @@ type fakeTracker struct {
 	agents []context.Context
 	// ends counts the write sessions ended.
 	ends int
+	// try answers a widget's count; tries are those asked, as project
+	// connection/board width show thread.
+	try   func(w trackerapp.KeptWidget) (trackerdash.Tried, error)
+	tries []string
+	// time answers ReadTime by connection; draft answers DraftTime, and
+	// drafts are the drafts asked, by connection.
+	time   map[string]trackerapp.WorklogDays
+	draft  func(connection string, in trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error)
+	drafts []string
+	// open answers OpenTimeEntries by connection; post answers PostTime,
+	// and posts are the posts asked, by connection.
+	open map[string][]trackerapp.TimeEntryView
+	// openErr refuses a connection's read of its open entries.
+	openErr map[string]error
+	// links are the Jira tickets threads are linked to.
+	links map[string]trackerapp.JiraTicket
+	// linksErr fails ThreadJiraTickets.
+	linksErr error
+	post     func(connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error)
+	posts    []string
+	// postCtx is each post's context error as the post began.
+	postCtx []error
+}
+
+func (f *fakeTracker) OpenTimeEntries(connection string, days []string) ([]trackerapp.TimeEntryView, error) {
+	f.asked = append(f.asked, "open time "+connection+" "+strings.Join(days, " "))
+	if err := f.openErr[connection]; err != nil {
+		return nil, err
+	}
+	got, ok := f.open[connection]
+	if !ok {
+		return nil, errorsx.Public("tracker_connection_unverified", "this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings", nil)
+	}
+	return slices.DeleteFunc(slices.Clone(got), func(e trackerapp.TimeEntryView) bool { return !slices.Contains(days, e.Day) }), nil
+}
+
+func (f *fakeTracker) PostTime(ctx context.Context, connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error) {
+	raw, _ := json.Marshal(in)
+	f.posts = append(f.posts, connection+" "+string(raw))
+	f.postCtx = append(f.postCtx, ctx.Err())
+	if f.post == nil {
+		return postedAsRead(f.open[connection], in), nil
+	}
+	return f.post(connection, in)
+}
+
+// postedAsRead is a post of in that posts each entry of open it names
+// that a post sends, and gives each other one the reason it is not sent.
+func postedAsRead(open []trackerapp.TimeEntryView, in trackerapp.PostTimeRequest) trackerapp.PostTimeView {
+	var out trackerapp.PostTimeView
+	for _, ref := range in.Entries {
+		o := trackerapp.PostOutcome{ID: ref.ID, State: trackerapp.OutcomePosted}
+		if i := slices.IndexFunc(open, func(e trackerapp.TimeEntryView) bool { return e.ID == ref.ID }); i >= 0 && trackerapp.NotSentWhy(open[i]) != "" {
+			o = trackerapp.NotSentOutcome(open[i])
+		}
+		if o.State == trackerapp.OutcomePosted {
+			out.Posted++
+		}
+		out.Outcomes = append(out.Outcomes, o)
+	}
+	return out
+}
+
+func (f *fakeTracker) TryWidget(_ context.Context, project, connection, board string, w trackerapp.KeptWidget, marks trackerapp.TileMarks, thread string, show bool) (trackerdash.Tried, error) {
+	f.tries = append(f.tries, fmt.Sprintf("%s %s/%s %d %v %s", project, connection, board, w.Width, show, thread))
+	if marks.Limit != nil {
+		f.tries = append(f.tries, fmt.Sprintf("limit %v", *marks.Limit))
+	}
+	if marks.Pin {
+		f.tries = append(f.tries, "pin")
+	}
+	return f.try(w)
+}
+
+func (f *fakeTracker) ReadTime(_ context.Context, connection, from, to string) (trackerapp.WorklogDays, error) {
+	f.asked = append(f.asked, "time "+connection+" "+from+" "+to)
+	got, ok := f.time[connection]
+	if !ok {
+		return got, errorsx.Public("tracker_connection_unverified", "this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings", nil)
+	}
+	return got, nil
+}
+
+func (f *fakeTracker) DraftTime(connection string, in trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error) {
+	raw, _ := json.Marshal(in.Entries)
+	f.drafts = append(f.drafts, connection+" "+string(raw))
+	if f.draft == nil {
+		return trackerapp.TimeDraftView{Author: "acc-user1", Made: []trackerapp.TimeEntryView{}, Logged: []trackerapp.LoggedDay{}}, nil
+	}
+	return f.draft(connection, in)
 }
 
 func (f *fakeTracker) TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error) {
@@ -131,23 +226,53 @@ func (f *fakeTracker) AddComment(ctx context.Context, connection string, in trac
 // fakeHost answers the writing tools' questions about the thread.
 type fakeHost struct {
 	readOnly bool
+	// noAsk is a project whose Agents settings let a change to several
+	// tickets go without the person's approval.
+	noAsk bool
+	// onPolicy runs before each WritePolicy read with its count, from 1.
+	onPolicy func(n int)
+	policies int
 	// approve answers an approval; nil approves.
 	approve   func(Approval) error
 	approvals []Approval
 	rows      []WriteRow
+	timeRows  []TimeRow
+	postRows  []TimePostRow
 	// createBoards are the boards a create can go through, by project;
 	// readingProject, when set, runs as a create reads them.
-	createBoards   map[string][]CreateBoard
+	createBoards   map[string][]ListedBoard
 	readingProject func()
+	// project and boards are the thread's project and the boards it lists
+	// beside createBoards'.
+	project string
+	boards  []ListedBoard
 	// ended are the sessions the host no longer holds.
 	ended map[string]bool
+	// activity is what Activity answers, and activityErr its failure.
+	activity    ActivityDays
+	activityErr error
+	// time and timeErr answer TimeSettings.
+	time    trackerapp.TimeSettings
+	timeErr error
 }
 
-func (h *fakeHost) Writable(string) error {
-	if h.readOnly {
-		return errorsx.Public("tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
+func (h *fakeHost) Activity(context.Context, string, string) (ActivityDays, error) {
+	return h.activity, h.activityErr
+}
+
+func (h *fakeHost) WritePolicy(string) (WritePolicy, error) {
+	h.policies++
+	if h.onPolicy != nil {
+		h.onPolicy(h.policies)
 	}
-	return nil
+	if h.readOnly {
+		return WritePolicy{}, errorsx.Public("tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.", nil)
+	}
+	return WritePolicy{AskSeveral: !h.noAsk}, nil
+}
+
+func (h *fakeHost) TimeSettings(string) (trackerapp.TimeSettings, error) {
+	return h.time, h.timeErr
 }
 
 func (h *fakeHost) Approve(_ context.Context, _ string, a Approval) error {
@@ -160,16 +285,41 @@ func (h *fakeHost) Approve(_ context.Context, _ string, a Approval) error {
 
 func (h *fakeHost) Wrote(_ string, row WriteRow) { h.rows = append(h.rows, row) }
 
-func (h *fakeHost) CreateBoards(_, project string) ([]CreateBoard, error) {
+func (h *fakeHost) Drafted(_ string, row TimeRow) { h.timeRows = append(h.timeRows, row) }
+
+func (h *fakeHost) Posted(_ string, row TimePostRow) { h.postRows = append(h.postRows, row) }
+
+func (h *fakeHost) Boards(string) (string, []ListedBoard, error) {
 	if h.readingProject != nil {
 		h.readingProject()
 	}
-	return h.createBoards[project], nil
+	var out []ListedBoard
+	for _, project := range slices.Sorted(maps.Keys(h.createBoards)) {
+		for _, b := range h.createBoards[project] {
+			b.TrackerProject = project
+			out = append(out, b)
+		}
+	}
+	return h.project, append(out, h.boards...), nil
 }
 
 func (h *fakeHost) Live(_, session string) bool { return !h.ended[session] }
 
 func (f *fakeTracker) TicketSources() ([]trackerapp.TicketSource, error) { return f.sources, nil }
+
+func (f *fakeTracker) ThreadJiraTickets(threadIDs []string) (map[string]trackerapp.JiraTicket, error) {
+	f.asked = append(f.asked, "thread tickets "+strings.Join(threadIDs, " "))
+	if f.linksErr != nil {
+		return nil, f.linksErr
+	}
+	out := map[string]trackerapp.JiraTicket{}
+	for _, id := range threadIDs {
+		if t, ok := f.links[id]; ok {
+			out[id] = t
+		}
+	}
+	return out, nil
+}
 
 func (f *fakeTracker) LinkedTicket(string) (trackerapp.LinkedTicket, bool, error) {
 	if f.linkErr != nil {
@@ -183,6 +333,9 @@ func (f *fakeTracker) LinkedTicket(string) (trackerapp.LinkedTicket, bool, error
 
 func (f *fakeTracker) Lookup(_ context.Context, connection string, keys []string) (trackerapp.LookupView, error) {
 	f.asked = append(f.asked, "lookup "+connection+" "+strings.Join(keys, ","))
+	if f.onLookup != nil {
+		f.onLookup()
+	}
 	if err := f.lookupErr[connection]; err != nil && f.lookupErrAfter == 0 {
 		return trackerapp.LookupView{}, err
 	}
@@ -208,6 +361,9 @@ func (f *fakeTracker) Search(_ context.Context, connection string, in trackerapp
 
 func (f *fakeTracker) IssueDetail(ctx context.Context, connection, issue string) (trackerapp.DetailView, error) {
 	f.asked = append(f.asked, "detail "+connection+" "+issue)
+	if f.onDetail != nil {
+		f.onDetail()
+	}
 	if err := ctx.Err(); f.honorCtx && err != nil {
 		return trackerapp.DetailView{}, err
 	}
@@ -335,7 +491,7 @@ func cards(prefix string, n int) []trackerapp.CardView {
 // is a refusal the model reads, and the names are the table's.
 func TestToolSchemasAreClosed(t *testing.T) {
 	t.Parallel()
-	tools := New(nil, nil).Tools()
+	tools := New(nil, nil).Tools(false)
 	var names []string
 	for _, tool := range tools {
 		names = append(names, tool["name"].(string))
@@ -347,7 +503,7 @@ func TestToolSchemasAreClosed(t *testing.T) {
 			t.Errorf("%s's required is %#v", tool["name"], schema["required"])
 		}
 	}
-	if !slices.Equal(names, []string{"ticket_find", "ticket_read", "ticket_create", "ticket_update"}) || !slices.Equal(names, ToolNames()) {
+	if !slices.Equal(names, []string{"ticket_find", "ticket_read", "ticket_create", "ticket_update", "dashboard_widget"}) || !slices.Equal(names, ToolNames(false)) {
 		t.Fatalf("tools = %v", names)
 	}
 	f := &fakeTracker{sources: []trackerapp.TicketSource{jiraSource}}
@@ -356,11 +512,62 @@ func TestToolSchemasAreClosed(t *testing.T) {
 		t.Fatalf("an unknown argument = %v", err)
 	}
 	_, err = call(t, f, "ticket_move", map[string]any{})
-	refused(t, err, CodeInvalidRequest, `There is no tool named "ticket_move". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update.`)
+	refused(t, err, CodeInvalidRequest, `There is no tool named "ticket_move". The tracker tools are: ticket_find, ticket_read, ticket_create, ticket_update, dashboard_widget.`)
 }
 
 // A search pages 20 at a time through next, which the answer carries
 // only while more exists, and which takes the same text again.
+// The filters reach every source's search as the tracker-neutral
+// request: a status as its name, whatever it reads, a group as the group,
+// not_done among them, and the next page with the same filters.
+func TestFindAsksEachSourceTheFilters(t *testing.T) {
+	t.Parallel()
+	var asked []trackerapp.SearchRequest
+	f := &fakeTracker{sources: []trackerapp.TicketSource{jiraSource}}
+	f.search = func(_ string, in trackerapp.SearchRequest) (trackerapp.SearchPageView, error) {
+		asked = append(asked, in)
+		if in.Page == "" {
+			return trackerapp.SearchPageView{Cards: cards("WEB", in.Limit), Next: "page-2"}, nil
+		}
+		return trackerapp.SearchPageView{Cards: cards("WEB", 1)}, nil
+	}
+	for _, c := range []struct {
+		args map[string]any
+		want trackerapp.SearchRequest
+	}{
+		{map[string]any{"mine": true}, trackerapp.SearchRequest{Mine: true, Limit: pageSize}},
+		{map[string]any{"status": " In Progress "}, trackerapp.SearchRequest{Status: "In Progress", Limit: pageSize}},
+		{map[string]any{"group": "in_progress", "sprint": "active"}, trackerapp.SearchRequest{Group: "in_progress", ActiveSprint: true, Limit: pageSize}},
+		{map[string]any{"group": "backlog"}, trackerapp.SearchRequest{Group: "backlog", Limit: pageSize}},
+		{map[string]any{"group": "not_done", "mine": true}, trackerapp.SearchRequest{Mine: true, Group: trackerapp.GroupNotDone, Limit: pageSize}},
+		{map[string]any{"status": "In Review", "text": " login "}, trackerapp.SearchRequest{Text: "login", Status: "In Review", Limit: pageSize}},
+	} {
+		asked = nil
+		answer, err := call(t, f, "ticket_find", c.args)
+		if err != nil {
+			t.Fatalf("ticket_find %v: %v", c.args, err)
+		}
+		next := c.args
+		next["next"] = decodeAs[findAnswer](t, answer).Next
+		if _, err := call(t, f, "ticket_find", next); err != nil {
+			t.Fatalf("ticket_find %v: %v", next, err)
+		}
+		page := c.want
+		page.Page = "page-2"
+		if want := []trackerapp.SearchRequest{c.want, page}; !slices.Equal(asked, want) {
+			t.Errorf("ticket_find %v asked %+v\nwant %+v", c.args, asked, want)
+		}
+	}
+	_, err := call(t, f, "ticket_find", map[string]any{"sprint": "Sprint 1"})
+	refused(t, err, CodeInvalidRequest, `sprint takes "active" only.`)
+	_, err = call(t, f, "ticket_find", map[string]any{"mine": false, "status": " "})
+	refused(t, err, CodeInvalidRequest, "Give text, mine, status, group or sprint.")
+	_, err = call(t, f, "ticket_find", map[string]any{"group": "in progress"})
+	refused(t, err, CodeInvalidRequest, "group takes backlog, todo, in_progress, done, canceled, not_done.")
+	_, err = call(t, f, "ticket_find", map[string]any{"status": "In Review", "group": "in_progress"})
+	refused(t, err, CodeInvalidRequest, "Give status or group, not both.")
+}
+
 func TestFindPagesThroughNext(t *testing.T) {
 	t.Parallel()
 	f := &fakeTracker{sources: []trackerapp.TicketSource{jiraSource}}
@@ -395,12 +602,22 @@ func TestFindPagesThroughNext(t *testing.T) {
 		t.Fatalf("asked %q\nwant %q", f.asked, want)
 	}
 
+	// A next is for the search that gave it: other text, or the same text
+	// with a filter more, is refused.
 	_, err = call(t, f, "ticket_find", map[string]any{"text": "another search", "next": first.Next})
-	refused(t, err, CodeInvalidRequest, "next is from a search for other text; leave it out to search for this text.")
+	refused(t, err, CodeInvalidRequest, "next is from another search; leave it out to search with these arguments.")
+	for _, other := range []map[string]any{
+		{"text": "safari login", "mine": true}, {"text": "safari login", "status": "Done"}, {"text": "safari login", "group": "done"},
+		{"text": "safari login", "sprint": "active"},
+	} {
+		other["next"] = first.Next
+		_, err = call(t, f, "ticket_find", other)
+		refused(t, err, CodeInvalidRequest, "next is from another search; leave it out to search with these arguments.")
+	}
 	_, err = call(t, f, "ticket_find", map[string]any{"text": "safari login", "next": "not-a-cursor"})
 	refused(t, err, CodeInvalidRequest, "next is not one these tools gave; leave it out to start again.")
 	_, err = call(t, f, "ticket_find", map[string]any{"text": "  "})
-	refused(t, err, CodeInvalidRequest, "text is required.")
+	refused(t, err, CodeInvalidRequest, "Give text, mine, status, group or sprint.")
 	if len(f.asked) != 2 {
 		t.Fatalf("refused calls asked the tracker: %q", f.asked)
 	}

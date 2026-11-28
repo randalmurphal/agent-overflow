@@ -1,0 +1,711 @@
+package trackerapp
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
+	"os"
+	"runtime"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
+	"agent-overflow/internal/trackerdash"
+)
+
+// openTickets is a widget an agent writes: the board's tickets, counted.
+func openTickets() KeptWidget {
+	return KeptWidget{Form: trackerdash.FormNumber, Width: 3, Metric: trackerdash.Metric{
+		Title: "Tickets on the board", Words: []string{"Every ticket the board holds."}, SQL: "SELECT id AS ticket FROM tickets",
+		Reduce: trackerdash.ReduceCount, Unit: trackerdash.UnitTickets,
+	}}
+}
+
+// dashboardFixture is a mirror fixture whose board holds three tickets,
+// subscribed for its project.
+func dashboardFixture(t *testing.T) (*mirrorFixture, string) {
+	t.Helper()
+	m := newMirrorFixture(t)
+	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a"), row("10002", 1_799_000_000_000, "b"), row("10003", 1_799_000_000_000, "c")})
+	return m, m.subscribeShown(t, m.project()).ID
+}
+
+// A widget reads a ticket's type, priority and labels as the board's read
+// gave them: the copy decodes the blob mirrorCard wrote, by its shape
+// (cardShape), and a label the read could not name counts by its ID.
+func TestAWidgetReadsTypesPrioritiesAndLabelsAsTheReadGaveThem(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	bug := row("10001", 1_799_000_000_000, "a")
+	bug.Card.Type = tracker.IssueType{ID: "10004", Name: "Bug"}
+	bug.Card.Priority = tracker.Choice{ID: "2", Name: "High"}
+	bug.Card.Labels = []tracker.Choice{{ID: "frontend", Name: "frontend"}, {ID: "lbl-9"}}
+	m.tracks([]tracker.Row{bug, row("10002", 1_799_000_000_000, "b")})
+	m.subscribeShown(t, m.project())
+	w := openTickets()
+	w.Metric.SQL = `SELECT t.id AS ticket, coalesce(t.type, '-') || '|' || coalesce(t.priority, '-') || '|' ||
+	  coalesce((SELECT group_concat(name, ',') FROM (SELECT name FROM labels WHERE ticket = t.id ORDER BY name)), '-') AS note FROM tickets t`
+	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, TileMarks{}, "thread-1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, r := range tried.Rows {
+		got[r.ID] = r.Note
+	}
+	if want := map[string]string{"10001": "Bug|High|frontend,lbl-9", "10002": "-|-|-"}; !maps.Equal(got, want) {
+		t.Fatalf("type|priority|labels by ticket = %v; want %v", got, want)
+	}
+}
+
+// A widget that reads a type, a priority or labels through a join's
+// USING or NATURAL counts what its ON twin counts: tried alone, kept on
+// one dashboard beside the others, and drilled, each copy filled with what
+// its query reads. The board holds one Bug, High, labeled ticket of three.
+func TestAJoinCountsTheSameUsingNaturalOrOn(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	bug := row("10001", 1_799_000_000_000, "a")
+	bug.Card.Type = tracker.IssueType{ID: "10004", Name: "Bug"}
+	bug.Card.Priority = tracker.Choice{ID: "2", Name: "High"}
+	bug.Card.Labels = []tracker.Choice{{ID: "frontend", Name: "frontend"}}
+	task := row("10002", 1_799_000_000_000, "b")
+	task.Card.Type = tracker.IssueType{ID: "10003", Name: "Task"}
+	task.Card.Priority = tracker.Choice{ID: "3", Name: "Low"}
+	m.tracks([]tracker.Row{bug, task, row("10003", 1_799_000_000_000, "c")})
+	sub := m.subscribeShown(t, m.project()).ID
+	queries := map[string]string{
+		"type USING":       `WITH kinds(type) AS (VALUES ('Bug')) SELECT t.id AS ticket FROM tickets t JOIN kinds USING(type)`,
+		"type ON":          `WITH kinds(k) AS (VALUES ('Bug')) SELECT t.id AS ticket FROM tickets t JOIN kinds ON kinds.k = t.type`,
+		"priority NATURAL": `WITH w(priority) AS (VALUES ('High')) SELECT id AS ticket FROM tickets NATURAL JOIN w`,
+		"priority ON":      `WITH w(p) AS (VALUES ('High')) SELECT t.id AS ticket FROM tickets t JOIN w ON w.p = t.priority`,
+		"labels USING":     `WITH c AS (SELECT id AS ticket FROM tickets) SELECT c.ticket FROM c JOIN labels USING(ticket)`,
+		"labels ON":        `SELECT t.id AS ticket FROM tickets t JOIN labels l ON l.ticket = t.id`,
+	}
+	names := slices.Sorted(maps.Keys(queries))
+	widgets := map[string]string{} // widget ID to its query's name
+	dashboard := ""
+	for _, name := range names {
+		w := openTickets()
+		w.Metric.Title, w.Metric.SQL = name, queries[name]
+		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, TileMarks{}, "thread-1", true)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := numText(t, tried.Value.Value); got != `{"v":1}` {
+			t.Errorf("%s tried: %s; want 1", name, got)
+		}
+		target := KeepTarget{Dashboard: dashboard}
+		if dashboard == "" {
+			target = KeepTarget{Title: "Joins"}
+		}
+		if dashboard, err = m.svc.KeepProposal(sub, tried.View.ID, target); err != nil {
+			t.Fatalf("keep %s: %v", name, err)
+		}
+		widgets[tried.View.ID] = name
+	}
+	for _, v := range m.evaluate(t, sub, dashboard).Widgets {
+		if got := numText(t, v.Value); got != `{"v":1}` {
+			t.Errorf("%s kept: %s; want 1", widgets[v.ID], got)
+		}
+		d, err := m.svc.DashboardDrill(t.Context(), sub, trackerdash.DrillRequest{Request: trackerdash.Request{Dashboard: dashboard, TimeZone: "UTC"}, Widget: v.ID})
+		if err != nil {
+			t.Fatalf("drill %s: %v", widgets[v.ID], err)
+		}
+		if got := numText(t, &d.Value); got != `{"v":1}` || len(d.Rows) != 1 || d.Rows[0].ID != "10001" {
+			t.Errorf("%s drilled: %s, rows %+v; want 1, 10001", widgets[v.ID], got, d.Rows)
+		}
+	}
+}
+
+// numText is n as the wire writes it, "null" for none.
+func numText(t *testing.T, n *trackerdash.Num) string {
+	t.Helper()
+	data, err := json.Marshal(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// propose shows w on the fixture's board for thread-1 and answers its
+// proposal's ID.
+func (m *mirrorFixture) propose(t *testing.T, w KeptWidget) string {
+	t.Helper()
+	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), w, TileMarks{}, "thread-1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tried.View.ID
+}
+
+// evaluate counts dashboard of subscription sub, the built-in when "".
+func (m *mirrorFixture) evaluate(t *testing.T, sub, dashboard string) trackerdash.Answer {
+	t.Helper()
+	if dashboard == "" {
+		dashboard = m.list(t, sub).Dashboards[0].ID
+	}
+	return must[trackerdash.Answer](t)(m.svc.EvaluateDashboard(t.Context(), sub, trackerdash.Request{Dashboard: dashboard, TimeZone: "UTC"}))
+}
+
+// list is the dashboards and proposals subscription sub shows.
+func (m *mirrorFixture) list(t *testing.T, sub string) trackerdash.Listing {
+	t.Helper()
+	l, _, err := m.svc.Dashboards(t.Context(), sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// proposed is whether listing l holds proposal id.
+func proposed(l trackerdash.Listing, id string) bool {
+	return slices.ContainsFunc(l.Proposals, func(v trackerdash.ProposalView) bool { return v.View.ID == id })
+}
+
+func refusalCode(err error) string {
+	if r, ok := errors.AsType[*trackerdash.Refusal](err); ok {
+		return r.Code
+	}
+	return ""
+}
+
+// A widget tried without show is counted and joins nothing; shown, it is
+// a proposal on every dashboard of the board, with the thread that
+// proposed it, and the clients are told. Nothing reaches the setup file
+// until a Keep.
+func TestATriedWidgetIsCountedAndShownOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), openTickets(), TileMarks{}, "thread-1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tried.Count != 3 || tried.Value.Value == nil || *tried.Value.Value.V != 3 || len(tried.Rows) != 3 || tried.Rows[0].Key == "" {
+		t.Fatalf("tried = %+v", tried)
+	}
+	if l := m.list(t, sub); len(l.Proposals) != 0 || len(m.dashboardsSince(0)) != 0 {
+		t.Fatalf("a try without show proposed: %+v, told %+v", l.Proposals, m.dashboardsSince(0))
+	}
+
+	id := m.propose(t, openTickets())
+	if told := m.dashboardsSince(0); !isOwnID(id, widgetPrefix) || !slices.Equal(told, []ProjectDashboards{{Project: m.project(), Counts: true}}) {
+		t.Fatalf("proposal %q, told %+v", id, told)
+	}
+	if ps := m.list(t, sub).Proposals; len(ps) != 1 || ps[0].View.ID != id || ps[0].Thread != "thread-1" || ps[0].View.How.SQL == "" {
+		t.Fatalf("proposals = %+v", ps)
+	}
+	builtin := m.evaluate(t, sub, "")
+	i := slices.IndexFunc(builtin.Widgets, func(v trackerdash.WidgetValue) bool { return v.ID == id })
+	if i < 0 || *builtin.Widgets[i].Value.V != 3 {
+		t.Fatalf("the proposal's value among %+v", builtin.Widgets)
+	}
+	if _, err := os.Stat(m.setupPathOf(t, m.project())); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a proposal wrote the setup file: %v", err)
+	}
+}
+
+// A widget whose query does not run is refused with its widget's
+// sentence and proposes nothing; a board the project does not list is
+// refused before anything is read; a board holding maxProposals refuses
+// another show, and still counts a try.
+func TestATriedWidgetIsRefusedWithItsReason(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	bad := openTickets()
+	bad.Metric.SQL = "SELECT id AS ticket FROM tickets WHERE labels = 'x'"
+	_, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), bad, TileMarks{}, "thread-1", true)
+	if r, ok := errors.AsType[*trackerdash.Refusal](err); !ok || r.Code != "dashboard_widget_refused" || !strings.Contains(r.Sentence, "labels") {
+		t.Fatalf("a query on a column the copy lacks: %v", err)
+	}
+	if l := m.list(t, sub); len(l.Proposals) != 0 {
+		t.Fatalf("a refused widget was proposed: %+v", l.Proposals)
+	}
+	if _, err := m.svc.TryWidget(t.Context(), m.project(), Scope{Connection: m.conn.ID, Board: "5"}, openTickets(), TileMarks{}, "thread-1", true); !errors.Is(err, ErrNotListed) {
+		t.Fatalf("a board the project does not list: %v", err)
+	}
+	for range maxProposals {
+		m.propose(t, openTickets())
+	}
+	if _, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), openTickets(), TileMarks{}, "thread-1", true); refusalCode(err) != "dashboard_proposals_full" {
+		t.Fatalf("a proposal past the cap: %v", err)
+	}
+	if _, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), openTickets(), TileMarks{}, "thread-1", false); err != nil {
+		t.Fatalf("a try without show past the cap: %v", err)
+	}
+}
+
+// Keep puts a proposal on a new dashboard, which the board lists after
+// the built-in and counts with its widget, and the proposal goes; a
+// second Keep of it is refused. Keep onto that dashboard appends, Dismiss
+// drops, and each change is told once.
+func TestKeepMovesAProposalOntoAKeptDashboard(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	first := m.propose(t, openTickets())
+	if _, err := m.svc.KeepProposal(sub, first, KeepTarget{Title: "  "}); refusalCode(err) != "dashboard_title_invalid" {
+		t.Fatalf("a Keep onto an unnamed dashboard: %v", err)
+	}
+	if _, err := m.svc.KeepProposal(sub, first, KeepTarget{}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("a Keep onto no dashboard: %v", err)
+	}
+	told := m.boardEventCount()
+	id, err := m.svc.KeepProposal(sub, first, KeepTarget{Title: " Bugs "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.dashboardsSince(told); !slices.Equal(got, []ProjectDashboards{{Project: m.project(), Counts: true}}) {
+		t.Fatalf("a Keep was told %+v; want once, counting again", got)
+	}
+	list := m.list(t, sub)
+	if ds := list.Dashboards; len(ds) != 2 || ds[1].ID != id || ds[1].Title != "Bugs" || len(ds[1].Widgets) != 1 || ds[1].Widgets[0].ID != first || len(list.Proposals) != 0 {
+		t.Fatalf("dashboards = %+v", list)
+	}
+	kept := m.evaluate(t, sub, id)
+	if len(kept.Widgets) != 1 || *kept.Widgets[0].Value.V != 3 {
+		t.Fatalf("the kept dashboard = %+v", kept)
+	}
+	if _, err := m.svc.KeepProposal(sub, first, KeepTarget{Dashboard: id}); refusalCode(err) != "dashboard_proposal_gone" {
+		t.Fatalf("a second Keep: %v", err)
+	}
+
+	second := m.propose(t, openTickets())
+	if got, err := m.svc.KeepProposal(sub, second, KeepTarget{Dashboard: id}); err != nil || got != id {
+		t.Fatalf("a Keep onto the dashboard: %q, %v", got, err)
+	}
+	third := m.propose(t, openTickets())
+	if _, err := m.svc.KeepProposal(sub, third, KeepTarget{Dashboard: "d_0123"}); refusalCode(err) != "dashboard_gone" {
+		t.Fatalf("a Keep onto a dashboard that is gone: %v", err)
+	}
+	told = m.boardEventCount()
+	if err := m.svc.DismissProposal(sub, third); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.svc.DismissProposal(sub, third); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.dashboardsSince(told); !slices.Equal(got, []ProjectDashboards{{Project: m.project(), Counts: true}}) {
+		t.Fatalf("two Dismisses were told %+v, want once", got)
+	}
+	if l := m.list(t, sub); len(l.Proposals) != 0 || len(l.Dashboards[1].Widgets) != 2 {
+		t.Fatalf("after the second Keep and the Dismiss: %+v", l)
+	}
+}
+
+// The kept dashboards are the setup file's: a restart keeps them and
+// drops what was proposed; a save of the setup screen keeps them, an
+// empty one included; Remove of a dashboard's last widget removes the
+// dashboard, and again changes nothing and tells nothing.
+func TestKeptDashboardsLiveInTheSetupFile(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	w := m.propose(t, openTickets())
+	id := must[string](t)(m.svc.KeepProposal(sub, w, KeepTarget{Title: "Bugs"}))
+	m.propose(t, openTickets())
+	data, err := os.ReadFile(m.setupPathOf(t, m.project()))
+	if err != nil || !strings.Contains(string(data), `"dashboards"`) || !strings.Contains(string(data), "SELECT id AS ticket FROM tickets") {
+		t.Fatalf("the setup file: %s, %v", data, err)
+	}
+
+	m.restart(t)
+	sub = m.subscribeShown(t, m.project()).ID
+	if l := m.list(t, sub); len(l.Proposals) != 0 || len(l.Dashboards) != 2 || len(l.Dashboards[1].Widgets) != 1 || l.Dashboards[1].Widgets[0].ID != w {
+		t.Fatalf("after a restart: %+v", l)
+	}
+
+	stored := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	m.saveSetup(t, m.project(), m.regrouped(map[string]string{"s1": "done"}))
+	saved := must[SetupView](t)(m.svc.ProjectSetup(m.project()))
+	if _, err := m.svc.SetProjectSetup(m.project(), saved.Revision, Setup{}); err != nil {
+		t.Fatal(err)
+	}
+	if list := m.list(t, sub).Dashboards; len(list) != 2 || list[1].ID != id {
+		t.Fatalf("after setup saves over %s: %+v", stored.Revision, list)
+	}
+
+	told := m.boardEventCount()
+	if err := m.svc.RemoveWidget(sub, id, w); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.svc.RemoveWidget(sub, id, w); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.dashboardsSince(told); !slices.Equal(got, []ProjectDashboards{{Project: m.project(), Counts: true}}) {
+		t.Fatalf("a Remove, twice, was told %+v; want once", got)
+	}
+	if list := m.list(t, sub).Dashboards; len(list) != 1 {
+		t.Fatalf("the dashboard outlived its last widget: %+v", list)
+	}
+	if _, err := os.Stat(m.setupPathOf(t, m.project())); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the last dashboard's removal from an empty setup left its file: %v", err)
+	}
+}
+
+// A dashboards section a newer version saved is kept and refuses a Keep
+// with the setup's own refusal; a Keep that would take the file past its
+// bound is refused saying what to remove, and the proposal stays.
+func TestKeepRefusesANewerSectionAndAFullFile(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	newer := `{"dashboards": {"version": 2, "boards": "kept"}}`
+	m.writeSetupFile(t, m.project(), newer)
+	w := m.propose(t, openTickets())
+	if _, err := m.svc.KeepProposal(sub, w, KeepTarget{Title: "Bugs"}); !errors.Is(err, ErrSetupNewer) {
+		t.Fatalf("a Keep over a newer section: %v", err)
+	}
+	if data, _ := os.ReadFile(m.setupPathOf(t, m.project())); string(data) != newer {
+		t.Fatalf("the newer section was rewritten: %s", data)
+	}
+
+	if err := os.Remove(m.setupPathOf(t, m.project())); err != nil {
+		t.Fatal(err)
+	}
+	big := openTickets()
+	big.Metric.SQL = "SELECT id AS ticket FROM tickets WHERE title <> '" + strings.Repeat("x", 15_000) + "'"
+	var id string
+	for {
+		p := m.propose(t, big)
+		target := KeepTarget{Dashboard: id}
+		if id == "" {
+			target = KeepTarget{Title: "Big"}
+		}
+		got, err := m.svc.KeepProposal(sub, p, target)
+		if err != nil {
+			if refusalCode(err) != "dashboard_full" {
+				t.Fatalf("a Keep past the bound: %v", err)
+			}
+			if l := m.list(t, sub); !proposed(l, p) {
+				t.Fatalf("a refused Keep dropped its proposal: %+v", l.Proposals)
+			}
+			break
+		}
+		id = got
+	}
+	if info, err := os.Stat(m.setupPathOf(t, m.project())); err != nil || info.Size() > setupMaxBytes {
+		t.Fatalf("the full file: %v, %v", info, err)
+	}
+}
+
+// A Keep is one change the clients are told of once: when it is told,
+// the widget is kept and no longer proposed, so whoever lists the board
+// then finds it so. The hook runs on the Keep's goroutine as the event
+// is emitted, under subMu, so it reads the service's state as the Keep
+// left it rather than through a listing, which takes subMu.
+func TestAKeepIsToldOnceAndReadsSettled(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	p := m.propose(t, openTickets())
+	_, key, err := m.svc.boardHandle(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type seen struct{ proposed, kept bool }
+	var reads []seen
+	hook := func(e any) {
+		if b, ok := e.(BoardEvent); !ok || b.Dashboards == nil {
+			return
+		}
+		held := m.svc.setups[key.slug]
+		kept := held != nil && slices.ContainsFunc(dashboardsOf(held.kept.dashboards, key.site, string(testBoard)), func(d KeptDashboard) bool {
+			return slices.ContainsFunc(d.Widgets, func(w KeptWidget) bool { return w.ID == p })
+		})
+		proposed := slices.ContainsFunc(m.svc.proposals[proposalKey{key.slug, key.site, testBoard}], func(h heldProposal) bool { return h.widget.ID == p })
+		reads = append(reads, seen{proposed, kept})
+	}
+	m.events.onEmit.Store(&hook)
+	if _, err := m.svc.KeepProposal(sub, p, KeepTarget{Title: "Bugs"}); err != nil {
+		t.Fatal(err)
+	}
+	m.events.onEmit.Store(nil)
+	if len(reads) != 1 || reads[0] != (seen{proposed: false, kept: true}) {
+		t.Fatalf("what the service held at each telling of one Keep: %+v; want one, kept and not proposed", reads)
+	}
+}
+
+// A count that overlaps a Keep counts the widget once, proposed or kept,
+// never in neither place nor both: it reads the kept dashboards and the
+// proposals under the proposals' lock, the order a Keep holds them in. The test holds
+// that lock, waits for the count to block on it, and does a Keep's
+// transition by hand.
+func TestACountOverlappingAKeepFindsTheWidgetOnce(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	id := must[string](t)(m.svc.KeepProposal(sub, m.propose(t, openTickets()), KeepTarget{Title: "Bugs"}))
+	q := m.propose(t, openTickets())
+	scope, key, err := m.svc.boardHandle(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb := must[tileBoard](t)(m.svc.tileBoardOf(scope, key))
+	m.svc.propMu.Lock()
+	unlock := sync.OnceFunc(m.svc.propMu.Unlock)
+	defer unlock()
+	type outcome struct {
+		answer trackerdash.Answer
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		a, err := m.svc.EvaluateDashboard(t.Context(), sub, trackerdash.Request{Dashboard: id, TimeZone: "UTC"})
+		done <- outcome{a, err}
+	}()
+	waitBlockedIn(t, "trackerapp.(*Service).ownOf", done)
+	err = m.svc.keepLocked(proposalKey{key.slug, key.site, scope.Board}, key, string(scope.Board), tb, q, KeepTarget{Dashboard: id}, id)
+	unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := <-done
+	if c.err != nil {
+		t.Fatal(c.err)
+	}
+	a := c.answer
+	var counted int
+	for _, w := range a.Widgets {
+		if w.ID == q {
+			counted++
+		}
+	}
+	if counted != 1 {
+		t.Fatalf("the count counted the widget %d times; want once", counted)
+	}
+}
+
+// waitBlockedIn waits until a goroutine waits on a mutex inside fn, and
+// fails if the one that should has already ended.
+func waitBlockedIn[T any](t *testing.T, fn string, ended chan T) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		select {
+		case v := <-ended:
+			t.Fatalf("it ended before blocking in %s: %+v", fn, v)
+		default:
+		}
+		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if strings.Contains(g, "sync.(*Mutex).Lock") && strings.Contains(g, fn) {
+				return
+			}
+		}
+	}
+	t.Fatalf("no goroutine blocked on a mutex in %s", fn)
+}
+
+// A project that counts tickets lays its dashboards out in tickets: a
+// widget that adds up the board's points says it adds up tickets.
+func TestADashboardOfAProjectCountingTicketsIsLaidOutInTickets(t *testing.T) {
+	t.Parallel()
+	m, sub := dashboardFixture(t)
+	counts := func() []string {
+		var out []string
+		for _, w := range m.list(t, sub).Dashboards[0].Widgets {
+			out = append(out, w.How.Counts)
+		}
+		return out
+	}
+	before := counts()
+	if !slices.ContainsFunc(before, func(c string) bool { return strings.Contains(c, "points") }) {
+		t.Fatalf("the built-in dashboard counts no points: %q", before)
+	}
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
+	if after := counts(); slices.ContainsFunc(after, func(c string) bool { return strings.Contains(c, "points") }) {
+		t.Fatalf("the dashboard of a project counting tickets: %q", after)
+	}
+}
+
+// A project counting tickets counts each counted row of a kept estimate
+// widget as one ticket, on every read of the copy: the agent's try, the
+// dashboard and its drill. The copy keeps each ticket's own estimate, so a
+// widget written for points, and one that finds the tickets with no
+// estimate, need no change: of tickets of 3, 5 and no points, the sum is
+// 8 points or 2 tickets, the unestimated one not counted either way, and
+// one ticket has no estimate in both.
+func TestAnEvaluationOfAProjectCountingTicketsCountsTickets(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	three, five := 3.0, 5.0
+	m.tracks([]tracker.Row{
+		{Card: card("10001", 1_799_000_000_000), Order: "a", Estimate: &three},
+		{Card: card("10002", 1_799_000_000_000), Order: "b", Estimate: &five},
+		row("10003", 1_799_000_000_000, "c"),
+	})
+	sub := m.subscribeShown(t, m.project()).ID
+	sum := openTickets()
+	sum.Metric.Title, sum.Metric.SQL = "Estimate on the board", `SELECT id AS ticket, points AS value FROM tickets`
+	sum.Metric.Reduce, sum.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
+	none := openTickets()
+	none.Metric.Title, none.Metric.SQL = "Tickets with no estimate", `SELECT id AS ticket FROM tickets WHERE points IS NULL`
+	dashboard := ""
+	for _, w := range []KeptWidget{sum, none} {
+		target := KeepTarget{Dashboard: dashboard}
+		if dashboard == "" {
+			target = KeepTarget{Title: "Estimates"}
+		}
+		var err error
+		if dashboard, err = m.svc.KeepProposal(sub, m.propose(t, w), target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reads := func() string {
+		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), sum, TileMarks{}, "thread-1", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := m.evaluate(t, sub, dashboard)
+		d, err := m.svc.DashboardDrill(t.Context(), sub, trackerdash.DrillRequest{Request: trackerdash.Request{Dashboard: dashboard, TimeZone: "UTC"}, Widget: a.Widgets[0].ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("tried %s %s; dashboard %s %s, no estimate %s; drill %s %s",
+			numText(t, tried.Value.Value), tried.Unit, numText(t, a.Widgets[0].Value), a.Estimates, numText(t, a.Widgets[1].Value), numText(t, &d.Value), d.Estimates)
+	}
+	if got, want := reads(), `tried {"v":8,"nc":1} points; dashboard {"v":8,"nc":1} points, no estimate {"v":1}; drill {"v":8,"nc":1} points`; got != want {
+		t.Fatalf("counting estimates:\n%s\nwant\n%s", got, want)
+	}
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
+	if got, want := reads(), `tried {"v":2,"nc":1} tickets; dashboard {"v":2,"nc":1} none, no estimate {"v":1}; drill {"v":2,"nc":1} none`; got != want {
+		t.Fatalf("counting tickets:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A project that turns credit on, with no status groups or support named
+// for the site, has its boards' dashboards listed again with the pace
+// read from credit. While the evidence read fails, a finished ticket's
+// review is not counted and every answer of the credit dashboard says
+// why, whatever its range holds; once a read stores the evidence, its
+// reviews count and the sentence is gone.
+func TestAProjectCountingCreditCountsItsPaceFromCredit(t *testing.T) {
+	m, _, _ := evidenceFixture(t, 1)
+	sub := m.subscribeShown(t, m.project()).ID
+	paceReads := func() []string { return m.list(t, sub).Dashboards[0].Widgets[0].How.Reads }
+	if slices.Contains(paceReads(), "credit") {
+		t.Fatalf("the pace without credit reads %v", paceReads())
+	}
+	var read func(tracker.EvidenceQuery) (tracker.Evidence, error)
+	m.p.set(func(p *scripted) {
+		read = p.evidence
+		p.evidence = func(tracker.EvidenceQuery) (tracker.Evidence, error) {
+			return tracker.Evidence{}, &trackerapi.TransientError{Err: errors.New("reset")}
+		}
+	})
+	m.saveSetup(t, m.project(), Setup{Credit: &Credit{On: true, Rules: defaultCredit().Rules}})
+	if !slices.Contains(paceReads(), "credit") {
+		t.Fatalf("the pace with credit reads %v", paceReads())
+	}
+	// pace is the board's review credit as a tried widget sums it, and
+	// the sentence beside it, which the built-in dashboard's pace says too.
+	credit := openTickets()
+	credit.Metric.Title, credit.Metric.SQL = "Review credit", `SELECT ticket, value, share FROM credit WHERE kind = 'review'`
+	credit.Metric.Reduce, credit.Metric.Unit = trackerdash.ReduceSum, trackerdash.UnitEstimate
+	pace := func() (string, string) {
+		tried, err := m.svc.TryWidget(t.Context(), m.project(), m.scope(), credit, TileMarks{}, "thread-1", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dashboard := m.list(t, sub).Dashboards[0].ID
+		a := must[trackerdash.Answer](t)(m.svc.EvaluateDashboard(t.Context(), sub, trackerdash.Request{Dashboard: dashboard, Range: trackerdash.RangeThisSprint,
+			TimeZone: "UTC"}))
+		for _, w := range a.Widgets {
+			if w.Error != "" {
+				t.Fatalf("widget %s failed: %s", w.ID, w.Error)
+			}
+		}
+		if said := paceSays(t, a); said != tried.Value.Evidence {
+			t.Fatalf("the built-in pace says %q, the tried widget %q", said, tried.Value.Evidence)
+		}
+		return numText(t, tried.Value.Value), tried.Value.Evidence
+	}
+	out := must[Outcome](t)(m.svc.SyncLinked(t.Context(), m.conn.ID, LinkedDue{Evidence: true}, Background))
+	if out.Failure == nil {
+		t.Fatal("the failing evidence read did not fail its tick")
+	}
+	got, evidence := pace()
+	if got != `{"nc":1}` || !strings.HasPrefix(evidence, "Credit may not count everything: the last read of who worked on the tickets failed. ") ||
+		!strings.Contains(evidence, out.Failure.Message) {
+		t.Fatalf("while the read fails: credit %s, evidence %q; want the ticket's review not counted and the failure %q", got, evidence, out.Failure.Message)
+	}
+	// The ticket is the active sprint's; the last five finished sprints,
+	// the range a dashboard opens on, count credit too, which the failed
+	// read may have left out.
+	if said := paceSays(t, m.evaluate(t, sub, "")); said != evidence {
+		t.Fatalf("the last five sprints say %q; want %q", said, evidence)
+	}
+	m.p.set(func(p *scripted) { p.evidence = read })
+	m.evidenceTick(t)
+	if got, evidence := pace(); got != `{"v":0}` || evidence != "" {
+		t.Fatalf("once read: credit %s, evidence %q; want every row counted, no sentence", got, evidence)
+	}
+}
+
+// A change of a board's dashboards that no person's press makes reaches
+// every open dashboard of the project's board, on the board's event, and
+// no other: an agent's proposal, which names the project and the board,
+// not a subscription, is told to the board's subscriptions of the
+// project, two windows' pump among them, and not to the project's other
+// board, nor to the board of the same ID on another site the project
+// lists; a setup save that changes the unit the project counts in is told
+// to every board of the project, counting again. Another project on the
+// board takes none of it as its own.
+func TestADashboardsChangeReachesEveryOpenDashboardOfItsBoardAndNoOther(t *testing.T) {
+	t.Parallel()
+	m, _ := dashboardFixture(t)
+	m.subscribeShown(t, m.project())
+	m.listIn(t, "other")
+	m.subscribeShown(t, "other")
+	second := Scope{Connection: m.conn.ID, Board: "2"}
+	m.subscribe(t, second.Board)
+	elsewhere := m.add(NewConnection{Kind: store.TrackerKindJira, Site: "elsewhere.atlassian.net", Account: "User1@Example.com"})
+	held := []store.HeldTrackerBoard{}
+	for _, b := range must[[]store.ProjectTrackerBoard](t)(m.st.ListProjectTrackerBoards(m.project())) {
+		held = append(held, store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst})
+	}
+	list := []store.ProjectTrackerBoard{{ConnectionID: m.conn.ID, BoardID: string(testBoard)}, {ConnectionID: m.conn.ID, BoardID: "2"}, {ConnectionID: elsewhere.ID, BoardID: string(testBoard)}}
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), held, list); err != nil {
+		t.Fatal(err)
+	}
+	there := Scope{Connection: elsewhere.ID, Board: testBoard}
+	if _, err := m.svc.SubscribeBoard(m.project(), there, []Section{{Kind: SectionBacklog}}, true, untied); err != nil {
+		t.Fatal(err)
+	}
+	told := func(n int) map[Scope][]ProjectDashboards {
+		boards, _, _ := m.events.snapshot()
+		out := map[Scope][]ProjectDashboards{}
+		for _, e := range boards[n:] {
+			if e.Dashboards != nil {
+				out[e.Scope] = append(out[e.Scope], *e.Dashboards)
+			}
+		}
+		return out
+	}
+	counts := []ProjectDashboards{{Project: m.project(), Counts: true}}
+
+	n := m.boardEventCount()
+	m.propose(t, openTickets())
+	if got := told(n); len(got) != 1 || !slices.Equal(got[m.scope()], counts) {
+		t.Fatalf("an agent's proposal was told %+v; want once, on the board's event of the project, counting again", got)
+	}
+
+	n = m.boardEventCount()
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}})
+	if got := told(n); len(got) != 3 || !slices.Equal(got[m.scope()], counts) || !slices.Equal(got[second], counts) || !slices.Equal(got[there], counts) {
+		t.Fatalf("a change of the unit was told %+v; want once on each of the project's boards, counting again", got)
+	}
+}
+
+// paceSays is the sentence beside the built-in dashboard's pace in a.
+func paceSays(t *testing.T, a trackerdash.Answer) string {
+	t.Helper()
+	for _, w := range a.Widgets {
+		if w.ID == "pace" {
+			return w.Evidence
+		}
+	}
+	t.Fatal("the answer has no pace")
+	return ""
+}

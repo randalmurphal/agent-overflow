@@ -265,6 +265,7 @@ var mirrorNotReadTimes = map[string]string{
 	"tracker_cache_boards.totals_revision":         "a counter",
 	"tracker_cache_boards.retired":                 "a flag",
 	"tracker_cache_boards.structure_wall":          "a wall time (MirrorRead.Wall)",
+	"tracker_cache_forge_people.checked_at":        "a wall time, when the match was made",
 	"tracker_cache_sync.read_wall":                 "a wall time (MirrorRead.Wall)",
 	"tracker_cache_sync.failed_wall":               "a wall time (MirrorRead.Wall)",
 	"tracker_cache_sync.reconcile_failed_wall":     "a wall time (when the failing call returned)",
@@ -279,6 +280,7 @@ var mirrorNotReadTimes = map[string]string{
 	"tracker_cache_sprints.end_at":                 "the tracker's clock",
 	"tracker_cache_sprints.completed_at":           "the tracker's clock",
 	"tracker_cache_issues.type_level":              "a level",
+	"tracker_cache_parents.type_level":             "a level",
 	"tracker_cache_issues.created_at":              "the tracker's clock",
 	"tracker_cache_issues.updated_at":              "the tracker's clock",
 	"tracker_cache_issues.resolved_at":             "the tracker's clock",
@@ -305,6 +307,14 @@ var mirrorNotReadTimes = map[string]string{
 	"tracker_cache_sync.reconciled_wall":           "a wall time (MirrorRead.Wall)",
 	"tracker_cache_open_tickets.session":           "a process session",
 	"tracker_cache_open_tickets.pump":              "a counter",
+	"tracker_cache_issue_acts.source":              "an enum",
+	"tracker_cache_issue_acts.at":                  "the tracker's clock",
+	"tracker_cache_issue_acts.seconds":             "a duration",
+	"tracker_cache_issue_act_reads.source":         "an enum",
+	"tracker_cache_issue_act_reads.read_for":       "the tracker's clock",
+	"tracker_cache_issue_act_reads.read_from":      "the tracker's clock",
+	"tracker_cache_issue_act_reads.read_wall":      "a wall time (MirrorRead.Wall)",
+	"tracker_cache_issue_act_reads.tried_at":       "a wall time (MirrorRead.Wall)",
 }
 
 // Every INTEGER column of every mirror table is a read time the clock's

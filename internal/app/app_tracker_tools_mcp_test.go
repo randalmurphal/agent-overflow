@@ -148,7 +148,7 @@ func TestTrackerMCPRegistersOnlyWithATicketSource(t *testing.T) {
 		if endpoint == "" {
 			t.Fatalf("a %s project session has no tracker tools", name)
 		}
-		if got := workflowMCPToolNames(t, endpoint); !slices.Equal(got, trackertools.ToolNames()) {
+		if got := workflowMCPToolNames(t, endpoint); !slices.Equal(got, trackertools.ToolNames(true)) {
 			t.Fatalf("%s sees %v", name, got)
 		}
 	}
@@ -285,6 +285,31 @@ func TestTrackerMCPReadsTheLinkedTicket(t *testing.T) {
 	}
 }
 
+// ticket_read by key of a ticket no board, link or open ticket keeps,
+// before any board read, names its parent as the read gave it.
+func TestTrackerMCPReadNamesTheParentOfAnUnkeptTicket(t *testing.T) {
+	t.Parallel()
+	site := trackerBoardSite()
+	site.Projects = append(site.Projects, trackerfake.JiraProject{ID: "10001", Key: "OPS", Name: "Ops"})
+	day := site.Issues[0].Created
+	site.Issues = append(site.Issues,
+		trackerfake.JiraIssue{ID: "10104", Key: "WEB-4", Project: "WEB", Type: "10000", Summary: "The epic", Status: "10000", Created: day, Updated: day},
+		trackerfake.JiraIssue{ID: "10105", Key: "OPS-1", Project: "OPS", Type: "10002", Summary: "An ops task", Parent: "10104", Status: "10000", Created: day, Updated: day})
+	f := newTrackerBoardFixtureOn(t, trackerBoardSetup{site: site})
+	t.Cleanup(func() { _ = f.a.trackerMCPServer().Close() })
+	thread := store.Thread{ID: uuid.NewString(), ProjectID: f.project, Provider: string(provider.Codex), WorkspacePath: t.TempDir()}
+	if err := f.a.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	token := uuid.NewString()
+	f.a.sessionManager().put(thread.ID, session{Token: token, Provider: thread.Provider})
+	endpoint := trackerMCPEndpoint(t, f.a, thread, token)
+	read, isError := trackerMCPStreamedCall(t, f.a, endpoint, "ticket_read", map[string]any{"key": "OPS-1"})
+	if isError || !strings.HasPrefix(read, `{"key":"OPS-1","title":"An ops task",`) || !strings.Contains(read, `"parent":"WEB-4 The epic"`) {
+		t.Fatalf("ticket_read = %s (error %v)", read, isError)
+	}
+}
+
 // The Claude argv carries the server and its allowlist entry, and the app
 // guide names it; with no ticket source, neither.
 func TestStartSession_ClaudeAllowsTheTrackerToolsWithoutAPrompt(t *testing.T) {
@@ -369,10 +394,11 @@ func TestStartSession_CodexCarriesTheTrackerToolsEntryAndGuide(t *testing.T) {
 // The tool list and guide are what every session with the server reads
 // before it calls anything, so their size is a decision. This measures them
 // as a client receives them through the transport, and fails past the bound
-// saying the sizes it found.
+// saying the sizes it found. The session has a Jira connection, so its list
+// carries the time tools and dashboard_widget.
 func TestTrackerMCPToolListAndGuideStayWithinTheirBound(t *testing.T) {
 	t.Parallel()
-	const bound = 1_900
+	const bound = 3_307
 	app := newTestAppWithStore(t)
 	t.Cleanup(func() { _ = app.trackerMCPServer().Close() })
 	withTicketSource(t, app)
@@ -408,7 +434,7 @@ func TestTrackerMCPToolListAndGuideStayWithinTheirBound(t *testing.T) {
 
 // trackerToolListSum is the sha256 of the tracker tools' tools/list
 // result followed by their guide.
-const trackerToolListSum = "2ae4461f88e1bff642c891f642cc0362dba1051eee9d19b56fc8e9b462e3eeef"
+const trackerToolListSum = "0066f0441cfa172e72245fc1c9b4f57446a5de9e42fbbbc5f6a5b69f7208a3c0"
 
 // brokenPhaseThread is a workflow phase thread whose session scope cannot
 // be resolved: its attempt row names a phase its run's snapshot does not
@@ -457,7 +483,7 @@ func TestTrackerToolsLookForAConnectionBeforeTheSessionScope(t *testing.T) {
 	app := newTestAppWithStore(t)
 	withTrackerService(t, app)
 	phase := brokenPhaseThread(t, app)
-	if ok, err := app.trackerToolsFor(phase, func() (transport.CallerScope, bool, error) {
+	if ok, _, err := app.trackerToolsFor(phase, func() (transport.CallerScope, bool, error) {
 		t.Fatal("the session scope was resolved with no connection on")
 		return transport.CallerScope{}, false, nil
 	}); err != nil || ok {

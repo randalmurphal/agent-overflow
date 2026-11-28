@@ -17,7 +17,9 @@ import (
 // references its cards name (mirrorCardMarkSQL), one statement that finds
 // nothing to mark when nothing changed, and copies its cards to the links
 // of their tickets (mirrorLinkCopySQL), one statement that stops at its
-// guard when no thread has a link. A round's statements do not
+// guard when no thread has a link, and writes the parents' names its cards
+// give (mirrorParentsWriteSQL), one statement that writes no row when the
+// names are those held. A round's statements do not
 // grow with its tickets; its row writes are each ticket's read time. A board tick while an issue's
 // history waits until a read can be final for it is an idle tick: the sync
 // state reports no history due, so the tick runs no history unit.
@@ -87,13 +89,13 @@ func TestIdleTickStatements(t *testing.T) {
 				_, err := s.StoreMirrorTickets(root, sweep, checks, MirrorCatalog{}, MirrorRead{}, mirrorReadAt(at))
 				return err
 			})
-		}, 7, map[string]int{"tracker_cache_issues": n}, nil}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
+		}, 8, map[string]int{"tracker_cache_issues": n}, nil}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
 			call("GetMirrorSync", syncState(""))
 			call("StoreMirrorTickets", func() error {
 				_, err := s.StoreMirrorTickets(root, sweep, held[:n], MirrorCatalog{}, MirrorRead{}, mirrorReadAt(at))
 				return err
 			})
-		}, 7, map[string]int{"tracker_cache_issues": n}, nil})
+		}, 8, map[string]int{"tracker_cache_issues": n}, nil})
 	}
 	// The tick whose history waits runs last: it moves issue 10001's update
 	// time.
@@ -133,7 +135,7 @@ func TestIdleTickStatements(t *testing.T) {
 				return err
 			})
 			call("RecordMirrorSyncAttempt", record)
-		}, 11, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1, "tracker_cache_sync": 2}, nil},
+		}, 12, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1, "tracker_cache_sync": 2}, nil},
 	}, rounds...) {
 		if tick.before != nil {
 			tick.before()

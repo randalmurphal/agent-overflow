@@ -32,6 +32,10 @@ import (
 //   - working_days(a, b): the same, Saturdays and Sundays in the zone left
 //     out.
 //   - day(a): instant a's date in the zone, as YYYY-MM-DD.
+//   - day_start(d): the instant a row of day d (YYYY-MM-DD) is placed at,
+//     dayStart: the first millisecond of that date in the zone, which a
+//     period that holds the day holds (period.holds), whatever zone the
+//     day was named in.
 //
 // A process holds one driver for each zone name a count names that
 // time.LoadLocation loads (location refuses any other before a driver is
@@ -101,6 +105,20 @@ func driverFor(loc *time.Location) (*sqlite.Driver, error) {
 				return nil, err
 			}
 			return time.UnixMilli(a).In(loc).Format(time.DateOnly), nil
+		}),
+		scalar("day_start", 1, func(args []driver.Value) (driver.Value, error) {
+			if args[0] == nil {
+				return nil, nil
+			}
+			d, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("day_start takes a day as YYYY-MM-DD, not %T", args[0])
+			}
+			at, err := dayStart(d, loc)
+			if err != nil {
+				return nil, err
+			}
+			return at, nil
 		}),
 	)
 	if err != nil {
@@ -243,30 +261,67 @@ type contribution struct {
 	ticket  string
 	value   float64
 	counted bool
-	bucket  string
-	series  string
-	person  string
-	epic    string
-	at      int64
-	hasAt   bool
-	note    string
+	// share is the part of a ticket the row counts where the board counts
+	// tickets (ColumnShare).
+	share  float64
+	bucket string
+	series string
+	person string
+	epic   string
+	at     int64
+	hasAt  bool
+	// until is when a state row stops holding (ColumnUntil); hasUntil is
+	// false for one that still holds.
+	until    int64
+	hasUntil bool
+	note     string
+	// heading is the drill's heading of the row within its series
+	// (ColumnHeading).
+	heading string
 	// period is the label of the period place put the row in.
 	period string
 }
 
 // rowSink gathers the rows of the metric that runs, charged against the
-// byte budget. One metric runs at a time on a session.
+// row limit and the byte budget. One metric runs at a time on a session.
+// It keeps only the rows the evaluation's widgets take (kept): the limit
+// and the budget count the rows kept, and no other row is held.
 type rowSink struct {
 	cols columns
 	// series is the metric's declared series, which a row's series is one of.
 	series []string
+	kept   kept
 	rows   []contribution
 	bytes  int
 	err    error
 }
 
-func (s *rowSink) reset(cols columns, series []string) {
-	s.cols, s.series, s.rows, s.bytes, s.err = cols, series, nil, 0, nil
+func (s *rowSink) reset(cols columns, series []string, k kept) {
+	s.cols, s.series, s.kept, s.rows, s.bytes, s.err = cols, series, k, nil, 0, nil
+}
+
+// kept is which rows of a metric the sink keeps: keep is whether the
+// evaluation takes row c (reads.kept, by the reduction's own rules, and
+// evaluation.keeps for a narrowed page), nil for every row. where says
+// where a state metric's kept rows hold, for the row limit's sentence,
+// and shorter whether a shorter range holds fewer of them.
+type kept struct {
+	keep    func(c contribution) bool
+	where   string
+	shorter bool
+}
+
+// errRows is the row limit's failure: of a state metric, the rows that
+// hold where its widgets read it, which the sentence says.
+func (k kept) errRows(state bool) *MetricError {
+	if !state {
+		return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows, its limit. Pick a shorter range.", maxRows), Limit: true}
+	}
+	advice := " Pick a shorter range."
+	if !k.shorter {
+		advice = ""
+	}
+	return &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows that hold %s, its limit.%s", maxRows, k.where, advice), Limit: true}
 }
 
 func (s *rowSink) take() []contribution {
@@ -279,6 +334,19 @@ func (s *rowSink) take() []contribution {
 var errBytes = &MetricError{Sentence: fmt.Sprintf("This widget's rows passed %d MiB, their limit. Pick a shorter range.", maxRowBytes>>20), Limit: true}
 
 const maxNote = 80
+
+// cutNote is a note or a heading cut to maxNote bytes, on a rune, with an
+// ellipsis.
+func cutNote(s string) string {
+	if len(s) <= maxNote {
+		return s
+	}
+	cut := maxNote
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
 
 // add reads one row into a contribution: onBoard is whether its ticket
 // is one of the copy's tickets, which the wrapper asks of the copy.
@@ -304,14 +372,15 @@ func (s *rowSink) add(onBoard driver.Value, args []driver.Value) error {
 		return s.err
 	}
 
-	if len(c.note) > maxNote {
-		cut := maxNote
-		for cut > 0 && !utf8.RuneStart(c.note[cut]) {
-			cut--
-		}
-		c.note = c.note[:cut] + "…"
+	if s.kept.keep != nil && !s.kept.keep(c) {
+		return nil
 	}
-	s.bytes += 96 + len(c.ticket) + len(c.bucket) + len(c.series) + len(c.person) + len(c.epic) + len(c.note)
+	if len(s.rows) == maxRows {
+		s.err = s.kept.errRows(s.cols.state())
+		return s.err
+	}
+	c.note, c.heading = cutNote(c.note), cutNote(c.heading)
+	s.bytes += 96 + len(c.ticket) + len(c.bucket) + len(c.series) + len(c.person) + len(c.epic) + len(c.note) + len(c.heading)
 	if s.bytes > maxRowBytes {
 		s.err = errBytes
 		return s.err
@@ -328,17 +397,29 @@ func (s *rowSink) read(args []driver.Value) (contribution, error) {
 	if c.ticket, err = text(ColumnTicket, at(ColumnTicket)); err == nil && c.ticket == "" {
 		err = errors.New("a row's ticket is empty or NULL; each row names the ticket it counts")
 	}
-	c.value, c.counted = 1, true
+	c.value, c.counted, c.share = 1, true, 1
 	if err == nil && s.cols.has(ColumnValue) {
 		c.value, c.counted, err = number(ColumnValue, at(ColumnValue))
 		if err == nil && c.counted && (math.IsNaN(c.value) || math.Abs(c.value) > maxValue) {
 			err = fmt.Errorf("ticket %q's value is %g, past %g either way, the most a metric counts", truncate(c.ticket, 64), c.value, maxValue)
 		}
 	}
+	if err == nil && s.cols.has(ColumnShare) {
+		var share float64
+		var ok bool
+		share, ok, err = number(ColumnShare, at(ColumnShare))
+		switch {
+		case err != nil || !ok:
+		case math.IsNaN(share) || math.Abs(share) > maxValue:
+			err = fmt.Errorf("ticket %q's share is %g, past %g either way, the most a metric counts", truncate(c.ticket, 64), share, maxValue)
+		default:
+			c.share = share
+		}
+	}
 	for _, f := range []struct {
 		name string
 		to   *string
-	}{{ColumnBucket, &c.bucket}, {ColumnSeries, &c.series}, {ColumnPerson, &c.person}, {ColumnEpic, &c.epic}, {ColumnNote, &c.note}} {
+	}{{ColumnBucket, &c.bucket}, {ColumnSeries, &c.series}, {ColumnPerson, &c.person}, {ColumnEpic, &c.epic}, {ColumnNote, &c.note}, {ColumnHeading, &c.heading}} {
 		if err == nil && s.cols.has(f.name) {
 			*f.to, err = text(f.name, at(f.name))
 		}
@@ -350,6 +431,18 @@ func (s *rowSink) read(args []driver.Value) (contribution, error) {
 			err = fmt.Errorf("ticket %q's at is %g, not an instant in milliseconds from 1970 to 2286", truncate(c.ticket, 64), v)
 		}
 		c.at = int64(v)
+	}
+	if err == nil && s.cols.has(ColumnUntil) {
+		var v float64
+		v, c.hasUntil, err = number(ColumnUntil, at(ColumnUntil))
+		switch {
+		case err != nil || !c.hasUntil:
+		case !(v >= 0 && v <= maxInstant):
+			err = fmt.Errorf("ticket %q's until is %g, not an instant in milliseconds from 1970 to 2286", truncate(c.ticket, 64), v)
+		case c.hasAt && int64(v) < c.at:
+			err = fmt.Errorf("ticket %q's until is before its at; a state holds from at until until", truncate(c.ticket, 64))
+		}
+		c.until = int64(v)
 	}
 	return c, err
 }
@@ -431,3 +524,36 @@ func (a *sinkStep) WindowValue(*sqlite.FunctionContext) (driver.Value, error) {
 }
 
 func (a *sinkStep) Final(*sqlite.FunctionContext) {}
+
+// dayStart is the instant day d (YYYY-MM-DD) is placed at in loc
+// (placed). A worklog's day is the date the person logged it on, in their
+// tracker profile's zone; it is placed on that date in the request's
+// zone, whatever the two zones are.
+func dayStart(d string, loc *time.Location) (int64, error) {
+	t, err := time.Parse(time.DateOnly, d)
+	if err != nil {
+		return 0, fmt.Errorf("day_start takes a day as YYYY-MM-DD: %w", err)
+	}
+	return placed(t, loc), nil
+}
+
+// placed is the instant the civil date of day (its year, month and day;
+// its zone is not read) is placed at in loc: the first millisecond after
+// the date's first instant. That instant is its midnight, or where the
+// date begins when a zone change skips its midnight (America/Santiago's
+// 2026-09-06 begins at 01:00). A period holds the instants after its
+// start through its end (period.holds), so a period that begins at the
+// date's first instant holds the date by this instant and not the day
+// before. day_start places a row by it and evaluation.unread finds a
+// period's days by it.
+func placed(day time.Time, loc *time.Location) int64 {
+	y, m, d := day.Date()
+	t := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	if t.Day() != d {
+		// The midnight does not exist and Go read it in the zone before
+		// the change, which puts it on the day before: the date begins
+		// where that zone ends.
+		_, t = t.ZoneBounds()
+	}
+	return t.UnixMilli() + 1
+}

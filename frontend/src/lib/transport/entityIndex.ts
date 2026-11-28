@@ -322,6 +322,8 @@ const SINGLE_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = 
   4173453878: 'thread', // StartNextAssistantThread
   3009548683: 'thread', // StartTerminal
   2291054583: 'thread', // StartTicketThread
+  1584226996: 'thread', // StartTicketsThread
+  3031630647: 'thread', // StartTrackerDashboardThread
   3897387725: 'thread', // SwitchThread
   2561521885: 'project', // UnarchiveProject
   3655125512: 'thread', // UnarchiveThread

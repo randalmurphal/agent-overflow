@@ -48,6 +48,7 @@ func TestTrackerTicketMethodsCarryTheirScopeAndRoute(t *testing.T) {
 		"SaveTrackerAttachment":               {operate, transport.RouteHome, false, 30 * time.Minute},
 		"TrackerBoardProjects":                form,
 		"TrackerIssueTypes":                   form,
+		"TrackerProjectIssueTypes":            form,
 		"TrackerCreateFields":                 form,
 		"TrackerMoves":                        form,
 		"TrackerAssignableUsers":              form,
@@ -56,6 +57,9 @@ func TestTrackerTicketMethodsCarryTheirScopeAndRoute(t *testing.T) {
 		"TrackerLookup":                       form,
 		"TrackerSearch":                       form,
 		"TrackerComments":                     form,
+		"TrackerForgeAccounts":                form,
+		"TrackerPeople":                       form,
+		"SetTrackerForgeAccount":              {operate, transport.RouteHome, false, 0},
 		"CreateTrackerIssue":                  write,
 		"EditTrackerIssue":                    write,
 		"MoveTrackerIssue":                    write,
@@ -76,6 +80,10 @@ func TestTrackerTicketMethodsCarryTheirScopeAndRoute(t *testing.T) {
 		"DeleteTrackerWorklog":                write,
 		"TrackerWorklogs":                     form,
 		"RefreshTrackerWorklogs":              form,
+		"EditTrackerTimeEntry":                {operate, transport.RouteHome, false, 0},
+		"RemoveTrackerTimeEntries":            {operate, transport.RouteHome, false, 0},
+		"PostTrackerTimeEntries":              write,
+		"ThreadTimeEntries":                   {read, transport.RouteThread, false, 0},
 	} {
 		i := slices.IndexFunc(transport.GeneratedMethods, func(m transport.MethodMeta) bool { return m.Name == name })
 		if i < 0 {

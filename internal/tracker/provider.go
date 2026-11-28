@@ -48,6 +48,11 @@ type Capabilities struct {
 	// or when it began at least this long after an earlier answer for the
 	// same update arrived. The one copy of each provider's margin.
 	HistorySettle time.Duration
+	// Evidence reports that Provider.Evidence reads who commented on and
+	// logged time on an issue, the time from the connection's time source
+	// (Provider.Time): Jira does; Linear, whose work credit does not
+	// count, does not.
+	Evidence bool
 }
 
 // FieldScope is where a field's values are asked for: an existing issue,
@@ -106,6 +111,10 @@ type Provider interface {
 	// IssueTypes are the types an issue can be created with in project;
 	// none without Capabilities.IssueTypes.
 	IssueTypes(ctx context.Context, project ProjectID) ([]IssueType, error)
+	// ProjectIssueTypes are the issue types project has, which a user
+	// who can see the project reads whatever it may create; none without
+	// Capabilities.IssueTypes.
+	ProjectIssueTypes(ctx context.Context, project ProjectID) ([]IssueType, error)
 	// Boards are project's boards.
 	Boards(ctx context.Context, project ProjectID) ([]Board, error)
 	// Structure is board's structure, read from the tracker, with its
@@ -113,6 +122,12 @@ type Provider interface {
 	Structure(ctx context.Context, board BoardID, window time.Time) (Structure, error)
 	// LinkTypes are the kinds of link the tracker offers.
 	LinkTypes(ctx context.Context) ([]LinkType, error)
+	// Fields are the fields a project's setup can pin for the site's
+	// tickets: every field of the site that an issue's Detail lists, by
+	// the rule Detail lists them by, with its name and kind (no value);
+	// one of KindRichText is a section of the ticket. Refused wrapping
+	// ErrUnsupported without Capabilities.CustomFields.
+	Fields(ctx context.Context) ([]Field, error)
 
 	// ChangedRows is the next page of a board's changed rows.
 	ChangedRows(ctx context.Context, q DeltaQuery) (RowPage, error)
@@ -134,6 +149,31 @@ type Provider interface {
 	// History is the status, sprint, estimate and assignee changes of the
 	// issues q names. A failure returns no history.
 	History(ctx context.Context, q HistoryQuery) (History, error)
+	// Evidence is who commented on and logged time on the issues q names,
+	// after q.Check: each source asked of each issue is read whole or, when
+	// it failed for that issue alone (the tracker did not return the issue
+	// or said it failed, an answer too large even alone, an author not
+	// confirmed a person's), in Evidence.Failed with why. A failure every
+	// issue shares (the tracker unreachable, the credential refused, a
+	// rate limit) fails the call; the Evidence it returns holds the sources
+	// read whole before it. Without Capabilities.Evidence it fails wrapping
+	// ErrUnsupported before any request.
+	Evidence(ctx context.Context, q EvidenceQuery) (Evidence, error)
+	// PersonNamed is the one person of the tracker whose name is name,
+	// case ignored, as a forge names the account that reviewed a pull
+	// request; ok is false when no person has the name, when several do,
+	// and when the tracker cannot say whether one does. Without
+	// Capabilities.Evidence it fails wrapping ErrUnsupported before any
+	// request.
+	PersonNamed(ctx context.Context, name string) (person User, ok bool, err error)
+	// People are the people of the tracker whose name or email starts
+	// with text, for picking who a forge account is: any person of the
+	// site, or, when the tracker names none of them (which it also does
+	// for a credential that may not browse its users), those who may be
+	// assigned in any of projects. Empty text returns none with More
+	// set. Without Capabilities.Evidence it fails wrapping ErrUnsupported
+	// before any request.
+	People(ctx context.Context, projects []ProjectID, text string) (UserList, error)
 
 	// Detail is one issue's detail.
 	Detail(ctx context.Context, issue IssueID) (Detail, error)

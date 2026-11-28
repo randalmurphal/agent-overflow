@@ -378,7 +378,11 @@ problem on that record, which stays usable.
   exists), so an empty object or an error envelope never reads as every
   issue absent. `BulkFetchByID` fetches IDs alone and fails on an answer
   holding an issue with no ID, one not asked or one twice, before
-  anything is collapsed. Text a person or a tracker wrote enters
+  anything is collapsed. A bulk fetch batch whose answer is over the
+  body bound is asked again in halves (`trackerapi.Halved`, as the
+  comment, worklog and Tempo pages are), and a single issue over it
+  fails as `*OversizedIssueError` naming it, after the issues before it
+  were handed over. Text a person or a tracker wrote enters
   a JQL string only through `QuoteJQL`, `QuoteJQLText` (after `~`) or
   `QuoteJQLList` (an `in` list). `MatchJQL` asks
   `jql/match` which of up to 50 issue IDs each of up to 10 queries
@@ -520,8 +524,10 @@ input names, by ID, an entity that no longer exists is refused naming the
 input member (`Error.MissingReference`), which the provider reports as a
 stale write: the value was picked from a list that has changed.
 
-Issues are listed by a filter (team, state, cycle, update time, IDs or
-identifiers), found by text with `SearchIssues`, and read in full, every
+Issues are listed by a filter (team, state by ID, type or name, cycle by
+ID or in progress, assignee by ID or the key's user, update time, IDs or
+identifiers), found by text with `SearchIssues` under the same filter,
+and read in full, every
 relation each way read to its end: one at a time with `Issue`, or up to
 `MaxIssueDetails` (10) by ID in one request with `IssueDetails`, which
 leaves out an ID that names no issue the user can see (Linear charged the
@@ -535,8 +541,9 @@ with each entry its actor and the users, cycles, projects, teams, parent
 issues and labels it names, in the same request; one Linear answers as
 null leaves its ID alone. The same reads carry the issue's assignee and
 each comment's author whole, as `IssueComments` does its comments'
-authors, and a `SearchIssues` hit its state and assignee, so a ticket and
-a search row are named however little of the workspace was read. A trashed issue is still answered
+authors, and a `SearchIssues` hit or a `RecentIssues` row its state and
+assignee, so a ticket and a search row are named however little of the
+workspace was read. A trashed issue is still answered
 ([measured](../references/tracker-api-measurements.md#linear-trashed-history));
 the other kinds (an
 archived label, cycle, project or team, a deactivated user) are

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { WorklogDays, WorklogView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { addDays, isWeekend, localDay, mondayOf, weekDays, weekShape, weekTickets } from './trackerTimeModel';
+import type { TimeEntryView, WorklogDays, WorklogView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { addDays, cardDays, cardState, isWeekend, localDay, mondayOf, weekDays, weekDrafted, weekQuestions, weekShape, weekTickets } from './trackerTimeModel';
 
 function log(id: string, day: string, spent: number, issue = '10001', key = 'WEB-1', title = 'First story'): WorklogView {
   return { id, issue, key, title, author: 'acct-1', day, spent_seconds: spent, updated: 1 };
@@ -86,5 +86,82 @@ describe('weekShape', () => {
   it('names a ticket from any entry that names it', () => {
     const shape = weekShape(MONDAY, answer([log('1', '2026-11-09', 60, '7', '', ''), log('2', '2026-11-10', 60, '7', 'WEB-7', 'Seventh')]));
     expect(weekTickets(shape).map((t) => [t.key, t.title])).toEqual([['WEB-7', 'Seventh']]);
+  });
+});
+
+function entry(id: number, day: string, minutes: number, extra: Partial<TimeEntryView> = {}): TimeEntryView {
+  return { id, revision: 1, connection: 'c1', day, issue: '10001', key: 'WEB-1', title: 'First story', minutes, reason: 'Commits', by: 'agent', thread: 't1', call: 'call-1', state: 'drafted', ...extra };
+}
+
+function question(id: number, day: string, minutes: number, extra: Partial<TimeEntryView> = {}): TimeEntryView {
+  return entry(id, day, minutes, { issue: undefined, key: undefined, title: undefined, reason: 'A call not on the calendar.', offers: [{ issue: '10002', key: 'WEB-2' }], ...extra });
+}
+
+describe('the agent\'s draft in a week', () => {
+  it('puts drafted entries under their day and ticket, questions apart, and counts what an approval posts', () => {
+    const shape = weekShape(MONDAY, answer([log('1', '2026-11-09', 3600)], { drafted: [
+      entry(1, '2026-11-09', 90),
+      entry(2, '2026-11-10', 30, { issue: '10002', key: 'WEB-2', title: 'Second story' }),
+      question(3, '2026-11-10', 25),
+      entry(4, '2026-11-11', 60, { state: 'unknown' }),
+    ] }));
+    const [mon, tue, wed, thu] = shape.days;
+    expect(mon.drafted.map((e) => e.id)).toEqual([1]);
+    expect(mon.draftedMinutes).toBe(90);
+    expect(tue.questions.map((e) => e.id)).toEqual([3]);
+    expect(tue.draftedMinutes).toBe(30);
+    // An entry of unknown outcome shows on its day and is never approved.
+    expect(wed.drafted.map((e) => e.id)).toEqual([4]);
+    expect(wed.draftedMinutes).toBe(0);
+    expect([mon.mark, tue.mark, wed.mark, thu.mark]).toEqual(['drafted', 'question', 'drafted', 'none']);
+    expect(shape.draft).toEqual({ days: 2, entries: 2, questions: 1, minutes: 120, threads: ['t1'], logged: { seconds: 0, worklogs: 0 } });
+    expect(weekDrafted(shape).map((e) => e.id)).toEqual([1, 2, 3]);
+    expect(weekQuestions(shape).map((q) => q.map((e) => e.id))).toEqual([[], [3], [], [], []]);
+    const rows = weekTickets(shape);
+    expect(rows.map((r) => [r.key, r.drafted.map((c) => c.map((e) => e.id))])).toEqual([
+      ['WEB-1', [[1], [], [4], [], []]],
+      ['WEB-2', [[], [2], [], [], []]],
+    ]);
+    // A drafted cell's time is not the ticket's logged total.
+    expect(rows[0].total).toBe(3600);
+  });
+
+  // The worklogs say what is logged: a posted entry whose worklog was
+  // deleted or moved is no time on its day.
+  it('draws no entry left out or posted, and counts what the draft logged by the worklogs the read holds', () => {
+    const shape = weekShape(MONDAY, answer([log('w9', '2026-11-09', 1800)], { drafted: [
+      entry(1, '2026-11-09', 30, { state: 'posted', worklog: 'w9' }),
+      entry(2, '2026-11-10', 30, { state: 'posted', worklog: 'w10' }),
+      question(3, '2026-11-10', 25, { state: 'left_out' }),
+    ] }));
+    expect(shape.days[0].drafted).toEqual([]);
+    expect(shape.days[0].mark).toBe('logged');
+    expect(shape.days[1].drafted).toEqual([]);
+    expect(shape.days[1].questions).toEqual([]);
+    expect(shape.days[1].mark).toBe('none');
+    expect(shape.draft.entries).toBe(0);
+    expect(shape.draft.logged).toEqual({ seconds: 1800, worklogs: 1 });
+  });
+
+  it('shows a weekend day that holds a draft', () => {
+    const shape = weekShape(MONDAY, answer([], { drafted: [entry(1, '2026-11-14', 60)] }));
+    expect(shape.days.map((d) => d.day).at(-1)).toBe('2026-11-14');
+  });
+});
+
+describe('a call\'s card', () => {
+  it('groups the entries by the days its row names, a day with none left included', () => {
+    expect(cardDays([entry(1, '2026-11-10', 60)], ['2026-11-09', '2026-11-10']).map((d) => [d.day, d.entries.map((e) => e.id)])).toEqual([
+      ['2026-11-09', []],
+      ['2026-11-10', [1]],
+    ]);
+  });
+
+  it('says what is left: time to approve, questions only, logged time, nothing to approve, or no entry', () => {
+    expect(cardState([entry(1, '2026-11-09', 60), entry(2, '2026-11-10', 30), question(3, '2026-11-10', 25)])).toEqual({ kind: 'draft', days: 2, minutes: 90 });
+    expect(cardState([question(3, '2026-11-10', 25), entry(1, '2026-11-09', 60, { state: 'posted' })])).toEqual({ kind: 'questions', questions: 1 });
+    expect(cardState([entry(1, '2026-11-09', 60, { state: 'posted' }), entry(2, '2026-11-10', 30, { state: 'posted' })])).toEqual({ kind: 'logged', minutes: 90, worklogs: 2 });
+    expect(cardState([entry(1, '2026-11-09', 60, { state: 'unknown' })])).toEqual({ kind: 'settled' });
+    expect(cardState([])).toEqual({ kind: 'empty' });
   });
 });

@@ -1041,3 +1041,32 @@ func TestLocalFactsHoldNoneOfGitsListing(t *testing.T) {
 		t.Fatalf("six lookups left %d bytes on the heap, want under 1 MiB", after-before)
 	}
 }
+
+// recordSink keeps every byte it is given.
+type recordSink struct{ got []byte }
+
+func (s *recordSink) write(p []byte) { s.got = append(s.got, p...) }
+
+// A cat-file --batch stream is parsed the same however its writes are
+// cut: each object's bytes reach its sink whole and nothing else does,
+// with the stream cut every n bytes for every n, so a cut falls inside a
+// header, inside an object, on its last byte and on its newline.
+func TestBatchStreamParsesHoweverItsWritesAreCut(t *testing.T) {
+	t.Parallel()
+	first, second := "tree 1\n\nfirst object\n", "x"
+	stream := fmt.Sprintf("aaa commit %d\n%s\nbbb blob 0\n\nccc blob %d\n%s\n", len(first), first, len(second), second)
+	for n := 1; n <= len(stream); n++ {
+		a, c := &recordSink{}, &recordSink{}
+		s := &batchStream{sinks: map[string]objectSink{"aaa": a, "ccc": c}}
+		for rest := []byte(stream); len(rest) > 0; {
+			cut := min(n, len(rest))
+			if wrote, err := s.Write(rest[:cut]); err != nil || wrote != cut {
+				t.Fatalf("writes of %d bytes: wrote %d, %v", n, wrote, err)
+			}
+			rest = rest[cut:]
+		}
+		if s.objects != 3 || s.remaining != 0 || len(s.header) != 0 || string(a.got) != first || string(c.got) != second {
+			t.Fatalf("writes of %d bytes: %d objects, %d bytes owed, sinks %q and %q", n, s.objects, s.remaining, a.got, c.got)
+		}
+	}
+}

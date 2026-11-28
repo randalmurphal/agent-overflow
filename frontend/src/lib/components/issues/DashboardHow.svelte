@@ -3,14 +3,20 @@
   // as the board's computer words it from the metric's definition: the
   // metric's own words, what it adds up and for whom, what the range does
   // to it, the rules it reads, the tables it reads and its query. Shown in
-  // the widget's place, so it reads the same under compact.
+  // the widget's place, so it reads the same under compact. A count of
+  // threads reads the board's computer's (`computer`), which the Ticket
+  // screen's list, of every attached computer, can exceed: it says so. A
+  // count of logged time says which days the page reads
+  // (trackerDashboard's reads, trackerdash worklogs.go).
   import type { How } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
 
   interface Props {
     how: How;
+    /** The name of the computer that counts the board. */
+    computer: string;
   }
 
-  let { how }: Props = $props();
+  let { how, computer }: Props = $props();
 </script>
 
 <div class="flex flex-col gap-1.5 text-[0.75rem] text-fg-muted" data-testid="dashboard-how">
@@ -22,6 +28,12 @@
   <p>Rules it reads: {how.rules}.</p>
   {#if how.reads.length > 0}
     <p>It reads {how.reads.join(', ')}.</p>
+  {/if}
+  {#if how.reads.includes('worklogs')}
+    <p data-testid="dashboard-how-worklogs">It counts your own logged time, and its numbers are known once every day of the last 182 days up to today is read. While a widget of it is counted, its computer reads from the tracker the days not read yet, 31 days a read, and the newest 31 days again at most once every 5 minutes; once it starts, it reads them all even if this page closes. After a read fails it reads nothing more on its own until Read again or Refresh, which read every day again. A day before those 182 is not read, so a number that counts one is not known.</p>
+  {/if}
+  {#if how.reads.includes('threads')}
+    <p data-testid="dashboard-how-threads">It counts the threads on {computer} linked to these tickets; a ticket's Work lists those of every attached computer.</p>
   {/if}
   <details class="mt-1">
     <summary class="cursor-pointer select-none text-fg-muted hover:text-fg">The query</summary>

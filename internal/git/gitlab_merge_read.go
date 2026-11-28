@@ -40,7 +40,8 @@ type gitlabProjectSettings struct {
 	// (ListOpenPRs).
 	ID         int64 `json:"id"`
 	ForkedFrom *struct {
-		ID int64 `json:"id"`
+		ID                int64  `json:"id"`
+		PathWithNamespace string `json:"path_with_namespace"`
 	} `json:"forked_from_project"`
 	MergeMethod                               string `json:"merge_method"`
 	SquashOption                              string `json:"squash_option"`

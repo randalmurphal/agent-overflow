@@ -22,8 +22,12 @@ func (fakeProvider) BoardProjects(context.Context, BoardID) ([]Project, error) {
 	return nil, nil
 }
 func (fakeProvider) LinkTypes(context.Context) ([]LinkType, error)      { return nil, nil }
+func (fakeProvider) Fields(context.Context) ([]Field, error)            { return nil, nil }
 func (fakeProvider) Boards(context.Context, ProjectID) ([]Board, error) { return nil, nil }
 func (fakeProvider) IssueTypes(context.Context, ProjectID) ([]IssueType, error) {
+	return nil, nil
+}
+func (fakeProvider) ProjectIssueTypes(context.Context, ProjectID) ([]IssueType, error) {
 	return nil, nil
 }
 func (fakeProvider) Structure(context.Context, BoardID, time.Time) (Structure, error) {
@@ -43,9 +47,18 @@ func (fakeProvider) NewRows(context.Context, IssueID, []BoardID) (Placement, err
 }
 func (fakeProvider) Cards(context.Context, []IssueID) (Cards, error)        { return Cards{}, nil }
 func (fakeProvider) History(context.Context, HistoryQuery) (History, error) { return History{}, nil }
-func (fakeProvider) Detail(context.Context, IssueID) (Detail, error)        { return Detail{}, nil }
-func (fakeProvider) Details(context.Context, []IssueID) (Details, error)    { return Details{}, nil }
-func (fakeProvider) Moves(context.Context, IssueID) ([]Move, error)         { return nil, nil }
+func (fakeProvider) Evidence(context.Context, EvidenceQuery) (Evidence, error) {
+	return Evidence{}, nil
+}
+func (fakeProvider) PersonNamed(context.Context, string) (User, bool, error) {
+	return User{}, false, nil
+}
+func (fakeProvider) People(context.Context, []ProjectID, string) (UserList, error) {
+	return UserList{}, nil
+}
+func (fakeProvider) Detail(context.Context, IssueID) (Detail, error)     { return Detail{}, nil }
+func (fakeProvider) Details(context.Context, []IssueID) (Details, error) { return Details{}, nil }
+func (fakeProvider) Moves(context.Context, IssueID) ([]Move, error)      { return nil, nil }
 func (fakeProvider) Comments(context.Context, IssueID, PageToken) (CommentPage, error) {
 	return CommentPage{}, nil
 }
@@ -85,6 +98,6 @@ func (fakeProvider) Poker() Poker                                  { return nil 
 type fakeTime struct{}
 
 func (fakeTime) Worklogs(context.Context, WorklogQuery) ([]Worklog, error) { return nil, nil }
-func (fakeTime) AddWorklog(context.Context, WorklogInput) Result           { return Result{} }
+func (fakeTime) AddWorklogs(context.Context, []WorklogInput) Result        { return Result{} }
 func (fakeTime) EditWorklog(context.Context, WorklogEdit) Result           { return Result{} }
 func (fakeTime) DeleteWorklog(context.Context, WorklogDelete) Result       { return Result{} }

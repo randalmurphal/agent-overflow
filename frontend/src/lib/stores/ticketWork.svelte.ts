@@ -7,7 +7,13 @@
 //
 // The Work read is the ticket's computer's answer, newest read wins; it is
 // read when Work shows, on the ticket's Refresh and after a Start work
-// thread is made, and does not follow pull requests or branches live.
+// thread is made, and does not follow pull requests or branches live. A
+// read is two calls to that computer at once: the stored sources
+// (GetTicketWork), shown as soon as they answer, and the same answer with
+// the forge searched by the ticket's key (SearchTicketWork), which
+// replaces it when it lands, so a slow forge holds no stored row back.
+// The search's answer is the read's once it lands, whichever came first,
+// and a stored read that fails after it shows no failure.
 //
 // A Start work run is its plan, the thread it made and each step's
 // outcome. The steps run in order: the thread (StartTicketThread, which
@@ -31,9 +37,10 @@
 // so a later write of the target by anything else never shows there.
 
 import { SvelteMap } from 'svelte/reactivity';
-import type { FieldValueView, Setup, StartWorkDefaults } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { GetTicketWork, StartTicketThread, type TicketWork } from './bindings';
+import type { FieldValueView, Setup } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { GetTicketWork, SearchTicketWork, StartTicketThread, StartTicketsThread, type TicketWork } from './bindings';
 import { editTrackerSetup } from './trackerSetup.svelte';
+import { withStartWorkDefaults, type DefaultsPlace } from './startWorkDefaults';
 import { mountThreadForToolPane } from './panes.svelte';
 import { revealProject } from './sidebarEntryContinuity.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
@@ -55,14 +62,21 @@ export interface TicketWorkRead {
   /** The last answer; null until one arrives. */
   readonly work: TicketWork | null;
   readonly loading: boolean;
+  /** The read's forge search has not answered yet. */
+  readonly searching: boolean;
   /** The last read failed: why; null otherwise. */
   readonly error: unknown;
+  /** The last read's forge search failed as a whole (each repository's
+   * failure is in the answer's `forgeProblems`): why; null otherwise. */
+  readonly searchError: unknown;
   /** This device may not read git on the ticket's computer. */
   readonly denied: boolean;
 }
 
 interface HeldRead extends TicketWorkRead {
   readonly request: number;
+  /** The read's search answered, so its stored answer is not shown. */
+  readonly searched: boolean;
 }
 
 const reads = new SvelteMap<string, HeldRead>();
@@ -73,28 +87,33 @@ export function ticketWork(key: string): TicketWorkRead | null {
   return reads.get(key) ?? null;
 }
 
-/** Reads the ticket's pull requests and branches on its computer. A newer
- * read supersedes this one's answer; the last answer shows meanwhile. A
+/** Reads the ticket's pull requests and branches on its computer, and
+ * searches the forge for the ones it does not store. A newer read
+ * supersedes this one's answers; the last answer shows meanwhile. A
  * dropped connection keeps it and says nothing: the next read is the
  * reconnect's Refresh or the next open. */
 export async function loadTicketWork(key: string, ref: TrackerTicketRef): Promise<void> {
   const held = reads.get(key);
   if (!hasScope('git:operate', ref.backend)) {
-    reads.set(key, { request: ++nextRequest, work: null, loading: false, error: null, denied: true });
+    reads.set(key, { request: ++nextRequest, work: null, loading: false, searching: false, searched: false, error: null, searchError: null, denied: true });
     return;
   }
   const request = ++nextRequest;
-  reads.set(key, { request, work: held?.work ?? null, loading: true, error: null, denied: false });
-  const write = (next: Omit<HeldRead, 'request' | 'denied'>) => {
-    if (reads.get(key)?.request === request) reads.set(key, { request, denied: false, ...next });
+  reads.set(key, { request, work: held?.work ?? null, loading: true, searching: true, searched: false, error: null, searchError: null, denied: false });
+  const write = (next: (read: HeldRead) => Partial<HeldRead>) => {
+    const read = reads.get(key);
+    if (read?.request === request) reads.set(key, { ...read, ...next(read) });
   };
-  try {
-    const work = await withBackendTarget(ref.backend, () => GetTicketWork(ref.connection, ref.issue));
-    write({ work, loading: false, error: null });
-  } catch (err) {
-    const work = reads.get(key)?.work ?? null;
-    write({ work, loading: false, error: isPassiveConnectionFailure(err) ? null : err });
-  }
+  const failure = (err: unknown) => (isPassiveConnectionFailure(err) ? null : err);
+  const stored = withBackendTarget(ref.backend, () => GetTicketWork(ref.connection, ref.issue)).then(
+    (work) => write((read) => (read.searched ? { loading: false } : { work, loading: false, error: null })),
+    (err) => write((read) => (read.searched ? { loading: false } : { loading: false, error: failure(err) })),
+  );
+  const searched = withBackendTarget(ref.backend, () => SearchTicketWork(ref.connection, ref.issue)).then(
+    (work) => write(() => (work === null ? { searching: false } : { work, searched: true, searching: false, loading: false, error: null })),
+    (err) => write(() => ({ searching: false, searchError: failure(err) })),
+  );
+  await Promise.all([stored, searched]);
 }
 
 const asking = new SvelteMap<string, true>();
@@ -121,25 +140,31 @@ export async function askAboutTicket(t: TicketWriteContext, project: string): Pr
   }
 }
 
-// ---- Start work ----
-
-/** The Start work defaults' place in a project's setup file: the tracker
- * site and the tracker project, named by the key's prefix. */
-export interface DefaultsPlace {
-  readonly tracker: string;
-  readonly site: string;
-  readonly project: string;
+/** Start a thread on tickets selected together, all of one connection:
+ * one thread in `project` with each ticket's file attached to its draft
+ * and `text` in it, unsent, opened in a pane once `made` has run (a drill
+ * closes there). Nothing on the tickets changes. Answers whether it was
+ * made; a failure leaves nothing and says why in a toast. */
+export async function askAboutTickets(tickets: readonly TicketWriteContext[], project: string, text: string, made: () => void): Promise<boolean> {
+  const mark = threadRowFrameMark();
+  let thread: Thread;
+  try {
+    thread = await StartTicketsThread(project, { connectionId: tickets[0].ref.connection, issueIds: tickets.map((t) => t.ref.issue), text });
+  } catch (err) {
+    addErrorToast(`Could not start a thread on ${tickets.map((t) => t.label).join(', ')}: ${userFacingError(err)}`, err);
+    return false;
+  }
+  made();
+  await openTicketThread(prependThreadReply(thread, mark));
+  return true;
 }
+
+// ---- Start work ----
 
 /** The prefix of a ticket key ("WEB" of "WEB-1"). */
 export function keyPrefix(key: string): string {
   const dash = key.lastIndexOf('-');
   return dash > 0 ? key.slice(0, dash) : key;
-}
-
-/** The entry of the setup for `place`, if any. */
-export function defaultsAt(setup: Setup, place: DefaultsPlace): StartWorkDefaults | null {
-  return (setup.start_work ?? []).find((d) => d.tracker === place.tracker && d.site === place.site && d.project === place.project) ?? null;
 }
 
 /** What Start work does, as the form showed it. */
@@ -270,28 +295,26 @@ async function assignStep(t: TicketWriteContext, plan: StartWorkPlan, state: Tra
 }
 
 /** The setup with the Start work defaults of `plan` saved at its place:
- * the other entries kept, and the branch template kept when the plan's
- * branch names none. */
-function withStartWorkDefaults(setup: Setup, plan: StartWorkPlan): Setup {
+ * the branch template kept when the plan's branch names none, and naming
+ * the branch after the ticket turned on when it names one. */
+function withPlanDefaults(setup: Setup, plan: StartWorkPlan): Setup {
   const save = plan.save;
   if (!save) return setup;
-  const kept = defaultsAt(setup, save.place);
-  const entry: StartWorkDefaults = {
-    ...save.place,
-    status: plan.status?.id,
+  const named = save.branchTemplate !== null;
+  return withStartWorkDefaults(setup, save.place, save.project, {
+    status: plan.status?.id ?? null,
     assign: plan.assign,
-    branch: save.branchTemplate ?? kept?.branch,
-    repository: plan.repository === save.project ? undefined : plan.repository,
-  };
-  const others = (setup.start_work ?? []).filter((d) => d !== kept);
-  return { ...setup, start_work: [...others, entry] };
+    branch: save.branchTemplate,
+    nameBranch: named ? true : undefined,
+    repository: plan.repository,
+  });
 }
 
 async function defaultsStep(plan: StartWorkPlan): Promise<StepOutcome> {
   const save = plan.save;
   if (!save) return { kind: 'skipped' };
   try {
-    const answer = await editTrackerSetup(save.project, (setup) => withStartWorkDefaults(setup, plan));
+    const answer = await editTrackerSetup(save.project, (setup) => withPlanDefaults(setup, plan));
     if (answer.kind === 'refused') return { kind: 'refused', text: `The defaults were not saved: ${answer.sentence}.` };
     return { kind: 'applied', note: save.branchTemplate === null ? 'The branch name does not hold the ticket\'s key, so the branch pattern saved before stays.' : null };
   } catch (err) {

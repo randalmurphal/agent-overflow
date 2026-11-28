@@ -44,10 +44,14 @@ func New(c *linear.Client) (*Provider, error) {
 // no custom fields, no move screens, generates its cycles and holds links
 // rather than files. Nor DetailMovesUpdated: a comment does not move an
 // issue's `updatedAt` (docs/references/tracker-api-measurements.md,
-// Linear).
-func (p *Provider) Capabilities() tracker.Capabilities {
+// Linear). They are the same for every connection, so a caller with no
+// client reads them.
+func Capabilities() tracker.Capabilities {
 	return tracker.Capabilities{HistorySettle: settleMargin}
 }
+
+// Capabilities are Linear's (Capabilities).
+func (p *Provider) Capabilities() tracker.Capabilities { return Capabilities() }
 
 // Time is nil: Linear has no time tracking.
 func (p *Provider) Time() tracker.TimeTracker { return nil }
@@ -104,6 +108,11 @@ func (p *Provider) IssueTypes(context.Context, tracker.ProjectID) ([]tracker.Iss
 	return nil, nil
 }
 
+// ProjectIssueTypes is none: Linear issues have no type.
+func (p *Provider) ProjectIssueTypes(context.Context, tracker.ProjectID) ([]tracker.IssueType, error) {
+	return nil, nil
+}
+
 // Boards is the team's one board, whose ID is the team's; none for a
 // team the key cannot see.
 func (p *Provider) Boards(ctx context.Context, project tracker.ProjectID) ([]tracker.Board, error) {
@@ -140,6 +149,12 @@ var linkTypes = []tracker.LinkType{
 	{ID: tracker.LinkTypeID(linear.RelationBlocks), Name: "Blocks", Outward: "blocks", Inward: "is blocked by"},
 	{ID: tracker.LinkTypeID(linear.RelationDuplicate), Name: "Duplicate", Outward: "duplicates", Inward: "is duplicated by"},
 	{ID: tracker.LinkTypeID(linear.RelationRelated), Name: "Related", Outward: "relates to", Inward: "relates to"},
+}
+
+// Fields are refused: a Linear ticket's field list is fixed, and a
+// project pins none of it (no Capabilities.CustomFields).
+func (p *Provider) Fields(context.Context) ([]tracker.Field, error) {
+	return nil, fmt.Errorf("linearprovider: pinnable fields: %w", tracker.ErrUnsupported)
 }
 
 // LinkTypes are the relations Linear can create.

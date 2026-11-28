@@ -48,6 +48,13 @@ type boardPump struct {
 type boardPending struct {
 	changed, removed     []tracker.IssueID
 	readAgain, truncated bool
+	// pins are a project's pins that changed (tellPins), and dashboards a
+	// change of a project's dashboards (tellDashboards), each sent at once.
+	pins       *ProjectPins
+	dashboards *ProjectDashboards
+	// recount is a change of what the board's dashboards count that names
+	// no row (tellRecount).
+	recount bool
 	// due reports something to send: a change or a failure that started,
 	// changed or cleared.
 	due bool
@@ -138,16 +145,12 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 	case !listed:
 		return BoardSubscription{}, fmt.Errorf("%w: project %s, board %s of %s", ErrNotListed, projectID, scope.Board, scope.Connection)
 	}
-	id, p, start, seq, told, key, err := s.takeBoardHandle(scope, slug, visible, tie)
+	id, p, start, seq, told, key, err := s.takeBoardHandle(projectID, scope, slug, visible, tie)
 	if err != nil {
 		return BoardSubscription{}, err
 	}
 	answer := BoardSubscription{ID: id, Seq: seq, PollEvery: p.every.Milliseconds()}
-	var view BoardView
-	groups, err := s.boardStatusGroups(key)
-	if err == nil {
-		view, err = s.Board(scope, groups, sections)
-	}
+	view, err := s.boardViewOf(key, scope, sections)
 	switch {
 	case err == nil:
 		answer.Loaded, answer.View = true, &view
@@ -186,7 +189,7 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 // were last told of it then, and key the status groups the handle reads
 // with. The connection is read under opMu, so a turn off orders entirely
 // before (refused) or after (the pump ends).
-func (s *Service) takeBoardHandle(scope Scope, slug string, visible bool, tie Tie) (id string, p *boardPump, start bool, seq uint64,
+func (s *Service) takeBoardHandle(projectID string, scope Scope, slug string, visible bool, tie Tie) (id string, p *boardPump, start bool, seq uint64,
 	told SyncView, key setupKey, err error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -217,7 +220,7 @@ func (s *Service) takeBoardHandle(scope Scope, slug string, visible bool, tie Ti
 		s.subs.boards[scope] = p
 		start = true
 	}
-	h := &handle{board: p, untie: untie, setup: key}
+	h := &handle{board: p, untie: untie, setup: key, project: projectID}
 	s.takeHandleLocked(id, h, &p.core)
 	h.ref.VoteLocked(visible)
 	return id, p, start, s.nextSeqLocked(), p.toldLocked(), key, nil
@@ -508,7 +511,7 @@ func (s *Service) flushBoardLocked(p *boardPump) {
 	p.pending = boardPending{}
 	s.emitBoard(BoardEvent{
 		Scope: p.scope, Seq: s.nextSeqLocked(), Changed: pending.changed, Removed: pending.removed,
-		Truncated: pending.truncated, ReadAgain: pending.readAgain, Sync: p.toldLocked(),
+		Truncated: pending.truncated, ReadAgain: pending.readAgain, Pins: pending.pins, Dashboards: pending.dashboards, Recount: pending.recount, Sync: p.toldLocked(),
 	})
 }
 

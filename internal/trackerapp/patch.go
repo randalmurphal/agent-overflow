@@ -114,7 +114,7 @@ func (s *Service) BoardPatch(scope Scope, groups StatusGroups, sections []Sectio
 	}
 	out := BoardPatch{Lifetime: snap.Lifetime, Revision: snap.Revision, Sections: make([]PatchSection, len(sections))}
 	if snap.Counts != nil {
-		out.Totals = totalsOf(*snap.Counts)
+		out.Totals = totalsOf(*snap.Counts, groups.credit)
 	}
 	cards := make([][]shownCard, len(sections))
 	for i, rows := range snap.Sections {
@@ -131,9 +131,10 @@ func (s *Service) BoardPatch(scope Scope, groups StatusGroups, sections []Sectio
 	return out, nil
 }
 
-// totalsOf is c as a patch's totals, sprints and columns in order.
-func totalsOf(c store.MirrorSectionCounts) *BoardTotals {
-	out := &BoardTotals{Revision: c.TotalsRevision, All: totalOf(c.All), Backlog: totalOf(c.Backlog), Pace: paceOf(c.Pace)}
+// totalsOf is c as a patch's totals, sprints and columns in order, the
+// pace with the project's credit while it counts credit.
+func totalsOf(c store.MirrorSectionCounts, credit bool) *BoardTotals {
+	out := &BoardTotals{Revision: c.TotalsRevision, All: totalOf(c.All), Backlog: totalOf(c.Backlog), Pace: paceOf(c.Pace, credit)}
 	for id, t := range c.Sprints {
 		out.Sprints = append(out.Sprints, SprintTotal{Sprint: id, Total: totalOf(t)})
 	}

@@ -18,6 +18,7 @@ import {
   appendPage,
   applyBoardPatch,
   cardMatches,
+  filtering,
   cardURL,
   columnWith,
   columnsReached,
@@ -141,7 +142,7 @@ function sprintBoard(rowsBySprint: Record<string, RowView[]>, more: string[] = [
     { name: 'In Progress', statuses: [{ id: 's2', group: 'in_progress' }], total: { rows: 0, estimate: 0 } },
   ];
   const view = {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' }, counts: 'points',
     columns, sprints: [...Object.keys(rowsBySprint), ...unread].map((id) => ({ id, name: id, state: 'active', total: { rows: 0, estimate: 0 } })),
     all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {},
     screen: [...Object.keys(rowsBySprint), ...unread].map((id) => ({ kind: 'sprint', sprint: id })),
@@ -210,6 +211,14 @@ describe('Only mine and Search', () => {
     expect(cardMatches(card, { mine: null, words: searchWords('web-1 bug user') })).toBe(true);
     expect(cardMatches(card, { mine: null, words: searchWords('export missing') })).toBe(false);
   });
+
+  it("keeps only a tile's tickets while a tile filters the board, with Only mine and Search on top", () => {
+    expect(filtering({ mine: null, words: [], only: new Set<string>() })).toBe(true);
+    expect(filtering({ mine: null, words: [], only: null })).toBe(false);
+    expect(cardMatches(card, { mine: null, words: [], only: new Set(['1']) })).toBe(true);
+    expect(cardMatches(card, { mine: null, words: [], only: new Set(['2']) })).toBe(false);
+    expect(cardMatches(card, { mine: 'acc-user2', words: [], only: new Set(['1']) })).toBe(false);
+  });
 });
 
 describe('the row interner', () => {
@@ -234,7 +243,7 @@ describe('a moved card on the Board screen', () => {
       { name: 'Done', statuses: [{ id: 's3', group: 'done' }], total: { rows: 0, estimate: 0 } },
     ];
     const view = {
-      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' },
+      id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: false, estimate: { unit: 'points' }, counts: 'points',
       columns, sprints: [], all: { rows: 3, estimate: 6 }, backlog: { rows: 0, estimate: 0 }, sync: {}, regrouped: Object.fromEntries(leftOut.map((s) => [s, 'left_out'])),
       screen: [0, 1, 2].map((column) => ({ kind: 'column', column })),
       sections: [
@@ -331,7 +340,7 @@ function planBoard(rows: { '8': RowView[]; '9'?: RowView[]; backlog?: RowView[] 
   const sprint = (id: string, state: string) => ({ id, name: `Sprint ${id}`, state, total: { rows: 0, estimate: 0 } });
   const page = (section: object, held: RowView[]) => ({ section, rows: held, next: null });
   const view = {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: 'points' }, counts: 'points',
     columns, sprints: [sprint('8', 'active'), sprint('9', 'future')],
     all: { rows: 0, estimate: 0 }, backlog: { rows: 0, estimate: 0 }, sync: {},
     screen: [{ kind: 'sprint', sprint: '8' }],
@@ -402,5 +411,15 @@ describe('the Backlog screen\'s sections', () => {
     expect(withRow(total, row('2', 'b', 's2'), -1)).toEqual({ rows: 3, estimate: 4, unestimated: 1 });
     // A total from a computer that does not count them starts from none.
     expect(withRow({ rows: 1, estimate: 2 }, none, 1)).toEqual({ rows: 2, estimate: 2, unestimated: 1 });
+  });
+
+  it('counts a support ticket as no estimate but not as without one, carried in or out', () => {
+    const support = { ...row('1', 'a', 's1'), estimate: null, support: true };
+    const none = { ...row('3', 'c', 's1'), estimate: null };
+    const held = planBoard({ '8': [support, none, row('2', 'b', 's2')] }, false);
+    expect(screenColumns(held).map((c) => c.total)).toEqual([{ rows: 2, estimate: 0, unestimated: 1 }, { rows: 1, estimate: 2, unestimated: 0 }]);
+    const total = { rows: 4, estimate: 6, unestimated: 1 };
+    expect(withRow(total, support, 1)).toEqual({ rows: 5, estimate: 6, unestimated: 1 });
+    expect(withRow(total, support, -1)).toEqual({ rows: 3, estimate: 6, unestimated: 1 });
   });
 });

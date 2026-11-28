@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -29,10 +30,12 @@ func (m *mirrorFixture) seedBoard(t *testing.T) {
 }
 
 // seededCard is issue 10001's card as seedBoard's board read finds it:
-// in sprint 1, a child of 10004, of medium priority, labeled frontend.
+// in sprint 1, a child of 10004 (named by the read), of medium priority,
+// labeled frontend.
 func seededCard() tracker.Card {
 	c := card("10001", 1_799_000_000_000)
 	c.Sprints, c.Parent = []tracker.SprintID{"1"}, "10004"
+	c.ParentName = &tracker.ParentName{Key: "WEB-4", Title: "The epic", Level: 1}
 	c.Priority = tracker.Choice{ID: "3", Name: "Medium"}
 	c.Labels = []tracker.Choice{{ID: "frontend", Name: "frontend"}}
 	return c
@@ -131,6 +134,141 @@ func TestBoardPace(t *testing.T) {
 	patch := must[BoardPatch](t)(m.svc.BoardPatch(m.scope(), StatusGroups{}, nil, ids("10002"), held))
 	if patch.Totals == nil || patch.Totals.Pace == nil || *patch.Totals.Pace != (PaceView{Sprints: 2, Rows: 2, Estimate: 2.5}) {
 		t.Fatalf("patch totals %+v; want a pace of 2 sprints averaging 2 tickets and 2.5 points", patch.Totals)
+	}
+}
+
+// While the project counts credit, a board's pace adds the sprints'
+// review and support credit and says what each part adds and how many
+// tickets' credit is not read: with no evidence read, each finished
+// ticket's review is not counted, so the pace is the finished tickets
+// alone, with both of them unread; a patch carries it the same way.
+func TestBoardPaceWithCredit(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	completed := time.UnixMilli(1_799_000_000_000).UTC()
+	m.p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+		st := webStructure(b)
+		st.Sprints = append(st.Sprints, tracker.Sprint{ID: "9", Board: b, Name: "Sprint 1", State: tracker.SprintClosed, Completed: completed})
+		return st, nil
+	}
+	three, one := 3.0, 1.0
+	member := func(id string, estimate *float64) tracker.Row {
+		r := row(id, 1_799_000_000_000, id)
+		r.Card.Status, r.Card.Sprints, r.Estimate = "s3", []tracker.SprintID{"9"}, estimate
+		return r
+	}
+	m.p.changedRows = pagedDelta(t, []tracker.Row{member("10001", &three), member("10002", &one)})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	regroup, err := store.MirrorRegroup{}.WithCredit([]store.MirrorCreditRule{{ReviewShare: 10, ReviewNeed: 1, Commented: true, HoursPerPoint: 4}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credit := StatusGroups{regroup: regroup, credit: true}
+	want := PaceView{Sprints: 1, Rows: 2, Estimate: 4, Credit: &PaceCredit{Finished: PaceAmount{Rows: 2, Estimate: 4}, Unread: 2}}
+	v := must[BoardView](t)(m.svc.Board(m.scope(), credit, nil))
+	if v.Pace == nil || !reflect.DeepEqual(*v.Pace, want) {
+		t.Fatalf("pace with credit %+v; want %+v", v.Pace, want)
+	}
+	if off := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, nil)); off.Pace == nil || off.Pace.Credit != nil {
+		t.Fatalf("pace without credit %+v; want no credit", off.Pace)
+	}
+	patch := must[BoardPatch](t)(m.svc.BoardPatch(m.scope(), credit, nil, ids("10001"), TotalsAt{}))
+	if patch.Totals == nil || patch.Totals.Pace == nil || !reflect.DeepEqual(*patch.Totals.Pace, want) {
+		t.Fatalf("patch totals %+v; want the pace with credit", patch.Totals)
+	}
+}
+
+// paceOf adds review and support credit to the pace only while the
+// project counts credit, and averages each part over the sprints.
+func TestPaceOfAddsCreditOnlyWhenCounted(t *testing.T) {
+	t.Parallel()
+	finished := []store.MirrorSprintFinished{
+		{SprintID: "1", Done: 2, Estimate: 8, Review: 1, ReviewShares: 0.2, Support: 2, SupportShares: 2, Unread: 1},
+		{SprintID: "2", Done: 0, Estimate: 0, Review: 0, ReviewShares: 0, Support: 1, SupportShares: 1, Unread: 2},
+	}
+	on := PaceView{Sprints: 2, Rows: 1 + 0.1 + 1.5, Estimate: 4 + 0.5 + 1.5, Credit: &PaceCredit{
+		Finished: PaceAmount{Rows: 1, Estimate: 4}, Review: PaceAmount{Rows: 0.1, Estimate: 0.5}, Support: PaceAmount{Rows: 1.5, Estimate: 1.5}, Unread: 3}}
+	if got := paceOf(finished, true); !reflect.DeepEqual(*got, on) {
+		t.Errorf("with credit %+v; want %+v", *got, on)
+	}
+	if got := paceOf(finished, false); !reflect.DeepEqual(*got, PaceView{Sprints: 2, Rows: 1, Estimate: 4}) {
+		t.Errorf("without credit %+v; want the finished tickets alone", *got)
+	}
+}
+
+// A project's pace, as its Points and credit page reads it, is the one
+// sprint planning measures against, read with the project's status groups
+// and in the unit it counts the board in, from the mirror alone; a board
+// this computer has not read says so.
+func TestProjectPaceIsTheBoardsPace(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	completed := time.UnixMilli(1_799_000_000_000).UTC()
+	m.p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+		st := webStructure(b)
+		st.Sprints = append(st.Sprints,
+			tracker.Sprint{ID: "8", Board: b, Name: "Sprint 0", State: tracker.SprintClosed, Completed: completed.Add(-time.Hour)},
+			tracker.Sprint{ID: "9", Board: b, Name: "Sprint 1", State: tracker.SprintClosed, Completed: completed})
+		return st, nil
+	}
+	// of is the fixture's board among the project's.
+	of := func(all []BoardPace) BoardPace {
+		t.Helper()
+		i := slices.IndexFunc(all, func(b BoardPace) bool { return b.Board == string(testBoard) })
+		if i < 0 {
+			t.Fatalf("the project's pace has no board %s: %+v", testBoard, all)
+		}
+		return all[i]
+	}
+	// A Linear board the project lists is listed by its kind, with no pace.
+	lin := m.addLinear()
+	current := must[[]store.ProjectTrackerBoard](t)(m.st.ListProjectTrackerBoards(m.project()))
+	held := make([]store.HeldTrackerBoard, len(current))
+	for i, b := range current {
+		held[i] = store.HeldTrackerBoard{ConnectionID: b.ConnectionID, BoardID: b.BoardID, OpensFirst: b.OpensFirst}
+	}
+	if _, _, err := m.st.ReplaceProjectTrackerBoards(m.project(), held, append(slices.Clone(current), store.ProjectTrackerBoard{ConnectionID: lin.ID, BoardID: "team-1"})); err != nil {
+		t.Fatal(err)
+	}
+	all := must[[]BoardPace](t)(m.svc.ProjectPace(m.project()))
+	if got := all[len(all)-1]; got != (BoardPace{Connection: lin.ID, ConnectionKind: store.TrackerKindLinear, Board: "team-1"}) {
+		t.Fatalf("the Linear board listed: %+v", got)
+	}
+	if got := of(all); got.ConnectionKind != store.TrackerKindJira || got.Site != m.conn.Site || got.Read || got.Pace != nil || got.Counts != "" {
+		t.Fatalf("the pace of a board not read: %+v", got)
+	}
+	three, one := 3.0, 1.0
+	member := func(id, status string, estimate *float64, sprint tracker.SprintID) tracker.Row {
+		r := row(id, 1_799_000_000_000, id)
+		r.Card.Status, r.Card.Sprints, r.Estimate = tracker.StatusID(status), []tracker.SprintID{sprint}, estimate
+		return r
+	}
+	m.p.changedRows = pagedDelta(t, []tracker.Row{
+		member("10001", "s3", &three, "9"), member("10002", "s1", &one, "9"), member("10003", "s3", nil, "9"),
+		member("10004", "s3", &one, "8"),
+	})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	// The read makes no tracker request.
+	pace := func() []BoardPace {
+		t.Helper()
+		before := len(m.p.callsInOrder())
+		got := must[[]BoardPace](t)(m.svc.ProjectPace(m.project()))
+		if after := m.p.callsInOrder()[before:]; len(after) > 0 {
+			t.Fatalf("the pace read asked the tracker: %v", after)
+		}
+		return got
+	}
+	want := BoardPace{Connection: m.conn.ID, ConnectionKind: store.TrackerKindJira, Site: m.conn.Site, Board: string(testBoard), Name: "WEB board " + string(testBoard), Read: true, Estimate: "points", Counts: "points", PlansSprints: true,
+		Pace: &PaceView{Sprints: 2, Rows: 1.5, Estimate: 2}}
+	if got := of(pace()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the project's pace = %+v; want %+v", got, want)
+	}
+	m.saveSetup(t, m.project(), Setup{Estimates: &Estimates{Count: "tickets"}, StatusGroups: m.regrouped(map[string]string{"s1": "done"}).StatusGroups})
+	sub := m.subscribeShown(t, m.project())
+	board := m.viewOf(t, sub.ID)
+	want.Counts, want.Pace = "none", board.Pace
+	if got := of(pace()); !reflect.DeepEqual(got, want) || *board.Pace != (PaceView{Sprints: 2, Rows: 2, Estimate: 2.5}) {
+		t.Fatalf("the project's pace regrouped, counting tickets = %+v; want %+v", got, want)
 	}
 }
 

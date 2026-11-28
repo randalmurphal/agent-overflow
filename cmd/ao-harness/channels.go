@@ -24,6 +24,7 @@ import (
 // does not emit this by itself", not "this cannot carry traffic".
 func eventChannelConstants() []eventchan.Channel {
 	return []eventchan.Channel{
+		eventchan.ActivityRecording,
 		eventchan.AgentComputersChanged,
 		eventchan.AccessDevicesChanged,
 		eventchan.OwnDevicesChanged,
@@ -120,6 +121,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.TrackerConnectionsUpdated,
 		eventchan.TrackerIssueUpdated,
 		eventchan.TrackerSetupUpdated,
+		eventchan.TrackerTimeEntriesUpdated,
 		eventchan.UpdaterDownloadStarted,
 		eventchan.UpdaterError,
 		eventchan.UpdaterInstall,

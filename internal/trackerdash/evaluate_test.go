@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/store"
 )
 
 // teamBoard is sprintBoard with its tickets:
@@ -151,23 +154,29 @@ func TestAFirstReadNotFinishedIsSaid(t *testing.T) {
 
 // A widget whose metric counts now has no previous value and no trend,
 // so the screen can draw no change mark for it; its view says it counts
-// now. A metric of the range has both.
+// now. A metric of the range has both, and a state's (Stuck) compares
+// what holds now with what held where the range begins.
 func TestNowMetricHasNoChangeMark(t *testing.T) {
 	t.Parallel()
-	a := mustEvaluate(t, evaluator(), teamBoard().board(), utcSprints3)
+	e := evaluator()
+	a := mustEvaluate(t, e, teamBoard().board(), utcSprints3)
+	list, err := e.Dashboards(context.Background(), Kind{PlansSprints: true, Epics: true}, store.MirrorEstimatePoints, Own{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	views := map[string]WidgetView{}
-	for _, v := range a.Dashboard.Widgets {
+	for _, v := range list.Dashboards[0].Widgets {
 		views[v.ID] = v
 	}
-	stuck := widgetOf(t, a, "stuck")
-	if !views["stuck"].Now || stuck.Previous != nil || stuck.Trend != nil {
-		t.Fatalf("stuck: now %v, previous %s, trend %v; want a now widget with neither", views["stuck"].Now, num(stuck.Previous), stuck.Trend)
+	if !views["carrying"].Now || views["carrying"].State || !strings.Contains(views["carrying"].How.Range, "true now") {
+		t.Fatalf("carrying: now %v, state %v, How %q; want a now widget", views["carrying"].Now, views["carrying"].State, views["carrying"].How.Range)
 	}
-	if !strings.Contains(views["stuck"].How.Range, "true now") {
-		t.Fatalf("stuck's How says %q of the range", views["stuck"].How.Range)
+	stuck := widgetOf(t, a, "stuck")
+	if views["stuck"].Now || !views["stuck"].State || stuck.Previous == nil || len(stuck.Trend) != 3 || !strings.Contains(views["stuck"].How.Range, "where the range begins") {
+		t.Fatalf("stuck: now %v, state %v, previous %s, trend %v, How %q; want a state with both", views["stuck"].Now, views["stuck"].State, num(stuck.Previous), stuck.Trend, views["stuck"].How.Range)
 	}
 	pace := widgetOf(t, a, "pace")
-	if views["pace"].Now || pace.Previous == nil || len(pace.Trend) != 3 {
+	if views["pace"].Now || views["pace"].State || pace.Previous == nil || len(pace.Trend) != 3 {
 		t.Fatalf("pace: now %v, previous %s, trend %v; want both", views["pace"].Now, num(pace.Previous), pace.Trend)
 	}
 }
@@ -373,15 +382,24 @@ func TestDrillStartsAgainWhenTheCountMoved(t *testing.T) {
 
 // Every kind of board offers its built-in dashboard, every metric valid
 // and prepared, every widget drawable: the epic widget only where the
-// tracker has epics, and the ranges of the board's kind.
+// tracker has epics, the ranges of the board's kind, and its pace read
+// from credit where its project counts credit.
 func TestEveryKindOffersItsBuiltInDashboard(t *testing.T) {
 	t.Parallel()
-	for _, k := range []Kind{{true, true}, {true, false}, {false, true}, {false, false}} {
-		views, err := evaluator().Dashboards(context.Background(), k)
+	var kinds []Kind
+	for _, sprints := range []bool{true, false} {
+		for _, epics := range []bool{true, false} {
+			for _, credit := range []bool{true, false} {
+				kinds = append(kinds, Kind{PlansSprints: sprints, Epics: epics, Credit: credit})
+			}
+		}
+	}
+	for _, k := range kinds {
+		list, err := evaluator().Dashboards(context.Background(), k, store.MirrorEstimatePoints, Own{})
 		if err != nil {
 			t.Fatalf("%+v: %v", k, err)
 		}
-		v := views[0]
+		v := list.Dashboards[0]
 		width, epics := 0, false
 		for _, w := range v.Widgets {
 			width += w.Width
@@ -392,6 +410,9 @@ func TestEveryKindOffersItsBuiltInDashboard(t *testing.T) {
 		}
 		if width%12 != 0 || epics != k.Epics || (v.DefaultRange == RangeSprints5) != k.PlansSprints {
 			t.Errorf("%+v: widths add to %d, epics %v, default range %s", k, width, epics, v.DefaultRange)
+		}
+		if pace := v.Widgets[0]; slices.Contains(pace.How.Reads, "credit") != k.Credit || (len(pace.Series) == 3) != k.Credit {
+			t.Errorf("%+v: the pace reads %v, series %v", k, pace.How.Reads, pace.Series)
 		}
 	}
 }
@@ -495,9 +516,10 @@ func TestAnUnknownFinishBelongsToTheRangesItsTicketSpans(t *testing.T) {
 	if got, want := rows("pace"), []string{"WEB-1 true ", "WEB-6 false when it finished is not known", "WEB-9 false when it finished is not known", "WEB-10 false when it finished is not known", "0.5, 3 not counted"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("pace drill = %q; want %q", got, want)
 	}
-	// The chart's "3 not counted" opens the whole widget: WEB-9's and
-	// WEB-10's creations are counted and their finishes are not.
-	if got, want := rows("created_finished"), []string{"WEB-1 true ", "WEB-9 true ", "WEB-10 true ", "WEB-6 false when it finished is not known",
+	// The chart's "3 not counted" opens the whole widget, its rows grouped
+	// by series: WEB-9's and WEB-10's creations are counted, then the
+	// finishes, theirs not.
+	if got, want := rows("created_finished"), []string{"WEB-9 true ", "WEB-10 true ", "WEB-1 true ", "WEB-6 false when it finished is not known",
 		"WEB-9 false when it finished is not known", "WEB-10 false when it finished is not known", "3, 3 not counted"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("created and finished drill = %q; want %q", got, want)
 	}
@@ -509,8 +531,8 @@ func TestAnUnknownFinishBelongsToTheRangesItsTicketSpans(t *testing.T) {
 func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 	t.Parallel()
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25000)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, points, done_at, started_known, open, counts)
-		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, 1, %d, 0, 0, 1 FROM n`, ago(400), ago(390), ago(390))
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, points, done_at, history_behind, started_known, open, counts)
+		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, 1, %d, 0, 0, 0, 1 FROM n`, ago(400), ago(390), ago(390))
 	a := mustEvaluate(t, evaluator(), f.board(), utcSprints3)
 	for _, id := range []string{"created_finished", "start_to_done"} {
 		if w := widgetOf(t, a, id); w.Error != "" {
@@ -518,8 +540,8 @@ func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 		}
 	}
 	w := mustEvaluate(t, evaluator(), newFixture(false, "none").status("5", "Done", "done").exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25000)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, done_at, started_known, open, counts)
-		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, %d, 0, 0, 1 FROM n`, ago(400), ago(390), ago(390)).board(),
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, created_at, updated_at, resolved_at, status_since, done_at, history_behind, started_known, open, counts)
+		SELECT 'old' || i, 'OLD-' || i, 'Old', 0, '5', 'done', %d, 0, %d, 0, %d, 0, 0, 0, 1 FROM n`, ago(400), ago(390), ago(390)).board(),
 		Request{Dashboard: builtinWeeksID, Range: RangeWeeks12, TimeZone: "UTC"})
 	for _, id := range []string{"pace", "created_finished", "start_to_done"} {
 		if v := widgetOf(t, w, id); v.Error != "" {
@@ -535,11 +557,11 @@ func TestRangeMetricsReadOnlyTheRange(t *testing.T) {
 // parallel with the package's others.
 func TestATableMakesTheCellsItShows(t *testing.T) {
 	f := teamBoard().exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 19900)
-		INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, created_at, updated_at, status_since, points, started_known, open, counts)
-		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1, 0, 1, 1 FROM n`, ago(5)).
+		INSERT INTO tickets(id, key, title, type_level, status, status_group, assignee, created_at, updated_at, status_since, points, history_behind, started_known, open, counts)
+		SELECT 'p' || i, 'WEB-' || (5000 + i), 'T', 0, '1', 'todo', 'person' || i, %d, 0, 0, 1, 0, 0, 1, 1 FROM n`, ago(5)).
 		exec(`INSERT INTO sprint_tickets SELECT 's7', id FROM tickets WHERE id LIKE 'p%%'`)
 	e := evaluator()
-	o, err := e.begin(context.Background(), f.board(), utcSprints3, func(Widget) bool { return true })
+	o, err := e.begin(context.Background(), f.board(), utcSprints3, func(Widget, bool) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +571,7 @@ func TestATableMakesTheCellsItShows(t *testing.T) {
 		}
 	}()
 	m := o.metrics["carrying"]
-	c, err := o.count(m)
+	c, err := o.count(m, reads{now: true})
 	if err != nil || c.err != nil {
 		t.Fatalf("carrying: %v %v", err, c.err)
 	}
@@ -612,5 +634,33 @@ func TestMoreOpensTheBucketsTheWidgetLeftOut(t *testing.T) {
 	whole, err := e.Drill(context.Background(), b, DrillRequest{Request: utcSprints3, Widget: "carrying"})
 	if err != nil || whole.Count != 54 || num(&whole.Value) != "58" || whole.Title != "Who is carrying what" {
 		t.Fatalf("the whole table = %+v, %v; want its 54 rows, 58 points", whole, err)
+	}
+}
+
+// A list whose metric places a ticket in more than one row says how many
+// tickets its rows are of; one of a row a ticket says nothing, since its
+// rows are its tickets.
+func TestAListSaysHowManyTicketsItsRowsAreOf(t *testing.T) {
+	t.Parallel()
+	f := sprintBoard()
+	f.ticket(ticket{id: "t1", key: "WEB-1", status: "3", group: "in_progress", created: ago(20), historyFrom: ago(20)})
+	f.ticket(ticket{id: "t2", key: "WEB-2", status: "3", group: "in_progress", created: ago(20), historyFrom: ago(20)})
+	f.stay("t1", "1", ago(6), ago(4)).stay("t1", "3", ago(4), 0).stay("t2", "3", ago(3), 0)
+	metric := func(name, sql string, bucket Bucket) Metric {
+		return Metric{Name: name, Title: name, Words: []string{"Each row."}, SQL: sql, Reduce: ReduceCount, Unit: UnitTickets, Bucket: bucket}
+	}
+	b := f.board()
+	b.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine", Widgets: []Widget{
+		{ID: "moves", Metric: "moves", Form: FormList, Width: 6}, {ID: "each", Metric: "each", Form: FormList, Width: 6},
+	}}}, Metrics: map[string]Metric{
+		"moves": metric("moves", `SELECT ticket, from_at AS at FROM status_intervals`, BucketPeriod),
+		"each":  metric("each", `SELECT id AS ticket FROM tickets`, ""),
+	}}
+	a := mustEvaluate(t, evaluator(), b, Request{Dashboard: "mine", Range: RangeSprints3, TimeZone: "UTC"})
+	if w := widgetOf(t, a, "moves"); w.Error != "" || len(w.Tickets) != 3 || w.Distinct != 2 {
+		t.Errorf("a list of 3 moves of 2 tickets = %d rows of %d tickets, %q; want 3 rows of 2", len(w.Tickets), w.Distinct, w.Error)
+	}
+	if w := widgetOf(t, a, "each"); w.Error != "" || len(w.Tickets) != 2 || w.Distinct != 0 {
+		t.Errorf("a list of a row a ticket = %+v, distinct %d, %q; want 2 rows and no count beside them", w.Tickets, w.Distinct, w.Error)
 	}
 }

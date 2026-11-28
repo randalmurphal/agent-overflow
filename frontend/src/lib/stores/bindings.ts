@@ -640,6 +640,11 @@ export {
   // TrackerDashboards is below.
   EvaluateTrackerDashboard,
   TrackerDashboardDrill,
+  KeepTrackerWidget,
+  DismissTrackerWidget,
+  RemoveTrackerWidget,
+  SetTrackerWidgetLimit,
+  PinTrackerWidget,
   // A ticket's subscription, its writes and the reads its pickers make
   // (stores/trackerTicket.svelte.ts, stores/trackerTicketWrites.svelte.ts).
   SubscribeTrackerTicket,
@@ -666,6 +671,9 @@ export {
   TrackerBoardProjects,
   TrackerIssueTypes,
   TrackerCreateFields,
+  // The types a project has, which the Credit group picks support
+  // types from (stores/trackerTicketWrites.svelte.ts).
+  TrackerProjectIssueTypes,
   CreateTrackerSprint,
   EditTrackerSprint,
   StartTrackerSprint,
@@ -691,18 +699,38 @@ export {
   // A ticket's Work: its pull requests and branches, and the threads of
   // its Ask and Start work (stores/ticketWork.svelte.ts).
   GetTicketWork,
-  // A project's tracker setup file and its statuses by site
+  // A project's tracker setup file, its statuses, its boards' pace, its
+  // fields to pin by site and a board's support tickets
   // (stores/trackerSetup.svelte.ts).
   ProjectTrackerSetup,
   ProjectTrackerStatuses,
+  ProjectTrackerPace,
+  ProjectTrackerSiteFields,
+  ProjectTrackerSupport,
   SetProjectTrackerSetup,
+  // Who each forge account is in a connection's tracker, a person's word
+  // on one, and the people that word picks from
+  // (stores/trackerSetup.svelte.ts).
+  TrackerForgeAccounts,
+  SetTrackerForgeAccount,
+  TrackerPeople,
   // A person's logged time and its writes (stores/trackerTime.svelte.ts,
   // stores/trackerTimeWrites.svelte.ts).
   TrackerWorklogs,
   RefreshTrackerWorklogs,
+  // The reads of your logged time a dashboard's widgets need
+  // (stores/trackerDashboard.svelte.ts).
+  ReadTrackerWorklogDays,
   AddTrackerWorklog,
   EditTrackerWorklog,
   DeleteTrackerWorklog,
+  // An agent's time draft: a call's entries, and the person's changes,
+  // removals and approvals of entries (stores/trackerTimeDraft.svelte.ts,
+  // stores/trackerTimeWrites.svelte.ts).
+  ThreadTimeEntries,
+  EditTrackerTimeEntry,
+  RemoveTrackerTimeEntries,
+  PostTrackerTimeEntries,
   // The tickets a person finds by key or by words (components/issues/TicketFinder.svelte).
   TrackerLookup,
   TrackerSearch,
@@ -948,6 +976,8 @@ import {
   SendMessageWithOptions as SendMessageWithOptionsRaw,
   StartTerminal as StartTerminalRaw,
   StartTicketThread as StartTicketThreadRaw,
+  StartTicketsThread as StartTicketsThreadRaw,
+  StartTrackerDashboardThread as StartTrackerDashboardThreadRaw,
   UpdateNewThreadDefaults as UpdateNewThreadDefaultsRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import {
@@ -957,6 +987,7 @@ import {
   SendMessageOptions as SendMessageOptionsClass,
   StartTerminalOptions as StartTerminalOptionsClass,
   StartTicketThreadRequest as StartTicketThreadRequestClass,
+  StartTicketsThreadRequest as StartTicketsThreadRequestClass,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { SourceDiffReview, SourceProposedPlan, Thread } from '../types/models';
 import type { DraftSnapshot } from '../types/draft';
@@ -1014,6 +1045,21 @@ export function StartTicketThread(
   req: { connectionId: string; issueId: string; origin: 'ask' | 'start_work'; branch?: string },
 ): Promise<Thread> {
   return StartTicketThreadRaw(projectId, new StartTicketThreadRequestClass(req)) as unknown as Promise<Thread>;
+}
+
+/** The thread on tickets selected together (stores/ticketWork.svelte.ts,
+ * `askAboutTickets`): its row, as CreateThread answers one. */
+export function StartTicketsThread(
+  projectId: string,
+  req: { connectionId: string; issueIds: string[]; text?: string },
+): Promise<Thread> {
+  return StartTicketsThreadRaw(projectId, new StartTicketsThreadRequestClass(req)) as unknown as Promise<Thread>;
+}
+
+/** The thread of a board's Ask your agent (stores/trackerDashboard.svelte.ts):
+ * its row, as CreateThread answers one. */
+export function StartTrackerDashboardThread(subscriptionId: string, rowWidget: string): Promise<Thread> {
+  return StartTrackerDashboardThreadRaw(subscriptionId, rowWidget) as unknown as Promise<Thread>;
 }
 
 export function MoveDraftToThread(threadId: string, destinationThreadId: string, snapshot: DraftSnapshot) {
@@ -1390,9 +1436,10 @@ import {
   TrackerConnections as TrackerConnectionsRaw,
   ProjectTrackerBoards as ProjectTrackerBoardsRaw,
   TrackerDashboards as TrackerDashboardsRaw,
+  SearchTicketWork as SearchTicketWorkRaw,
+  RecordActivity as RecordActivityRaw,
 } from '../../../bindings/agent-overflow/app.js';
-import type { DashboardView as TrackerDashboardRow } from '../../../bindings/agent-overflow/internal/trackerdash/models.js';
-import type { TrackerConnection as TrackerConnectionRow } from '../../../bindings/agent-overflow/internal/app/models.js';
+import type { TrackerConnection as TrackerConnectionRow, TicketWork as TicketWorkAnswer, TrackerDashboardsView } from '../../../bindings/agent-overflow/internal/app/models.js';
 import type { BoardChoice as TrackerBoardChoiceRow } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
 export { ArchiveThreadResult, DeleteDependents, DeleteThreadResult };
@@ -1596,7 +1643,7 @@ export {
   SetProjectTrackerBoards,
 } from '../../../bindings/agent-overflow/app.js';
 export type { TrackerConnection, NewTrackerConnection } from '../../../bindings/agent-overflow/internal/app/models.js';
-export type { TicketWork, TicketPullRequest, TicketBranch } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { TicketWork, TicketPullRequest, TicketBranch, TicketForgeProblem } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type { BoardChoice as TrackerBoardChoice, BoardRef as TrackerBoardRef, ProjectBoard as TrackerProjectBoard, ProjectView as TrackerProjectView, BoardInfoView as TrackerBoardInfo } from '../../../bindings/agent-overflow/internal/trackerapp/models.js';
 
 /** This computer's tracker connections; null on a computer whose release has no trackers. */
@@ -1604,10 +1651,24 @@ export function TrackerConnections(): Promise<TrackerConnectionRow[] | null> {
   return orOlder(() => TrackerConnectionsRaw(), () => null);
 }
 
-/** The dashboards a subscribed board offers; null on a computer whose
- * release has no dashboards. */
-export function TrackerDashboards(subscriptionId: string): Promise<TrackerDashboardRow[] | null> {
+/** What a subscribed board's Dashboards screen lays out; null on a
+ * computer whose release has no dashboards. */
+export function TrackerDashboards(subscriptionId: string): Promise<TrackerDashboardsView | null> {
   return orOlder(() => TrackerDashboardsRaw(subscriptionId), () => null);
+}
+
+/** A ticket's Work with the forge searched by its key
+ * (stores/ticketWork.svelte.ts); null on a computer without the search,
+ * whose Work read answers alone. */
+export function SearchTicketWork(connectionId: string, issueId: string): Promise<TicketWorkAnswer | null> {
+  return orOlder(() => SearchTicketWorkRaw(connectionId, issueId), () => null);
+}
+
+/** Input on this screen now, on the thread its focused pane shows, to
+ * every attached computer (stores/activityRecorder.ts); a computer
+ * without the recorder takes nothing. */
+export function RecordActivity(focused: string, phone: boolean, sinceInputMs: number): Promise<void> {
+  return orOlder(() => RecordActivityRaw(focused, phone, sinceInputMs), () => undefined);
 }
 
 /** The boards a project lists; none on a computer without trackers. */

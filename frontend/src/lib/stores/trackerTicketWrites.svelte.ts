@@ -1,6 +1,7 @@
-// Every write the ticket screen, a Board card and a Backlog row make, a
-// board's own writes (its sprints, and the tickets made on it from the
-// Backlog), and the reads their pickers and forms make
+// Every write the ticket screen, a Board card, a Backlog row and a
+// dashboard's ticket list make, a board's own writes (its sprints, and the
+// tickets made on it from the Backlog), and the reads their pickers and
+// forms make
 // (docs/architecture/tracker-backend.md, "Writes"). A card and a row write
 // under the same ticket key as the ticket screen, so one write shows one
 // state on all of them. A board's writes are held under the board's key
@@ -39,8 +40,8 @@
 // - a control draws its target's outcome while it is mounted
 //   (`drawTicketWrite`: each `TicketWriteNote`, and the attachments row of
 //   the file being sent), and draws it for the person only while its
-//   surface is shown: the Board while it is on screen and no ticket
-//   covers it, a ticket while its pane is on screen
+//   surface is shown: the Board and a dashboard while on screen and no
+//   ticket covers them, a ticket while its pane is on screen
 //   (`components/issues/ticketWriteSurface.ts`);
 // - a write that settles while a mounted control of its target is on a
 //   shown surface keeps a refused, unknown or noted outcome there, on
@@ -123,6 +124,7 @@ import {
   TrackerChoices,
   TrackerCreateFields,
   TrackerIssueTypes,
+  TrackerProjectIssueTypes,
   TrackerLinkTypes,
   TrackerMoves,
   TrackerBoardProjects,
@@ -532,14 +534,16 @@ function toastUnshown(change: string, what: string, outcome: WriteOutcome): void
 }
 
 /** Sets fields of the ticket (EditTrackerIssue), `target` being the
- * control's. */
-export function editTicketFields(t: TicketWriteContext, target: string, fields: FieldEditInput[]): Promise<WriteOutcome | null> {
-  return write(t, target, (acceptLoss) => EditTrackerIssue(t.ref.connection, { issue: t.ref.issue, fields, accept_loss: acceptLoss }), false);
+ * control's; pending from the call, sent once `after` settles (a list's
+ * batch waiting for its turn). */
+export function editTicketFields(t: TicketWriteContext, target: string, fields: FieldEditInput[], after?: Promise<void>): Promise<WriteOutcome | null> {
+  return write(t, target, (acceptLoss) => EditTrackerIssue(t.ref.connection, { issue: t.ref.issue, fields, accept_loss: acceptLoss }), false, { after });
 }
 
-/** Moves the ticket by one of its moves (MoveTrackerIssue). */
-export function moveTicket(t: TicketWriteContext, move: string, fields?: FieldEditInput[]): Promise<WriteOutcome | null> {
-  return write(t, 'status', (acceptLoss) => MoveTrackerIssue(t.ref.connection, { issue: t.ref.issue, move, fields, accept_loss: acceptLoss }), false);
+/** Moves the ticket by one of its moves (MoveTrackerIssue); sent once
+ * `after` settles, as editTicketFields. */
+export function moveTicket(t: TicketWriteContext, move: string, fields?: FieldEditInput[], after?: Promise<void>): Promise<WriteOutcome | null> {
+  return write(t, 'status', (acceptLoss) => MoveTrackerIssue(t.ref.connection, { issue: t.ref.issue, move, fields, accept_loss: acceptLoss }), false, { after });
 }
 
 /** Sets or clears the ticket's estimate on a board (SetTrackerEstimate). */
@@ -939,6 +943,17 @@ export function issueTypes(backend: BackendKey, connection: string, project: str
 
 export function loadIssueTypes(backend: BackendKey, connection: string, project: string): Promise<void> {
   return loadHeldRead(backend, connection, readKey(backend, 'types', connection, project), () => TrackerIssueTypes(connection, project));
+}
+
+/** The types `project` has, which a person who can see it reads whatever
+ * they may create (the Credit group's support types); null before
+ * `loadProjectIssueTypes`. */
+export function projectIssueTypes(backend: BackendKey, connection: string, project: string): HeldRead<IssueTypeView[]> | null {
+  return heldRead(readKey(backend, 'project types', connection, project));
+}
+
+export function loadProjectIssueTypes(backend: BackendKey, connection: string, project: string): Promise<void> {
+  return loadHeldRead(backend, connection, readKey(backend, 'project types', connection, project), () => TrackerProjectIssueTypes(connection, project));
 }
 
 /** The fields a ticket of `type` made in `project` takes besides its

@@ -99,6 +99,36 @@ func (s *Service) LinkedTicket(threadID string) (_ LinkedTicket, ok bool, _ erro
 	return LinkedTicket{Connection: id, Site: siteName(link.Ticket.Site), Issue: link.Ticket.IssueID, Key: link.IssueKey}, true, nil
 }
 
+// JiraTicket is the Jira ticket a thread is linked to, as answers name
+// it: its site as a person names it and the key the link last saw.
+type JiraTicket struct {
+	Site string
+	Key  string
+}
+
+// ThreadJiraTickets are the Jira tickets the threads threadIDs names are
+// linked to, by thread, in one store read: a thread with no link, a
+// Linear link, or one this computer does not own has no entry. It reads
+// links only, so a link whose site has no connection on still names its
+// ticket.
+func (s *Service) ThreadJiraTickets(threadIDs []string) (map[string]JiraTicket, error) {
+	if err := s.enter(); err != nil {
+		return nil, err
+	}
+	defer s.leave()
+	links, err := s.store.ListThreadTickets(threadIDs)
+	if err != nil {
+		return nil, fmt.Errorf("trackerapp: the tickets of %d threads: %w", len(threadIDs), err)
+	}
+	out := make(map[string]JiraTicket, len(links))
+	for id, link := range links {
+		if link.Ticket.Kind == store.TrackerKindJira {
+			out[id] = JiraTicket{Site: siteName(link.Ticket.Site), Key: link.IssueKey}
+		}
+	}
+	return out, nil
+}
+
 // LinkThread links thread threadID to ticket, replacing the link it had,
 // with origin (store.TicketOrigin*). It reads through the connection of
 // this computer that store TicketConnection names, and links the card
@@ -229,7 +259,7 @@ func (s *Service) UnlinkThread(threadID string) (ThreadLinkWrite, error) {
 // replaced, a thread deleted or moved away), the issues an attached
 // mirror of this computer holds and no longer keeps (store
 // ListUnkeptLinkedIssues) to the subscriptions of each one's connection
-// that show them as another's parent or link (Changes.Visibility), as the
+// that show them as another's link (Changes.Visibility), as the
 // drop of an open ticket's keep does. The root and its generation are
 // read together under opMu, so a turn off that detached the root since
 // reaches no subscription of a later mirror. A read that fails is logged:
@@ -259,7 +289,7 @@ func (s *Service) LinksEnded(tickets []store.TicketRef) {
 	}
 	s.opMu.Unlock()
 	if err != nil {
-		s.logf("trackerapp: read the issues %d ended links kept: %v; their parents' and links' views show them until their boards are read again", len(tickets), err)
+		s.logf("trackerapp: read the issues %d ended links kept: %v; the views that link them show them until their boards are read again", len(tickets), err)
 		return
 	}
 	for _, conn := range order {

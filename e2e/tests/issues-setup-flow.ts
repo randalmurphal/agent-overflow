@@ -51,10 +51,10 @@ export interface SetupSurface {
   compact: boolean;
 }
 
-const EFFORT = 'customfield_10050';
-const ROOT_CAUSE = 'customfield_10095';
-const PINNED_ID = '10104';
-const OTHER_ID = '10105';
+export const EFFORT = 'customfield_10050';
+export const ROOT_CAUSE = 'customfield_10095';
+export const PINNED_ID = '10104';
+export const OTHER_ID = '10105';
 const DONE_ID = '10106';
 
 function doc(text: string) {
@@ -64,7 +64,7 @@ function doc(text: string) {
 // The seed's WEB-1 (In Progress) and WEB-2 (To Do) in Sprint 1, WEB-3
 // (To Do) in the backlog; WEB-4 and WEB-5 in Sprint 1 with an Effort and
 // a Root cause, the fields a ticket pins, and WEB-6 done in Sprint 1.
-const SETUP: ExtraJira = {
+export const SETUP: ExtraJira = {
   projects: [],
   boards: [],
   fields: [
@@ -84,7 +84,7 @@ const SETUP: ExtraJira = {
 
 /** Where the computer that holds `projectId` keeps its tracker setup:
  * tracker.json in the project's app directory, beside the key files'. */
-async function setupFile(harness: HarnessApp, projectId: string): Promise<string> {
+export async function setupFile(harness: HarnessApp, projectId: string): Promise<string> {
   const [connection] = await harness.rpc<TrackerConnection[]>('TrackerConnections');
   const rows = await harness.rpc<Array<{ project: { id: string; slug: string } }>>('ListProjects');
   const slug = rows.find((row) => row.project.id === projectId)?.project.slug;
@@ -92,12 +92,24 @@ async function setupFile(harness: HarnessApp, projectId: string): Promise<string
   return join(dirname(dirname(connection.keyFilePath)), 'projects', slug, 'tracker.json');
 }
 
-async function writeSetup(path: string, text: string): Promise<void> {
+/** Saves a project's tracker setup as a page saves it. A setup a test
+ * needs in place before its page opens goes through here, never through
+ * writeSetup: the computer holds the setup it read, and the sync of a
+ * listed board reads it with no page open, so a file written by hand
+ * after the board is listed shows only when that read came second. */
+export async function saveSetup(harness: HarnessApp, projectId: string, setup: Record<string, unknown>): Promise<void> {
+  const held = await harness.rpc<{ revision: string }>('ProjectTrackerSetup', projectId);
+  const saved = await harness.rpc<{ saved: boolean; refused?: string }>('SetProjectTrackerSetup', projectId, held.revision, setup);
+  expect(saved.saved, saved.refused).toBe(true);
+}
+
+/** Writes a project's setup file by hand, as an edit outside the app. */
+export async function writeSetup(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, text, { mode: 0o600 });
 }
 
-async function storedSetup(path: string): Promise<Record<string, unknown>> {
+export async function storedSetup(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
 }
 
@@ -105,9 +117,10 @@ function groupsFile(site: string, statuses: Record<string, string>): string {
   return JSON.stringify({ status_groups: { version: 1, sites: [{ tracker: 'jira', site, statuses }] } });
 }
 
-/** Opens Settings > Issues > Status groups; on compact from the list
- * screen, and back to the rail from a page first. */
-async function openStatusGroups(page: Page, compact: boolean): Promise<Locator> {
+/** Opens the Settings > Issues page `tab`, whose screen has test ID
+ * `screenId`; on compact from the list screen, and back to the rail from a
+ * page first. */
+export async function openIssuesSetting(page: Page, compact: boolean, tab: string, screenId: string): Promise<Locator> {
   const tabs = page.getByRole('tablist', { name: 'Settings Sections' });
   if (compact && (await page.getByTestId('settings-page-back').isVisible())) {
     await press(page.getByTestId('settings-page-back'), true);
@@ -117,13 +130,18 @@ async function openStatusGroups(page: Page, compact: boolean): Promise<Locator> 
     }
     await press(page.getByTestId('sidebar-settings-button'), compact);
   }
-  await press(tabs.getByRole('tab', { name: 'Status groups', exact: true }), compact);
-  const screen = page.getByTestId('settings-tracker-statuses');
+  await press(tabs.getByRole('tab', { name: tab, exact: true }), compact);
+  const screen = page.getByTestId(screenId);
   await expect(screen).toBeVisible();
   return screen;
 }
 
-async function closeSettings(page: Page, compact: boolean): Promise<void> {
+/** Opens Settings > Issues > Status groups (openIssuesSetting). */
+function openStatusGroups(page: Page, compact: boolean): Promise<Locator> {
+  return openIssuesSetting(page, compact, 'Status groups', 'settings-tracker-statuses');
+}
+
+export async function closeSettings(page: Page, compact: boolean): Promise<void> {
   await press(page.getByRole('button', { name: 'Close Settings', exact: true }), compact);
   await expect(page.getByTestId('settings-overlay')).toHaveCount(0);
 }
@@ -175,7 +193,7 @@ async function expectColumnCount(pane: Locator, name: string, count: string, com
   }
 }
 
-function card(pane: Locator, issueId: string): Locator {
+export function card(pane: Locator, issueId: string): Locator {
   return pane.locator(`[data-testid="issues-card"][data-issue="${issueId}"]`);
 }
 
@@ -189,7 +207,7 @@ async function openBoardScreen(page: Page, pane: Locator, compact: boolean): Pro
   }
 }
 
-async function openTicket(pane: Locator, issueId: string, compact: boolean): Promise<Locator> {
+export async function openTicket(pane: Locator, issueId: string, compact: boolean): Promise<Locator> {
   await expect(card(pane, issueId)).toBeVisible({ timeout: 30_000 });
   await press(card(pane, issueId).getByTestId('issues-card-open'), compact);
   const ticket = pane.getByTestId('ticket-screen');
@@ -197,14 +215,16 @@ async function openTicket(pane: Locator, issueId: string, compact: boolean): Pro
   return ticket;
 }
 
-async function closeTicket(pane: Locator, compact: boolean): Promise<void> {
+export async function closeTicket(pane: Locator, compact: boolean): Promise<void> {
   await press(pane.getByTestId(compact ? 'issues-back' : 'ticket-close'), compact);
   await expect(pane.getByTestId('ticket-screen')).toHaveCount(0);
 }
 
-/** The rail of the ticket's fields; a narrow ticket opens it from Details. */
-async function openRail(ticket: Locator, compact: boolean): Promise<Locator> {
+/** The rail of the ticket's fields; a narrow ticket opens it from Details,
+ * which a compact ticket shows once its detail is read. */
+export async function openRail(ticket: Locator, compact: boolean): Promise<Locator> {
   const details = ticket.getByTestId('ticket-details');
+  if (compact) await expect(details).toBeVisible({ timeout: 15_000 });
   if (await details.isVisible() && (await details.getAttribute('aria-expanded')) !== 'true') await press(details, compact);
   const rail = ticket.getByTestId('ticket-rail');
   await expect(rail).toBeVisible();
@@ -212,14 +232,14 @@ async function openRail(ticket: Locator, compact: boolean): Promise<Locator> {
 }
 
 /** Closes the Details rail a narrow ticket opened over its content. */
-async function closeRail(ticket: Locator, compact: boolean): Promise<void> {
+export async function closeRail(ticket: Locator, compact: boolean): Promise<void> {
   const close = ticket.getByTestId('ticket-details-close');
   if (await close.isVisible()) await press(close, compact);
 }
 
 /** The rail's rows above its "more fields" control: the card's and the
  * pinned ones. Opens a narrow ticket's rail, and leaves it open. */
-async function railFields(ticket: Locator, compact: boolean): Promise<string[]> {
+export async function railFields(ticket: Locator, compact: boolean): Promise<string[]> {
   await openRail(ticket, compact);
   return ticket.getByTestId('ticket-fields').evaluate((rail) => {
     const out: string[] = [];
@@ -243,12 +263,12 @@ async function shownSections(ticket: Locator): Promise<string[]> {
   });
 }
 
-function sectionPin(ticket: Locator, field: string): Locator {
+export function sectionPin(ticket: Locator, field: string): Locator {
   return ticket.locator(`[data-testid="ticket-section"][data-field="${field}"] [data-testid="ticket-section-pin"]`);
 }
 
-async function openBoard(harness: HarnessApp, page: Page, name: string, compact: boolean): Promise<{ board: ConnectedBoard; pane: Locator; file: string }> {
-  const board = await connectFakeJiraBoard(harness, name, SETUP);
+export async function openBoard(harness: HarnessApp, page: Page, name: string, compact: boolean, setup: ExtraJira = SETUP): Promise<{ board: ConnectedBoard; pane: Locator; file: string }> {
+  const board = await connectFakeJiraBoard(harness, name, setup);
   const file = await setupFile(harness, board.projectId);
   await harness.open(page);
   const pane = await openIssuesPane(page, compact);

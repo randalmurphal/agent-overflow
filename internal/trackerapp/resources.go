@@ -106,10 +106,13 @@ func (r *run) cards(issues []tracker.IssueID) (out Changes, missing, unread []tr
 	for i := 0; i < len(issues); i += readBatch {
 		batch := issues[i:min(i+readBatch, len(issues))]
 		err := r.againIfSwept(func() error {
-			ch, gone, err := r.cardsOf(batch)
+			ch, gone, began, err := r.cardsOf(batch)
 			out.add(ch)
 			missing = append(missing, gone...)
-			return err
+			if err != nil {
+				return err
+			}
+			return r.markMissing(began, gone)
 		})
 		if err != nil {
 			return out, missing, issues[i:], err
@@ -119,36 +122,36 @@ func (r *run) cards(issues []tracker.IssueID) (out Changes, missing, unread []tr
 }
 
 // cardsOf reads and stores the cards of one batch of issues, and answers
-// those the tracker did not return.
-func (r *run) cardsOf(batch []tracker.IssueID) (Changes, []tracker.IssueID, error) {
+// those the tracker did not return and the read it began.
+func (r *run) cardsOf(batch []tracker.IssueID) (Changes, []tracker.IssueID, store.MirrorRead, error) {
 	began, err := r.beginRead()
 	if err != nil {
-		return Changes{}, nil, err
+		return Changes{}, nil, began, err
 	}
 	r.calls++
 	read, err := r.p.Cards(r.ctx, batch)
 	if err != nil {
-		return Changes{}, nil, fmt.Errorf("trackerapp: read %d cards: %w", len(batch), call(err))
+		return Changes{}, nil, began, fmt.Errorf("trackerapp: read %d cards: %w", len(batch), call(err))
 	}
 	cards := make([]store.MirrorCard, 0, len(read.Cards))
 	for _, c := range read.Cards {
 		m, err := mirrorCard(c)
 		if err != nil {
-			return Changes{}, nil, err
+			return Changes{}, nil, began, err
 		}
 		cards = append(cards, m)
 	}
 	catalog, err := mirrorCatalog(read.Catalog)
 	if err != nil {
-		return Changes{}, nil, err
+		return Changes{}, nil, began, err
 	}
 	stored, err := r.s.store.UpsertMirrorCards(r.root, r.state.Sweep, cards, catalog, began)
 	if err != nil {
-		return Changes{}, nil, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
+		return Changes{}, nil, began, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
 	}
 	w := changesOf(stored)
 	r.told("", w)
-	return w.Changes, read.Missing, r.markMissing(began, read.Missing)
+	return w.Changes, read.Missing, began, nil
 }
 
 // markMissing records that the read begun at began did not return the
@@ -235,31 +238,32 @@ func (r *run) structure(board tracker.BoardID) (Changes, error) {
 const timeSourceChanged = "this connection's time tracking changed (its Tempo connection was added, turned on or off, or removed) while its worklogs were read; refresh to read them again"
 
 // worklogs reads author's worklogs whose day is from to to (at most
-// worklogSpan days) through the connection's time tracker, and makes them
-// the mirror's for those days. Worklogs name no issue the mirror must
-// keep, so they change no view the funnel tells of.
-func (r *run) worklogs(author tracker.UserID, from, to tracker.Date) error {
+// worklogSpan days) through the connection's time tracker, makes them the
+// mirror's for those days, and returns them as the tracker answered.
+// Worklogs name no issue the mirror must keep, so they change no view the
+// funnel tells of.
+func (r *run) worklogs(author tracker.UserID, from, to tracker.Date) ([]tracker.Worklog, error) {
 	tt := r.p.Time()
 	if tt == nil {
-		return fmt.Errorf("trackerapp: connection %s has no time tracking: %w", r.row.ID, tracker.ErrUnsupported)
+		return nil, fmt.Errorf("trackerapp: connection %s has no time tracking: %w", r.row.ID, tracker.ErrUnsupported)
 	}
 	read, err := r.beginRead()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	r.calls++
 	logs, err := tt.Worklogs(r.ctx, tracker.WorklogQuery{Author: author, From: from, To: to})
 	if f, refused := worklogRefusal(author, from, to, err); refused {
-		return &requestRefused{f: f, err: err}
+		return nil, &requestRefused{f: f, err: err}
 	}
 	if err != nil {
 		err = timeAnswered(r.timeBy, err)
-		return fmt.Errorf("trackerapp: read the worklogs of %s from %s to %s: %w", author, from, to, call(err))
+		return nil, fmt.Errorf("trackerapp: read the worklogs of %s from %s to %s: %w", author, from, to, call(err))
 	}
 	stored := make([]store.MirrorWorklog, len(logs))
 	for i, w := range logs {
 		if w.Author != author || w.Day.Compare(from) < 0 || w.Day.Compare(to) > 0 {
-			return fmt.Errorf("trackerapp: the worklogs of %s from %s to %s: %w", author, from, to,
+			return nil, fmt.Errorf("trackerapp: the worklogs of %s from %s to %s: %w", author, from, to,
 				call(fmt.Errorf("the tracker answered worklog %s of %s on %s", w.ID, w.Author, w.Day)))
 		}
 		stored[i] = mirrorWorklog(w)
@@ -267,16 +271,16 @@ func (r *run) worklogs(author tracker.UserID, from, to tracker.Date) error {
 	_, err = r.s.store.ReplaceMirrorWorklogs(r.root, r.row.TimeSourceGen, string(author), from.String(), to.String(), read, stored)
 	switch {
 	case errors.Is(err, store.ErrTrackerCacheSourceChanged):
-		return &failureError{f: Failure{Kind: FailureTransient, Message: timeSourceChanged}}
+		return nil, &failureError{f: Failure{Kind: FailureTransient, Message: timeSourceChanged}}
 	case errors.Is(err, store.ErrTooManyWorklogs):
-		return &requestRefused{err: err, f: Failure{Kind: FailureInternal, Message: fmt.Sprintf(
+		return nil, &requestRefused{err: err, f: Failure{Kind: FailureInternal, Message: fmt.Sprintf(
 			"%s has more than %d worklogs from %s to %s, which is more than one read can store; read fewer days at a time",
 			author, store.MaxReplacedWorklogs, from, to)}}
 	}
 	if err != nil {
-		return fmt.Errorf("trackerapp: store the worklogs of %s from %s to %s: %w", author, from, to, err)
+		return nil, fmt.Errorf("trackerapp: store the worklogs of %s from %s to %s: %w", author, from, to, err)
 	}
-	return nil
+	return logs, nil
 }
 
 // markStructureDue marks the run's structure due when a row write found

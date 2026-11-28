@@ -83,19 +83,18 @@ func TestALinkMakesANeverSentThreadReal(t *testing.T) {
 func TestTheListingRuleProbesTheLinkByKey(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	listed, args := sidebarListedClause()
+	listed := sidebarListedClause()
 	for name, query := range map[string]string{
 		"the empty-draft test":   emptyDraftThreadSQL,
 		"a write's listing read": `SELECT EXISTS (SELECT 1 FROM owned_threads AS threads WHERE threads.id = ? AND ` + listed + `)`,
 	} {
-		plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+query, append([]any{"t"}, args...)...)
+		plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+query, "t")
 		if !strings.Contains(plan, "SEARCH thread_tickets USING COVERING INDEX sqlite_autoindex_thread_tickets_1 (thread_id=?)") ||
 			strings.Contains(plan, "SCAN thread_tickets") {
 			t.Errorf("%s does not probe the link by key:\n%s", name, plan)
 		}
 	}
-	list, listArgs := listThreadsWithItemsQuery()
-	plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+list, listArgs...)
+	plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+listThreadsWithItemsQuery())
 	if !strings.Contains(plan, "SEARCH thread_tickets USING COVERING INDEX sqlite_autoindex_thread_tickets_1 (thread_id=?)") {
 		t.Errorf("the sidebar's list does not probe the link by key:\n%s", plan)
 	}

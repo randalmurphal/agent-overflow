@@ -120,7 +120,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 // board.
 func TestMirrorDrainCoversEveryTable(t *testing.T) {
 	t.Parallel()
-	db := migrateThrough(t, threadTicketCopyMigrationVersion)
+	db := migrateThrough(t, migrations[len(migrations)-1].Version)
 	tables, err := queryIDs(db, `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'tracker\_cache\_%' ESCAPE '\'
 		AND name <> 'tracker_cache_roots' ORDER BY name`)
 	if err != nil {
@@ -225,6 +225,8 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, _, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: mirrorReadOf(root, 8), Failure: MirrorAttemptFailure{At: mirrorReadOf(root, 9), Kind: MirrorFailureTransient, Message: "timed out"}}))
 			return err
 		},
+		"PassMirrorUnnamedParents": func(root int64) error { return s.PassMirrorUnnamedParents(root, "10050") },
+		"EndMirrorUnnamedParents":  func(root int64) error { return s.EndMirrorUnnamedParents(root) },
 		"MarkMirrorIssuesMissing": func(root int64) error {
 			_, err := s.MarkMirrorIssuesMissing(root, mirrorReadOf(root, 9), []string{"10001"})
 			return err
@@ -237,6 +239,27 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, err := s.DropMirrorBodies(root, []string{"10001"})
 			return err
 		},
+		"RecordMirrorEvidenceOutcome": func(root int64) error {
+			_, err := s.RecordMirrorEvidenceOutcome(root, "Jira answered 503")
+			return err
+		},
+		"ReplaceMirrorActs": func(root int64) error {
+			_, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 9), []MirrorIssueActs{commentsOf("10001", 5, 2, "c1"),
+				{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 5, Acts: []MirrorAct{{ID: "w1", Person: "acc-user2", At: 3, Seconds: 60}}}},
+				nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user2", Name: "User 2"}}})
+			return err
+		},
+		"SetMirrorForgePeople": func(root int64) error {
+			_, err := s.SetMirrorForgePeople(root, mirrorReadOf(root, 9), []MirrorForgeMatch{{MirrorForgePerson: MirrorForgePerson{Host: "github.com", Login: "user3"}}},
+				MirrorCatalog{}, 2, []string{"10"})
+			return err
+		},
+		// The pull requests of a key no ticket has: an advance that names
+		// one a board counts is a change each time it is told.
+		"AdvanceMirrorForgeCredit": func(root int64) error {
+			_, err := s.AdvanceMirrorForgeCredit(root, []MirrorActsBoard{{BoardID: "10"}}, []string{"WEB-999"}, false)
+			return err
+		},
 	}
 }
 
@@ -244,8 +267,8 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 // the cleanup and the reads.
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
-	"GetMirrorSync", "ListMirrorHistoryDue", "ListMirrorBodies", "ListMirrorIssueWorklogs",
-	"GetMirrorBoard", "GetMirrorBoardStatuses", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections",
+	"GetMirrorSync", "GetMirrorEvidenceFailure", "ListMirrorHistoryDue", "ListMirrorActsDue", "ListMirrorForgePeopleDue", "ListMirrorForgeAccounts", "MirrorForgeFailures", "ListMirrorBodies", "ListMirrorIssueWorklogs",
+	"GetMirrorBoard", "GetMirrorBoardStatuses", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorParents", "ListMirrorUnnamedParents", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections", "GetMirrorBoardPace", "ListMirrorSupport",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards", "ListMirrorSprintNames", "LastMirrorPlanRow",
 	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays",
 	// A board's rows copied into a dashboard's own database: a read of the

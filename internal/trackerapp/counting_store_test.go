@@ -15,6 +15,9 @@ type countingStore struct {
 	*store.Store
 	mu    sync.Mutex
 	calls map[string]int
+	// children is how many issues the change funnel asked the children's
+	// boards of (ListMirrorIssueBoards' parents), since the last take.
+	children int
 }
 
 func newCountingStore(st *store.Store) *countingStore {
@@ -33,7 +36,18 @@ func (c *countingStore) take() map[string]int {
 	defer c.mu.Unlock()
 	out := maps.Clone(c.calls)
 	clear(c.calls)
+	c.children = 0
 	return out
+}
+
+// takeChildren returns the issues whose children's boards were asked
+// since the last take, and starts that count again.
+func (c *countingStore) takeChildren() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := c.children
+	c.children = 0
+	return n
 }
 
 func (c *countingStore) GetOrCreateMirrorRoot(id string) (int64, bool, error) {
@@ -141,6 +155,11 @@ func (c *countingStore) ListMirrorCards(root int64, issues []string) ([]store.Mi
 	return c.Store.ListMirrorCards(root, issues)
 }
 
+func (c *countingStore) ListMirrorParents(root int64, parents []string) ([]store.MirrorParent, error) {
+	c.count("ListMirrorParents")
+	return c.Store.ListMirrorParents(root, parents)
+}
+
 func (c *countingStore) ListMirrorTicketRows(root int64, issues []string) ([]store.MirrorTicketRow, error) {
 	c.count("ListMirrorTicketRows")
 	return c.Store.ListMirrorTicketRows(root, issues)
@@ -178,6 +197,9 @@ func (c *countingStore) ReadMirrorBoardPatch(root int64, board string, regroup s
 
 func (c *countingStore) ListMirrorIssueBoards(root int64, issues, parents []string) ([]store.MirrorIssueBoard, error) {
 	c.count("ListMirrorIssueBoards")
+	c.mu.Lock()
+	c.children += len(parents)
+	c.mu.Unlock()
 	return c.Store.ListMirrorIssueBoards(root, issues, parents)
 }
 
@@ -219,4 +241,49 @@ func (c *countingStore) ProjectTrackerBoardListed(projectID, connectionID, board
 func (c *countingStore) ListProjectTrackerBoards(projectID string) ([]store.ProjectTrackerBoard, error) {
 	c.count("ListProjectTrackerBoards")
 	return c.Store.ListProjectTrackerBoards(projectID)
+}
+
+func (c *countingStore) ListMirrorActsDue(root int64, boards []store.MirrorActsBoard, from, now int64) ([]store.MirrorActsDue, bool, error) {
+	c.count("ListMirrorActsDue")
+	return c.Store.ListMirrorActsDue(root, boards, from, now)
+}
+
+func (c *countingStore) ReplaceMirrorActs(root, sourceGen int64, read store.MirrorRead, issues []store.MirrorIssueActs, tried []store.MirrorActsAttempt, catalog store.MirrorCatalog) (store.MirrorActsWrite, error) {
+	c.count("ReplaceMirrorActs")
+	return c.Store.ReplaceMirrorActs(root, sourceGen, read, issues, tried, catalog)
+}
+
+func (c *countingStore) ListTrackerBoardChoices(projectID string) ([]store.TrackerBoardChoice, error) {
+	c.count("ListTrackerBoardChoices")
+	return c.Store.ListTrackerBoardChoices(projectID)
+}
+
+func (c *countingStore) ListConnectionProjectBoards(connectionID string) ([]store.ConnectionProjectBoard, error) {
+	c.count("ListConnectionProjectBoards")
+	return c.Store.ListConnectionProjectBoards(connectionID)
+}
+
+func (c *countingStore) ListMirrorForgePeopleDue(root, now int64, viewer string) ([]store.MirrorForgePersonDue, bool, error) {
+	c.count("ListMirrorForgePeopleDue")
+	return c.Store.ListMirrorForgePeopleDue(root, now, viewer)
+}
+
+func (c *countingStore) SetMirrorForgePeople(root int64, read store.MirrorRead, matches []store.MirrorForgeMatch, catalog store.MirrorCatalog, checkedAt int64, boards []string) (bool, error) {
+	c.count("SetMirrorForgePeople")
+	return c.Store.SetMirrorForgePeople(root, read, matches, catalog, checkedAt, boards)
+}
+
+func (c *countingStore) SetTrackerForgePairing(p store.TrackerForgePairing, boards []string) (bool, error) {
+	c.count("SetTrackerForgePairing")
+	return c.Store.SetTrackerForgePairing(p, boards)
+}
+
+func (c *countingStore) DeleteTrackerForgePairing(connectionID, host, login string, boards []string) (bool, error) {
+	c.count("DeleteTrackerForgePairing")
+	return c.Store.DeleteTrackerForgePairing(connectionID, host, login, boards)
+}
+
+func (c *countingStore) AdvanceMirrorForgeCredit(root int64, boards []store.MirrorActsBoard, keys []string, all bool) ([]string, error) {
+	c.count("AdvanceMirrorForgeCredit")
+	return c.Store.AdvanceMirrorForgeCredit(root, boards, keys, all)
 }

@@ -162,6 +162,103 @@ whose last page names no next is complete to the after date. Stopping at
 the first short page read one comments page, reaching back 12 days
 (2026-10-09). The feed's `after` semantics were not probed.
 
+## Ticket key search
+
+Measured on github.com on 2026-11-26, read-only, against this project's
+own public repository through GraphQL `search(type: ISSUE)`, a handful of
+queries: enough to design on, not a proof of every tokenizer case.
+
+- `head:` is a prefix match on the branch name: for a pull request from
+  branch `issues-find-filters`, `head:issues-find-filters`,
+  `head:issues-find` and `head:issues-fin` each matched it, and
+  `head:find`, `head:filters` and `head:find-filters` matched nothing.
+  A second probe the same day: `head:ISSUES-FIND` matched the pull request
+  from `issues-find-filters`, so the prefix ignores case. It also matches
+  a closed pull request whose branch was deleted on the forge.
+- A quoted title term matches whole tokens in order, case ignored: for
+  titles holding an ID of the shape `XX-YYYY-NNNN`, the quoted full ID
+  matched its one pull request, the quoted `XX-YYYY` matched both pull
+  requests whose IDs begin that way, and the quoted `XX-YYYY-NN` (a token
+  cut short) matched none. The unquoted full ID matched the same one.
+- `(in:title "..." OR head:...)` in one query matched nothing, though
+  each half alone matched one.
+- Two aliased `search` fields in one request both answered, and
+  `rateLimit { cost }` for that request was 1.
+- `repository.refs(refPrefix: "refs/heads/", query: ...)` matches a
+  substring of a branch name, ignoring case: `query: "integration"` and
+  `query: "INTEGRATION"` each returned `issues-integration`. It lists
+  only branches that exist.
+
+GitLab's merge request list documentation (read the same day) says
+`search` matches "against their `title` and `description`", narrowed by
+`in` (`title`, `description`, or both joined with a comma), that
+`source_branch` "Returns merge requests with the given source branch."
+(it does not say exact), and that `state` defaults to `all`. Its Branches
+API documentation says `search` returns the branches "containing the
+search string", with `^term` and `term$` anchors. Probed on 2026-11-26,
+read-only and unauthenticated, on a public project on gitlab.com: the
+Branches API `search=MAIN` and `search=main` returned the same three
+branches (`main` and two whose names hold `main` in the middle), and
+likewise `STABLE` and `stable`, so it matches a substring and ignores
+case. A self-managed GitLab of another version was not measured, nor
+which rate-limit pool these searches use.
+
+## Pull request history
+
+The reads of a repository's history
+([forge transport](../architecture/forge-transport.md#pull-request-history))
+rest on these documented behaviors, read on 2026-11-27; none was measured
+against a live forge.
+
+- GitLab's Events API documentation (`docs.gitlab.com/api/events/`): a
+  project's events (`GET /projects/:id/events`) filter by `action`
+  (`approved` and `commented` are among the listed actions), by `after`
+  and `before`, each a date (`YYYY-MM-DD`), and sort by `sort` (`asc` or
+  `desc`). The page names no GitLab version for these parameters, and
+  says events older than 3 years are removed. GitLab's source
+  (`app/finders/events_finder.rb`) orders the events by `id`, not by
+  time, and keeps those created after the end of the `after` day and
+  before the start of the `before` day, in the server's time zone, so
+  each date is exclusive; the reader pads each by 2 days. Its offset
+  pagination (`lib/gitlab/pagination/offset_pagination.rb`) counts at most
+  10,000 rows, past which it names no next page; the reader reads a band
+  of a day whole up to 100 pages and fails past them.
+- A note on a merge request is an event whose target is a `Note`, a
+  `DiffNote` (a comment on the code) or a `DiscussionNote` (a reply);
+  both are kinds of `Note` (`app/models/discussion_note.rb`), and
+  GitLab's event entity (`lib/api/entities/event.rb`) answers an event
+  whose target is a note with its `note` (`noteable_type`,
+  `noteable_iid`, `system`), so by the source the `commented` feed holds
+  all three. GitLab's discussions documentation
+  (`docs.gitlab.com/api/discussions/`, its note types) says a
+  `DiscussionNote` is not available through the events API; the reader
+  follows the source, and the viewer's feed measured above carried
+  `DiscussionNote` targets.
+- GitLab's merge requests API documentation: `updated_after` and
+  `updated_before` return merge requests updated on or after, and on or
+  before, the given time; `order_by=updated_at` with `sort`; a filter by
+  `source_project_id` exists only on the group list, so the project list
+  is read and each row's `source_project_id` names its head.
+- GitHub's GraphQL rate limit documentation: `first` and `last` are 1 to
+  100; a query's cost is the requests it needs (each connection and each
+  nested connection by its `first`) divided by 100, rounded, at least 1;
+  5,000 points an hour for a user; a query that runs past 10 seconds is
+  stopped. `PullHistory` (50 pull requests, each with 50 reviews, 3
+  approvals with their comment counts and 50 comments) is 1 + 50 + 50 +
+  50 + 150 = 301 requests, 3 points a page; `PullHistoryMore` is at most
+  103 requests, 1 point.
+- GitHub's GraphQL schema (`internal/git/forgeschema/github.graphql`)
+  leaves `PullRequestReviewComment.pullRequestReview` nullable and
+  documents neither that every line comment belongs to a review by its
+  writer nor that a review or a reply moves the pull request's
+  `updatedAt`; the reader relies on both
+  ([forge transport](../architecture/forge-transport.md#pull-request-history)).
+- A `PullHistory` page's size was not measured; its body bound is 8 MiB
+  (`WithMaxBody`), as the GitLab merge request list's is: 50 pull
+  requests with 103 nested items each fit it at up to 1.6 KB an item.
+  A project events page uses `gitlabEventsMaxBody` (4 MiB), sized from
+  the user events pages measured below.
+
 ## List page sizes
 
 Read-only GETs on 2026-11-11 (`gh api` on randalmurphal/agent-overflow,

@@ -49,9 +49,44 @@ type period struct {
 	to      int64
 	sprints []string
 	partial bool
+	// future is a sprint day after today, which has no value yet; last is
+	// the sprint's last working day, where its even pace reaches zero.
+	future, last bool
 }
 
 func (p period) holds(at int64) bool { return at > p.from && at <= p.to }
+
+// places is whether p is row c's period: one of p's sprints is c's for a
+// metric by sprint (bySprint), else p holds c's at. A row of no at and no
+// sprint has no period (place).
+func (p period) places(c contribution, bySprint bool) bool {
+	if bySprint {
+		return slices.Contains(p.sprints, c.bucket)
+	}
+	return c.hasAt && p.holds(c.at)
+}
+
+// holdsState is whether state row c is in p: it holds at p's end
+// (holdsAt), in one of p's sprints for a metric by sprint (bySprint). The
+// widget and the drill place a period's states here (ranged.of), and the
+// row sink keeps those rows by it (reads.kept).
+func (p period) holdsState(c contribution, bySprint bool) bool {
+	return c.holdsAt(p.to) && (!bySprint || slices.Contains(p.sprints, c.bucket))
+}
+
+// meets is whether p meets the span from to to of a row with no instant,
+// its ticket's creation and last update: where it could have happened
+// (place).
+func (p period) meets(from, to int64) bool { return from <= p.to && to > p.from }
+
+// holdsAt is whether state row c holds at instant t: from its at (none:
+// before anything) until its until (none: still), at <= t < until. A
+// period's state is what holds at its end, a number's what holds now and
+// at the range's start; the widget and the drill both place states here
+// (ranged.of).
+func (c contribution) holdsAt(t int64) bool {
+	return (!c.hasAt || c.at <= t) && (!c.hasUntil || t < c.until)
+}
 
 // since is where the span's periods, the previous range's included,
 // begin: no row at or before it falls in one. It is now for a span with
@@ -81,12 +116,20 @@ type span struct {
 	previousLabel string
 	// note says why the range has no periods.
 	note string
+	// now is the instant the span is resolved at, where a state is read
+	// for a number's value and a list.
+	now int64
+	// days is the active sprints' working days (sprintDays), which a
+	// metric grouped by day counts whatever the range; daysLabel names
+	// those sprints, and daysNote says why there are no days.
+	days                []period
+	daysLabel, daysNote string
 }
 
 // sprintRow is a sprint of the export.
 type sprintRow struct {
 	id, name, state string
-	startAt         int64
+	startAt, endAt  int64
 	completedAt     int64
 	position        int64
 }
@@ -102,8 +145,9 @@ func resolveSpan(id string, plansSprints bool, sprints []sprintRow, now time.Tim
 		}
 		return span{}, fmt.Errorf("this board counts over %s, not %q", strings.Join(ids, ", "), id)
 	}
-	sp := span{id: id, label: options[i].Label}
+	sp := span{id: id, label: options[i].Label, now: now.UnixMilli()}
 	if !plansSprints {
+		sp.daysNote = "This board plans no sprints, so it has no sprint days to count."
 		n := map[string]int{RangeWeeks2: 2, RangeWeeks4: 4, RangeWeeks12: 12}[id]
 		sp.periods, sp.previous = weeks(n, now, loc)
 		sp.previousLabel = fmt.Sprintf("the %d weeks before", n)
@@ -120,6 +164,7 @@ func resolveSpan(id string, plansSprints bool, sprints []sprintRow, now time.Tim
 	slices.SortFunc(closed, func(a, b sprintRow) int {
 		return cmp.Or(cmp.Compare(b.completedAt, a.completedAt), cmp.Compare(b.position, a.position))
 	})
+	sp.days, sp.daysLabel, sp.daysNote = sprintDays(sprints, now, loc)
 	window := func(i int) period {
 		s := closed[i]
 		from := s.startAt
@@ -198,4 +243,85 @@ func weeks(n int, now time.Time, loc *time.Location) (cur, prev []period) {
 		}
 	}
 	return cur, prev
+}
+
+// maxSprintDays is the most points a metric grouped by day draws: a
+// sprint's start and its working days to the later of its end and today.
+const maxSprintDays = 64
+
+// sprintDays is the working days of the board's active sprints (their
+// union when several are active): Start, at the earliest start, then the
+// end of each working day in loc from the start's day to the later of the
+// last end's day and today. Today's point is at now and partial, a later
+// day's is future, and the last working day on or before the end is the
+// sprint's last. Each day holds the rows of an at after the point before
+// it, a weekend's in the next working day. label names the sprints; note
+// says why there are no days: no active sprint, one with no dates, or
+// more days than maxSprintDays.
+func sprintDays(sprints []sprintRow, now time.Time, loc *time.Location) (days []period, label, note string) {
+	var start, end int64
+	var names []string
+	dated := true
+	for _, s := range sprints {
+		if s.state != "active" {
+			continue
+		}
+		names = append(names, s.name)
+		if s.startAt <= 0 || s.endAt <= 0 {
+			dated = false
+			continue
+		}
+		if start == 0 || s.startAt < start {
+			start = s.startAt
+		}
+		end = max(end, s.endAt)
+	}
+	label = strings.Join(names, ", ")
+	switch {
+	case len(names) == 0:
+		return nil, "", "No sprint is active on this board."
+	case !dated:
+		return nil, label, label + " has no start or end date, so it has no days to count."
+	}
+	at := now.UnixMilli()
+	days = []period{{id: "day:start", label: "Start", from: start - 1, to: start, future: start > at}}
+	lastDay := midnight(time.UnixMilli(end).In(loc))
+	today := midnight(now.In(loc))
+	stop := lastDay
+	if today.After(stop) {
+		stop = today
+	}
+	last := 0
+	for d := midnight(time.UnixMilli(start).In(loc)); !d.After(stop); d = d.AddDate(0, 0, 1) {
+		if !working(d) {
+			continue
+		}
+		if len(days) > maxSprintDays {
+			return nil, label, fmt.Sprintf("%s runs past %d working days, more than a day chart draws.", label, maxSprintDays)
+		}
+		p := period{id: "day:" + d.Format(time.DateOnly), label: d.Format("Jan 2"), from: days[len(days)-1].to, to: d.AddDate(0, 0, 1).UnixMilli() - 1}
+		switch {
+		case d.Equal(today):
+			p.to, p.partial = at, true
+		case d.After(today):
+			p.future = true
+		}
+		if !d.After(lastDay) {
+			last = len(days)
+		}
+		days = append(days, p)
+	}
+	days[last].last = true
+	return days, label, ""
+}
+
+// holding is the rows of rows that hold at t.
+func holding(rows []contribution, t int64) []contribution {
+	var out []contribution
+	for _, c := range rows {
+		if c.holdsAt(t) {
+			out = append(out, c)
+		}
+	}
+	return out
 }

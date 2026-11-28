@@ -18,6 +18,17 @@ export interface TrackerBoardEvent {
   removed?: string[] | null;
   truncated?: boolean;
   read_again?: boolean;
+  /** One project's pins that changed (trackerapp.ProjectPins): only that
+   * project's subscriptions hold them. */
+  pins?: { project: string; pins: string[] } | null;
+  /** One project's dashboards of the board changed
+   * (trackerapp.ProjectDashboards), and with `counts` what they count:
+   * only that project's subscriptions take it. */
+  dashboards?: { project: string; counts: boolean } | null;
+  /** What the board's dashboards count changed with no row named: the
+   * reads of the connection's logged time ended, or the last read of who
+   * worked on its tickets ended otherwise (trackerapp tellRecount). */
+  recount?: boolean;
   sync?: SyncView;
   ended?: boolean;
 }
@@ -33,6 +44,16 @@ export interface TrackerIssueEvent {
   ended?: boolean;
 }
 
+/** The `tracker:time_entries_updated` frame (trackerapp.TimeEntriesEvent):
+ * the time entries of a connection's author changed on `days`, drafted by
+ * `threads` among others. */
+export interface TrackerTimeEntriesEvent {
+  connection: string;
+  author: string;
+  days?: string[] | null;
+  threads?: string[] | null;
+}
+
 /** What a store does with a channel: a frame, and a gap that answers the
  * settling of the reads it starts, or undefined when nothing of the
  * computer is held. */
@@ -43,6 +64,8 @@ interface TrackerChannel<E> {
 
 let boards: TrackerChannel<TrackerBoardEvent> | null = null;
 let tickets: TrackerChannel<TrackerIssueEvent> | null = null;
+// The weeks' store and the draft cards' store, each once it loads.
+const timeEntries = new Set<TrackerChannel<TrackerTimeEntriesEvent>>();
 const listsChanged = new Set<(backend: BackendKey) => void>();
 const setupUpdated = new Set<(backend: BackendKey) => void>();
 
@@ -74,6 +97,23 @@ export function trackerIssueUpdated(event: TrackerIssueEvent, backend: BackendKe
 /** A gap on `tracker:issue_updated` from `backend`. */
 export function trackerTicketsGap(backend: BackendKey): Promise<void> | undefined {
   return tickets?.gap(backend);
+}
+
+/** A store that shows time entries takes the channel when it loads. */
+export function takeTrackerTimeEntriesChannel(channel: TrackerChannel<TrackerTimeEntriesEvent>): void {
+  timeEntries.add(channel);
+}
+
+/** A `tracker:time_entries_updated` frame from `backend`. */
+export function trackerTimeEntriesUpdated(event: TrackerTimeEntriesEvent, backend: BackendKey): void {
+  for (const channel of timeEntries) channel.event(event, backend);
+}
+
+/** A gap on `tracker:time_entries_updated` from `backend`: what each store
+ * reads again, settled together. */
+export function trackerTimeEntriesGap(backend: BackendKey): Promise<void> | undefined {
+  const reads = [...timeEntries].flatMap((channel) => channel.gap(backend) ?? []);
+  return reads.length > 0 ? Promise.all(reads).then(() => undefined) : undefined;
 }
 
 /** Runs `listener` whenever the boards some project of a computer lists may

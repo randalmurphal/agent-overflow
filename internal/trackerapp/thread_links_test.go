@@ -164,9 +164,11 @@ func TestLinkThreadFromTheMirrorOrOneRead(t *testing.T) {
 	}
 }
 
-// An unlink, and a link replaced, tell the boards that show the issue the
-// link was the last to keep as a parent of their rows.
-func TestEndedLinksTellTheBoardsOfTheirChildren(t *testing.T) {
+// An unlink, and a link replaced, of the last keep of a parent tell no
+// board of its children: a row names its parent from the parent's name,
+// which does not depend on the mirror keeping the parent, so the child's
+// row still names it.
+func TestEndedLinksTellNoBoardOfTheirChildren(t *testing.T) {
 	t.Parallel()
 	for _, end := range []struct {
 		name string
@@ -191,11 +193,14 @@ func TestEndedLinksTellTheBoardsOfTheirChildren(t *testing.T) {
 			t.Parallel()
 			m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
 			child := row("10002", 1_799_000_000_000, "a")
-			child.Card.Parent = "10009"
+			child.Card.Parent, child.Card.ParentName = "10009", &tracker.ParentName{Key: "WEB-9", Title: "Linked epic", Level: 1}
 			m.tracks([]tracker.Row{child})
 			m.linkThread("thread-1", "10009")
 			m.subscribe(t, testBoard)
 			idleBoards(t, m.svc, m.p)
+			if cards := must[[]store.MirrorCard](t)(m.st.ListMirrorCards(m.root(), []string{"10009"})); len(cards) != 1 {
+				t.Fatalf("the link keeps no parent: %+v", cards)
+			}
 			before, _, _ := m.events.snapshot()
 			if err := end.run(m); err != nil {
 				t.Fatal(err)
@@ -203,9 +208,16 @@ func TestEndedLinksTellTheBoardsOfTheirChildren(t *testing.T) {
 			if cards := must[[]store.MirrorCard](t)(m.st.ListMirrorCards(m.root(), []string{"10009"})); len(cards) != 0 {
 				t.Fatalf("the parent is still kept: %+v", cards)
 			}
-			m.events.waitFor(t, "the child's row", func(b []BoardEvent, _ []IssueEvent, _ []error) bool {
-				return slices.ContainsFunc(b[len(before):], func(e BoardEvent) bool { return slices.Contains(e.Changed, "10002") })
-			})
+			// The end is told as it returns (LinksEnded).
+			after, _, _ := m.events.snapshot()
+			if slices.ContainsFunc(after[len(before):], func(e BoardEvent) bool { return slices.Contains(e.Changed, "10002") }) {
+				t.Fatalf("the end told the board of the child: %+v", after[len(before):])
+			}
+			v := must[BoardView](t)(m.svc.Board(m.scope(), StatusGroups{}, []Section{{Kind: SectionBacklog}}))
+			if rows := v.Sections[0].Rows; len(rows) != 1 || rows[0].Card.Parent == nil ||
+				*rows[0].Card.Parent != (ParentView{ID: "10009", Key: "WEB-9", Title: "Linked epic"}) {
+				t.Fatalf("the child's row after the end = %+v; want it to name its parent", rows)
+			}
 		})
 	}
 }

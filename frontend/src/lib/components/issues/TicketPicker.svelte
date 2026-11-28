@@ -59,9 +59,13 @@
     multi?: boolean;
     onPick: (item: PickItem | null) => void;
     onClose: () => void;
+    /** The control that opened the list, when a dialog hosts it: the list
+     * is outside the dialog's focus trap, so Tab closes it and focus goes
+     * back to this control (Popover's `claimTab`). */
+    dialogTrigger?: HTMLElement;
   }
 
-  let { anchor, open, label, load, checked, clearLabel, multi = false, onPick, onClose }: Props = $props();
+  let { anchor, open, label, load, checked, clearLabel, multi = false, onPick, onClose, dialogTrigger }: Props = $props();
 
   const PAUSE_MS = 250;
 
@@ -154,7 +158,7 @@
   }
 </script>
 
-<Popover {anchor} {open} onClose={close} placement="bottom-start" ariaLabel={label}>
+<Popover {anchor} {open} onClose={close} placement="bottom-start" ariaLabel={label} claimTab={!!dialogTrigger} restoreFocusTo={dialogTrigger}>
   <div class="flex max-h-80 w-64 flex-col">
     <input
       class="m-1.5 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"

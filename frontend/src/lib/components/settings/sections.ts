@@ -202,6 +202,36 @@ export const SETTINGS_SECTIONS = [
     description: 'Which group each status of a project\'s boards counts in, or whether it is left out of counts.',
   },
   {
+    id: 'tracker-fields',
+    label: 'Fields',
+    group: 'Issues',
+    description: 'What shows without being asked for. Everything else stays one click away on the ticket.',
+  },
+  {
+    id: 'tracker-start-work',
+    label: 'Starting work',
+    group: 'Issues',
+    description: 'What happens when you press Start work on a ticket.',
+  },
+  {
+    id: 'tracker-points',
+    label: 'Points and credit',
+    group: 'Issues',
+    description: 'How work is counted on this project\'s dashboards and in sprint planning.',
+  },
+  {
+    id: 'tracker-time',
+    label: 'Time',
+    group: 'Issues',
+    description: 'Where meetings and time off are logged, and whether your agent may log time to an epic.',
+  },
+  {
+    id: 'tracker-agents',
+    label: 'Agents',
+    group: 'Issues',
+    description: 'What a thread in this project may do to its tickets.',
+  },
+  {
     id: 'systems',
     remote: true,
     label: 'Connect to a computer',
@@ -311,5 +341,6 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'agy', 'commit-messages',
     'browser', 'thread-tools', 'assistants', 'agent-guide', 'memory', 'projects', 'git', 'editor', 'remote', 'agent-access',
-    'observability', 'storage', 'voice', 'tracker-connections', 'tracker-boards', 'tracker-statuses'].includes(section);
+    'observability', 'storage', 'voice', 'tracker-connections', 'tracker-boards', 'tracker-statuses', 'tracker-fields',
+    'tracker-start-work', 'tracker-points', 'tracker-time', 'tracker-agents'].includes(section);
 }

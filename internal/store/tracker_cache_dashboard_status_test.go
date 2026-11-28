@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"testing"
@@ -25,8 +26,8 @@ func TestDashboardCountsStatusesAsTheSectionsDo(t *testing.T) {
 	e := trackerdash.NewEvaluator(func() time.Time { return now })
 	evaluate := func(board, dashboard, rng string) trackerdash.Answer {
 		t.Helper()
-		fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-			return s.ExportMirrorBoard(ctx, conn, root, board, regroup, relations)
+		fill := func(ctx context.Context, conn *sql.Conn, relations []string, _ string) (store.MirrorExport, bool, error) {
+			return s.ExportMirrorBoard(ctx, conn, root, board, regroup, relations, 0, math.MaxInt64, store.MirrorLoggedDays{}, store.CardShapeForTest)
 		}
 		a, err := e.Evaluate(context.Background(), trackerdash.Board{Fill: fill, Epics: true},
 			trackerdash.Request{Dashboard: dashboard, Range: rng, TimeZone: "UTC"})
@@ -94,8 +95,8 @@ func TestStartToDoneCountsWhatTheHistoryShows(t *testing.T) {
 	// Monday 16 November, noon: WEB-21 is in progress Tuesday to Thursday,
 	// WEB-23 Tuesday to Wednesday.
 	s, root := store.DashboardHistoryFixtureForTest(t, time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC).UnixMilli(), day)
-	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-		return s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{}, relations)
+	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string, _ string) (store.MirrorExport, bool, error) {
+		return s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{}, relations, 0, math.MaxInt64, store.MirrorLoggedDays{}, store.CardShapeForTest)
 	}}
 	r := trackerdash.Request{Dashboard: "overview_weeks", Range: trackerdash.RangeWeeks2, TimeZone: "UTC"}
 	d, err := trackerdash.NewEvaluator(func() time.Time { return now }).Drill(context.Background(), b, trackerdash.DrillRequest{Request: r, Widget: "start_to_done"})
@@ -118,16 +119,17 @@ func TestStartToDoneCountsWhatTheHistoryShows(t *testing.T) {
 
 // A count copies what its metrics read, through a real export of a board
 // whose tickets have changes: no built-in reads the changes, so neither
-// the Overview's copy nor a Stuck drill's holds any, and the drill asks
-// for the relations its metric and the rows' labels read, no sprint's.
+// the Overview's copy nor a Stuck drill's holds any (the status intervals
+// are filled without copying them), and the drill asks for the relations
+// its metric and the rows' labels read, no sprint's.
 func TestACountCopiesWhatItsMetricsRead(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 	s, root := store.DashboardHistoryFixtureForTest(t, time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC).UnixMilli(), int64(24*time.Hour/time.Millisecond))
 	var asked [][]string
 	var changes []int
-	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-		export, ok, err := s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{}, relations)
+	b := trackerdash.Board{Fill: func(ctx context.Context, conn *sql.Conn, relations []string, _ string) (store.MirrorExport, bool, error) {
+		export, ok, err := s.ExportMirrorBoard(ctx, conn, root, "11", store.MirrorRegroup{}, relations, 0, math.MaxInt64, store.MirrorLoggedDays{}, store.CardShapeForTest)
 		var n int
 		if err == nil {
 			err = conn.QueryRowContext(ctx, `SELECT count(*) FROM changes`).Scan(&n)
@@ -146,7 +148,7 @@ func TestACountCopiesWhatItsMetricsRead(t *testing.T) {
 	if !reflect.DeepEqual(changes, []int{0, 0}) || slices.Contains(asked[0], "changes") {
 		t.Fatalf("the copies held %v changes, the Overview asked for %v; want none copied", changes, asked[0])
 	}
-	if want := []string{"epics", "people", "statuses", "tickets"}; !reflect.DeepEqual(asked[1], want) {
+	if want := []string{"epics", "people", "status_intervals", "statuses", "tickets"}; !reflect.DeepEqual(asked[1], want) {
 		t.Fatalf("the Stuck drill asked for %v; want %v", asked[1], want)
 	}
 }

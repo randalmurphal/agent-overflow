@@ -531,6 +531,38 @@ describe('tracker tool write results', () => {
     }), {}, names)!.outcome).toBe('0 of 1 ticket changed');
   });
 
+  it('reads a widget call as the rules, or as its count on its board with its first rows', () => {
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json('A widget is one SQLite SELECT.'), {}, names)).toMatchObject({ outcome: 'the widget rules' });
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({
+      board: 'Web Team', range: 'Last 5 sprints', counts: 'The number of tickets.', value: 3, rows: 3,
+      first_rows: [{ key: 'WEB-1', title: 'Login fails', counted: true }, { key: 'WEB-2', counted: false, note: 'no estimate' }],
+      shown: 'It is on the board\'s dashboards for the user to keep or dismiss.',
+    }), {}, names)).toMatchObject({
+      outcome: '3 · 3 rows · on Web Team',
+      note: 'It is on the board\'s dashboards for the user to keep or dismiss.',
+      lines: [{ key: 'WEB-1', title: 'WEB-1 · Login fails', detail: '' }, { key: 'WEB-2', title: 'WEB-2', detail: 'not counted', text: 'no estimate' }],
+    });
+  });
+
+  it('says a widget\'s number and each first row\'s in its unit, as the dashboard draws them', () => {
+    const card = (unit: string, value: number) => aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({
+      board: 'Web Team', unit, value, rows: 2, first_rows: [{ key: 'WEB-1', value, counted: true }],
+    }), {}, names);
+    expect(card('seconds', 5400)).toMatchObject({ outcome: '1.5h · 2 rows · on Web Team', lines: [{ detail: '1.5h' }] });
+    expect(card('points', 8)).toMatchObject({ outcome: '8 points · 2 rows · on Web Team', lines: [{ detail: '8 points' }] });
+    expect(card('tickets', 1)).toMatchObject({ outcome: '1 ticket · 2 rows · on Web Team', lines: [{ detail: '1 ticket' }] });
+    expect(card('days', 2.5)).toMatchObject({ outcome: '2.5 days · 2 rows · on Web Team', lines: [{ detail: '2.5 days' }] });
+  });
+
+  it('says a widget\'s days of logged time not read, or older than kept, and why a widget counts nothing', () => {
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({ board: 'Web Team', unit: 'seconds', not_read: 24, rows: 0, first_rows: [] }), {}, names))
+      .toMatchObject({ outcome: 'not known, 24 days of your logged time not read · 0 rows · on Web Team' });
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({ board: 'Web Team', unit: 'seconds', old: true, rows: 2, first_rows: [] }), {}, names))
+      .toMatchObject({ outcome: 'not known, it counts days older than the logged time kept · 2 rows · on Web Team' });
+    expect(aoResultView(TRACKER_TOOLS_SERVER, 'dashboard_widget', json({ board: 'Web Team', unit: 'seconds', note: 'Only your own logged time is read.', rows: 0, first_rows: [] }), {}, names))
+      .toMatchObject({ outcome: '0 rows · on Web Team', note: 'Only your own logged time is read.' });
+  });
+
   it('reads a create as its key, and a create that stopped part way as incomplete with its sentence', () => {
     expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_create', json({ key: 'WEB-42' }), {}, names)).toMatchObject({ outcome: 'created WEB-42', note: '' });
     expect(aoResultView(TRACKER_TOOLS_SERVER, 'ticket_create', json({

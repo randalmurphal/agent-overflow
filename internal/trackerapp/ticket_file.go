@@ -20,47 +20,91 @@ const TicketFileMaxBytes = 200 << 10
 // holds.
 const ticketFileComments = 10
 
-// DetailForThread is issue's detail on connection id as a thread made for it
-// is given it: the one the mirror holds, with no tracker request, or, when
-// the mirror holds no body of the issue, the detail read once
-// (IssueDetail). The ticket a person starts work on is open, so its body
-// is held.
-func (s *Service) DetailForThread(ctx context.Context, id string, issue tracker.IssueID) (DetailView, error) {
-	if v, ok, err := s.storedDetail(id, issue); err != nil || ok {
-		return v, err
+// DetailsForThread are issues' details on connection id, in the order
+// asked, as a thread made for them is given them: each one whose body the
+// mirror holds as it holds it, with no tracker request, and the others
+// read together once (UnmarkedIssueDetails), so a thread on several
+// tickets the mirror does not keep costs one read, not one each. A ticket
+// that could not be read fails the whole. The ticket a person starts work
+// on is open, so its body is held.
+func (s *Service) DetailsForThread(ctx context.Context, id string, issues []tracker.IssueID) ([]DetailView, error) {
+	out, held, err := s.storedDetails(id, issues)
+	if err != nil {
+		return nil, err
 	}
-	v, _, err := s.IssueDetail(ctx, id, issue, Interactive)
-	return v, err
+	var missed []tracker.IssueID
+	var at []int
+	for i, issue := range issues {
+		if !held[i] {
+			missed, at = append(missed, issue), append(at, i)
+		}
+	}
+	if len(missed) == 0 {
+		return out, nil
+	}
+	reads, err := s.UnmarkedIssueDetails(ctx, id, missed, Interactive)
+	if err != nil {
+		return nil, err
+	}
+	for k, r := range reads {
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		out[at[k]] = r.View
+	}
+	return out, nil
 }
 
-// storedDetail is the view of issue's body the mirror of connection id
-// holds; ok is false when it holds none.
-func (s *Service) storedDetail(id string, issue tracker.IssueID) (DetailView, bool, error) {
+// storedDetails are the views of issues' bodies the mirror of connection
+// id holds, in the order asked, in one lookup; held[i] is false for an
+// issue it holds no body of.
+func (s *Service) storedDetails(id string, issues []tracker.IssueID) (views []DetailView, held []bool, err error) {
+	views, held = make([]DetailView, len(issues)), make([]bool, len(issues))
 	root, err := s.readRoot(id)
 	if errors.Is(err, ErrNotMirrored) {
-		return DetailView{}, false, nil
+		return views, held, nil
 	}
 	if err != nil {
-		return DetailView{}, false, err
+		return nil, nil, err
 	}
 	defer s.leave()
-	held, err := s.store.ListMirrorBodies(root, []string{string(issue)})
-	if err != nil {
-		return DetailView{}, false, fmt.Errorf("trackerapp: read the body of %s from the mirror: %w", issue, err)
+	ids := make([]string, len(issues))
+	for i, issue := range issues {
+		ids[i] = string(issue)
 	}
-	for _, b := range held {
+	bodies, err := s.store.ListMirrorBodies(root, ids)
+	if err != nil {
+		return nil, nil, fmt.Errorf("trackerapp: read the bodies of %d tickets from the mirror: %w", len(ids), err)
+	}
+	var docs []ticketDoc
+	var at []int
+	for _, b := range bodies {
 		doc, ok := bodyOf(b)
 		if !ok {
 			continue
 		}
-		row, err := s.viewRow(id)
-		if err != nil {
-			return DetailView{}, false, err
+		for i, issue := range issues {
+			if string(issue) == b.IssueID {
+				docs, at = append(docs, doc), append(at, i)
+				break
+			}
 		}
-		v, _, err := s.detailView(root, row, doc, false)
-		return v, err == nil, err
 	}
-	return DetailView{}, false, nil
+	if len(docs) == 0 {
+		return views, held, nil
+	}
+	row, err := s.viewRow(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	shown, _, err := s.detailViews(root, row, docs, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	for k, i := range at {
+		views[i], held[i] = shown[k], true
+	}
+	return views, held, nil
 }
 
 // TicketFileText is the ticket file of a thread made for a ticket (Ask,

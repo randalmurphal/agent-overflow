@@ -279,6 +279,11 @@ describe('AO tool presentation', () => {
     it.each([
       ['ticket_find', { text: 'safari login' }, 'find', '"safari login"'],
       ['ticket_find', { text: 'safari login', next: 'eyJjIjoiYSJ9' }, 'find', '"safari login"'],
+      ['ticket_find', { mine: true }, 'find', 'assigned to you'],
+      ['ticket_find', { mine: true, group: 'in_progress', sprint: 'active' }, 'find', 'assigned to you · in progress · active sprint'],
+      ['ticket_find', { group: 'todo' }, 'find', 'to do'],
+      ['ticket_find', { mine: true, group: 'not_done' }, 'find', 'assigned to you · not done'],
+      ['ticket_find', { text: 'login', status: 'In Review' }, 'find', '"login" · In Review'],
       ['ticket_read', {}, 'read', 'linked ticket'],
       ['ticket_read', { key: 'WEB-12' }, 'read', 'WEB-12'],
       ['ticket_read', { key: 'WEB-12', history: true }, 'read', 'WEB-12 with history'],
@@ -286,6 +291,9 @@ describe('AO tool presentation', () => {
       ['ticket_create', { project: 'WEB', title: 'Login fails on Safari' }, 'create', 'WEB "Login fails on Safari"'],
       ['ticket_update', { keys: ['WEB-12', 'WEB-18'], comment: 'Ready.' }, 'update', 'WEB-12, WEB-18'],
       ['ticket_update', { keys: ['WEB-1', 'WEB-2', 'WEB-3', 'WEB-4', 'WEB-5'] }, 'update', 'WEB-1, WEB-2, WEB-3 and 2 more'],
+      ['dashboard_widget', {}, 'widget', 'the rules'],
+      ['dashboard_widget', { widget: { title: 'Open bugs' } }, 'widget', '"Open bugs"'],
+      ['dashboard_widget', { board: 'Web Team', widget: { title: 'Open bugs' }, show: true }, 'widget', '"Open bugs" · shown'],
     ])('%s %j', (tool, input, label, what) => {
       const p = aoToolPresentation(meta(TRACKER_TOOLS_SERVER, tool, input))!;
       expect(p).toMatchObject({ icon: 'file', label, what, headerLabel: `Ticket ${label}` });
@@ -293,6 +301,7 @@ describe('AO tool presentation', () => {
 
     it('keeps the continuations a person does not read out of the body', () => {
       expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_find', { text: 'login', next: 'eyJjIjoiYSJ9' }))).toEqual([]);
+      expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_find', { mine: true, status: 'Done', group: 'done', sprint: 'active' }))).toEqual([]);
       expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_read', { key: 'WEB-1', history: true }))).toEqual([]);
       expect(aoToolFacts(meta(TRACKER_TOOLS_SERVER, 'ticket_read', { more: 'eyJjIjoiYSJ9' }))).toEqual([]);
     });

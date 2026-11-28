@@ -69,12 +69,14 @@ func storedRepoOf(lists map[string]ProjectPRList, projectID string) (gitops.Repo
 	return gitops.RepoReference{}, false
 }
 
-// prListRepoRead is one repository's landed read.
+// prListRepoRead is one repository's landed read; started is when its
+// request started, the time its rows were observed at.
 type prListRepoRead struct {
-	key  string
-	repo gitops.RepoReference
-	rows []gitops.PRListRow
-	err  error
+	key     string
+	repo    gitops.RepoReference
+	started time.Time
+	rows    []gitops.PRListRow
+	err     error
 }
 
 // pollPRList runs one tick under ctx (interactive for a subscribe or a
@@ -160,7 +162,7 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 	results := make(chan prListRepoRead, len(order))
 	round := gitops.WithPRListRound(ctx)
 	go runBounded(len(order), prListReadConcurrency, func(i int) {
-		read := prListRepoRead{key: order[i], repo: repos[order[i]]}
+		read := prListRepoRead{key: order[i], repo: repos[order[i]], started: time.Now()}
 		read.rows, read.err = a.listProjectPRs(round, read.repo)
 		results <- read
 	})
@@ -200,8 +202,9 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 }
 
 // landPRListRead folds one repository's read into the pump, stores a
-// successful one (refreshing SQLite read_at even when semantically unchanged),
-// and reports whether the published pump state changed.
+// successful one at the time its request started (refreshing SQLite
+// read_at even when semantically unchanged), and reports whether the
+// published pump state changed.
 func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) bool {
 	var detailErr *gitops.PRListDetailError
 	listed := read.err == nil || errors.As(read.err, &detailErr)
@@ -224,7 +227,7 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) bool {
 	}
 	var record []byte
 	var fallbackList *ProjectPRList
-	readAt := time.Now()
+	readAt := read.started
 	changed := false
 	touchReadAt := false
 	switch {

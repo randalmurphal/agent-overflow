@@ -31,7 +31,8 @@ func storedHistoryShape(t *testing.T, s *Store, root int64) string {
 // histories go through the batch, long ones through staging: switched in
 // when no history was stored, kept in place when one was. Over a stored
 // history the older answer holds its changes, so landing first it stores
-// times alone, which no view shows: unchanged, its receipt moved. With the
+// times alone, its receipt moved: changed, as it is not final, which
+// credit reads (mirrorHistoryReadForCard). With the
 // stored history's own times, the older answer is that history again and
 // writes nothing, so the newer one, its changes alone changed, is stored
 // after it and refuses the older one after it.
@@ -50,7 +51,7 @@ func TestMirrorHistoryOverlappingReadsLandInEitherOrder(t *testing.T) {
 		}{
 			{"none stored, older first", false, false, true, "changed", "superseded"},
 			{"none stored, newer first", false, false, false, "changed", "superseded"},
-			{"stored, older first", true, false, true, "unchanged", "superseded"},
+			{"stored, older first", true, false, true, "changed", "superseded"},
 			{"stored, newer first", true, false, false, "changed", "superseded"},
 			{"stored, same times, older first", true, true, true, "unchanged", "changed"},
 			{"stored, same times, newer first", true, true, false, "changed", "superseded"},

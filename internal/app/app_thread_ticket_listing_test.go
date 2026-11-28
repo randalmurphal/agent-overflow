@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"slices"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
-	"agent-overflow/internal/trackerapp"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 )
 
@@ -105,8 +104,10 @@ func TestALinkKeepsANeverSentThread(t *testing.T) {
 
 // A linked draft moved to a project of another computer is copied there
 // with its link, and the copy's completion ends the source's link: the
-// source no longer keeps the ticket, so the boards that showed it as a
-// parent are told, and the emptied source is deletable.
+// source no longer keeps the ticket, its board still names the ticket as
+// its row's parent, its open ticket that shows the ticket as a linked
+// ticket stops showing the card the link kept, and the emptied source is
+// deletable.
 func TestALinkedDraftCopiedToAnotherComputerEndsTheSourceLink(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -132,10 +133,13 @@ func TestALinkedDraftCopiedToAnotherComputerEndsTheSourceLink(t *testing.T) {
 	if err := source.SaveDraft(ctx, thread.ID, snapshot.Content, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
+	board := showParentBoard(t, source, e, sourceConn, project.ID)
+	ticketCtx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	linking := board.openLinkingTicket(t, ticketCtx)
 	if _, err := source.SetThreadTicket(ctx, thread.ID, parentTicket); err != nil {
 		t.Fatal(err)
 	}
-	board := showParentBoard(t, source, e, sourceConn, project.ID)
+	board.linkShows(t, ticketCtx, linking, "while the link keeps OPS-1", linkKept)
 
 	destinationID, _ := destination.backendIdentity()
 	operation := uuid.NewString()
@@ -151,7 +155,8 @@ func TestALinkedDraftCopiedToAnotherComputerEndsTheSourceLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	awaitTransferComplete(t, source, destination, operation, false)
-	board.boardEvent(t, "for the parent the copy stopped keeping", func(e trackerapp.BoardEvent) bool { return slices.Contains(e.Changed, "10102") })
+	board.parentNamed(t, "after the copy")
+	board.linkShows(t, ticketCtx, linking, "after the copy", linkUnkept)
 
 	copied, err := destination.store.GetThread(intent.TargetThreadID)
 	if err != nil {

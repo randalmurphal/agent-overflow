@@ -24,6 +24,12 @@
   }
 
   // The Dashboards screen loads on its first switch to Dashboards, once per page.
+  // The board's summary row, loaded the first time a board pins a widget.
+  let summaryRow: Promise<typeof import('./BoardSummaryRow.svelte')> | null = null;
+  function loadSummaryRow(): Promise<typeof import('./BoardSummaryRow.svelte')> {
+    summaryRow ??= import('./BoardSummaryRow.svelte');
+    return summaryRow;
+  }
   let dashboardScreen: Promise<typeof import('./DashboardScreen.svelte')> | null = null;
   function loadDashboardScreen(): Promise<typeof import('./DashboardScreen.svelte')> {
     dashboardScreen ??= import('./DashboardScreen.svelte');
@@ -75,6 +81,8 @@
   import Search from '@lucide/svelte/icons/search';
   import UserRound from '@lucide/svelte/icons/user-round';
   import X from '@lucide/svelte/icons/x';
+  import Funnel from '@lucide/svelte/icons/funnel';
+  import Plus from '@lucide/svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import ToolPaneHeader from '../panes/ToolPaneHeader.svelte';
@@ -106,11 +114,13 @@
     setCardFieldShown,
     setTicketPlacement,
     showsBoard,
-    takeTicketOpenRequest,
-    ticketOpenRequested,
+    takePaneOpenRequest,
+    paneOpenRequested,
     type IssuesScreen,
   } from '../../stores/issuesPane.svelte';
   import { dismissTrackerRefreshNotice, refreshTrackerBoard } from '../../stores/trackerBoard.svelte';
+  import type { BoardTicketSet, TicketSetTile } from '../../stores/boardTicketSet.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import {
     isBoardChoiceOpenable,
     readTrackerBoardChoices,
@@ -158,11 +168,12 @@
   let timeRefreshing = $state(false);
   // The Dashboards screen open now, for Refresh, and whether it is counting.
   let dashboardView: { refresh(): void } | undefined = $state();
+  let rowView: { refreshLogged(): void } | undefined = $state();
   let dashboardCounting = $state(false);
   // A ticket another surface asked for (a thread's link) opens here.
   $effect(() => {
-    if (!ticketOpenRequested()) return;
-    const request = untrack(takeTicketOpenRequest);
+    if (!paneOpenRequested()) return;
+    const request = untrack(takePaneOpenRequest);
     if (request) selection.openRequested(request);
   });
   const ticket = $derived(selection.ticket);
@@ -261,7 +272,42 @@
     onlyMine = on;
     saveOnlyMine(on);
   }
-  const filter: CardFilter = $derived({ mine: onlyMine ? me : null, words: searchWords(query) });
+  // The tickets a summary row tile filters the board to, on the Board and
+  // the Backlog; no filter until its first read lands. Its store loads with
+  // the first tile picked, from the row's chunk.
+  let ticketSet = $state.raw<BoardTicketSet | null>(null);
+  let ticketSetLoad: Promise<BoardTicketSet> | null = null;
+  let paneGone = false;
+  function pickTicketSet(tile: TicketSetTile | null): void {
+    if (ticketSet || !tile) {
+      ticketSet?.pick(tile);
+      return;
+    }
+    ticketSetLoad ??= import('../../stores/boardTicketSet.svelte').then((m) => {
+      const made = m.createBoardTicketSet({ board: () => board, source: () => dashboardSource, pins: () => boardState?.pins ?? null, shown: () => selection.boardShown });
+      if (paneGone) made.destroy();
+      else ticketSet = made;
+      return made;
+    });
+    ticketSetLoad.then((made) => { if (!paneGone) made.pick(tile); }, (err: unknown) => {
+      ticketSetLoad = null;
+      addErrorToast(`Could not filter the board to ${tile.title}: ${err instanceof Error ? err.message : String(err)}`, err);
+    });
+  }
+  onDestroy(() => {
+    paneGone = true;
+    ticketSet?.destroy();
+  });
+  const filter: CardFilter = $derived({ mine: onlyMine ? me : null, words: searchWords(query), only: ticketSet?.tile ? ticketSet.ids : null });
+  let ticketSetFailure: CapturedError | null = $state(null);
+  let ticketSetFailureOf: unknown = null;
+  $effect(() => {
+    const err = ticketSet?.error ?? null;
+    if (err === ticketSetFailureOf) return;
+    ticketSetFailureOf = err;
+    ticketSetFailure = err ? captureError(err, { context: 'Could not read the tickets the board is filtered to' }) : null;
+  });
+
   const matchCount = $derived.by(() => {
     if (!showsBoard(screen) || !held || !filtering(filter)) return 0;
     let n = 0;
@@ -356,13 +402,22 @@
       refreshFormReads(board.backend, board.connection);
     }
     if (screen === 'dashboards') dashboardView?.refresh();
+    else rowView?.refreshLogged();
   }
 
   // The board a dashboard counts: its subscription once the subscribe
   // answered, and how many times the board changed since.
   const dashboardSource = $derived(
-    board && boardState?.subscription ? { backend: board.backend, subscription: boardState.subscription, changes: boardState.changes } : null,
+    board && boardState?.subscription ? { backend: board.backend, board, subscription: boardState.subscription, changes: boardState.changes, dashboards: boardState.dashboards } : null,
   );
+  // The board's summary row: mounted while the board pins a widget or the
+  // person edits the row, which a board with none starts from its Add a
+  // tile. Editing is the board's: another board shows out of it.
+  const rowPins = $derived(boardState?.pins ?? null);
+  let rowEditedOn = $state('');
+  const boardId = $derived(board ? `${board.backend}\n${board.projectId}\n${board.connection}\n${board.board}` : '');
+  const rowEditing = $derived(boardId !== '' && rowEditedOn === boardId);
+  const rowAddable = $derived(!!board && scopeGrant('tracker:operate', board.backend) === 'granted');
 
   // The board's listing: its connection's kind, whether it may be opened.
   // The board's tracker, jira or linear; empty until a listing names it.
@@ -374,8 +429,35 @@
   }
 </script>
 
+{#snippet ticketSetChip()}
+  {#if ticketSet?.tile}
+    {@const set = ticketSet}
+    {@const tile = ticketSet.tile}
+    <div class="flex items-center gap-2 px-3 pt-2 text-[0.75rem]" data-testid="issues-ticket-set">
+      <span class="inline-flex h-7 min-w-0 items-center gap-2 rounded-[var(--radius-control)] border border-accent bg-accent/15 pl-2.5 pr-1 text-fg-muted compact:h-8">
+        <Icon icon={Funnel} size={13} strokeWidth={2} class="shrink-0" />
+        {#if set.ids}
+          <span class="truncate" data-testid="issues-ticket-set-text">Showing only <b class="font-semibold text-fg">{tile.title}</b> · {set.ids.size === 1 ? '1 ticket' : `${set.ids.size} tickets`}</span>
+        {:else if set.incomplete}
+          <span class="truncate" data-testid="issues-ticket-set-text">Showing every ticket: <b class="font-semibold text-fg">{tile.title}</b> is not known, {set.incomplete}</span>
+        {:else if set.error}
+          <span class="truncate" data-testid="issues-ticket-set-text">Could not find the tickets of <b class="font-semibold text-fg">{tile.title}</b></span>
+        {:else}
+          <span class="truncate" data-testid="issues-ticket-set-text">Finding the tickets of <b class="font-semibold text-fg">{tile.title}</b>…</span>
+        {/if}
+        <IconButton label="Show every ticket" size="xs" variant="tint" testId="issues-ticket-set-clear" onClick={() => set.pick(null)}>
+          {#snippet children()}<Icon icon={X} size={12} strokeWidth={2.25} />{/snippet}
+        </IconButton>
+      </span>
+    </div>
+    {#if ticketSetFailure}
+      <ErrorNotice message="{set.ids ? `Could not read the tickets of ${tile.title} again` : `Could not find the tickets of ${tile.title}`}: {ticketSetFailure.report.reason}" captured={ticketSetFailure} testId="issues-ticket-set-error" />
+    {/if}
+  {/if}
+{/snippet}
+
 <div class="flex h-full min-h-0 flex-col" data-testid="issues-pane">
-  <ToolPaneHeader {paneId} kind="issues" {onPaneDragStart} onBack={compact && ticket ? () => { stepBack(); } : undefined} backTestId="issues-back">
+  <ToolPaneHeader {paneId} kind="issues" compactTitle={false} {onPaneDragStart} onBack={compact && ticket ? () => { stepBack(); } : undefined} backTestId="issues-back">
     <div class="flex min-w-0 flex-1 items-center gap-1">
       <BoardPicker
         {choices}
@@ -545,7 +627,10 @@
               bind:this={timeView}
               bind:refreshing={timeRefreshing}
               backend={timeBoard.backend}
+              project={timeBoard.projectId}
               connection={timeBoard.connection}
+              board={timeBoard.board}
+              boardChanges={boardState?.changes ?? 0}
               connectionKind={choice.connection_kind}
               connectionOn={isBoardChoiceOpenable(choice) && !boardState?.ended}
               author={me}
@@ -553,6 +638,8 @@
               offline={boardOffline}
               {compact}
               shown={selection.timeShown}
+              askedWeek={selection.askedWeek}
+              onAskedWeekTaken={selection.takeAskedWeek}
               openIssue={ticket?.ref.issue ?? null}
               onOpenTicket={(t) => selection.openTicket(t.issue, { key: t.key, title: t.title, card: null }, 'list')}
             />
@@ -562,6 +649,7 @@
         {/if}
       {:else if held && attachment && screen === 'backlog'}
         {@const backlogBoard = board}
+        {@render ticketSetChip()}
         {#await loadBacklogScreen()}
           <p class="px-4 py-6 text-sm text-fg-muted" data-testid="backlog-loading">Opening the backlog…</p>
         {:then mod}
@@ -594,6 +682,8 @@
             bind:this={dashboardView}
             bind:counting={dashboardCounting}
             source={dashboardSource}
+            pins={rowPins}
+            boardName={boardChoice?.name ?? 'this board'}
             shown={selection.dashboardsShown}
             {compact}
             computerName={computerName(dashboardBoard.backend)}
@@ -603,6 +693,40 @@
           <p class="px-4 py-6 text-sm text-error" role="alert" data-testid="dashboard-load-error">The Dashboards screen could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
         {/await}
       {:else if held && attachment && screen !== 'dashboards'}
+        {#if rowPins && (rowPins.length > 0 || rowEditing) && dashboardSource}
+          {@const rowSource = dashboardSource}
+          {@const pins = rowPins}
+          {#await loadSummaryRow() then mod}
+            <mod.default
+              bind:this={rowView}
+              source={rowSource}
+              {pins}
+              shown={selection.boardShown}
+              editing={rowEditing}
+              onEditing={(on) => { rowEditedOn = on ? boardId : ''; }}
+              adding={pins.length === 0}
+              filteredTo={ticketSet?.tile?.widget ?? ''}
+              onFilter={pickTicketSet}
+              onOpenDashboards={() => selection.setScreen('dashboards')}
+            />
+          {:catch err}
+            <p class="border-b border-border-subtle px-3 py-1.5 text-xs text-error" role="alert" data-testid="board-row-load-error">The board's summary row could not load: {err instanceof Error ? err.message : String(err)}. Reload the window to try again.</p>
+          {/await}
+        {:else if rowPins && dashboardSource && rowAddable}
+          <div class="flex border-b border-border-subtle px-3 py-1" data-testid="board-row-empty">
+            <button
+              type="button"
+              class="inline-flex h-6 items-center gap-1 rounded-[var(--radius-control)] px-1.5 text-[0.75rem] text-fg-muted hover:bg-surface-1 hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:h-8 compact:select-none"
+              title="Show dashboard numbers above the board"
+              data-testid="board-row-start"
+              onclick={() => { rowEditedOn = boardId; }}
+            >
+              <Icon icon={Plus} size={13} strokeWidth={2} />
+              Add a tile
+            </button>
+          </div>
+        {/if}
+        {@render ticketSetChip()}
         <BoardScreen
           boardKey={attachment.key}
           boardRef={board}
@@ -644,6 +768,7 @@
         {compact}
         placement={besideFits ? { value: selection.placement, set: (p) => setTicketPlacement(screen, p) } : undefined}
         onOwnPane={moveToOwnPane}
+        hostPaneId={paneId}
       />
     </div>
   {/if}

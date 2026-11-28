@@ -12,8 +12,11 @@
   // listed while a detail request failed (`partial`) shows the same
   // block over its rows, which carry their facts as unknown. A login to fix outside
   // the app (setup, forbidden) reads in the error tone with no Retry: no
-  // retry changes it until the user does. A rate limit reads as paused.
-  // Anything else retries on the next tick and offers Retry now. Details
+  // retry changes it until the user does. A rate limit on a polled read
+  // reads as paused; on a read that runs only when asked (`polled` false,
+  // a ticket's Work) it reads as the caller's message, in the same tone,
+  // with Retry. Anything else retries on the next tick and offers Retry
+  // now. Details
   // expands the correlation id and the forge's raw error behind the
   // sentence, and copy takes them with the backend log.
 
@@ -27,17 +30,20 @@
     onRetry: () => void;
     retrying?: boolean;
     partial?: boolean;
+    /** The read runs again by itself; false, only on Retry. */
+    polled?: boolean;
   }
 
-  let { message, failure, forge, cause = null, onRetry, retrying = false, partial = false }: Props = $props();
+  let { message, failure, forge, cause = null, onRetry, retrying = false, partial = false, polled = true }: Props = $props();
 
   const kind = $derived(failure?.kind ?? 'forge');
-  const paused = $derived(kind === 'rate_limited');
+  const limited = $derived(kind === 'rate_limited');
+  const paused = $derived(limited && polled);
   const fixOutside = $derived(kind === 'setup' || kind === 'forbidden');
   const text = $derived(paused && failure ? rateLimitMessage(forge, failure) : message);
   const toneClass = $derived(
-    paused || fixOutside
-      ? (paused ? 'border-warning/30 bg-warning/8 text-warning' : 'border-error/30 bg-error/8 text-error')
+    limited || fixOutside
+      ? (limited ? 'border-warning/30 bg-warning/8 text-warning' : 'border-error/30 bg-error/8 text-error')
       : 'border-border-subtle bg-surface-1/60 text-fg-muted',
   );
   const captured = $derived(capturedCause(cause));

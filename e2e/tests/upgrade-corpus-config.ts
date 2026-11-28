@@ -958,6 +958,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   // The top-up reads the fake Jira's scrum board into the mirror through a
   // board subscription (connectTrackers); what that read leaves empty:
   { table: 'tracker_cache_roots', columns: ['sweep'], reason: 'a mirror root\'s sweep counter (v162), which a cleanup sweep that deletes an issue or a board moves; nothing the top-up reads leaves the mirror' },
+  { table: 'tracker_cache_roots', columns: ['names_after'], reason: 'the cursor of the parents a root upgraded by v172 owes names (v172); only v172 sets it, and a root made after it, as every root of the corpus and the top-up is, owes none' },
   { table: 'tracker_cache_users', reason: 'a user a board\'s catalog names (v162); the fake board\'s issues name no assignee, so its read stores none' },
   {
     table: 'tracker_cache_boards',
@@ -967,8 +968,8 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'tracker_cache_board_unexplained', reason: 'a reference a board\'s complete structure did not explain (v162); the fake board\'s structure explains all of its own' },
   {
     table: 'tracker_cache_issues',
-    columns: ['type_level', 'assignee_id', 'priority_id', 'parent_id', 'resolved_at', 'history_from', 'history_wait', 'history_gen', 'history_dirty', 'body_updated_at', 'body_read_at', 'body_wall', 'body_opened_at', 'body_digest'],
-    reason: 'the fields the fake board\'s issues leave empty (type level, assignee, priority, parent, resolution), an issue\'s change history, which the board read stores none of, and its body, read for a ticket a person opens; the top-up opens no ticket',
+    columns: ['type_level', 'assignee_id', 'priority_id', 'parent_id', 'resolved_at', 'labels', 'history_from', 'history_wait', 'history_gen', 'history_dirty', 'body_updated_at', 'body_read_at', 'body_wall', 'body_opened_at', 'body_digest'],
+    reason: 'the fields the fake board\'s issues leave empty (type level, assignee, priority, parent, resolution, labels: v176), an issue\'s change history, which the board read stores none of, and its body, read for a ticket a person opens; the top-up opens no ticket',
   },
   { table: 'tracker_cache_board_issues', columns: ['estimate'], reason: 'a card\'s estimate (v162); the fake board estimates by count' },
   { table: 'tracker_cache_sprints', columns: ['goal', 'completed_at'], values: { state: [1, 3] }, reason: 'a sprint\'s goal, and a future or closed sprint with its completion (v162); the fake board has one active sprint with no goal' },
@@ -983,7 +984,19 @@ export const coverageAllowlist: CoverageAllowance[] = [
   },
   { table: 'tracker_cache_open_tickets', reason: 'a tracker ticket a person has open, which keeps its issue in the mirror (v165); the top-up opens no ticket' },
   { table: 'tracker_cache_issue_missing', reason: 'a read that did not return a linked issue (v167); no step of the top-up links a thread' },
+  { table: 'tracker_cache_parents', reason: 'the name of a parent a card names (v172); the fake board\'s issues name no parent' },
+  { table: 'tracker_cache_issue_acts', reason: 'who commented on or logged time on an issue credit counts (v177); the top-up\'s project has no credit section, so nothing is collected' },
+  { table: 'tracker_cache_issue_act_reads', reason: 'the read of an issue\'s comments or worklogs for credit, or its failed attempt (v177); the top-up\'s project has no credit section, so nothing is collected' },
+  { table: 'tracker_cache_roots', columns: ['evidence_failure'], reason: 'why the last whole read of who worked on a root\'s tickets failed (v177); the top-up\'s project has no credit section, so no such read runs' },
+  { table: 'forge_history_sources', reason: 'a repository whose pull request history the linked rounds read from the forge (v178); no linked round of the top-up reads one, and every forge history row is a cache a forge read rebuilds' },
+  { table: 'forge_history_prs', reason: 'a pull request of a repository\'s history (v178); no linked round of the top-up reads one' },
+  { table: 'forge_history_acts', reason: 'an approval or comment on a pull request of a repository\'s history (v178); no linked round of the top-up reads one' },
+  { table: 'forge_history_keys', reason: 'a ticket key a pull request of a repository\'s history names (v178); no linked round of the top-up reads one' },
+  { table: 'forge_history_uses', reason: 'a repository a tracker connection\'s credit reads (v179), written with the sources; no linked round of the top-up reads one' },
+  { table: 'tracker_cache_forge_people', reason: 'who a forge account is in a tracker, which credit reads to count a pull request\'s approval or comment (v179); the top-up\'s project has no credit section and no forge history, so no account is matched' },
+  { table: 'tracker_forge_pairings', reason: 'who a person said a forge account is in a connection\'s tracker (v180), set on the Points and credit page; no step of the top-up opens that page\'s forge accounts' },
   { table: 'tracker_agent_writes', reason: 'a tracker write an agent made through the tracker tools (v171); no step of the top-up runs an agent that writes a ticket' },
+  { table: 'tracker_time_entries', reason: 'the user\'s time draft, which an agent writes through the time tools and the person approves (v173); no step of the top-up runs an agent that drafts time' },
   { table: 'chat_model_profiles', values: { reasoning_effort: ['none', 'minimal', 'low', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last' },
 
   // Provider accounting the mock does not report.

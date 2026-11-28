@@ -59,8 +59,12 @@ export interface BoardShape {
   /** The tracker project the board shows; empty for a board of several. */
   readonly project: string;
   readonly plansSprints: boolean;
-  /** none, points, or time (seconds). */
+  /** A card's own estimate: none, points, or time (seconds). */
   readonly unit: string;
+  /** The unit the project sums the board's work in (`BoardView.counts`):
+   * `unit`, or none when the project counts tickets. Every total, the
+   * pace and a person's load read it; a card's estimate reads `unit`. */
+  readonly counts: string;
   readonly columns: readonly ColumnView[];
   readonly sprints: readonly SprintView[];
   /** A card's address less its key; empty when cards carry their own
@@ -121,6 +125,7 @@ export function heldFromView(view: BoardView, intern: (row: RowView) => RowView,
       project: view.project ?? '',
       plansSprints: view.plans_sprints,
       unit: view.estimate.unit,
+      counts: view.counts,
       columns: view.columns,
       sprints: view.sprints,
       issueURL: view.issue_url ?? '',
@@ -350,6 +355,13 @@ function countedOf(held: HeldBoard, rows: readonly RowView[]): number {
   return n;
 }
 
+/** Whether `row` counts as a ticket without an estimate: it has none and
+ * is no support ticket, which has none and is not counted as without one,
+ * as the server's totals count it. Every client total counts by this. */
+function withoutEstimate(row: RowView): boolean {
+  return (row.estimate === undefined || row.estimate === null) && !row.support;
+}
+
 function sumOf(held: HeldBoard, rows: readonly RowView[]): SectionTotal {
   let n = 0;
   let estimate = 0;
@@ -357,8 +369,8 @@ function sumOf(held: HeldBoard, rows: readonly RowView[]): SectionTotal {
   for (const r of rows) {
     if (!counts(held, r)) continue;
     n += 1;
-    if (r.estimate === undefined || r.estimate === null) unestimated += 1;
-    else estimate += r.estimate;
+    estimate += r.estimate ?? 0;
+    if (withoutEstimate(r)) unestimated += 1;
   }
   return { rows: n, estimate, unestimated };
 }
@@ -434,6 +446,9 @@ export interface CardFilter {
   readonly mine: string | null;
   /** The search's words, lower case; empty when no search is on. */
   readonly words: readonly string[];
+  /** The tickets a summary row tile stands for, by ID, which alone pass;
+   * null or absent when no tile filters the board. */
+  readonly only?: ReadonlySet<string> | null;
 }
 
 /** The words of a search query, lower case. */
@@ -443,7 +458,7 @@ export function searchWords(query: string): string[] {
 
 /** Whether a filter is on. */
 export function filtering(filter: CardFilter): boolean {
-  return filter.mine !== null || filter.words.length > 0;
+  return filter.mine !== null || filter.words.length > 0 || !!filter.only;
 }
 
 /** The text a search matches a card by: key, title, labels, parent and
@@ -457,6 +472,7 @@ function searchText(card: CardView): string {
 /** Whether a card passes the filter: assigned to `mine` when set, and
  * every word found in its text. */
 export function cardMatches(card: CardView, filter: CardFilter): boolean {
+  if (filter.only && !filter.only.has(card.id)) return false;
   if (filter.mine !== null && card.assignee?.id !== filter.mine) return false;
   if (filter.words.length === 0) return true;
   const text = searchText(card);
@@ -595,10 +611,9 @@ export function columnWith(
 /** A total with `row` added (1) or taken out (-1): the one rule for what a
  * header counts while a ticket is carried over it or waits in it. */
 export function withRow(total: SectionTotal, row: RowView, sign: 1 | -1): SectionTotal {
-  const none = row.estimate === undefined || row.estimate === null;
   return {
     rows: total.rows + sign,
-    estimate: total.estimate + (none ? 0 : sign * row.estimate!),
-    unestimated: (total.unestimated ?? 0) + (none ? sign : 0),
+    estimate: total.estimate + sign * (row.estimate ?? 0),
+    unestimated: (total.unestimated ?? 0) + (withoutEstimate(row) ? sign : 0),
   };
 }

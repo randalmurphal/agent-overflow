@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -125,6 +126,36 @@ func (s *Store) GetProjectContext(ctx context.Context, id string) (Project, erro
 	return p, nil
 }
 
+// ThreadProjects is the projects the threads of threadIDs belong to, each
+// once, in one statement. A thread with no project (an assistant's) or
+// no row adds none.
+func (s *Store) ThreadProjects(threadIDs []string) ([]Project, error) {
+	if len(threadIDs) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(threadIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: encode thread ids for their projects: %w", err)
+	}
+	rows, err := s.reader().Query(`SELECT `+projectColumns+` FROM projects WHERE id IN
+	  (SELECT t.project_id FROM json_each(?1) j JOIN threads t ON t.id = j.value) ORDER BY name, id`, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("store: read the projects of %d threads: %w", len(threadIDs), err)
+	}
+	var out []Project
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan a thread's project: %w", err), rows.Close())
+		}
+		out = append(out, p)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: read the projects of %d threads: %w", len(threadIDs), err)
+	}
+	return out, nil
+}
+
 // GetProjectByPath looks up a project by its filesystem path. Used during
 // CreateProject to dedupe when the user adds a path that already belongs
 // to a project.
@@ -206,8 +237,7 @@ func (s *Store) ListAllProjects() ([]Project, error) {
 // (TestTimelineItemsViewJoinPushesDown) has to explain the production
 // text. A plan that materializes the view here scans `items` once per
 // sidebar thread.
-func listProjectsWithThreadCountsQuery() (string, []any) {
-	hiddenClause, hiddenArgs := catalogThreadClause("t")
+func listProjectsWithThreadCountsQuery() string {
 	return `SELECT p.id, p.path, p.name, p.slug, p.color, p.sort_position,
 		        p.created_at, p.updated_at, p.archived, p.identity_error, p.repository_id, p.identity_source,
 		        COALESCE(COUNT(t.id), 0) AS thread_count,
@@ -219,10 +249,10 @@ func listProjectsWithThreadCountsQuery() (string, []any) {
 		          0
 		        ) AS last_active
 		 FROM projects p
-		 LEFT JOIN owned_threads t ON t.project_id = p.id AND t.archived = 0 AND ` + hiddenClause + `
+		 LEFT JOIN owned_threads t ON t.project_id = p.id AND t.archived = 0 AND ` + catalogThreadClause("t") + `
 		 WHERE p.archived = 0
 		 GROUP BY p.id
-		 ORDER BY p.name ASC`, hiddenArgs
+		 ORDER BY p.name ASC`
 }
 
 // ListProjectsWithThreadCounts returns every non-archived project plus
@@ -233,8 +263,7 @@ func listProjectsWithThreadCountsQuery() (string, []any) {
 // the sidebar — only real activity (first message send and onward,
 // gated by MarkThreadActivity) counts.
 func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
-	query, args := listProjectsWithThreadCountsQuery()
-	rows, err := s.reader().Query(query, args...)
+	rows, err := s.reader().Query(listProjectsWithThreadCountsQuery())
 	if err != nil {
 		return nil, fmt.Errorf("store: list projects with counts: %w", err)
 	}

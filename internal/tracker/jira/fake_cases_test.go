@@ -3,6 +3,7 @@ package jira
 import (
 	"bytes"
 	"errors"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -94,6 +95,28 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 	"FindUser": func(t *testing.T, f *fakeEnv) {
 		if u := got(f.c.FindUser(f.ctx, "User 2")).must(t); u.AccountID != "acc-user2" {
 			t.Fatalf("found %+v", u)
+		}
+	},
+	// A forge account named by name alone is matched to the one person
+	// who has the name, case ignored: a customer's account, a name two
+	// people share and a name no one has match none.
+	"UserNamed": func(t *testing.T, f *fakeEnv) {
+		site := conformanceSite(f.clock.Now())
+		site.Users = append(site.Users, trackerfake.JiraUser{AccountID: "acc-customer", DisplayName: "Customer 1", AccountType: "customer"},
+			trackerfake.JiraUser{AccountID: "acc-same1", DisplayName: "Same Name"}, trackerfake.JiraUser{AccountID: "acc-same2", DisplayName: "Same Name"})
+		check(t, f.e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}))
+		named := func(name string) (User, bool) {
+			u, ok, err := f.c.UserNamed(f.ctx, name)
+			check(t, err)
+			return u, ok
+		}
+		if u, ok := named("user 2"); !ok || u.AccountID != "acc-user2" {
+			t.Fatalf("user 2 = %+v, %v", u, ok)
+		}
+		for _, name := range []string{"Customer 1", "Same Name", "Nobody"} {
+			if u, ok := named(name); ok {
+				t.Errorf("%s matched %+v", name, u)
+			}
 		}
 	},
 	"ForgetBoard":      func(t *testing.T, f *fakeEnv) { f.c.ForgetBoard(1) },
@@ -225,6 +248,14 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 		if len(p.Issues) != 1 || p.Issues[0].Key != "WEB-1" || p.NextPageToken != "" {
 			t.Fatalf("found %d issues", len(p.Issues))
 		}
+		mine := got(f.c.Search(f.ctx, SearchQuery{JQL: `assignee = currentUser() AND sprint in openSprints() AND status = "in progress" ORDER BY updated DESC`})).must(t)
+		if len(mine.Issues) != 1 || mine.Issues[0].Key != "WEB-1" {
+			t.Fatalf("the user's issues in progress in the active sprint are %d issues", len(mine.Issues))
+		}
+		_, err := f.c.Search(f.ctx, SearchQuery{JQL: `status = "Nope"`})
+		if refused, ok := errors.AsType[*QueryRefusedError](err); !ok || refused.Err.Status != http.StatusBadRequest {
+			t.Fatalf("a search for a status Jira has not = %v, want a *QueryRefusedError of a 400", err)
+		}
 	},
 	"SearchAll": func(t *testing.T, f *fakeEnv) {
 		r := got(f.c.SearchAll(f.ctx, SearchQuery{JQL: `updated >= 0 ORDER BY updated ASC, id ASC`, Fields: []string{"summary"}, MaxResults: 2}, 0)).must(t)
@@ -269,6 +300,28 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 		l := got(f.c.BulkChangelogs(f.ctx, ChangelogQuery{Issues: []string{"WEB-1", "WEB-2"}, Fields: []string{"status"}})).must(t)
 		if len(l.ByIssue["10101"]) != 1 || len(l.ByIssue) != 1 {
 			t.Fatalf("changelogs %+v", l)
+		}
+	},
+	"BulkActs": func(t *testing.T, f *fakeEnv) {
+		r, failed, err := f.c.BulkActs(f.ctx, []string{"10101", "99999"}, true, true)
+		check(t, err)
+		if len(failed) != 0 {
+			t.Fatalf("failed %+v", failed)
+		}
+		if len(r) != 1 || r[0].ID != "10101" || r[0].Updated.IsZero() || !r[0].Comments.Complete || len(r[0].Comments.Acts) != 1 ||
+			r[0].Comments.Acts[0].Author.AccountID != "acc-user2" || !r[0].Worklogs.Complete || len(r[0].Worklogs.Acts) != 1 ||
+			r[0].Worklogs.Acts[0].Spent != time.Hour {
+			t.Fatalf("acts %+v", r)
+		}
+	},
+	"CommentActs": func(t *testing.T, f *fakeEnv) {
+		if a := got(f.c.CommentActs(f.ctx, "10101")).must(t); len(a) != 1 || a[0].ID != "40001" || a[0].At.IsZero() {
+			t.Fatalf("comment acts %+v", a)
+		}
+	},
+	"WorklogActs": func(t *testing.T, f *fakeEnv) {
+		if a := got(f.c.WorklogActs(f.ctx, WorklogQuery{Issue: "10101"})).must(t); len(a) != 1 || a[0].ID != "50001" || a[0].Spent != time.Hour {
+			t.Fatalf("worklog acts %+v", a)
 		}
 	},
 	"Comments": func(t *testing.T, f *fakeEnv) {

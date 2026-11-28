@@ -81,8 +81,9 @@ func TestMirrorIssueGainingABoardIsHistoryDue(t *testing.T) {
 
 // A staged (long) history records the boards revision it was read for and
 // its wait as the batch does, and an identical one read for a later
-// revision, or only its wait differing, records it and reports no change:
-// nothing a view shows changed.
+// revision records it and reports no change: nothing a reader reads
+// changed. One whose wait alone differs reports one: credit reads
+// whether the history is final for the card (mirrorHistoryReadForCard).
 func TestMirrorLongHistoryRecordsItsBoards(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -102,7 +103,7 @@ func TestMirrorLongHistoryRecordsItsBoards(t *testing.T) {
 	// differs from the stored one or it is staged whole: each issue is due
 	// once its wait is over.
 	long.Wait = 60_000
-	mustReplaceHistory(t, s, root, long, MirrorWrite{})
+	mustReplaceHistory(t, s, root, long, MirrorWrite{Changed: true})
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10002", 5, "b")), nil)
 	staged := statusHistory("10002", clearMirrorChunk+100)
 	staged.Wait = 60_000

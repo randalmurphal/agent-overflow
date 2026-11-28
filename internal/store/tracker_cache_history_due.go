@@ -30,8 +30,12 @@ type MirrorHistoryDue struct {
 }
 
 // mirrorHistoryDueArm is one arm of the history due rule: its terms on
-// an issue of root ?1, and the order its index walks them in.
-type mirrorHistoryDueArm struct{ where, order string }
+// an issue of root ?1, its partial index and the order the index walks
+// them in. Every read of an arm names its index (INDEXED BY): with no
+// row counts the planner weighs the issues' other indexes by the table's
+// width, and an index on the root's issues that is not the arm's walks
+// every issue of the root.
+type mirrorHistoryDueArm struct{ where, index, order string }
 
 // mirrorHistoryDue is the one rule for an issue i due a history read at
 // now, the caller's steady clock in Unix ms (an SQL expression), as its
@@ -56,10 +60,32 @@ type mirrorHistoryDueArm struct{ where, order string }
 func mirrorHistoryDue(i, now string) []mirrorHistoryDueArm {
 	deadline := i + `.history_answered_at + ` + i + `.history_wait`
 	return []mirrorHistoryDueArm{
-		{i + `.history_wait > 0 AND ` + deadline + ` <= ` + now, deadline},
-		{i + `.history_wait > 0 AND ` + i + `.history_answered_at > ` + now, i + `.history_answered_at`},
-		{`(` + i + `.history_for < ` + i + `.updated_at OR ` + i + `.history_boards_rev < ` + i + `.boards_rev)`, i + `.issue_id`},
+		{i + `.history_wait > 0 AND ` + deadline + ` <= ` + now, "idx_tracker_cache_issues_history_waiting", deadline},
+		{i + `.history_wait > 0 AND ` + i + `.history_answered_at > ` + now, "idx_tracker_cache_issues_history_answered", i + `.history_answered_at`},
+		{`(` + i + `.history_for < ` + i + `.updated_at OR ` + i + `.history_boards_rev < ` + i + `.boards_rev)`, "idx_tracker_cache_issues_history_due",
+			i + `.issue_id`},
 	}
+}
+
+// mirrorHistoryCovers holds for an issue i whose stored history covers its
+// card: read for its update time and its boards, and final for them. It is
+// due by none of the arms of mirrorHistoryDue: the version arm's terms
+// fail and it waits for nothing. A history that does not cover the card
+// says nothing of the card's values over the stretch since its latest
+// change, which may be newer than the history.
+func mirrorHistoryCovers(i string) string {
+	return i + `.history_for > 0 AND NOT ` + mirrorHistoryDue(i, "0")[2].where + ` AND ` + i + `.history_wait = 0`
+}
+
+// mirrorHistoryReadForCard is mirrorHistoryCovers of issue i but for its
+// boards: its history is final for its card's version, so its changes of
+// the fields every board shares (status, assignee) are every change to
+// the card. A board added to the issue reads its estimates again, and
+// changes none of those. Credit reads it (mirrorCreditIssueSQL), so a
+// history write that changes it reports the issue
+// (writeMirrorHistoryTimesTx).
+func mirrorHistoryReadForCard(i string) string {
+	return i + `.history_for > 0 AND ` + i + `.history_for >= ` + i + `.updated_at AND ` + i + `.history_wait = 0`
 }
 
 // mirrorHistoryDueSQL lists the kept issues of root ?1 due at ?2: first
@@ -86,7 +112,7 @@ var mirrorHistoryDueSQL = func() string {
 		if k == len(arms)-1 {
 			where += ` AND NOT (` + arms[0].where + `) AND NOT (` + arms[1].where + `)`
 		}
-		selects[k+1] = `SELECT * FROM (SELECT ` + columns + ` FROM tracker_cache_issues i
+		selects[k+1] = `SELECT * FROM (SELECT ` + columns + ` FROM tracker_cache_issues i INDEXED BY ` + arm.index + `
 		  WHERE i.root_id = CAST(?1 AS INTEGER) AND ` + where + ` AND i.issue_id NOT IN (SELECT value FROM json_each(?3)) AND ` + kept + `
 		  ORDER BY ` + arm.order + ` LIMIT ` + limit + `)`
 	}
@@ -103,7 +129,7 @@ func mirrorHistoryDueExistsSQL(now string) string {
 	arms := mirrorHistoryDue("hd", now)
 	probes := make([]string, len(arms))
 	for k, arm := range arms {
-		probes[k] = `EXISTS (SELECT 1 FROM tracker_cache_issues hd WHERE hd.root_id = CAST(?1 AS INTEGER) AND ` + arm.where + `
+		probes[k] = `EXISTS (SELECT 1 FROM tracker_cache_issues hd INDEXED BY ` + arm.index + ` WHERE hd.root_id = CAST(?1 AS INTEGER) AND ` + arm.where + `
 		    AND ` + mirrorIssueKept("hd.root_id", "hd.issue_id") + `)`
 	}
 	return `(` + strings.Join(probes, "\n\t  OR ") + `)`

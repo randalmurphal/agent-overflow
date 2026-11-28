@@ -17,27 +17,36 @@ import "time"
 // only an issue with more labels than that, or with one the list leaves
 // out, needs LabelsByID.
 // labelIds stays the complete set.
+// The parent's identifier and title are scalars on an object already
+// selected, so they cost no points by the fitted cost model
+// (trackerfake/linear_cost.go); not measured on this selection.
 const issueSelection = `
   id identifier number title url branchName
   priority estimate sortOrder prioritySortOrder subIssueSortOrder
-  team { id issueEstimationType } state { id } assignee { id } creator { id } cycle { id } project { id } parent { id }
+  team { id issueEstimationType } state { id } assignee { id } creator { id } cycle { id } project { id } parent { id identifier title }
   labelIds labels(first: 250) { nodes { id name } }
   dueDate createdAt updatedAt startedAt completedAt canceledAt archivedAt trashed
 `
 
 const issueFields = `fragment IssueFields on Issue {` + issueSelection + `}`
 
-// issueSearchFields is issueSelection on a search result, a type of its
-// own with the same fields, and the state and assignee whole: a search
-// row is shown with their names, whatever the app has read of the team.
-// A page of issues that selects objects costs the same however many it
-// selects (measured, docs/references/tracker-api-measurements.md), so
-// the names cost bytes and no points. Its documents spread StateFields
-// and UserFields too.
-const issueSearchFields = `fragment IssueSearchFields on IssueSearchResult {` + issueSelection + `  state { ...StateFields } assignee { ...UserFields }
-}`
+// namedSelection is issueSelection with the state and assignee whole: a
+// row of a search or a listing is shown with their names, whatever the
+// app has read of the team. A page of issues that selects objects costs
+// the same however many it selects (measured,
+// docs/references/tracker-api-measurements.md), so the names cost bytes
+// and no points. Its documents spread StateFields and UserFields too.
+const namedSelection = issueSelection + `  state { ...StateFields } assignee { ...UserFields }
+`
 
-// wireSearchIssue is an issue as issueSearchFields selects it; its state
+// issueSearchFields is namedSelection on a search result, a type of its
+// own with the same fields; issueNamedFields is it on an issue.
+const (
+	issueSearchFields = `fragment IssueSearchFields on IssueSearchResult {` + namedSelection + `}`
+	issueNamedFields  = `fragment IssueNamedFields on Issue {` + namedSelection + `}`
+)
+
+// wireSearchIssue is an issue as namedSelection selects it; its state
 // and assignee shadow issueSelection's { id } ones.
 type wireSearchIssue struct {
 	wireIssue
@@ -72,34 +81,57 @@ func (w wireDescribed) typed() DescribedIssue {
 }
 
 type wireIssue struct {
-	ID                string     `json:"id"`
-	Identifier        string     `json:"identifier"`
-	Number            float64    `json:"number"`
-	Title             string     `json:"title"`
-	URL               string     `json:"url"`
-	BranchName        string     `json:"branchName"`
-	Priority          float64    `json:"priority"`
-	Estimate          *float64   `json:"estimate"`
-	SortOrder         float64    `json:"sortOrder"`
-	PrioritySortOrder float64    `json:"prioritySortOrder"`
-	SubIssueSortOrder *float64   `json:"subIssueSortOrder"`
-	Team              *issueTeam `json:"team"`
-	State             *ref       `json:"state"`
-	Assignee          *ref       `json:"assignee"`
-	Creator           *ref       `json:"creator"`
-	Cycle             *ref       `json:"cycle"`
-	Project           *ref       `json:"project"`
-	Parent            *ref       `json:"parent"`
-	LabelIDs          []string   `json:"labelIds"`
-	Labels            labelRefs  `json:"labels"`
-	DueDate           Date       `json:"dueDate"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
-	StartedAt         *time.Time `json:"startedAt"`
-	CompletedAt       *time.Time `json:"completedAt"`
-	CanceledAt        *time.Time `json:"canceledAt"`
-	ArchivedAt        *time.Time `json:"archivedAt"`
-	Trashed           *bool      `json:"trashed"`
+	ID                string      `json:"id"`
+	Identifier        string      `json:"identifier"`
+	Number            float64     `json:"number"`
+	Title             string      `json:"title"`
+	URL               string      `json:"url"`
+	BranchName        string      `json:"branchName"`
+	Priority          float64     `json:"priority"`
+	Estimate          *float64    `json:"estimate"`
+	SortOrder         float64     `json:"sortOrder"`
+	PrioritySortOrder float64     `json:"prioritySortOrder"`
+	SubIssueSortOrder *float64    `json:"subIssueSortOrder"`
+	Team              *issueTeam  `json:"team"`
+	State             *ref        `json:"state"`
+	Assignee          *ref        `json:"assignee"`
+	Creator           *ref        `json:"creator"`
+	Cycle             *ref        `json:"cycle"`
+	Project           *ref        `json:"project"`
+	Parent            *wireParent `json:"parent"`
+	LabelIDs          []string    `json:"labelIds"`
+	Labels            labelRefs   `json:"labels"`
+	DueDate           Date        `json:"dueDate"`
+	CreatedAt         time.Time   `json:"createdAt"`
+	UpdatedAt         time.Time   `json:"updatedAt"`
+	StartedAt         *time.Time  `json:"startedAt"`
+	CompletedAt       *time.Time  `json:"completedAt"`
+	CanceledAt        *time.Time  `json:"canceledAt"`
+	ArchivedAt        *time.Time  `json:"archivedAt"`
+	Trashed           *bool       `json:"trashed"`
+}
+
+// wireParent is an issue's parent as issueSelection selects it.
+type wireParent struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier"`
+	Title      string `json:"title"`
+}
+
+func (p *wireParent) id() string {
+	if p == nil {
+		return ""
+	}
+	return p.ID
+}
+
+// named is the parent's name, nil for none or one named without its
+// identifier.
+func (p *wireParent) named() *ParentName {
+	if p == nil || p.Identifier == "" {
+		return nil
+	}
+	return &ParentName{Identifier: p.Identifier, Title: p.Title}
 }
 
 // labelRefs is an issue's labels as issueSelection nests them.
@@ -133,7 +165,7 @@ func (w wireIssue) typed() Issue {
 		URL: w.URL, BranchName: w.BranchName, Priority: Priority(w.Priority), Estimate: w.Estimate,
 		SortOrder: w.SortOrder, PrioritySortOrder: w.PrioritySortOrder, SubIssueSortOrder: w.SubIssueSortOrder,
 		TeamID: w.Team.id(), TeamEstimateScale: w.Team.scale(), StateID: w.State.id(), AssigneeID: w.Assignee.id(), CreatorID: w.Creator.id(),
-		CycleID: w.Cycle.id(), ProjectID: w.Project.id(), ParentID: w.Parent.id(), LabelIDs: w.LabelIDs, Labels: w.Labels.Nodes,
+		CycleID: w.Cycle.id(), ProjectID: w.Project.id(), ParentID: w.Parent.id(), ParentName: w.Parent.named(), LabelIDs: w.LabelIDs, Labels: w.Labels.Nodes,
 		DueDate: w.DueDate, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt, StartedAt: w.StartedAt,
 		CompletedAt: w.CompletedAt, CanceledAt: w.CanceledAt, ArchivedAt: w.ArchivedAt,
 		Trashed: w.Trashed != nil && *w.Trashed,

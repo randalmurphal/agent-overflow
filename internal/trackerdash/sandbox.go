@@ -6,7 +6,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,9 +18,13 @@ import (
 
 // Fill fills the empty main database of conn with a board's export
 // (store.ExportMirrorBoard bound to the board) of relations, the ones the
-// count reads: ok is false for a board the mirror does not show. The fill
-// must leave conn holding its main database alone; the gate checks it.
-type Fill func(ctx context.Context, conn *sql.Conn, relations []string) (export store.MirrorExport, ok bool, err error)
+// count reads, with the viewer's logged time up to day loggedThrough
+// (YYYY-MM-DD, today in the request's time zone; worklogs.go): ok is
+// false for a board the mirror does not show. The export's EstimateUnit
+// is the unit the board is counted in, none where its project counts
+// tickets. The fill must leave conn holding its main database alone; the
+// gate checks it.
+type Fill func(ctx context.Context, conn *sql.Conn, relations []string, loggedThrough string) (export store.MirrorExport, ok bool, err error)
 
 // snapshotDSN is the export's database: private and in memory, a sort or
 // a materialized subquery that outgrows the 4 MiB page cache spilling to
@@ -36,7 +39,7 @@ const (
 )
 
 // maxParams is the parameters one statement on a sealed session binds: a
-// metric binds :now and :since, and the app's reads of a page's titles
+// metric binds :now, :since and :estimates, and the app's reads of a page's titles
 // bind as many IDs a statement.
 const maxParams = 8
 
@@ -79,7 +82,7 @@ func init() {
 		count sum total avg group_concat string_agg
 		row_number rank dense_rank percent_rank cume_dist ntile lag lead first_value last_value nth_value
 		ceil ceiling floor trunc ln log log10 log2 exp pow power sqrt mod pi
-		days working_days day`) {
+		days working_days day day_start`) {
 		allowedFunctions[name] = true
 	}
 }
@@ -102,17 +105,27 @@ type session struct {
 	// key names the sink in the sessions registry (sessionSinks).
 	key string
 	// denied is what the authorizer refused last, for the sentence of the
-	// error SQLite reports as "not authorized"; reads is what it allowed
-	// the statement to read. The authorizer runs while the statement
-	// prepares, on the goroutine that prepares it; mu is for the race
-	// detector's sake and for a reprepare SQLite may run on a step.
+	// error SQLite reports as "not authorized". The authorizer runs while
+	// the statement prepares, on the goroutine that prepares it; mu is for
+	// the race detector's sake and for a reprepare SQLite may run on a
+	// step.
 	mu     sync.Mutex
 	denied string
-	reads  []string
 	// wrapping is whether the wrapper prepares, the one statement that may
 	// call bounded_rows. A metric's own text is prepared first without it,
 	// so a metric that calls bounded_rows never runs.
 	wrapping bool
+	// layout is how an empty session stores the export, from which its
+	// prepares read what each statement reads (plan.go); nil on a session
+	// filled with a copy, whose prepares read asked instead.
+	layout *layout
+	// asked is what the copy was filled with for each metric, by name,
+	// from its plan on an empty session: what a filled session's prepare
+	// says it reads.
+	asked map[string]asks
+	// deadline is how long one metric may take from its prepare:
+	// metricDeadline unless the session's evaluator sets its own.
+	deadline time.Duration
 }
 
 // connector opens the snapshot on its zone's driver (driverFor).
@@ -128,7 +141,7 @@ func openSession(ctx context.Context, loc *time.Location) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &session{sink: &rowSink{}}
+	s := &session{sink: &rowSink{}, deadline: metricDeadline}
 	if s.key, err = openSink(s.sink); err != nil {
 		return nil, err
 	}
@@ -235,9 +248,6 @@ func (s *session) authorize(action sqlite.AuthorizerActionCode, arg1, arg2, data
 	// column and no database. The gate leaves main the only database that
 	// can hold an export table's name.
 	if action == sqlite.AuthRead && exportTables[arg1] && (database == "main" || (database == "" && arg2 == "")) {
-		if !slices.Contains(s.reads, arg1) {
-			s.reads = append(s.reads, arg1)
-		}
 		return sqlite.AuthorizerOK
 	}
 	if action == sqlite.AuthFunction {
@@ -280,13 +290,13 @@ func (s *session) setWrapping(on bool) {
 	s.mu.Unlock()
 }
 
-// take clears and returns what the authorizer recorded.
-func (s *session) take() (denied string, reads []string) {
+// take clears and returns what the authorizer denied last.
+func (s *session) take() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	denied, reads = s.denied, s.reads
-	s.denied, s.reads = "", nil
-	return denied, reads
+	denied := s.denied
+	s.denied = ""
+	return denied
 }
 
 // prepared is a metric's statement checked against the contract.
@@ -294,7 +304,8 @@ type prepared struct {
 	sql   string
 	names []string
 	cols  columns
-	reads []string
+	// asks is what it reads of the copy, from its plan (plan.go).
+	asks asks
 	// series is the metric's declared series (Metric.Series).
 	series []string
 	// took is how long the prepare took, which the metric's deadline
@@ -325,8 +336,7 @@ func (s *session) prepare(m Metric) (prepared, error) {
 		info, err = ci.ColumnInfo(text)
 		return err
 	})
-	denied, reads := s.take()
-	if err != nil {
+	if denied := s.take(); err != nil {
 		return prepared{}, sqlError(err, denied)
 	}
 	if len(info) == 0 {
@@ -340,47 +350,78 @@ func (s *session) prepare(m Metric) (prepared, error) {
 	if err != nil {
 		return prepared{}, &MetricError{Sentence: "This widget's query " + strings.TrimPrefix(err.Error(), "the query ") + "; change its query."}
 	}
-	slices.Sort(reads)
-	return prepared{sql: text, names: names, cols: cols, reads: reads, series: m.Series, took: time.Since(start)}, nil
+	p := prepared{sql: text, names: names, cols: cols, series: m.Series}
+	if p.asks, err = s.asksOf(m, p); err != nil {
+		return prepared{}, err
+	}
+	p.took = time.Since(start)
+	return p, nil
+}
+
+// asksOf is what metric m, prepared as p, reads of the copy: on an empty
+// session what the plan of the statement a count runs reads, on a filled
+// session what the copy was filled with for it, or why its plan could not
+// be read there.
+func (s *session) asksOf(m Metric, p prepared) (asks, error) {
+	if s.layout != nil {
+		return s.planAsks(s.wrapped(p))
+	}
+	a, ok := s.asked[m.Name]
+	if !ok {
+		return asks{}, fmt.Errorf("metric %s was not planned before its count", m.Name)
+	}
+	return a, a.failed
+}
+
+// hostParams is what the host binds to the wrapped statement: :now, the
+// evaluation's instant, :since, where the range's periods begin, and
+// :estimates, what the board's counts of unit estimate count (points,
+// time or none: tickets; evaluation.estimates).
+func hostParams(now, since int64, estimates string) []any {
+	return []any{sql.Named("now", now), sql.Named("since", since), sql.Named("estimates", estimates)}
+}
+
+// wrapped is the statement a count of p runs: p's own between
+// parentheses, each row with whether its ticket is on the board, into
+// the session's sink through bounded_rows, which keeps and caps them
+// (rowSink.add).
+func (s *session) wrapped(p prepared) string {
+	var b strings.Builder
+	b.WriteString("WITH r AS (\n")
+	b.WriteString(p.sql)
+	b.WriteString("\n) SELECT bounded_rows('" + s.key + "', EXISTS (SELECT 1 FROM main.tickets WHERE id = r.\"ticket\")")
+	for _, name := range p.names {
+		b.WriteString(`, r."` + name + `"`)
+	}
+	b.WriteString(") FROM r")
+	return b.String()
 }
 
 // run runs a prepared metric under its deadline, which began when its
 // prepare did, wrapped so SQLite
 // produces the whole result in its first step and the rows go straight
 // to the sink, and answers its rows. The host binds :now, the
-// evaluation's instant, and :since, where the range's periods begin
+// evaluation's instant, :since, where the range's periods begin
 // (span.since), so a metric of the range reads only the rows it can
-// place.
-func (s *session) run(ctx context.Context, p prepared, now, since int64) ([]contribution, error) {
-	ctx, cancel := context.WithTimeout(ctx, metricDeadline-p.took)
+// place, and :estimates (hostParams). It answers the rows k keeps.
+func (s *session) run(ctx context.Context, p prepared, now, since int64, estimates string, k kept) ([]contribution, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.deadline-p.took)
 	defer cancel()
-	s.sink.reset(p.cols, p.series)
-	defer s.sink.reset(columns{}, nil)
-	var b strings.Builder
-	b.WriteString("WITH q AS (\n")
-	b.WriteString(p.sql)
-	b.WriteString("\n), r AS (SELECT * FROM q LIMIT ")
-	fmt.Fprint(&b, maxRows+1)
-	b.WriteString(") SELECT bounded_rows('" + s.key + "', EXISTS (SELECT 1 FROM main.tickets WHERE id = r.\"ticket\")")
-	for _, name := range p.names {
-		b.WriteString(`, r."` + name + `"`)
-	}
-	b.WriteString(") FROM r")
+	s.sink.reset(p.cols, p.series, k)
+	defer s.sink.reset(columns{}, nil, kept{})
 	s.take()
 	s.setWrapping(true)
 	var n int64
-	err := s.conn.QueryRowContext(ctx, b.String(), sql.Named("now", now), sql.Named("since", since)).Scan(&n)
+	err := s.conn.QueryRowContext(ctx, s.wrapped(p), hostParams(now, since, estimates)...).Scan(&n)
 	s.setWrapping(false)
-	denied, _ := s.take()
+	denied := s.take()
 	switch {
 	case s.sink.err != nil:
 		return nil, s.sink.err
 	case ctx.Err() != nil && errors.Is(context.Cause(ctx), context.DeadlineExceeded):
-		return nil, &MetricError{Sentence: fmt.Sprintf("This widget's query ran past its limit of %v and was stopped. Pick a shorter range, or try again when this computer is less busy.", metricDeadline), Limit: true}
+		return nil, &MetricError{Sentence: fmt.Sprintf("This widget's query ran past its limit of %v and was stopped. Pick a shorter range, or try again when this computer is less busy.", s.deadline), Limit: true}
 	case err != nil:
 		return nil, sqlError(err, denied)
-	case n > maxRows:
-		return nil, &MetricError{Sentence: fmt.Sprintf("This widget's query returned more than %d rows, its limit. Pick a shorter range.", maxRows), Limit: true}
 	}
 	return s.sink.take(), nil
 }

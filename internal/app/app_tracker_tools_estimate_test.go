@@ -310,7 +310,7 @@ func TestTrackerAgentEstimateChangedDuringTheWaitIsSentNothing(t *testing.T) {
 			}
 			log := f.e.Requests(0).Requests
 			before := log[len(log)-1].Seq
-			if err := f.a.RespondToApproval(t.Context(), thread, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Decision: "allow"}); err != nil {
+			if err := f.a.RespondToApproval(t.Context(), thread, provider.ApprovalResponse{RequestID: open.RequestID, Occurrence: open.Occurrence, Shown: true, Decision: "allow"}); err != nil {
 				t.Fatal(err)
 			}
 			result := <-done

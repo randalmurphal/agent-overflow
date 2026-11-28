@@ -106,14 +106,18 @@ func IssueURLPrefix(site string) string {
 	return strings.TrimSuffix(site, "/") + "/browse/"
 }
 
-// Capabilities are Jira's: every capability the neutral model names.
+// Capabilities are Jira's: every capability the neutral model names,
+// the same for every connection, so a caller with no client reads them.
 // DetailMovesUpdated is measured: a comment, a link, an attachment and a
 // worklog each move an issue's `updated`
 // (docs/references/tracker-api-measurements.md, Jira Cloud).
-func (p *Provider) Capabilities() tracker.Capabilities {
+func Capabilities() tracker.Capabilities {
 	return tracker.Capabilities{IssueTypes: true, CustomFields: true, MoveFields: true, SprintWrites: true, MaxAttachmentBytes: jira.MaxAttachmentBytes,
-		DetailMovesUpdated: true, HistorySettle: historySettle}
+		DetailMovesUpdated: true, HistorySettle: historySettle, Evidence: true}
 }
+
+// Capabilities are Jira's (Capabilities).
+func (p *Provider) Capabilities() tracker.Capabilities { return Capabilities() }
 
 // Time is Tempo's worklogs when the Provider was built with a Tempo
 // client, and Jira's own otherwise.
@@ -170,6 +174,23 @@ func (p *Provider) IssueTypes(ctx context.Context, project tracker.ProjectID) ([
 	}
 	out := make([]tracker.IssueType, len(types))
 	for i, t := range types {
+		out[i] = issueTypeOf(t)
+	}
+	return out, nil
+}
+
+// ProjectIssueTypes are the issue types of project, read with the
+// project (browse permission), not the create screen.
+func (p *Provider) ProjectIssueTypes(ctx context.Context, project tracker.ProjectID) ([]tracker.IssueType, error) {
+	if err := checkProject(project); err != nil {
+		return nil, err
+	}
+	pr, err := p.jira.Project(ctx, string(project))
+	if err != nil {
+		return nil, fmt.Errorf("jiraprovider: issue types of project %s: %w", project, err)
+	}
+	out := make([]tracker.IssueType, len(pr.IssueTypes))
+	for i, t := range pr.IssueTypes {
 		out[i] = issueTypeOf(t)
 	}
 	return out, nil

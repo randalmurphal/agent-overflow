@@ -5,9 +5,10 @@
   // whose label narrows the page when the bucket can. A bar's value shows
   // on hover and focus; a press or Enter opens its rows.
   import type { BucketValue } from '../../../../../bindings/agent-overflow/internal/trackerdash/models';
-  import { formatNum, numValue, numWords, type DashboardUnit, type Num } from '../../../stores/trackerDashboardModel';
+  import { formatNum, numValue, numWords, type Num } from '../../../stores/trackerDashboardModel';
+  import type { DashboardUnit } from '../../../utils/dashboardAmount';
   import { isLocalEnter } from '../../../utils/localEnter';
-  import { band, labelEvery, SERIES_COLORS, valueScale } from './chartScale';
+  import { along, band, labelEvery, SERIES_COLORS, unitScale, valueEnds } from './chartScale';
 
   interface Props {
     title: string;
@@ -26,8 +27,8 @@
   let width = $state(0);
   let hovered = $state<{ b: number; s: number } | null>(null);
   const named = $derived(series.length > 1 || series[0] !== '');
-  const top = $derived(Math.max(0, ...buckets.flatMap((b) => b.cells.map((c) => numValue(c as Num) ?? 0))));
-  const scale = $derived(valueScale(top));
+  const ends = $derived(valueEnds(buckets.flatMap((b) => b.cells.map((c) => numValue(c as Num)))));
+  const scale = $derived(unitScale(ends.top, unit, estimates, ends.bottom));
 
   const V_HEIGHT = 168;
   const V_LEFT = 36;
@@ -55,17 +56,29 @@
     return { plain, text: `${plain}${b.partial ? ' (so far)' : ''}`, left: V_LEFT + outer.start + outer.size / 2 };
   });
 
-  /** A bar's path from the baseline, its far end rounded. */
-  function vBar(x: number, w: number, h: number): string {
-    const r = Math.min(4, w / 2, h);
-    const y0 = plotH + 8;
-    const y1 = y0 - h;
-    return `M${x},${y0}V${y1 + r}Q${x},${y1} ${x + r},${y1}H${x + w - r}Q${x + w},${y1} ${x + w},${y1 + r}V${y0}Z`;
+  /** Where a value stands up the vertical plot, and 0's line there. */
+  function vAt(v: number): number {
+    return plotH + 8 - along(v, scale, plotH);
+  }
+  /** Where a value stands across the horizontal plot. */
+  function hAt(v: number): number {
+    return along(v, scale, hPlotW);
   }
 
-  function hBar(y: number, h: number, w: number): string {
-    const r = Math.min(4, h / 2, w);
-    return `M0,${y}H${w - r}Q${w},${y} ${w},${y + r}V${y + h - r}Q${w},${y + h} ${w - r},${y + h}H0Z`;
+  /** A bar's path from 0's line to its value at y1, above the line or,
+   * for a value below 0, under it, its far end rounded. */
+  function vBar(x: number, w: number, y1: number): string {
+    const y0 = vAt(0);
+    const r = Math.min(4, w / 2, Math.abs(y0 - y1)) * Math.sign(y0 - y1);
+    return `M${x},${y0}V${y1 + r}Q${x},${y1} ${x + Math.abs(r)},${y1}H${x + w - Math.abs(r)}Q${x + w},${y1} ${x + w},${y1 + r}V${y0}Z`;
+  }
+
+  /** A bar's path from 0's line to its value at x1, right of the line
+   * or, for a value below 0, left of it, its far end rounded. */
+  function hBar(y: number, h: number, x1: number): string {
+    const x0 = hAt(0);
+    const r = Math.min(4, h / 2, Math.abs(x1 - x0)) * Math.sign(x1 - x0);
+    return `M${x0},${y}H${x1 - r}Q${x1},${y} ${x1},${y + Math.abs(r)}V${y + h - Math.abs(r)}Q${x1},${y + h} ${x1 - r},${y + h}H${x0}Z`;
   }
 
   function key(event: KeyboardEvent, b: BucketValue, s: number): void {
@@ -85,10 +98,10 @@
   {/if}
   {#if width > 0 && !horizontal}
     <svg width={width} height={V_HEIGHT} class="block overflow-visible" aria-hidden="false">
-      {#each scale.ticks as t (t)}
-        {@const y = plotH + 8 - (t / scale.max) * plotH}
+      {#each scale.ticks as t (t.value)}
+        {@const y = vAt(t.value)}
         <line x1={V_LEFT} x2={width} y1={y} y2={y} class="stroke-border-subtle" stroke-width="1" />
-        <text x={V_LEFT - 6} y={y + 3} text-anchor="end" class="fill-fg-subtle text-[0.625rem]">{t}</text>
+        <text x={V_LEFT - 6} y={y + 3} text-anchor="end" class="fill-fg-subtle text-[0.625rem]" data-testid="dashboard-axis-tick">{t.label}</text>
       {/each}
       <g transform="translate({V_LEFT},0)">
         {#each buckets as b, i (b.key)}
@@ -96,11 +109,11 @@
           {#each series as _, s (s)}
             {@const inner = band(s, series.length, outer.size, 2)}
             {@const v = numValue(b.cells[s] as Num)}
-            {@const h = v === null ? 0 : (v / scale.max) * plotH}
+            {@const y1 = v === null ? null : vAt(v)}
             <g
               role="button"
               tabindex="0"
-              aria-label={cellText(b, s)}
+              aria-label="{cellText(b, s)}{b.partial ? ' (so far)' : ''}"
               class="cursor-pointer outline-none focus-visible:[&>rect]:stroke-accent"
               data-testid="dashboard-bar"
               data-bucket={b.key}
@@ -114,8 +127,10 @@
             >
               <!-- The hit target is the whole band's height, wider than the bar. -->
               <rect x={outer.start + inner.start} y="0" width={inner.size} height={plotH + 8} fill="transparent" stroke-width="2" />
-              {#if h > 0}
-                <path d={vBar(outer.start + inner.start, inner.size, h)} fill={SERIES_COLORS[s]} opacity={b.partial ? 0.7 : 1} />
+              {#if y1 !== null && y1 !== vAt(0)}
+                <!-- A period still running is outlined in its series color and
+                     filled lighter, so its edge keeps the color's contrast. -->
+                <path d={vBar(outer.start + inner.start, inner.size, y1)} fill={SERIES_COLORS[s]} fill-opacity={b.partial ? 0.4 : 1} stroke={b.partial ? SERIES_COLORS[s] : 'none'} stroke-width="1.5" data-partial={b.partial ? '' : undefined} data-below={v !== null && v < 0 ? '' : undefined} />
               {/if}
             </g>
           {/each}
@@ -144,10 +159,14 @@
             <span class="shrink-0 truncate text-[0.75rem] text-fg-muted" style:width="{hLabelW}px">{b.label}</span>
           {/if}
           <svg width={hPlotW} height={H_ROW} class="block shrink-0">
+            {#if scale.min < 0}
+              <!-- 0's line, which the bars of values below 0 run left of. -->
+              <line x1={hAt(0)} x2={hAt(0)} y1="0" y2={H_ROW} class="stroke-border-subtle" stroke-width="1" data-testid="dashboard-bar-zero" />
+            {/if}
             {#each series as _, s (s)}
               {@const inner = band(s, series.length, H_ROW - 6, 2)}
               {@const v = numValue(b.cells[s] as Num)}
-              {@const w = v === null ? 0 : (v / scale.max) * hPlotW}
+              {@const x1 = v === null ? null : hAt(v)}
               <g
                 role="button"
                 tabindex="0"
@@ -164,7 +183,7 @@
                 onblur={() => { hovered = null; }}
               >
                 <rect x="0" y={3 + inner.start} width={hPlotW} height={inner.size} fill="transparent" />
-                {#if w > 0}<path d={hBar(3 + inner.start, inner.size, w)} fill={SERIES_COLORS[s]} />{/if}
+                {#if x1 !== null && x1 !== hAt(0)}<path d={hBar(3 + inner.start, inner.size, x1)} fill={SERIES_COLORS[s]} data-below={v !== null && v < 0 ? '' : undefined} />{/if}
               </g>
             {/each}
           </svg>

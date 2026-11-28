@@ -61,7 +61,7 @@ func newWriteFixture(t *testing.T) *writeFixture {
 		f.details[src.ID+"/"+issue] = writableDetail(key, issue)
 		f.cards[src.ID+"/"+issue] = trackerapp.CardView{ID: issue, Key: key, Updated: 2_000}
 	}
-	h := &fakeHost{createBoards: map[string][]CreateBoard{"WEB": {{Connection: src.ID, Board: "1", Thread: true}}}}
+	h := &fakeHost{createBoards: map[string][]ListedBoard{"WEB": {{Connection: src.ID, Board: "1", Thread: true}}}}
 	srv := New(f, h)
 	srv.newID = func() string { return "call-1" }
 	return &writeFixture{f: f, h: h, srv: srv}
@@ -163,6 +163,86 @@ func TestUpdateOfSeveralTicketsWaitsForApproval(t *testing.T) {
 	}
 	if want := []string{`sprint_move conn-jira {"board":"1","sprint":"15","issues":["10012","10018","10027"]}`}; !slices.Equal(w.f.writes, want) {
 		t.Fatalf("writes %q", w.f.writes)
+	}
+}
+
+// A call naming several tickets from a thread whose project does not ask
+// is sent with no approval and no read after one, and takes no bound of
+// what an approval would show.
+func TestUpdateOfSeveralTicketsGoesWhenTheProjectDoesNotAsk(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	w.h.noAsk = true
+	long := strings.Repeat("a", maxApprovalBytes)
+	answer, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"status": "In Review"}, "comment": long})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"tickets":[{"key":"WEB-12","applied":["status","comment"]},{"key":"WEB-18","applied":["status","comment"]}]}`; answer != want {
+		t.Fatalf("answer = %s\nwant %s", answer, want)
+	}
+	if len(w.h.approvals) != 0 {
+		t.Fatalf("a project that does not ask asked: %+v", w.h.approvals)
+	}
+	// The plan's reads and the comment's lookup before it is sent: no
+	// read of the cards after an approval.
+	if want := []string{"lookup conn-jira WEB-12,WEB-18", "detail conn-jira 10012", "detail conn-jira 10018", "lookup conn-jira WEB-12,WEB-18"}; !slices.Equal(w.f.asked, want) {
+		t.Fatalf("asked %q; want %q", w.f.asked, want)
+	}
+	if len(w.f.writes) != 4 || len(w.h.rows) != 1 || len(w.h.rows[0].Tickets) != 2 {
+		t.Fatalf("writes %q, rows %+v", w.f.writes, w.h.rows)
+	}
+}
+
+// A change of several tickets that asking was turned on for while it
+// planned waits for the person; one it was turned on for after the
+// decision, before the send, is refused with nothing sent.
+func TestUpdateOfSeveralTicketsAsksWhenAskingTurnsOnWhilePlanned(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	w.h.noAsk = true
+	w.f.onDetail = func() { w.h.noAsk = false }
+	if _, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"status": "In Review"}, "comment": "Both in this sprint."}); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.h.approvals) != 1 {
+		t.Fatalf("asked %+v after asking was turned on while it planned", w.h.approvals)
+	}
+
+	w = newWriteFixture(t)
+	w.h.noAsk = true
+	w.h.onPolicy = func(n int) { w.h.noAsk = n < 3 }
+	_, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"status": "In Review"}, "comment": "Both in this sprint."})
+	if len(w.f.writes) != 0 || len(w.h.approvals) != 0 {
+		t.Fatalf("sent %q, asked %+v after asking was turned on before the send", w.f.writes, w.h.approvals)
+	}
+	if code, _, _ := errorsx.PublicDetails(err); code != CodeRulesChanged {
+		t.Fatalf("err = %v; want %s", err, CodeRulesChanged)
+	}
+}
+
+// Whether a change of several tickets asks is decided by the policy read
+// after planning: asking turned off while the call planned sends it with
+// no prompt, and changes turned off then refuse it before any prompt.
+func TestUpdateOfSeveralTicketsDecidesAskingAfterPlanning(t *testing.T) {
+	t.Parallel()
+	w := newWriteFixture(t)
+	w.f.onDetail = func() { w.h.noAsk = true }
+	if _, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"status": "In Review"}, "comment": "Both in this sprint."}); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.h.approvals) != 0 || len(w.f.writes) == 0 {
+		t.Fatalf("asked %+v, sent %q after asking was turned off", w.h.approvals, w.f.writes)
+	}
+
+	w = newWriteFixture(t)
+	w.f.onDetail = func() { w.h.readOnly = true }
+	_, err := w.update(t, map[string]any{"keys": []string{"WEB-12", "WEB-18"}, "set": map[string]any{"status": "In Review"}})
+	if len(w.h.approvals) != 0 || len(w.f.writes) != 0 {
+		t.Fatalf("asked %+v, sent %q after changes were turned off", w.h.approvals, w.f.writes)
+	}
+	if code, _, _ := errorsx.PublicDetails(err); code != "tracker_read_only" {
+		t.Fatalf("err = %v; want the policy's refusal", err)
 	}
 }
 
@@ -506,9 +586,9 @@ func TestUpdateFromAReadOnlyThread(t *testing.T) {
 	w := newWriteFixture(t)
 	w.h.readOnly = true
 	_, err := w.update(t, map[string]any{"keys": []string{"WEB-12"}, "comment": "Hi."})
-	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.")
+	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.")
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New"})
-	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets; ask the user to change its access.")
+	refused(t, err, "tracker_read_only", "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.")
 	if len(w.f.asked)+len(w.f.writes) != 0 {
 		t.Fatalf("a read-only call asked %q, wrote %q", w.f.asked, w.f.writes)
 	}
@@ -600,7 +680,7 @@ func TestCreate(t *testing.T) {
 
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "OPS", "title": "Elsewhere"})
 	refused(t, err, CodeNotFound, "No board of project OPS is on this computer; ask the user to add one in Settings, Issues.")
-	w.h.createBoards["APP"] = []CreateBoard{{Connection: "conn-jira", Board: "9"}}
+	w.h.createBoards["APP"] = []ListedBoard{{Connection: "conn-jira", Board: "9"}}
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "app", "title": "Unread"})
 	refused(t, err, CodeNotFound, "Project APP's board on example.atlassian.net has not been read on this computer yet; ask the user to open it in Issues, then call again.")
 	_, err = w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "Typo", "type": "Bugg"})
@@ -681,7 +761,7 @@ func TestCreateTargets(t *testing.T) {
 	linear.Kind = "linear"
 	w.f.sources = []trackerapp.TicketSource{linear}
 	w.f.boards["conn-linear/team"] = trackerapp.BoardSummary{Name: "Web", Project: "team-id"}
-	w.h.createBoards["WEB"] = append(w.h.createBoards["WEB"], CreateBoard{Connection: "conn-linear", Board: "team", Thread: true})
+	w.h.createBoards["WEB"] = append(w.h.createBoards["WEB"], ListedBoard{Connection: "conn-linear", Board: "team", Thread: true})
 	_, err := w.call(t, "session-1", "ticket_create", map[string]any{"project": "WEB", "title": "New", "type": "Bug"})
 	refused(t, err, CodeInvalidRequest, "Linear has no issue types; leave out type.")
 	jira := jiraSource

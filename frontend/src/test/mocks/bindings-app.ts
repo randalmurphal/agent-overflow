@@ -163,7 +163,10 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // answers no revision and every section empty, and one with no board no
   // site (app_tracker_setup.go).
   ProjectTrackerSetup: async () => ({ revision: '', setup: { status_groups: [], ticket_pins: [], start_work: [] } }),
-  ProjectTrackerStatuses: async () => [],
+  ProjectTrackerStatuses: async () => ({ sites: [], places: [] }),
+  ProjectTrackerPace: async () => [],
+  ProjectTrackerSupport: async () => ({ issues: [] }),
+  TrackerForgeAccounts: async () => ({ accounts: [] }),
   // Custom notification sounds (stores/sounds).
   GetSoundFiles: async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }),
   // Rate limit snapshots read on every hello (stores/eventsRateLimits).
@@ -181,10 +184,27 @@ const PASSIVE_LOADS: Record<string, (...args: never[]) => unknown> = {
   // person's time answers (trackerapp Service.Worklogs).
   TrackerWorklogs: async (_connection: string, _author: string, from: string, to: string) => ({ worklogs: [], unread: daysFromTo(from, to) }),
   RefreshTrackerWorklogs: async () => ({ worklogs: [] }),
+  // A dashboard's logged-time widgets read their days when they show
+  // (stores/trackerDashboard): nothing read, nothing more to read.
+  // A thread's time draft card reads its call's entries when it shows.
+  ThreadTimeEntries: async () => [],
   // A ticket's Work, read when its rail shows (stores/ticketWork): no pull
   // request or branch names it, as a computer with no stored pull requests
   // and no branch of its key answers (app_ticket_work.go GetTicketWork).
   GetTicketWork: async () => ({ key: '', pullRequests: [], branches: [], problems: [] }),
+  // The forge search beside it (SearchTicketWork): the forge finds nothing
+  // the stored sources lack, so it answers what the Work read's mock
+  // answers, with no forge problem. It runs that mock's implementation, so
+  // the Work read's own call count is the person's reads.
+  SearchTicketWork: async (...args: unknown[]) => {
+    const impl = bindingMockFor('GetTicketWork')?.getMockImplementation();
+    if (!impl) throw unansweredBinding('GetTicketWork');
+    return { forgeProblems: [], searchFull: [], ...((await impl(...args)) as object) };
+  },
+  // The screen's activity report, made on input while the app is mounted
+  // (stores/activityRecorder.ts): the computer takes it and answers
+  // nothing (app_activity.go RecordActivity).
+  RecordActivity: async () => undefined,
   // A thread the pane opens, as the backend holds an idle thread with no
   // history: resuming it does nothing (app_session_bindings.go), and its
   // ticks, plans, turns, tray tasks, wakes and pending requests are empty
@@ -392,7 +412,11 @@ export const SetThreadTicket = dispatch('SetThreadTicket');
 export const ClearThreadTicket = dispatch('ClearThreadTicket');
 export const ThreadsForTicket = dispatch('ThreadsForTicket');
 export const GetTicketWork = dispatch('GetTicketWork');
+export const SearchTicketWork = dispatch('SearchTicketWork');
+export const RecordActivity = dispatch('RecordActivity');
+export const GetActivityRecording = dispatch('GetActivityRecording');
 export const StartTicketThread = dispatch('StartTicketThread');
+export const StartTicketsThread = dispatch('StartTicketsThread');
 export const SwitchThread = dispatch('SwitchThread');
 
 // Terminal operations (ThreadTerminalDrawer, TerminalBody, etc).
@@ -1155,6 +1179,12 @@ export const TrackerBoardChoices = dispatch('TrackerBoardChoices');
 export const SetProjectTrackerBoards = dispatch('SetProjectTrackerBoards');
 export const ProjectTrackerSetup = dispatch('ProjectTrackerSetup');
 export const ProjectTrackerStatuses = dispatch('ProjectTrackerStatuses');
+export const ProjectTrackerPace = dispatch('ProjectTrackerPace');
+export const ProjectTrackerSupport = dispatch('ProjectTrackerSupport');
+export const TrackerForgeAccounts = dispatch('TrackerForgeAccounts');
+export const SetTrackerForgeAccount = dispatch('SetTrackerForgeAccount');
+export const TrackerPeople = dispatch('TrackerPeople');
+export const ProjectTrackerSiteFields = dispatch('ProjectTrackerSiteFields');
 export const SetProjectTrackerSetup = dispatch('SetProjectTrackerSetup');
 export const SubscribeTrackerBoard = dispatch('SubscribeTrackerBoard');
 export const TrackerBoard = dispatch('TrackerBoard');
@@ -1166,6 +1196,12 @@ export const ReleaseTrackerSubscription = dispatch('ReleaseTrackerSubscription')
 export const TrackerDashboards = dispatch('TrackerDashboards');
 export const EvaluateTrackerDashboard = dispatch('EvaluateTrackerDashboard');
 export const TrackerDashboardDrill = dispatch('TrackerDashboardDrill');
+export const KeepTrackerWidget = dispatch('KeepTrackerWidget');
+export const DismissTrackerWidget = dispatch('DismissTrackerWidget');
+export const RemoveTrackerWidget = dispatch('RemoveTrackerWidget');
+export const SetTrackerWidgetLimit = dispatch('SetTrackerWidgetLimit');
+export const PinTrackerWidget = dispatch('PinTrackerWidget');
+export const StartTrackerDashboardThread = dispatch('StartTrackerDashboardThread');
 
 export const SubscribeTrackerTicket = dispatch('SubscribeTrackerTicket');
 export const TrackerTicket = dispatch('TrackerTicket');
@@ -1173,6 +1209,7 @@ export const MintTrackerAttachmentUploadTicket = dispatch('MintTrackerAttachment
 export const MintTrackerAttachmentDownloadTicket = dispatch('MintTrackerAttachmentDownloadTicket');
 export const TrackerBoardProjects = dispatch('TrackerBoardProjects');
 export const TrackerIssueTypes = dispatch('TrackerIssueTypes');
+export const TrackerProjectIssueTypes = dispatch('TrackerProjectIssueTypes');
 export const TrackerCreateFields = dispatch('TrackerCreateFields');
 export const TrackerMoves = dispatch('TrackerMoves');
 export const TrackerAssignableUsers = dispatch('TrackerAssignableUsers');
@@ -1201,6 +1238,11 @@ export const EditTrackerWorklog = dispatch('EditTrackerWorklog');
 export const DeleteTrackerWorklog = dispatch('DeleteTrackerWorklog');
 export const TrackerWorklogs = dispatch('TrackerWorklogs');
 export const RefreshTrackerWorklogs = dispatch('RefreshTrackerWorklogs');
+export const ReadTrackerWorklogDays = dispatch('ReadTrackerWorklogDays');
+export const ThreadTimeEntries = dispatch('ThreadTimeEntries');
+export const EditTrackerTimeEntry = dispatch('EditTrackerTimeEntry');
+export const RemoveTrackerTimeEntries = dispatch('RemoveTrackerTimeEntries');
+export const PostTrackerTimeEntries = dispatch('PostTrackerTimeEntries');
 export const TrackerPokerSupport = dispatch('TrackerPokerSupport');
 export const FollowTrackerPoker = dispatch('FollowTrackerPoker');
 export const TrackerPoker = dispatch('TrackerPoker');

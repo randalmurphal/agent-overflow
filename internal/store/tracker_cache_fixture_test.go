@@ -317,7 +317,10 @@ func mirrorRowTotal(counts map[string]int) int {
 func seedFullMirror(t *testing.T, s *Store, root int64) {
 	t.Helper()
 	mustReplaceStructure(t, s, root, webStructure(), true)
-	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21")), []byte("c1"))
+	// The row's card names its parent, an epic no board lists.
+	row := webRow("10001", 5, "a", "21")
+	row.Card.ParentID, row.Card.ParentName = "10050", &MirrorParentName{Key: "WEB-50", Title: "Epic 50", TypeLevel: 1}
+	mustWriteRowPage(t, s, root, webPage("10", row), []byte("c1"))
 	// The board's sync row holds a reconcile failure, so each of its
 	// columns holds a value.
 	if _, _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReconcileFailure: MirrorReconcileAttempt{
@@ -335,7 +338,15 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 		{ID: "w1", IssueID: "10001", AuthorID: "acc-user1", Day: "2026-01-05", SpentSeconds: 3600}}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.ReplaceMirrorActs(root, 0, mirrorReadOf(root, 7), []MirrorIssueActs{{IssueID: "10001", Source: MirrorActWorklog, ReadFor: 7,
+		Acts: []MirrorAct{{ID: "w1", Person: "acc-user1", At: 3, Seconds: 3600}}}}, nil, MirrorCatalog{}); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadOf(root, 7)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetMirrorForgePeople(root, mirrorReadOf(root, 7), []MirrorForgeMatch{{MirrorForgePerson: MirrorForgePerson{Host: "github.com", Login: "user2", Name: "User 2"},
+		Person: "acc-user2"}}, MirrorCatalog{}, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	// A linked issue a read missed, kept by its link.

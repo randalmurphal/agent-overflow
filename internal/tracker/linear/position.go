@@ -122,32 +122,47 @@ func (p Position) filter(o walkOrder, f *issueFilterInput) *issueFilterInput {
 // page that says more follow holds an issue unless every issue it would
 // have held was updated away twice over. The reads are one
 // trackerapi.Walk. A page that breaks the order, delivers an issue p
-// leaves out, or holds none while saying more follow fails.
-func readPosition(ctx context.Context, c *Client, o walkOrder, p Position, q IssueQuery) (Page[Issue], Position, error) {
-	r, err := trackerapi.Walk(ctx, func(ctx context.Context) (positioned, error) {
+// leaves out, or holds none while saying more follow fails. The walk
+// reads its pages with rows: a document over the issues connection and
+// how it types a node.
+func readPosition[W any, T walkRow](ctx context.Context, c *Client, rows walkRows[W, T], o walkOrder, p Position, q IssueQuery) (Page[T], Position, error) {
+	r, err := trackerapi.Walk(ctx, func(ctx context.Context) (positioned[T], error) {
 		at := p
-		var pg Page[Issue]
+		var pg Page[T]
 		var err error
 		for range 3 {
-			if pg, at, err = readOnce(ctx, c, o, at, q); err != nil || len(pg.Items) > 0 || !pg.HasNextPage {
+			if pg, at, err = readOnce(ctx, c, rows, o, at, q); err != nil || len(pg.Items) > 0 || !pg.HasNextPage {
 				break
 			}
 		}
-		return positioned{pg, at}, err
+		return positioned[T]{pg, at}, err
 	})
 	return r.page, r.at, err
 }
 
+// walkRow is a row a walk delivers: an issue, or one with more of it.
+type walkRow interface{ walked() Issue }
+
+func (is Issue) walked() Issue { return is }
+
+// walkRows is the document a walk reads over the issues connection, with
+// the variables issueVars builds, and how it types a node.
+type walkRows[W any, T walkRow] struct {
+	op    operation
+	typed func(W) T
+}
+
 // positioned is what readPosition returns, as one value for a walk.
-type positioned struct {
-	page Page[Issue]
+type positioned[T any] struct {
+	page Page[T]
 	at   Position
 }
 
 // readOnce is one request of readPosition.
-func readOnce(ctx context.Context, c *Client, o walkOrder, p Position, q IssueQuery) (Page[Issue], Position, error) {
+func readOnce[W any, T walkRow](ctx context.Context, c *Client, rows walkRows[W, T], o walkOrder, p Position, q IssueQuery) (Page[T], Position, error) {
+	op := rows.op
 	if err := p.check(); err != nil {
-		return Page[Issue]{}, Position{}, invalid(opIssues.name, "%w", err)
+		return Page[T]{}, Position{}, invalid(op.name, "%w", err)
 	}
 	// Linear's times are milliseconds and formatTime sends no finer, so
 	// the bound the page answers is the bound truncated.
@@ -163,27 +178,27 @@ func readOnce(ctx context.Context, c *Client, o walkOrder, p Position, q IssueQu
 	}
 	vars, err := issueVars(q, after)
 	if err != nil {
-		return Page[Issue]{}, Position{}, invalid(opIssues.name, "%w", err)
+		return Page[T]{}, Position{}, invalid(op.name, "%w", err)
 	}
 	vars.Filter = p.filter(o, vars.Filter)
-	pg, err := fetchPage(ctx, c, opIssues, vars, wireIssue.typed)
+	pg, err := fetchPage(ctx, c, op, vars, rows.typed)
 	if err != nil {
-		return Page[Issue]{}, Position{}, err
+		return Page[T]{}, Position{}, err
 	}
 	if pg.HasNextPage && len(pg.Items) == 0 {
 		// The position would not move, so the next page would ask again.
-		return Page[Issue]{}, Position{}, fmt.Errorf("linear %s: a page with no issues says more follow", opIssues.name)
+		return Page[T]{}, Position{}, fmt.Errorf("linear %s: a page with no issues says more follow", op.name)
 	}
 	var next Position
 	if p.Drain != nil {
-		next, err = p.drained(pg)
+		next, err = drained(op, p, pg)
 	} else {
 		var n int
-		next, n, err = p.advance(o, pg.Items)
+		next, n, err = advance(op, p, o, pg.Items)
 		pg.Items = pg.Items[:n]
 	}
 	if err != nil {
-		return Page[Issue]{}, Position{}, err
+		return Page[T]{}, Position{}, err
 	}
 	// A drain that starts, goes on or ends leaves the walk to go on; in
 	// the update order, whether more follow is the page's to say.
@@ -194,15 +209,16 @@ func readOnce(ctx context.Context, c *Client, o walkOrder, p Position, q IssueQu
 	return pg, next, nil
 }
 
-// drained is the Position after pg, a page of p's drain.
-func (p Position) drained(pg Page[Issue]) (Position, error) {
-	for _, is := range pg.Items {
+// drained is the Position after pg, a page of p's drain op read.
+func drained[T walkRow](op operation, p Position, pg Page[T]) (Position, error) {
+	for _, row := range pg.Items {
+		is := row.walked()
 		switch {
 		case !is.UpdatedAt.Equal(p.Bound):
 			return Position{}, fmt.Errorf("linear %s: issue %s, updated %s, is outside the tie at %s it drains",
-				opIssues.name, is.ID, formatTime(is.UpdatedAt), formatTime(p.Bound))
+				op.name, is.ID, formatTime(is.UpdatedAt), formatTime(p.Bound))
 		case slices.Contains(p.At, is.ID):
-			return Position{}, fmt.Errorf("linear %s: issue %s was left out by ID and came back", opIssues.name, is.ID)
+			return Position{}, fmt.Errorf("linear %s: issue %s was left out by ID and came back", op.name, is.ID)
 		}
 	}
 	if !pg.HasNextPage {
@@ -212,11 +228,11 @@ func (p Position) drained(pg Page[Issue]) (Position, error) {
 	return Position{Bound: p.Bound, At: p.At, Drain: &cursor}, nil
 }
 
-// advance is the Position after items, a page in order o read from p,
-// and how many of items it delivers: all, unless the tie at the bound
-// outgrows the cohort, when it stops before the issue that would not fit
-// and starts the drain. p and its cohort are left as they are.
-func (p Position) advance(o walkOrder, items []Issue) (Position, int, error) {
+// advance is the Position after items, a page in order o that op read
+// from p, and how many of items it delivers: all, unless the tie at the
+// bound outgrows the cohort, when it stops before the issue that would
+// not fit and starts the drain. p and its cohort are left as they are.
+func advance[T walkRow](op operation, p Position, o walkOrder, items []T) (Position, int, error) {
 	next := Position{Bound: p.Bound, Past: p.Past}
 	at := make([]string, len(p.At), max(len(p.At), min(len(p.At)+len(items), maxCohort)))
 	copy(at, p.At)
@@ -224,7 +240,8 @@ func (p Position) advance(o walkOrder, items []Issue) (Position, int, error) {
 	for _, id := range at {
 		seen[id] = struct{}{}
 	}
-	for i, is := range items {
+	for i, row := range items {
+		is := row.walked()
 		order := is.UpdatedAt.Compare(next.Bound)
 		if o == newestFirst {
 			order = -order
@@ -235,13 +252,13 @@ func (p Position) advance(o walkOrder, items []Issue) (Position, int, error) {
 		switch {
 		case order < 0 || order == 0 && next.Past:
 			return Position{}, 0, fmt.Errorf("linear %s: issue %s, updated %s, comes after an issue updated %s",
-				opIssues.name, is.ID, formatTime(is.UpdatedAt), formatTime(next.Bound))
+				op.name, is.ID, formatTime(is.UpdatedAt), formatTime(next.Bound))
 		case order > 0:
 			next.Bound, next.Past, at = is.UpdatedAt, false, at[:0]
 			clear(seen)
 		default:
 			if _, dup := seen[is.ID]; dup {
-				return Position{}, 0, fmt.Errorf("linear %s: issue %s was left out by ID and came back", opIssues.name, is.ID)
+				return Position{}, 0, fmt.Errorf("linear %s: issue %s was left out by ID and came back", op.name, is.ID)
 			}
 			if len(at) == maxCohort {
 				start := ""

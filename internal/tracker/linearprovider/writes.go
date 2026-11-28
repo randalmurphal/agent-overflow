@@ -409,6 +409,24 @@ func (p *Provider) Attach(_ context.Context, in tracker.AttachInput) tracker.Res
 	return unsupported(tracker.StepUpload, "file attachments", in.Issue)
 }
 
+// Evidence fails wrapping tracker.ErrUnsupported before any request:
+// credit counts no Linear work (Capabilities.Evidence names none).
+func (p *Provider) Evidence(context.Context, tracker.EvidenceQuery) (tracker.Evidence, error) {
+	return tracker.Evidence{}, fmt.Errorf("linearprovider: evidence: %w", tracker.ErrUnsupported)
+}
+
+// PersonNamed fails wrapping tracker.ErrUnsupported before any request,
+// as Evidence does.
+func (p *Provider) PersonNamed(context.Context, string) (tracker.User, bool, error) {
+	return tracker.User{}, false, fmt.Errorf("linearprovider: a person by name: %w", tracker.ErrUnsupported)
+}
+
+// People fails wrapping tracker.ErrUnsupported before any request, as
+// Evidence does.
+func (p *Provider) People(context.Context, []tracker.ProjectID, string) (tracker.UserList, error) {
+	return tracker.UserList{}, fmt.Errorf("linearprovider: people by name: %w", tracker.ErrUnsupported)
+}
+
 // Download fails wrapping tracker.ErrUnsupported: Linear holds no files.
 func (p *Provider) Download(_ context.Context, in tracker.DownloadInput) error {
 	if err := in.Check(); err != nil {

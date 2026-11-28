@@ -1,5 +1,6 @@
 // Opening a ticket in the Issues pane from outside it: a thread's linked
-// ticket, a pull request's chip. The Issues pane's stores load with the
+// ticket, a pull request's chip; and the Time screen at a week, from a
+// thread's time draft card. The Issues pane's stores load with the
 // pane, so the request that tells it which ticket to open is reached
 // through one stable dynamic import (architecture.test.ts, rule 4b).
 
@@ -97,6 +98,46 @@ export async function openTicketInIssues(t: TicketToOpen): Promise<void> {
         return;
       }
       addToast('error', `${computer} lists no board ${t.of} in any project, so ${t.key} cannot open. Add one in Settings > Issues > Boards.`);
+    },
+  });
+}
+
+/** A week to show on the Time screen: its computer, the connection whose
+ * first board it opens over, and a day of it. */
+export interface TimeToOpen {
+  readonly backend: BackendKey;
+  readonly connection: string;
+  readonly day: string;
+}
+
+/** Opens the Issues pane on the Time screen at the week of `t.day`, over
+ * the first board of the connection on that computer. A failed load, a
+ * pane that cannot open and a computer with no board of that connection
+ * say why in a toast. */
+export async function openTimeInIssues(t: TimeToOpen): Promise<void> {
+  let requestTimeOpen: typeof import('./issuesPane.svelte').requestTimeOpen;
+  try {
+    ({ requestTimeOpen } = await loadIssuesPane());
+  } catch (err) {
+    addErrorToast(`The draft cannot open in Time: the Issues pane did not load: ${userFacingError(err)}`, err);
+    return;
+  }
+  try {
+    openTool('issues', { newPane: true });
+  } catch (err) {
+    addErrorToast(`The draft cannot open in Time: ${userFacingError(err)}`, err);
+    return;
+  }
+  const computer = computerName(t.backend, 'The draft\'s computer');
+  requestTimeOpen({
+    time: { backend: t.backend, connection: t.connection, day: t.day },
+    project: null,
+    unplaced: (failure) => {
+      if (failure) {
+        addToast('error', `${computer} could not read its boards, so the draft cannot open in Time: ${failure.report.reason}`, undefined, undefined, failure);
+        return;
+      }
+      addToast('error', `${computer} lists no board of this draft's connection in any project, so the draft cannot open in Time. Add one in Settings > Issues > Boards.`);
     },
   });
 }

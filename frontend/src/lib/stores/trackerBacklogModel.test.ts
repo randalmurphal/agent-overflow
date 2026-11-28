@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { BoardView, CardView, RowView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { sectionLine } from '../components/issues/boardFormat';
+import { paceCreditWords, sectionLine } from '../components/issues/boardFormat';
 import {
   backlogItems,
   backlogSections,
@@ -37,14 +37,14 @@ const U2 = { id: 'u2', name: 'User 2' };
  * and Done (s2) unless `columns` names each column's statuses; s3 is a
  * status the project leaves out of counts, and `regrouped` the statuses
  * it puts in other groups. */
-function board(rows: { '8': RowView[]; '9': RowView[]; backlog: RowView[] }, extra: { unit?: string; pace?: object | null; more?: boolean; regrouped?: Record<string, string>; columns?: string[][] } = {}): HeldBoard {
+function board(rows: { '8': RowView[]; '9': RowView[]; backlog: RowView[] }, extra: { unit?: string; counts?: string; pace?: object | null; more?: boolean; regrouped?: Record<string, string>; columns?: string[][] } = {}): HeldBoard {
   const total = (held: RowView[]) => ({
     rows: held.filter((r) => r.card.status.id !== 's3').length,
     estimate: held.filter((r) => r.card.status.id !== 's3').reduce((n, r) => n + (r.estimate ?? 0), 0),
     unestimated: held.filter((r) => r.card.status.id !== 's3' && r.estimate == null).length,
   });
   const view = {
-    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: extra.unit ?? 'points' },
+    id: '1', lifetime: 1, revision: 1, totals_revision: 1, name: 'WEB board', plans_sprints: true, estimate: { unit: extra.unit ?? 'points' }, counts: extra.counts ?? extra.unit ?? 'points',
     columns: (extra.columns ?? [['s1'], ['s2']]).map((statuses, i) => ({ name: `Column ${i}`, statuses: statuses.map((id) => ({ id, group: GROUPS[id] })), total: { rows: 0, estimate: 0 } })),
     sprints: [
       { id: '8', name: 'Sprint 8', state: 'active', total: total(rows['8']) },
@@ -97,13 +97,13 @@ describe('a header\'s numbers', () => {
     expect(n.before).toBeNull();
     expect(n.load).toBeNull();
     expect(n.pace).toBeNull();
-    expect(sectionLine('active', n, 'points').map((p) => p.text).join('')).toBe('3 of 5 points done');
+    expect(sectionLine('active', n, 'points', 'points').map((p) => p.text).join('')).toBe('3 of 5 points done');
   });
 
   it('count an active sprint\'s done rows by the project\'s status groups', () => {
     const regrouped = board(ROWS, { regrouped: { s1: 'done' } });
     const project = sectionNumbers(regrouped, backlogSections(regrouped)[0], []);
-    expect(sectionLine('active', project, 'points').map((p) => p.text).join(''), 'To Do counts as done').toBe('5 of 5 points done');
+    expect(sectionLine('active', project, 'points', 'points').map((p) => p.text).join(''), 'To Do counts as done').toBe('5 of 5 points done');
     const undone = board(ROWS, { regrouped: { s2: 'in_progress' } });
     expect(sectionNumbers(undone, backlogSections(undone)[0], []).done, 'Done counts as in progress').toEqual({ rows: 0, estimate: 0, unestimated: 0 });
   });
@@ -115,13 +115,31 @@ describe('a header\'s numbers', () => {
     expect(n.total.estimate).toBe(7);
     expect(n.load?.map((l) => [l.person?.name ?? null, l.rows, l.estimate])).toEqual([['User 2', 1, 4], ['User 1', 2, 1], [null, 1, 2]]);
     expect(n.over).toBe(1);
-    const line = sectionLine('future', n, 'points');
+    const line = sectionLine('future', n, 'points', 'points');
     expect(line.map((p) => p.text).join('')).toBe('7 of about 6 points, the last 2 sprints\' average · 1 over');
     expect(line.filter((p) => p.tone === 'warn').map((p) => p.text)).toEqual(['1 over']);
     const one = board(ROWS, { pace: { sprints: 1, rows: 3, estimate: 7.25 } });
     const level = sectionNumbers(one, backlogSections(one)[1], []);
     expect(level.over).toBe(0);
-    expect(sectionLine('future', level, 'points').map((p) => p.text).join('')).toBe('7 of about 7.3 points, the last sprint');
+    expect(sectionLine('future', level, 'points', 'points').map((p) => p.text).join('')).toBe('7 of about 7.3 points, the last sprint');
+  });
+
+  it('say a pace counted with credit, what it is made of, and how many tickets\' credit it leaves out', () => {
+    const credit = { finished: { rows: 3, estimate: 5 }, review: { rows: 0.2, estimate: 0.5 }, support: { rows: 1.5, estimate: 1.5 }, unread: 2 };
+    const held = board(ROWS, { pace: { sprints: 5, rows: 4.7, estimate: 7, credit } });
+    const n = sectionNumbers(held, backlogSections(held)[1], []);
+    const line = sectionLine('future', n, 'points', 'points');
+    expect(line.map((p) => p.text).join('')).toBe('7 of about 7 points, the last 5 sprints\' average with credit · credit of 2 tickets not counted');
+    expect(line.filter((p) => p.tone === 'warn').map((p) => p.text)).toEqual(['credit of 2 tickets not counted']);
+    expect(paceCreditWords(n.pace, 'points')).toBe(
+      'A sprint\'s pace: finished tickets 5 points, review credit 0.5 points, support credit 1.5 points. The review or support credit of 2 tickets is not counted: who worked on them is not read.',
+    );
+    expect(paceCreditWords(n.pace, 'none')).toContain('finished tickets 3 tickets, review credit 0.2 tickets, support credit 1.5 tickets.');
+    const read = board(ROWS, { pace: { sprints: 5, rows: 4.7, estimate: 7, credit: { ...credit, unread: 0 } } });
+    const all = sectionNumbers(read, backlogSections(read)[1], []);
+    expect(sectionLine('future', all, 'points', 'points').map((p) => p.text).join('')).toBe('7 of about 7 points, the last 5 sprints\' average with credit');
+    expect(paceCreditWords(all.pace, 'points')).toBe('A sprint\'s pace: finished tickets 5 points, review credit 0.5 points, support credit 1.5 points.');
+    expect(paceCreditWords(sectionNumbers(board(ROWS), backlogSections(board(ROWS))[1], []).pace, 'points')).toBe('');
   });
 
   it('say a future sprint\'s points alone on a board that finished no sprint', () => {
@@ -129,13 +147,13 @@ describe('a header\'s numbers', () => {
     const n = sectionNumbers(held, backlogSections(held)[1], []);
     expect(n.pace).toBeNull();
     expect(n.over).toBe(0);
-    expect(sectionLine('future', n, 'points').map((p) => p.text).join('')).toBe('7 points');
+    expect(sectionLine('future', n, 'points', 'points').map((p) => p.text).join('')).toBe('7 points');
   });
 
   it('count the backlog\'s tickets, points and those with no estimate', () => {
     const held = board(ROWS);
     const n = sectionNumbers(held, backlogSections(held)[2], []);
-    expect(sectionLine('backlog', n, 'points').map((p) => p.text).join('')).toBe('2 tickets · 1 point · 1 without an estimate');
+    expect(sectionLine('backlog', n, 'points', 'points').map((p) => p.text).join('')).toBe('2 tickets · 1 point · 1 without an estimate');
   });
 
   it('count tickets where points would be, on a board without estimates', () => {
@@ -143,8 +161,21 @@ describe('a header\'s numbers', () => {
     const sections = backlogSections(held);
     const future = sectionNumbers(held, sections[1], []);
     expect(future.over).toBe(1);
-    expect(sectionLine('future', future, 'none').map((p) => p.text).join('')).toBe('4 of about 3 tickets, the last 2 sprints\' average · 1 over');
-    expect(sectionLine('backlog', sectionNumbers(held, sections[2], []), 'none').map((p) => p.text).join('')).toBe('2 tickets');
+    expect(sectionLine('future', future, 'none', 'none').map((p) => p.text).join('')).toBe('4 of about 3 tickets, the last 2 sprints\' average · 1 over');
+    expect(sectionLine('backlog', sectionNumbers(held, sections[2], []), 'none', 'none').map((p) => p.text).join('')).toBe('2 tickets');
+  });
+
+  it('count tickets on a board with points when the project counts tickets, each person\'s load by tickets', () => {
+    const held = board(ROWS, { counts: 'none', pace: { sprints: 2, rows: 5, estimate: 6 } });
+    const future = sectionNumbers(held, backlogSections(held)[1], []);
+    expect(future.over, '4 tickets against a pace of 5, not 7 points against 6').toBe(0);
+    expect(future.load?.map((l) => l.person?.name ?? null)).toEqual(['User 1', 'User 2', null]);
+  });
+
+  it('say the backlog\'s tickets with no estimate on a board with points when the project counts tickets', () => {
+    const held = board(ROWS, { counts: 'none' });
+    const n = sectionNumbers(held, backlogSections(held)[2], []);
+    expect(sectionLine('backlog', n, 'none', 'points').map((p) => p.text).join('')).toBe('2 tickets · 1 without an estimate');
   });
 
   it('count a row moving out of one section and into another where it goes, with what each was before', () => {
@@ -157,12 +188,12 @@ describe('a header\'s numbers', () => {
     expect(into.over).toBe(2);
     // The load counts it with its person: nobody's 2 points and its 1.
     expect(into.load?.at(-1)).toEqual({ person: null, rows: 2, estimate: 3 });
-    const line = sectionLine('future', into, 'points');
+    const line = sectionLine('future', into, 'points', 'points');
     expect(line.map((p) => p.text).join('')).toBe('7 → 8 of about 6 points, the last 2 sprints\' average · 2 over');
     expect(line.filter((p) => p.tone === 'to').map((p) => p.text)).toEqual(['→ 8']);
     const out = sectionNumbers(held, sections[2], moved);
     expect(out.total).toEqual({ rows: 1, estimate: 0, unestimated: 1 });
-    expect(sectionLine('backlog', out, 'points').map((p) => p.text).join('')).toBe('2 → 1 ticket · 1 → 0 points · 1 without an estimate');
+    expect(sectionLine('backlog', out, 'points', 'points').map((p) => p.text).join('')).toBe('2 → 1 ticket · 1 → 0 points · 1 without an estimate');
     // A row in a status left out of counts changes no number.
     const left = sectionNumbers(held, sections[1], [{ row: ROWS['8'][2], from: 'sprint:8', to: 'sprint:9' }]);
     expect(left.before).toBeNull();
@@ -249,7 +280,7 @@ describe('the sprint forms', () => {
 });
 
 describe('what Complete sprint counts', () => {
-  const line = (n: { numbers: Parameters<typeof sectionLine>[1] }) => sectionLine('active', n.numbers, 'points').map((p) => p.text).join('');
+  const line = (n: { numbers: Parameters<typeof sectionLine>[1] }) => sectionLine('active', n.numbers, 'points', 'points').map((p) => p.text).join('');
 
   it('counts a ticket finished when its status is in the board\'s last column that has statuses, every ticket of the sprint, whatever the project regroups', () => {
     for (const held of [board(ROWS), board(ROWS, { regrouped: { s1: 'done', s2: 'in_progress' } })]) {

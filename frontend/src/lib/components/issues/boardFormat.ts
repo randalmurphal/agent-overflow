@@ -2,7 +2,7 @@
 // value's name or level: the board answer carries no tracker icon, and the
 // app fetches none.
 
-import type { ChoiceView, IssueTypeView, SectionTotal } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
+import type { ChoiceView, IssueTypeView, PaceView, SectionTotal, SupportView } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
 import type { ScreenColumn, ShownColumn } from '../../stores/trackerBoardModel';
 import type { SectionNumbers } from '../../stores/trackerBacklogModel';
 
@@ -35,6 +35,36 @@ function estimateIn(value: number | null | undefined, unit: string, points: (n: 
 
 function trim(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, '');
+}
+
+/** A sum in the unit a board is counted in, with no word: points or
+ * time as `formatEstimateSum` words them, tickets as a count. */
+function bareAmount(v: number, unit: string): string {
+  return unit === 'points' || unit === 'time' ? (formatEstimateSum(v, unit) ?? '0') : trim(v);
+}
+
+/** The word after a sum in `unit`: none for time, which carries its own. */
+function amountWord(v: number, unit: string): string {
+  return unit === 'points' ? (v === 1 ? ' point' : ' points') : unit === 'time' ? '' : v === 1 ? ' ticket' : ' tickets';
+}
+
+/** A usual pace in the unit a board is counted in, to a tenth, as sprint
+ * planning and Settings say it: "7.3 points", "10h", "3 tickets". */
+export function formatPace(v: number, unit: string): string {
+  return `${bareAmount(Math.round(v * 10) / 10, unit)}${amountWord(v, unit)}`;
+}
+
+/** What `seconds` logged on `issue` are worth when it is a support
+ * ticket of the board the Time screen shows (`support`, the board's
+ * computer's answer): its hours over the newest hours a point, in the
+ * unit the project counts the board in, "1.5 points" or "0.8 tickets",
+ * with the rule as `title`. Null when it is no support ticket there, or
+ * the answer shows no line (no credit, a board estimated in time). */
+export function supportWorth(support: SupportView | null, issue: string, seconds: number): { text: string; title: string } | null {
+  const hours = support?.hours_per_point;
+  const unit = support?.counts;
+  if (!hours || !unit || !support.issues.includes(issue)) return null;
+  return { text: formatPace(seconds / 3600 / hours, unit), title: `Support ticket: every ${hours} hours logged count as 1${amountWord(1, unit)}.` };
 }
 
 /** A column's count and, for a board with estimates, its sum. */
@@ -89,6 +119,19 @@ export function priorityMark(priority: ChoiceView | null | undefined): PriorityM
   return PRIORITY_NAMES[(priority.name ?? '').trim().toLowerCase()] ?? 'other';
 }
 
+/** What a pace counted with credit is made of (`PaceView.credit`), each
+ * part an average a sprint in the unit the board is counted in, and how
+ * many tickets' credit it leaves out; '' for a pace without credit. */
+export function paceCreditWords(pace: PaceView | null, unit: string): string {
+  const c = pace?.credit;
+  if (!pace || !c) return '';
+  const estimated = unit === 'points' || unit === 'time';
+  const part = (a: { rows: number; estimate: number }) => formatPace(estimated ? a.estimate : a.rows, unit);
+  const said = `A sprint's pace: finished tickets ${part(c.finished)}, review credit ${part(c.review)}, support credit ${part(c.support)}.`;
+  if (!c.unread) return said;
+  return `${said} The review or support credit of ${c.unread} ${c.unread === 1 ? 'ticket' : 'tickets'} is not counted: who worked on ${c.unread === 1 ? 'it' : 'them'} is not read.`;
+}
+
 /** A part of a Backlog section's numbers line: plain, what a moved row
  * makes it (`to`, after an arrow), or a warning. */
 export interface LinePart {
@@ -99,14 +142,15 @@ export interface LinePart {
 /** A Backlog section's numbers line (`SectionNumbers`), in the board's
  * measure: its points or time, else its tickets. An active sprint says how
  * much is done once it is read; a future sprint its total of about the
- * pace, and how far over; the backlog its tickets, points and tickets with
- * no estimate. A moved row shows as the number before, an arrow and the
- * number it makes. */
-export function sectionLine(kind: 'active' | 'future' | 'backlog', n: SectionNumbers, unit: string): LinePart[] {
+ * pace, and how far over; the backlog its tickets, points and, on a board
+ * with estimates (`estimates`, the board's own unit), its tickets with no
+ * estimate whatever unit it is counted in (`unit`). A moved row shows as
+ * the number before, an arrow and the number it makes. */
+export function sectionLine(kind: 'active' | 'future' | 'backlog', n: SectionNumbers, unit: string, estimates: string): LinePart[] {
   const estimated = unit === 'points' || unit === 'time';
   const measure = (t: { rows: number; estimate: number }) => (estimated ? t.estimate : t.rows);
-  const bare = (v: number) => (estimated ? (formatEstimateSum(v, unit) ?? '0') : trim(v));
-  const word = (v: number) => (unit === 'points' ? (v === 1 ? ' point' : ' points') : unit === 'time' ? '' : v === 1 ? ' ticket' : ' tickets');
+  const bare = (v: number) => bareAmount(v, unit);
+  const word = (v: number) => amountWord(v, unit);
   const tickets = (v: number) => (v === 1 ? ' ticket' : ' tickets');
   const parts: LinePart[] = [];
   /** `now`, after `was` and an arrow when a moved row changes it. */
@@ -129,16 +173,20 @@ export function sectionLine(kind: 'active' | 'future' | 'backlog', n: SectionNum
     const pace = measure(n.pace);
     moving(was, now, '');
     const last = n.pace.sprints === 1 ? 'the last sprint' : `the last ${n.pace.sprints} sprints' average`;
-    parts.push({ text: ` of about ${bare(Math.round(pace * 10) / 10)}${word(pace)}, ${last}` });
+    parts.push({ text: ` of about ${formatPace(pace, unit)}, ${last}${n.pace.credit ? ' with credit' : ''}` });
     if (n.over > 0) parts.push({ text: ' · ' }, { text: `${bare(Math.round(n.over * 10) / 10)} over`, tone: 'warn' });
+    const unread = n.pace.credit?.unread ?? 0;
+    if (unread > 0) parts.push({ text: ' · ' }, { text: `credit of ${unread}${tickets(unread)} not counted`, tone: 'warn' });
     return parts;
   }
   const wasRows = n.before ? n.before.rows : null;
   if (wasRows !== null && wasRows !== n.total.rows) parts.push({ text: `${wasRows} ` }, { text: `→ ${n.total.rows}${tickets(n.total.rows)}`, tone: 'to' });
   else parts.push({ text: `${n.total.rows}${tickets(n.total.rows)}` });
-  if (!estimated) return parts;
-  parts.push({ text: ' · ' });
-  moving(n.before ? n.before.estimate : null, n.total.estimate, word(n.total.estimate));
+  if (estimated) {
+    parts.push({ text: ' · ' });
+    moving(n.before ? n.before.estimate : null, n.total.estimate, word(n.total.estimate));
+  }
+  if (estimates !== 'points' && estimates !== 'time') return parts;
   const none = n.total.unestimated ?? 0;
   if (none > 0) parts.push({ text: ' · ' }, { text: `${none} without an estimate`, tone: 'warn' });
   return parts;

@@ -59,7 +59,7 @@ function view(
 ): BoardView {
   const revision = opts.revision ?? 1;
   return {
-    id: '1', lifetime: 1, revision, totals_revision: revision, name: 'WEB board', plans_sprints: !opts.kanban, estimate: { unit: 'points' },
+    id: '1', lifetime: 1, revision, totals_revision: revision, name: 'WEB board', plans_sprints: !opts.kanban, estimate: { unit: 'points' }, counts: 'points',
     columns: Array.from({ length: opts.columns ?? 1 }, (_, i) => ({ name: i === 0 ? 'To Do' : `Column ${i}`, statuses: i === 0 ? [{ id: 's1', group: 'todo' }] : [], total: { rows: 0, estimate: 0 } })),
     sprints: [{ id: opts.sprint ?? '8', name: 'Sprint', state: 'active', total: { rows: 1, estimate: 1 } }],
     all: { rows: 1, estimate: 1 }, backlog: { rows: 0, estimate: 0 }, sync: { read_at: 100 },
@@ -256,7 +256,7 @@ describe('the board subscription', () => {
     board.release();
   });
 
-  it('counts the changes a dashboard reads again on: rows named, read again, and a gap, and not a sync alone', async () => {
+  it('counts the changes a dashboard reads again on: rows named, read again, a recount, and a gap, and not a sync alone', async () => {
     install();
     const board = attachTrackerBoard(REF, true);
     await flush();
@@ -268,9 +268,12 @@ describe('the board subscription', () => {
     expect(board.current?.changes).toBe(1);
     applyTrackerBoardEvent(event(13, { read_again: true }), HOME_BACKEND);
     expect(board.current?.changes).toBe(2);
+    applyTrackerBoardEvent(event(14, { recount: true }), HOME_BACKEND);
+    expect(board.current?.changes).toBe(3);
+    expect(board.current?.dashboards).toBe(1);
     await flush();
     await resyncTrackerBoardsAfterGap(HOME_BACKEND);
-    expect(board.current?.changes).toBe(3);
+    expect(board.current?.changes).toBe(4);
     board.release();
   });
 
@@ -314,6 +317,40 @@ describe('the board subscription', () => {
     patches.answer(patch([[]], 3));
     await flush();
     expect(board.current?.held?.sections[0].rows.map((r) => r.card.title)).toEqual(['one']);
+    board.release();
+  });
+
+  it('reads the totals again on a recount, by one patch that names no row', async () => {
+    install();
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    const patches = held<BoardPatch>('TrackerBoardPatch');
+    applyTrackerBoardEvent(event(11, { recount: true }), HOME_BACKEND);
+    await flush();
+    expect(patches.calls.length).toBe(1);
+    expect(patches.calls[0][2]).toEqual([]);
+    // The patch names the totals held, so the computer answers them only moved.
+    expect(patches.calls[0][3]).toEqual({ lifetime: 1, revision: 1, groups: '' });
+    const pace = { sprints: [{ sprint: '7', done: 2, estimate: 8, review: 1 }] };
+    patches.answer({
+      ...patch([[]], 1),
+      totals: { revision: 2, all: { rows: 1, estimate: 1 }, backlog: { rows: 0, estimate: 0 }, sprints: [], columns: [], pace },
+    } as unknown as BoardPatch);
+    await flush();
+    expect(board.current?.held?.totals.revision).toBe(2);
+    expect(board.current?.held?.totals.pace).toEqual(pace);
+    expect(heldIds(board)).toEqual([['1']]);
+    // Nothing more is owed.
+    await flush();
+    expect(patches.calls.length).toBe(1);
+    // A recount beside named rows is one patch of those rows.
+    applyTrackerBoardEvent(event(12, { recount: true, changed: ['1'] }), HOME_BACKEND);
+    await flush();
+    expect(patches.calls.length).toBe(2);
+    expect(patches.calls[1][2]).toEqual(['1']);
+    patches.answer(patch([[row('1', 'a')]], 2));
+    await flush();
+    expect(patches.calls.length).toBe(2);
     board.release();
   });
 
@@ -865,6 +902,91 @@ describe('the board subscription', () => {
     await flush();
     expect(mocks.board).toHaveBeenCalledTimes(1);
     expect(board.current?.readError).toBeNull();
+    board.release();
+  });
+
+  it("holds its project's pins from the read and each event that tells them, with no read, and not another project's of the same board", async () => {
+    const mocks = install({ view: { ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), pins: ['stuck'] } as unknown as BoardView });
+    const mine = attachTrackerBoard(REF, true);
+    const other = attachTrackerBoard({ ...REF, projectId: 'p2' }, true);
+    await flush();
+    expect(mocks.subscribe).toHaveBeenCalledTimes(2);
+    expect(mine.current?.pins).toEqual(['stuck']);
+    expect(other.current?.pins).toEqual(['stuck']);
+    const otherHeld = other.current?.held;
+    applyTrackerBoardEvent(event(11, { pins: { project: 'p1', pins: ['stuck', 'pace'] } }), HOME_BACKEND);
+    await flush();
+    expect(mine.current?.pins).toEqual(['stuck', 'pace']);
+    expect(mine.current?.changes).toBe(0);
+    expect(other.current?.pins).toEqual(['stuck']);
+    expect(other.current?.changes).toBe(0);
+    expect(other.current?.held).toBe(otherHeld);
+    expect(mocks.board).not.toHaveBeenCalled();
+    expect(mocks.patch).not.toHaveBeenCalled();
+    expect(mocks.page).not.toHaveBeenCalled();
+    mine.release();
+    other.release();
+  });
+
+  it("moves its dashboards count on each change of its project's dashboards of the board, and its changes too when what they count changed, and on a gap", async () => {
+    const mocks = install({ view: view([{ section: SPRINT, rows: [row('1', 'a')] }]) });
+    const mine = attachTrackerBoard(REF, true);
+    const other = attachTrackerBoard({ ...REF, projectId: 'p2' }, true);
+    // The board of the same ID on another site the project lists.
+    const elsewhere = attachTrackerBoard({ ...REF, connection: 'c2' }, true);
+    await flush();
+    const counts = (b: typeof mine) => [b.current?.dashboards, b.current?.changes];
+    // Two changes in a row, a Keep's and a limit's, both arrive.
+    applyTrackerBoardEvent(event(11, { dashboards: { project: 'p1', counts: true } }), HOME_BACKEND);
+    applyTrackerBoardEvent(event(12, { dashboards: { project: 'p1', counts: false } }), HOME_BACKEND);
+    await flush();
+    expect(counts(mine)).toEqual([2, 1]);
+    expect(counts(other)).toEqual([0, 0]);
+    expect(counts(elsewhere)).toEqual([0, 0]);
+    expect(mocks.board).not.toHaveBeenCalled();
+    expect(mocks.patch).not.toHaveBeenCalled();
+    // A gap may have lost one: every board of the computer lists and counts again.
+    await resyncTrackerBoardsAfterGap(HOME_BACKEND);
+    await flush();
+    expect(counts(mine)).toEqual([3, 2]);
+    expect(counts(other)).toEqual([1, 1]);
+    expect(counts(elsewhere)).toEqual([1, 1]);
+    mine.release();
+    other.release();
+    elsewhere.release();
+  });
+
+  it("lists every project's dashboards of the board again when the board is to be read again, as a change of its estimates asks", async () => {
+    install({ view: view([{ section: SPRINT, rows: [row('1', 'a')] }]) });
+    const mine = attachTrackerBoard(REF, true);
+    const other = attachTrackerBoard({ ...REF, projectId: 'p2' }, true);
+    await flush();
+    applyTrackerBoardEvent(event(11, { read_again: true }), HOME_BACKEND);
+    await flush();
+    expect([mine.current?.dashboards, mine.current?.changes]).toEqual([1, 1]);
+    expect([other.current?.dashboards, other.current?.changes]).toEqual([1, 1]);
+    mine.release();
+    other.release();
+  });
+
+  it('keeps pins an event told during a full read over the pins the read answers', async () => {
+    install({ view: { ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), pins: ['stuck'] } as unknown as BoardView });
+    const board = attachTrackerBoard(REF, true);
+    await flush();
+    const reads = held<BoardView>('TrackerBoard');
+    applyTrackerBoardEvent(event(11, { read_again: true }), HOME_BACKEND);
+    await flush();
+    expect(reads.calls).toHaveLength(1);
+    applyTrackerBoardEvent(event(12, { pins: { project: 'p1', pins: [] } }), HOME_BACKEND);
+    reads.answer({ ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), pins: ['stuck'] } as unknown as BoardView);
+    await flush();
+    expect(board.current?.pins).toEqual([]);
+    // A read begun after it takes the read's.
+    applyTrackerBoardEvent(event(13, { read_again: true }), HOME_BACKEND);
+    await flush();
+    reads.answer({ ...view([{ section: SPRINT, rows: [row('1', 'a')] }]), pins: ['pace'] } as unknown as BoardView);
+    await flush();
+    expect(board.current?.pins).toEqual(['pace']);
     board.release();
   });
 

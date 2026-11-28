@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"maps"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -22,6 +23,7 @@ var mirrorPoolReads = map[string]int{
 	"GetMirrorRoot":           1, // one root, by connection
 	"GetMirrorCatalog":        1, // at most mirrorMaxLookup users and statuses, each by key
 	"ListMirrorCards":         1, // at most mirrorMaxLookup cards, each by key
+	"ListMirrorParents":       1, // at most mirrorMaxLookup parents' names, each by key
 	"ListMirrorIssueRows":     1, // a page of one issue's rows
 	"ListMirrorTicketRows":    1, // the rows of at most MirrorMaxBodies issues, each by key
 	"ListMirrorSprintNames":   1, // at most mirrorMaxLookup sprints on as many boards, each pair by key
@@ -40,6 +42,7 @@ var mirrorPoolReads = map[string]int{
 	"finishMirrorHistoryStagings": 1, // the dirty histories, likewise
 	"ListMirrorHistoryDue":        1, // a page of the history-due indexes, each a seek of due issues alone
 	"probeMirrorHistory":          2, // one issue's removals, and a chunk of its changes by key
+	"MirrorForgeFailures":         1, // the repositories a connection's credit reads, each by key
 }
 
 // mirrorAttachedReads are the functions that begin a transaction on a
@@ -165,7 +168,7 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 		read{"ListMirrorOffBoardLinkedIssues", func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); return err }},
 		read{"FinishMirrorCleanup", func() error { return s.FinishMirrorCleanup(context.Background(), nil) }},
 		read{"ExportMirrorBoard", func() error {
-			_, _, err := s.ExportMirrorBoard(context.Background(), export, root, "10", MirrorRegroup{}, MirrorExportTables)
+			_, _, err := s.ExportMirrorBoard(context.Background(), export, root, "10", MirrorRegroup{}, MirrorExportTables, 0, math.MaxInt64, MirrorLoggedDays{}, CardShapeForTest)
 			return err
 		}},
 	)

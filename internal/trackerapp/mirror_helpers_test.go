@@ -28,8 +28,12 @@ type scripted struct {
 	newRows     func(tracker.IssueID, []tracker.BoardID) (tracker.Placement, error)
 	cards       func([]tracker.IssueID) (tracker.Cards, error)
 	history     func(tracker.HistoryQuery) (tracker.History, error)
+	evidence    func(tracker.EvidenceQuery) (tracker.Evidence, error)
+	personNamed func(string) (tracker.User, bool, error)
+	people      func([]tracker.ProjectID, string) (tracker.UserList, error)
 	detail      func(tracker.IssueID) (tracker.Detail, error)
 	structure   func(tracker.BoardID, time.Time) (tracker.Structure, error)
+	fields      func() ([]tracker.Field, error)
 	// detailReads are the issues of each Details call.
 	detailReads [][]tracker.IssueID
 	// caps are the tracker's capabilities; none unless a test sets them.
@@ -230,6 +234,49 @@ func (p *scripted) History(ctx context.Context, q tracker.HistoryQuery) (tracker
 	return h(q)
 }
 
+func (p *scripted) Evidence(ctx context.Context, q tracker.EvidenceQuery) (tracker.Evidence, error) {
+	p.mu.Lock()
+	h := p.evidence
+	p.mu.Unlock()
+	if !p.called(ctx, "Evidence", func() bool { return h != nil }) {
+		return tracker.Evidence{}, errUnscripted
+	}
+	if err := p.wait(ctx, "Evidence"); err != nil {
+		return tracker.Evidence{}, err
+	}
+	return h(q)
+}
+
+// PersonNamed answers through p.personNamed when called, one "PersonNamed"
+// call a name.
+func (p *scripted) PersonNamed(ctx context.Context, name string) (tracker.User, bool, error) {
+	p.mu.Lock()
+	h := p.personNamed
+	p.mu.Unlock()
+	if !p.called(ctx, "PersonNamed", func() bool { return h != nil }) {
+		return tracker.User{}, false, errUnscripted
+	}
+	if err := p.wait(ctx, "PersonNamed"); err != nil {
+		return tracker.User{}, false, err
+	}
+	return h(name)
+}
+
+// People answers through p.people when called, one "People" call a
+// search.
+func (p *scripted) People(ctx context.Context, projects []tracker.ProjectID, text string) (tracker.UserList, error) {
+	p.mu.Lock()
+	h := p.people
+	p.mu.Unlock()
+	if !p.called(ctx, "People", func() bool { return h != nil }) {
+		return tracker.UserList{}, errUnscripted
+	}
+	if err := p.wait(ctx, "People"); err != nil {
+		return tracker.UserList{}, err
+	}
+	return h(projects, text)
+}
+
 // Details reads each issue through p.detail when called, one "Details"
 // call for the set, and answers after p's block; an issue whose read fails
 // wrapping trackerapi.ErrNotFound is Missing, and any other failure fails
@@ -286,6 +333,19 @@ func (p *scripted) Structure(ctx context.Context, b tracker.BoardID, window time
 		return zero, err
 	}
 	return h(b, window)
+}
+
+func (p *scripted) Fields(ctx context.Context) ([]tracker.Field, error) {
+	p.mu.Lock()
+	h := p.fields
+	p.mu.Unlock()
+	if !p.called(ctx, "Fields", func() bool { return h != nil }) {
+		return nil, errUnscripted
+	}
+	if err := p.wait(ctx, "Fields"); err != nil {
+		return nil, err
+	}
+	return h()
 }
 
 // syncTick runs one tick of scope's board as its pump does (syncBoard),

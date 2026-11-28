@@ -6,12 +6,13 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
- * Answer is one evaluation of a dashboard. Reading is whether the board's
- * first read has not finished, so its numbers count the tickets read so
- * far.
+ * Answer is one evaluation of a dashboard and of the widgets agents
+ * proposed on the board: the values of the dashboard's widgets and then
+ * of the proposals, by widget ID, which the screen draws in the layout
+ * Listing gives. Reading is whether the board's first read has not
+ * finished, so its numbers count the tickets read so far.
  */
 export class Answer {
-    "dashboard": DashboardView;
     "range": RangeView;
     "reading"?: boolean;
     "estimates": string;
@@ -20,11 +21,14 @@ export class Answer {
     "at": number;
     "widgets": WidgetValue[];
 
+    /**
+     * Logged is the state of the reads of the viewer's logged time
+     * (Board.Worklogs) when a widget counted it.
+     */
+    "logged"?: WorklogState | null;
+
     /** Creates a new Answer instance. */
     constructor($$source: Partial<Answer> = {}) {
-        if (!("dashboard" in $$source)) {
-            this["dashboard"] = (new DashboardView());
-        }
         if (!("range" in $$source)) {
             this["range"] = (new RangeView());
         }
@@ -46,25 +50,25 @@ export class Answer {
      */
     static createFrom($$source: any = {}): Answer {
         const $$createField0_0 = $$createType0;
-        const $$createField1_0 = $$createType1;
-        const $$createField4_0 = $$createType3;
-        const $$createField5_0 = $$createType3;
-        const $$createField7_0 = $$createType5;
+        const $$createField3_0 = $$createType2;
+        const $$createField4_0 = $$createType2;
+        const $$createField6_0 = $$createType4;
+        const $$createField7_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("dashboard" in $$parsedSource) {
-            $$parsedSource["dashboard"] = $$createField0_0($$parsedSource["dashboard"]);
-        }
         if ("range" in $$parsedSource) {
-            $$parsedSource["range"] = $$createField1_0($$parsedSource["range"]);
+            $$parsedSource["range"] = $$createField0_0($$parsedSource["range"]);
         }
         if ("person" in $$parsedSource) {
-            $$parsedSource["person"] = $$createField4_0($$parsedSource["person"]);
+            $$parsedSource["person"] = $$createField3_0($$parsedSource["person"]);
         }
         if ("epic" in $$parsedSource) {
-            $$parsedSource["epic"] = $$createField5_0($$parsedSource["epic"]);
+            $$parsedSource["epic"] = $$createField4_0($$parsedSource["epic"]);
         }
         if ("widgets" in $$parsedSource) {
-            $$parsedSource["widgets"] = $$createField7_0($$parsedSource["widgets"]);
+            $$parsedSource["widgets"] = $$createField6_0($$parsedSource["widgets"]);
+        }
+        if ("logged" in $$parsedSource) {
+            $$parsedSource["logged"] = $$createField7_0($$parsedSource["logged"]);
         }
         return new Answer($$parsedSource as Partial<Answer>);
     }
@@ -104,6 +108,13 @@ export enum Bucket {
     BucketPerson = "person",
     BucketEpic = "epic",
     BucketText = "text",
+
+    /**
+     * BucketDay groups rows by the working days of the board's active
+     * sprints, whatever the range: their start, then each working day's
+     * end (sprintDays).
+     */
+    BucketDay = "day",
 };
 
 /**
@@ -113,6 +124,12 @@ export class BucketValue {
     "key": string;
     "label": string;
     "partial"?: boolean;
+
+    /**
+     * Last is the sprint's last working day of a day chart, where its even
+     * pace reaches zero.
+     */
+    "last"?: boolean;
     "cells": Num[];
     "total": Num;
 
@@ -138,10 +155,10 @@ export class BucketValue {
      * Creates a new BucketValue instance from a string or object.
      */
     static createFrom($$source: any = {}): BucketValue {
-        const $$createField3_0 = $$createType6;
+        const $$createField4_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("cells" in $$parsedSource) {
-            $$parsedSource["cells"] = $$createField3_0($$parsedSource["cells"]);
+            $$parsedSource["cells"] = $$createField4_0($$parsedSource["cells"]);
         }
         return new BucketValue($$parsedSource as Partial<BucketValue>);
     }
@@ -182,8 +199,8 @@ export class DashboardView {
      * Creates a new DashboardView instance from a string or object.
      */
     static createFrom($$source: any = {}): DashboardView {
-        const $$createField2_0 = $$createType8;
-        const $$createField4_0 = $$createType10;
+        const $$createField2_0 = $$createType9;
+        const $$createField4_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("ranges" in $$parsedSource) {
             $$parsedSource["ranges"] = $$createField2_0($$parsedSource["ranges"]);
@@ -198,7 +215,8 @@ export class DashboardView {
 /**
  * DrillAnswer is the number and one page of its rows, from one
  * evaluation: Count rows of Tickets tickets, Counted of the rows counted.
- * Reading is as an Answer's.
+ * Reading is as an Answer's. Asked for IDs, it holds those tickets' IDs
+ * in the drill's order, and no page.
  */
 export class DrillAnswer {
     "title": string;
@@ -213,6 +231,8 @@ export class DrillAnswer {
     "pages": number;
     "restarted"?: boolean;
     "rows": TicketRow[];
+    "groups"?: DrillGroup[];
+    "ids"?: string[];
     "at": number;
 
     /** Creates a new DrillAnswer instance. */
@@ -258,10 +278,18 @@ export class DrillAnswer {
      * Creates a new DrillAnswer instance from a string or object.
      */
     static createFrom($$source: any = {}): DrillAnswer {
-        const $$createField11_0 = $$createType12;
+        const $$createField11_0 = $$createType13;
+        const $$createField12_0 = $$createType15;
+        const $$createField13_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("rows" in $$parsedSource) {
             $$parsedSource["rows"] = $$createField11_0($$parsedSource["rows"]);
+        }
+        if ("groups" in $$parsedSource) {
+            $$parsedSource["groups"] = $$createField12_0($$parsedSource["groups"]);
+        }
+        if ("ids" in $$parsedSource) {
+            $$parsedSource["ids"] = $$createField13_0($$parsedSource["ids"]);
         }
         return new DrillAnswer($$parsedSource as Partial<DrillAnswer>);
     }
@@ -298,13 +326,49 @@ export class DrillCell {
 }
 
 /**
+ * DrillGroup is one group of a drill's rows, of a metric that returns a
+ * series or a heading column: its series (in the metric's order) and its
+ * heading within the series (none first, then by name), the number of its
+ * rows alone as the drill counts its own (Value), and how many rows it
+ * lists over every page (Rows). The rows of every page are in the
+ * groups' order.
+ */
+export class DrillGroup {
+    "series"?: string;
+    "heading"?: string;
+    "value": Num;
+    "rows": number;
+
+    /** Creates a new DrillGroup instance. */
+    constructor($$source: Partial<DrillGroup> = {}) {
+        if (!("value" in $$source)) {
+            this["value"] = null;
+        }
+        if (!("rows" in $$source)) {
+            this["rows"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DrillGroup instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DrillGroup {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DrillGroup($$parsedSource as Partial<DrillGroup>);
+    }
+}
+
+/**
  * DrillRequest asks for the rows behind one number of a dashboard, one
  * of three targets: the whole widget (no Cell, no Rest), one bar, point or
  * table cell of a bars, line or table widget (Cell), or the buckets a
  * widget that ranks its buckets left out (Rest, what its More opens).
  * Page is the page of drillPage rows; Count is the row count page 0
  * answered, so a later page that finds a different count starts again at
- * page 0.
+ * page 0. With IDs the answer names every ticket of the rows (the set a
+ * tile filters the board to) and lists no page.
  */
 export class DrillRequest {
     "dashboard": string;
@@ -313,9 +377,11 @@ export class DrillRequest {
     "person"?: string;
     "epic"?: string;
     "time_zone": string;
+    "widgets"?: string[];
     "widget": string;
     "cell"?: DrillCell | null;
     "rest"?: boolean;
+    "ids"?: boolean;
     "page": number;
     "count"?: number;
 
@@ -344,10 +410,14 @@ export class DrillRequest {
      * Creates a new DrillRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): DrillRequest {
-        const $$createField7_0 = $$createType14;
+        const $$createField6_0 = $$createType16;
+        const $$createField8_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("widgets" in $$parsedSource) {
+            $$parsedSource["widgets"] = $$createField6_0($$parsedSource["widgets"]);
+        }
         if ("cell" in $$parsedSource) {
-            $$parsedSource["cell"] = $$createField7_0($$parsedSource["cell"]);
+            $$parsedSource["cell"] = $$createField8_0($$parsedSource["cell"]);
         }
         return new DrillRequest($$parsedSource as Partial<DrillRequest>);
     }
@@ -428,8 +498,8 @@ export class How {
      * Creates a new How instance from a string or object.
      */
     static createFrom($$source: any = {}): How {
-        const $$createField0_0 = $$createType15;
-        const $$createField5_0 = $$createType15;
+        const $$createField0_0 = $$createType16;
+        const $$createField5_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("words" in $$parsedSource) {
             $$parsedSource["words"] = $$createField0_0($$parsedSource["words"]);
@@ -472,10 +542,12 @@ export class Name {
 /**
  * Num is one number a widget shows: a value, none (nothing to reduce:
  * the median of no rows), not known (no row counted and NC rows not
- * counted), or a gap (the mirror cannot answer: a previous range it holds
- * too few sprints for). NC is the tickets the metric could not count
- * beside the value. On the wire: {"v":3}, {"v":3,"nc":2}, {}, {"nc":2}
- * or {"gap":true}.
+ * counted, UR days of the viewer's logged time it counts not read, or Old:
+ * it counts days of that time older than the copy keeps, which nothing
+ * reads; worklogs.go), or a gap (the mirror cannot answer: a previous
+ * range it holds too few sprints for). NC is the tickets the metric could
+ * not count beside the value. On the wire: {"v":3}, {"v":3,"nc":2}, {},
+ * {"nc":2}, {"ur":4}, {"old":true} or {"gap":true}.
  */
 export type Num = any;
 
@@ -505,6 +577,39 @@ export class PeriodView {
     static createFrom($$source: any = {}): PeriodView {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new PeriodView($$parsedSource as Partial<PeriodView>);
+    }
+}
+
+/**
+ * ProposalView is a proposed widget as the screen lays it out, and the
+ * thread that proposed it.
+ */
+export class ProposalView {
+    "view": WidgetView;
+    "thread": string;
+
+    /** Creates a new ProposalView instance. */
+    constructor($$source: Partial<ProposalView> = {}) {
+        if (!("view" in $$source)) {
+            this["view"] = (new WidgetView());
+        }
+        if (!("thread" in $$source)) {
+            this["thread"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProposalView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProposalView {
+        const $$createField0_0 = $$createType10;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("view" in $$parsedSource) {
+            $$parsedSource["view"] = $$createField0_0($$parsedSource["view"]);
+        }
+        return new ProposalView($$parsedSource as Partial<ProposalView>);
     }
 }
 
@@ -569,7 +674,7 @@ export class RangeView {
      * Creates a new RangeView instance from a string or object.
      */
     static createFrom($$source: any = {}): RangeView {
-        const $$createField2_0 = $$createType17;
+        const $$createField2_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("periods" in $$parsedSource) {
             $$parsedSource["periods"] = $$createField2_0($$parsedSource["periods"]);
@@ -581,7 +686,10 @@ export class RangeView {
 /**
  * Request is what one evaluation counts: a dashboard, over a range,
  * narrowed to Mine (the viewer), a person or an epic, with weeks and days
- * in TimeZone (IANA).
+ * in TimeZone (IANA). With Widgets, the dashboard is those widgets of the
+ * board's dashboards in that order (a board's summary row): the built-in
+ * one's, which Dashboard names, and the project's own; a widget the board
+ * no longer has is left out, and the proposals are not counted.
  */
 export class Request {
     "dashboard": string;
@@ -590,6 +698,7 @@ export class Request {
     "person"?: string;
     "epic"?: string;
     "time_zone": string;
+    "widgets"?: string[];
 
     /** Creates a new Request instance. */
     constructor($$source: Partial<Request> = {}) {
@@ -610,7 +719,11 @@ export class Request {
      * Creates a new Request instance from a string or object.
      */
     static createFrom($$source: any = {}): Request {
+        const $$createField6_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("widgets" in $$parsedSource) {
+            $$parsedSource["widgets"] = $$createField6_0($$parsedSource["widgets"]);
+        }
         return new Request($$parsedSource as Partial<Request>);
     }
 }
@@ -619,7 +732,10 @@ export class Request {
  * TicketRow is one row of a metric in a ticket list or a drill: a ticket
  * as one row counts it. Row is the row's place among the answer's rows,
  * unique within it, since a ticket can count more than once (done in two
- * sprints). Period is the sprint or week a row of the range falls in.
+ * sprints). Assignee is the person the row counts for: the metric's
+ * person column, else the ticket's assignee. Period is the sprint or week
+ * a row of the range falls in, Series the metric's series it is in, and
+ * Heading the drill's heading of it within the series.
  * Value is the row's number in the metric's unit, absent for a metric
  * that counts tickets, whose rows' values are not what it counts.
  */
@@ -634,6 +750,8 @@ export class TicketRow {
     "value"?: number | null;
     "counted": boolean;
     "period"?: string;
+    "series"?: string;
+    "heading"?: string;
     "note"?: string;
 
     /** Creates a new TicketRow instance. */
@@ -689,6 +807,11 @@ export enum Unit {
      */
     UnitEstimate = "estimate",
     UnitDays = "days",
+
+    /**
+     * UnitTime is logged time, in seconds.
+     */
+    UnitTime = "time",
 };
 
 /**
@@ -697,6 +820,19 @@ export enum Unit {
 export class WidgetValue {
     "id": string;
     "error"?: string;
+
+    /**
+     * Note says why a widget of the sprint's days has nothing to draw: no
+     * sprint is active, or its dates are not known.
+     */
+    "note"?: string;
+
+    /**
+     * RangeWords is How this is counted's range sentence as this answer
+     * counted it, when it names what the listing could not: the active
+     * sprints a widget of the sprint's days counts.
+     */
+    "range_words"?: string;
     "value"?: Num | null;
     "previous"?: Num | null;
     "trend"?: Num[];
@@ -711,11 +847,38 @@ export class WidgetValue {
     "more"?: number;
 
     /**
+     * Distinct is how many tickets a list's rows, shown and past those
+     * shown, are of, when a ticket is in more than one row; 0 when each
+     * row is its own ticket.
+     */
+    "distinct"?: number;
+
+    /**
      * NotCounted is a list's tickets that its metric could not count, by
      * the rule every number's NC follows, or the tickets of a chart's or
      * table's range that it places in no bucket (a row with no instant).
      */
     "not_counted"?: number;
+
+    /**
+     * Unread is the range's working days of the viewer's logged time the
+     * copy holds no read of, for a metric that reads it (worklogs.go).
+     */
+    "unread"?: string[];
+
+    /**
+     * Old is a list's or a ranked chart's whose rows reach a day of the
+     * viewer's logged time older than the copy holds, so it is never
+     * whole, even with no rows (worklogs.go); a number says so in its Num.
+     */
+    "old"?: boolean;
+
+    /**
+     * Evidence says, beside a widget whose metric reads the credit
+     * relation while the last read of who worked on the tickets failed as
+     * a whole, that it failed and why (EvidenceSentence); "" otherwise.
+     */
+    "evidence"?: string;
 
     /** Creates a new WidgetValue instance. */
     constructor($$source: Partial<WidgetValue> = {}) {
@@ -730,22 +893,26 @@ export class WidgetValue {
      * Creates a new WidgetValue instance from a string or object.
      */
     static createFrom($$source: any = {}): WidgetValue {
-        const $$createField4_0 = $$createType6;
-        const $$createField5_0 = $$createType15;
-        const $$createField6_0 = $$createType19;
-        const $$createField7_0 = $$createType12;
+        const $$createField6_0 = $$createType7;
+        const $$createField7_0 = $$createType16;
+        const $$createField8_0 = $$createType22;
+        const $$createField9_0 = $$createType13;
+        const $$createField13_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("trend" in $$parsedSource) {
-            $$parsedSource["trend"] = $$createField4_0($$parsedSource["trend"]);
+            $$parsedSource["trend"] = $$createField6_0($$parsedSource["trend"]);
         }
         if ("series" in $$parsedSource) {
-            $$parsedSource["series"] = $$createField5_0($$parsedSource["series"]);
+            $$parsedSource["series"] = $$createField7_0($$parsedSource["series"]);
         }
         if ("buckets" in $$parsedSource) {
-            $$parsedSource["buckets"] = $$createField6_0($$parsedSource["buckets"]);
+            $$parsedSource["buckets"] = $$createField8_0($$parsedSource["buckets"]);
         }
         if ("tickets" in $$parsedSource) {
-            $$parsedSource["tickets"] = $$createField7_0($$parsedSource["tickets"]);
+            $$parsedSource["tickets"] = $$createField9_0($$parsedSource["tickets"]);
+        }
+        if ("unread" in $$parsedSource) {
+            $$parsedSource["unread"] = $$createField13_0($$parsedSource["unread"]);
         }
         return new WidgetValue($$parsedSource as Partial<WidgetValue>);
     }
@@ -763,7 +930,19 @@ export class WidgetView {
     "unit": Unit;
     "good"?: Good;
     "now"?: boolean;
+
+    /**
+     * State is a number of a state (Metric's until): its value is what
+     * holds now and its previous value what held where the range begins.
+     */
+    "state"?: boolean;
     "series"?: string[];
+
+    /**
+     * Pace and Overlap are the metric's (Metric.Pace, Metric.Overlap).
+     */
+    "pace"?: boolean;
+    "overlap"?: boolean;
     "how": How;
 
     /** Creates a new WidgetView instance. */
@@ -794,38 +973,65 @@ export class WidgetView {
      * Creates a new WidgetView instance from a string or object.
      */
     static createFrom($$source: any = {}): WidgetView {
-        const $$createField8_0 = $$createType15;
-        const $$createField9_0 = $$createType20;
+        const $$createField9_0 = $$createType16;
+        const $$createField12_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("series" in $$parsedSource) {
-            $$parsedSource["series"] = $$createField8_0($$parsedSource["series"]);
+            $$parsedSource["series"] = $$createField9_0($$parsedSource["series"]);
         }
         if ("how" in $$parsedSource) {
-            $$parsedSource["how"] = $$createField9_0($$parsedSource["how"]);
+            $$parsedSource["how"] = $$createField12_0($$parsedSource["how"]);
         }
         return new WidgetView($$parsedSource as Partial<WidgetView>);
     }
 }
 
+/**
+ * WorklogState is the state of the reads of the viewer's logged time, as
+ * Board.Worklogs answers it: whether they are reading, and why the last
+ * one failed, "" when none did.
+ */
+export class WorklogState {
+    "reading"?: boolean;
+    "failure"?: string;
+
+    /** Creates a new WorklogState instance. */
+    constructor($$source: Partial<WorklogState> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorklogState instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorklogState {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorklogState($$parsedSource as Partial<WorklogState>);
+    }
+}
+
 // Private type creation functions
-const $$createType0 = DashboardView.createFrom;
-const $$createType1 = RangeView.createFrom;
-const $$createType2 = Name.createFrom;
-const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = WidgetValue.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = $Create.Array($Create.Any);
-const $$createType7 = RangeOption.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = WidgetView.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = TicketRow.createFrom;
-const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = DrillCell.createFrom;
-const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = $Create.Array($Create.Any);
-const $$createType16 = PeriodView.createFrom;
-const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = BucketValue.createFrom;
-const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = How.createFrom;
+const $$createType0 = RangeView.createFrom;
+const $$createType1 = Name.createFrom;
+const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = WidgetValue.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = WorklogState.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = $Create.Array($Create.Any);
+const $$createType8 = RangeOption.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = WidgetView.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = TicketRow.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = DrillGroup.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = $Create.Array($Create.Any);
+const $$createType17 = DrillCell.createFrom;
+const $$createType18 = $Create.Nullable($$createType17);
+const $$createType19 = PeriodView.createFrom;
+const $$createType20 = $Create.Array($$createType19);
+const $$createType21 = BucketValue.createFrom;
+const $$createType22 = $Create.Array($$createType21);
+const $$createType23 = How.createFrom;

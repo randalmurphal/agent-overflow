@@ -218,6 +218,9 @@ type Issue struct {
 	CycleID           string
 	ProjectID         string
 	ParentID          string
+	// ParentName is the parent's name as the read gave it; nil for a
+	// top-level issue.
+	ParentName *ParentName
 	// LabelIDs are every label the issue carries. Labels names those
 	// Linear listed with the issue, at most 250 and archived ones left
 	// out; LabelsByID names the rest.
@@ -255,6 +258,11 @@ type IssuePosition struct {
 	// TeamID is the issue's team, for a caller that checks the issue is
 	// still the team's.
 	TeamID string
+}
+
+// ParentName is an issue's parent as an issue read names it.
+type ParentName struct {
+	Identifier, Title string
 }
 
 // IssueRef names a related issue.
@@ -306,8 +314,8 @@ type NamedComment struct {
 	User *User
 }
 
-// SearchHit is an issue as SearchIssues finds it, with its state and
-// assignee, nil when it has none or Linear answered null.
+// SearchHit is an issue as SearchIssues or RecentIssues finds it, with
+// its state and assignee, nil when it has none or Linear answered null.
 type SearchHit struct {
 	Issue
 	State    *WorkflowState

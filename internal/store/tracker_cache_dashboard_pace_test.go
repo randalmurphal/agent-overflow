@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"math"
 	"testing"
 	"time"
 
@@ -38,8 +39,8 @@ func TestDashboardPaceIsTheBacklogsPace(t *testing.T) {
 			}
 		}
 		backlog /= float64(len(pace))
-		fill := func(ctx context.Context, conn *sql.Conn, relations []string) (store.MirrorExport, bool, error) {
-			return s.ExportMirrorBoard(ctx, conn, root, c.board, c.regroup, relations)
+		fill := func(ctx context.Context, conn *sql.Conn, relations []string, _ string) (store.MirrorExport, bool, error) {
+			return s.ExportMirrorBoard(ctx, conn, root, c.board, c.regroup, relations, 0, math.MaxInt64, store.MirrorLoggedDays{}, store.CardShapeForTest)
 		}
 		a, err := e.Evaluate(context.Background(), trackerdash.Board{Fill: fill, Epics: true},
 			trackerdash.Request{Dashboard: "overview_sprints", Range: trackerdash.RangeSprints5, TimeZone: "UTC"})

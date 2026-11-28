@@ -5,7 +5,7 @@
 // thread, the defaults saved under the revision read, and the thread
 // opening only when every step held.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import type { DetailView, SetupView, TicketSubscription, TicketView, WriteView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
 import { trackerIssueUpdated } from './trackerBoardEvents';
@@ -27,6 +27,7 @@ import { getToasts } from './toast.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { methodNotFound } from '../../test/helpers/olderComputer';
 import type { Thread } from '../types/models';
 
 const REF: TrackerTicketRef = { backend: HOME_BACKEND, connection: 'c1', issue: '10101' };
@@ -109,6 +110,8 @@ describe('the Work read', () => {
     const answers: Array<(v: unknown) => void> = [];
     const fails: Array<(e: unknown) => void> = [];
     setBindingMock('GetTicketWork', () => new Promise((resolve, reject) => { answers.push(resolve); fails.push(reject); }));
+    // The search answers nothing here (a computer without it).
+    setBindingMock('SearchTicketWork', async () => null);
     const first = loadTicketWork(ticket.key, REF);
     const second = loadTicketWork(ticket.key, REF);
     answers[1]({ key: 'WEB-1', pullRequests: [], branches: [{ projectId: 'p1', name: 'WEB-1-new' }], problems: [] });
@@ -128,6 +131,72 @@ describe('the Work read', () => {
     expect((ticketWork(ticket.key)!.error as Error).message).toContain('has not read the ticket yet');
     ticket.release();
     expect(ticketWork(ticket.key)).toBeNull();
+  });
+
+  const stored = { key: 'WEB-1', pullRequests: [], branches: [{ projectId: 'p1', name: 'WEB-1-cache' }], problems: [], forgeProblems: [], searchFull: [] };
+  const searched = {
+    ...stored, branches: [],
+    pullRequests: [{ ref: { Forge: 'github', Host: 'github.com', Namespace: 'example', Repo: 'web', Number: 2 }, url: 'https://github.com/example/web/pull/2', state: 'merged', branch: 'WEB-1-cache', title: 'Cache the session' }],
+  };
+
+  function deferred() {
+    const answers: Array<(v: unknown) => void> = [];
+    const fails: Array<(e: unknown) => void> = [];
+    return { answers, fails, call: () => new Promise((resolve, reject) => { answers.push(resolve); fails.push(reject); }) };
+  }
+
+  it('shows the stored answer at once and the search\'s once it lands, whichever answers first', async () => {
+    const { ticket } = await openTicket();
+    const get = deferred();
+    const search = deferred();
+    setBindingMock('GetTicketWork', get.call);
+    const searches = setBindingMock('SearchTicketWork', search.call);
+    const first = loadTicketWork(ticket.key, REF);
+    expect(searches).toHaveBeenCalledWith('c1', '10101');
+    get.answers[0](stored);
+    await vi.waitFor(() => expect(ticketWork(ticket.key)).toMatchObject({ loading: false, searching: true }));
+    expect(ticketWork(ticket.key)?.work?.branches.map((b) => b.name)).toEqual(['WEB-1-cache']);
+    search.answers[0](searched);
+    await first;
+    expect(ticketWork(ticket.key)).toMatchObject({ loading: false, searching: false, error: null, searchError: null });
+    expect(ticketWork(ticket.key)?.work?.pullRequests.map((p) => p.state)).toEqual(['merged']);
+    expect(ticketWork(ticket.key)?.work?.branches).toEqual([]);
+
+    // The search first: the stored answer after it does not replace it.
+    const second = loadTicketWork(ticket.key, REF);
+    search.answers[1](searched);
+    await vi.waitFor(() => expect(ticketWork(ticket.key)?.searching).toBe(false));
+    get.answers[1](stored);
+    await second;
+    expect(ticketWork(ticket.key)?.work?.pullRequests).toHaveLength(1);
+    expect(ticketWork(ticket.key)?.loading).toBe(false);
+
+    // The search first, then the stored read fails: the search's answer
+    // stands and no failure shows under it.
+    const third = loadTicketWork(ticket.key, REF);
+    search.answers[2](searched);
+    await vi.waitFor(() => expect(ticketWork(ticket.key)?.searching).toBe(false));
+    get.fails[2](new TransportError('internal', 'the store is closed'));
+    await third;
+    expect(ticketWork(ticket.key)).toMatchObject({ loading: false, error: null });
+    expect(ticketWork(ticket.key)?.work?.pullRequests).toHaveLength(1);
+    ticket.release();
+  });
+
+  it('keeps the stored answer when the search fails, says so, and says nothing when the computer has no search', async () => {
+    const { ticket } = await openTicket();
+    setBindingMock('GetTicketWork', async () => stored);
+    setBindingMock('SearchTicketWork', async () => { throw new TransportError('internal', 'the store is closed'); });
+    await loadTicketWork(ticket.key, REF);
+    expect(ticketWork(ticket.key)).toMatchObject({ searching: false, error: null });
+    expect((ticketWork(ticket.key)!.searchError as Error).message).toContain('the store is closed');
+    expect(ticketWork(ticket.key)?.work?.branches.map((b) => b.name)).toEqual(['WEB-1-cache']);
+
+    setBindingMock('SearchTicketWork', async () => { throw methodNotFound(); });
+    await loadTicketWork(ticket.key, REF);
+    expect(ticketWork(ticket.key)).toMatchObject({ searching: false, error: null, searchError: null });
+    expect(ticketWork(ticket.key)?.work?.branches.map((b) => b.name)).toEqual(['WEB-1-cache']);
+    ticket.release();
   });
 });
 
@@ -399,7 +468,7 @@ describe('Start work', () => {
     expect(save).toHaveBeenCalledWith('p1', 'r1', expect.objectContaining({
       start_work: [
         { tracker: 'jira', site: 'https://example.atlassian.net', project: 'OPS', assign: false },
-        { ...place, status: 's2', assign: true, branch: 'feature/{key}', repository: 'p2' },
+        { ...place, status: 's2', assign: true, branch: 'feature/{key}', name_branch: true, repository: 'p2' },
       ],
     }));
     expect(startWorkRun(ticket.key)?.steps.defaults).toMatchObject({ kind: 'refused', text: expect.stringContaining('changed after it was read') });

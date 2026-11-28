@@ -2,19 +2,29 @@
 
 Status: product rulings and screen designs recorded 2026-11-15. Built:
 the connections and a project's board list, in Settings > Issues
-(Connections, Boards, Status groups), and the Issues pane with its Board and Backlog
+(Connections, Boards, Status groups, Fields, Starting work, Agents),
+and the Issues pane with its Board, Backlog and Time
 screens, opened from the tool row's Issues entry, and the Ticket screen,
 opened from a card or a row, from a thread's linked ticket or from a pull
 request's ticket chip; a thread's ticket link, in the sidebar and the
-thread header. The other screens are not built; the [Board](#board),
+thread header, and the Dashboards screen. The other screens are not
+built; the [Board](#board),
 [Backlog](#backlog-and-sprint-planning), [Ticket](#ticket),
-[Tickets, pull requests and branches](#tickets-pull-requests-and-branches)
-and [Thread link](#thread-link) sections say what of them is. A
+[Dashboards](#dashboards),
+[Tickets, pull requests and branches](#tickets-pull-requests-and-branches),
+[Thread link](#thread-link) and [Time](#time) sections say what of them is. A
 project's status groups are set in Settings > Issues > Status groups, its
-ticket pins on the ticket, and its Start work defaults from the Start work
-form. Agents can find, read, create and change tickets, a change of
-several tickets waiting for the person's approval; their worklog tools
-are not built ([Agent tools](../architecture/tracker-backend.md#agent-tools)).
+ticket pins in Settings > Issues > Fields or on the ticket, its Start work
+defaults in Settings > Issues > Starting work or from the Start work form,
+and what its threads may do to tickets in Settings > Issues > Agents.
+Agents can find, read, create and change tickets, a change of several
+tickets waiting for the person's approval unless the project turned that
+off. They read and draft the person's time, and ask to log the draft of
+named days, which is logged only once the person approves what the
+prompt shows ([Agent tools](../architecture/tracker-backend.md#agent-tools)).
+What they read beside the logged time is the [activity](#activity) each
+computer measured and the day's commits; reviews and calendar meetings
+are not read yet.
 
 ## Goal
 
@@ -111,9 +121,10 @@ All dated 2026-11-15.
   navigate itself to an outside address carrying data. A custom page would
   be a separate page in the browser pane reading the same metrics; it is
   not built.
-- **A credit rule is a named value with a first sprint, read by metric
-  queries by name.** Changing how credit is counted edits the value, never
-  a query. A change counts from the current sprint, and finished sprints
+- **Credit rules are values with a first sprint, applied where the
+  board's copy is made.** The copy's `credit` relation holds each credit
+  row counted with the rules in force for it, and the values its note
+  needs. Changing how credit is counted edits the values, never a query. A change counts from the current sprint, and finished sprints
   keep the value they were counted with, unless the user applies it to
   every sprint. Rule values are per-project settings.
 - **The pane shows one tracker board at a time.** There is no view that
@@ -126,8 +137,10 @@ All dated 2026-11-15.
   a thread with the ticket attached and changes nothing on the ticket.
 - **Any thread may read tickets. A thread that is not read-only may write
   them. A write to more than one ticket waits for the user's approval in
-  the app.** Each agent write is marked as the agent's in the ticket's
-  history view.
+  the app.** A project's Agents setting can turn off its threads' ticket
+  changes, or turn off asking before a change to several tickets
+  ([Setup](#setup)). Each agent write is marked as the agent's in the
+  ticket's history view.
 - **Time is drafted by an agent and posted on approval.** The app supplies
   the measured inputs: what is already logged, when the user was active in
   the app, which tickets each day's threads, commits and reviews touched,
@@ -135,8 +148,7 @@ All dated 2026-11-15.
   activity and meetings, never from how long a thread ran. The agent
   decides how a day splits between tickets and records its reason on each
   entry. What it cannot decide becomes a question. Nothing is posted until
-  the user approves a day or the whole draft; a per-project setting can
-  post the days that have no open question.
+  the user approves a day or the whole draft.
 - **Calendar and call-duration reading are per-project settings, off by
   default.** A source that is off is never started.
 - **Time logging is Tempo plus Jira native worklogs, on Jira only.** Linear
@@ -316,8 +328,16 @@ is running, it opens no form: Work shows the run's rows and its Start
 work button says the run is going. A dropped card waits where it was
 dropped, dimmed, until its write settles, and is not moved again until
 then. A refusal shows under the card or the ticket when one is in view,
-else in a toast. Not built: the summary row. A sprint on the board is read whole, and while Only mine
-or Search is on every column is read whole, so a board of thousands of
+else in a toast. The summary row: the widgets pinned from the
+dashboards, as chips or tiles, each tile amber past its limit; a tile
+of what holds now, a number or a list, filters the board to
+its tickets with a "Showing only" chip that clears, kept on the Backlog
+and following the tile's count, and any other tile opens its dashboard
+at that widget; the row edited in place (take a tile off, add one from
+the dashboards, or ask the agent, whose proposal Keep pins while the row
+has room); a board that pins nothing shows Add a tile and reads nothing
+for the row until it is pressed. A sprint on the board is read whole, and while Only mine,
+Search or a tile's filter is on every column is read whole, so a board of thousands of
 cards holds them all. A card's state line shows days in the status but not a
 running thread or what blocks it; its parent shows as a chip but is not
 known to be an epic; its type and priority marks are picked by name, not
@@ -327,8 +347,10 @@ avatar.
 - A summary row sits above the columns. It is one line of chips until
   expanded into tiles. Its tiles are dashboard widgets pinned to the board,
   at most five. A tile that stands for a set of tickets filters the board
-  when clicked. The row is edited in place: remove a tile, add one from a
-  dashboard, or ask the agent for a new one.
+  when clicked, and a list's chip counts those tickets, each once however
+  many of the list's rows it is in. The row is edited in place: remove a tile, add one from a
+  dashboard, or ask the agent for a new one. A board with no tiles offers
+  Add a tile in the row's place.
 - A card shows type, key, title, epic, labels, priority, points, assignee
   and one state line (a running thread, days in the same status, what
   blocks it). Display chooses which of these show, per board. Type,
@@ -391,10 +413,7 @@ last read them for the board, and the completion by the board's
 configuration as this computer last read it for its writes, which can be
 another read. A ticket opens beside the list, and in its own
 pane with Ctrl or Cmd or the menu; the row's menu has Ask and Start
-work…. Not built: the pace counted with credit (it counts the tickets
-whose status counted as done when their sprint was completed, by their
-estimates now); support tickets are counted among those without an
-estimate; a Linear team's cycles are started and completed in Linear,
+work…. Not built: a Linear team's cycles are started and completed in Linear,
 which the screen says; a completion the tracker refuses part of says the
 first refusal, not how many tickets moved.
 
@@ -405,7 +424,9 @@ first refusal, not how many tickets moved.
   row.
 - The next sprint shows its points against the usual pace (the average of
   the last five finished sprints, counted with credit), each person's
-  load, and a warning when it is over. While a row is carried, the section
+  load, and a warning when it is over. A pace counted with credit says
+  so, says how many tickets' credit it leaves out, and its tip gives the
+  finished tickets, review credit and support credit it is made of. While a row is carried, the section
   it left and the one it is over show what their totals would become.
 - The backlog counts tickets with no estimate. Support tickets are left out
   of that count.
@@ -508,23 +529,63 @@ holding the template text.
 
 ### Tickets, pull requests and branches
 
-Status: built: every bullet below but the forge search. A key matches when
-this computer's copy of an enabled connection holds an issue of its
-project. A ticket's Work reads the stored list of open pull requests, the
-pull requests its linked threads were last seen with (merged and closed
-among them) and the branches of the projects that list its connection's
-boards; it is read when Work shows and on the ticket's Refresh. Not built:
-searching the forge by key, and Jira's development data.
+Status: built: every bullet below. A key
+matches when this computer's copy of an enabled connection holds an issue
+of its project. The app keeps the pull request history of the
+repositories its tracker projects clone: every pull request updated in
+the last 180 days, in any state, with who approved and commented on it,
+read in the background every 15 minutes while a client is connected and
+the connection is on. A fork's parent is read for the fork's pull
+requests. A ticket's Work reads that history, the stored list of open
+pull requests, the pull requests its linked threads were last seen with
+and the branches of the projects that list its connection's boards. When
+Work shows and on the ticket's Refresh, it reads a repository's history
+again when the last read is more than a minute old, and searches the
+forge by the key only a repository whose history has not yet read back
+to the ticket's creation, or one the app keeps no history of (a linked
+thread's project that lists no board). The rows Work stores show at
+once, with "Searching the forge…" until the search answers. A
+repository whose last history read failed says so in Work in the Pull
+requests page's words, beside the rows its history holds, and is not
+searched; a search that fails is said the same way. A pull request from
+the history or the search shows its state and author and no CI. A
+repository's first full read runs at most 30 forge requests a read, and
+the next background round, 5 minutes later, reads on while it owes more:
+on GitHub a read covers up to 1,500 pull requests without long
+discussions, so 30,000 take about 20 reads (about 100 minutes), and
+older tickets are searched until it reaches them.
+
+The search finds a pull request in any state by its title, and by a
+branch name that holds the key: a branch the searched repository still has, a branch
+this computer has (local or fetched), and on GitHub any branch whose name
+begins with the key. The search misses a merge request whose key is only
+in its branch name once that branch is deleted on the forge, unless this
+computer still has the branch; on GitHub that holds only when the key is
+not at the branch name's start. A fork's parent is searched only for the
+branches of the ticket, not by title. Each repository's search reads at
+most 500 matches of each kind and says so when there were more.
 
 - Ticket keys are found in branch names and pull request titles. Only the
   keys of connected tracker projects match.
 - The match is used in both directions: the Pull requests page shows a chip
   per ticket that opens it, and a ticket's Work lists its pull requests and
   branches.
-- The forge is searched by key for a pull request outside the stored list.
-  Jira's own
-  [development data](../references/tracker-api-measurements.md#jira-cloud)
-  is a fallback only, because its endpoints are undocumented.
+- A pull request row opens its review in the ticket's place, the one the
+  Pull requests page shows, in any state: over the board or beside the
+  list, in the ticket's own pane, full screen on the phone. A bar over it
+  holds Back, the number and Open on GitHub or GitLab, and stays when the
+  review cannot load. Nothing of the ticket shows or takes the keyboard
+  under it. Find
+  searches the review while the person is in it. Back closes what is open
+  in the review (a CI log, the conflicts, the phone's file list), then
+  shows the ticket as it was. A row opens on the forge instead when no
+  project of the ticket's computer has the pull request's repository as
+  its origin: a fork's checkout cannot show its parent's pull request,
+  since the review fetches it from origin. The row's menu opens it on the
+  forge either way.
+- The forge is searched by key for a pull request the history cannot
+  answer for, and a match counts only when its title or branch names the
+  key by the same rule.
 
 ### Thread link
 
@@ -569,15 +630,98 @@ sidebar and the thread header, on desktop and on a phone.
 
 ### Dashboards
 
+Status: built: Overview, the dashboards a project keeps and the picker,
+Team or Mine, the range, Ask your agent, edit mode, which removes
+widgets and removes the dashboard with its last one (there is no
+Delete), and the widget an agent proposes, which the person keeps or
+dismisses; a number, bar or cell's tickets, a number's change and trend, narrowing to a person or
+an epic, selecting rows in a ticket list or a drill to move, assign
+or start a thread on them; a sprint board's burndown and its table of
+what each finished sprint committed, added, removed and completed;
+Stuck's value where the range began; a number tile's limit and a
+widget's pin to the board's summary row, which an agent's widget may ask
+for too; and a query over the threads linked to the board's tickets and
+over your own logged time. Pull requests in a query are not built, nor
+the credit rules in How this is counted.
+
 - Every board has a built-in dashboard, Overview: its usual pace, days
   from start to done, the tickets stuck now, what was finished per sprint
-  or week, who is carrying what, what was created and finished, and on
-  Jira open work by epic, counted from the computer's copy of the board,
-  which keeps syncing while the dashboard shows.
+  or week, who is carrying what, on a sprint board the burndown and what
+  each sprint committed, added, removed and completed, what was created
+  and finished, and on Jira open work by epic, counted from the
+  computer's copy of the board, which keeps syncing while the dashboard
+  shows.
+- The burndown draws the active sprint's work not yet done or canceled,
+  in the board's estimate (tickets when it has none), at the sprint's
+  start and at the end of each working day, against a dashed even pace
+  from the start's value to zero on its last day. Today's point is so
+  far, and later days have none. A point says what is left and what the
+  pace would leave, and opens its tickets; the pace opens nothing. A
+  board with no active sprint, or whose active sprint has no start or
+  end date, says so in the chart's place; a board without sprints has
+  no burndown.
+- The sprint table gives each sprint of the range its estimate committed
+  at its start, added after it and removed before its end, each at its
+  value then, and completed by the pace's rule. A ticket added and then
+  removed counts in both, and each ticket once per column, so the table
+  has no Total. Each cell opens its tickets.
+- The burndown and the sprint table count a ticket from its history.
+  After any change to a ticket, until its history is read again (about a
+  minute on Jira and three on Linear while the board shows), it is
+  listed and not counted, saying "its latest change is not read yet",
+  and one that left the sprint is missing from the burndown's past days
+  and from the sprint table.
 - A dashboard is a twelve-column grid of widgets with a toolbar: dashboard
   picker, Team or Mine, the range, Ask your agent, and an edit mode that
   removes widgets.
 - A query may read tickets, pull requests, threads and logged time.
+- A query of threads counts those on the board's computer linked to the
+  board's tickets; How this is counted says so, since a ticket's Work
+  lists the linked threads of every attached computer.
+- A query of logged time reads your own, the connection's account's, in
+  hours, from the last 182 days up to today in the page's time zone, and
+  each row of it counts for you. A number, period, bar or cell that
+  counts it is known only once every one of those days is read, since a
+  row can count in a period other than its own day's (a sprint's
+  tickets, a total so far). Until then it reads "Not known" and says how
+  many days were not read ("Not known, 3 days not read"), on the tile, a
+  hover, and a drill's header, and a comparison it cannot make says "Not
+  compared: 3 days of the range before are not read." One that counts a
+  period that began before those days, or what held before them, reads
+  "Not known" for good and says it is older than the logged time kept,
+  with nothing to read, and no Read again beside it; a list or a chart of
+  such a period says "Not known: it counts days older than the logged
+  time kept.", and a comparison says "Not compared: the range before is
+  older than the logged time kept." A chart or list with nothing in it
+  yet says its days not read rather than "Nothing to count." or "No
+  tickets." A day still to come, and a widget counted by sprint over a
+  range with no sprint, read nothing. A pinned list of it reads "Not
+  known" on its chip while its days are not all read, and filters the
+  board by nothing then: the board shows every ticket and says why; a
+  pinned widget that cannot count here shows no number on its chip.
+- When the board's computer counts such a widget, on the Dashboards
+  screen, the board's summary row or an agent's widget, it reads the days
+  not read from the tracker in one run, newest first, 31 days a tracker
+  read, back to back, while the widget says "Reading your logged time…",
+  and the dashboard counts again when the run ends: a first show with
+  nothing read is one run of 6 reads (182 days). Closing the page does not
+  stop a run already going; its reads are kept for the next show. Time
+  logged outside the app on one of the newest 31 days shows within 10
+  minutes while a widget of it shows: the computer reads those days again
+  when it counts the widget and 5 minutes have passed since they were
+  last read, at most once every 5 minutes for the account (6 reads an
+  hour on an idle board, at most 12 on a busy one); a number already
+  known stays shown meanwhile. After a read fails, the widget says why,
+  beside its number or in place of one it cannot know, with Read again,
+  and nothing more is read on its own until the person presses Read again
+  or Refresh, which read all 182 days again (6 reads), or the account or
+  its time tracking changes. The board's Refresh reads them too while a
+  tile of the board's summary row needs them, and reads no logged time
+  otherwise. A failed Read again or Refresh says why on the computer it
+  asked, until another ask or the computer says it is reading.
+  A page narrowed to another person says "Only your own logged time is
+  read."; a Linear board says it has no time tracking, and a connection
+  whose account is not verified says to check the connection.
 - A number, bar or table cell opens the tickets behind it. Each widget
   shows how it is counted: the rule in plain words, the credit rules it
   reads, the query, and its sources.
@@ -585,13 +729,20 @@ sidebar and the thread header, on desktop and on a phone.
   line. The arrow gives the direction and its color says whether that
   direction is good. When the range before left tickets out, the change
   says how many ("Up 0.5 tickets from 0.5, the 2 weeks before, 2 not
-  counted then").
+  counted then"). A number that counts what holds now, such as Stuck,
+  is compared with what held where the range began.
+- A value from before the copy's history reaches is "not counted", never
+  zero, and the number says how many.
 - A number says how many tickets it could not count beside it ("2 not
   counted"), and reads "Not known" with no change mark when it counted
   none. A drill's header gives its number and its rows and tickets ("6
   rows, 5 tickets" when a ticket counts in two sprints); each row names
   the period it counts in, and a row not counted says "Not counted" and
-  why.
+  why. A metric with series lists its rows under each series, and under
+  a heading within one where its rows carry one, each with the number
+  of its rows alone.
+- A value below 0 (a net change) is a bar or a point on the other side
+  of 0's line, on an axis that reaches as far below 0 as the values do.
 - A chart lists the tickets it draws in no bar or point (a finish whose
   time is not known) in a "not counted" that opens the whole chart. A
   chart or table that shows only its first 12 bars or 50 rows says how
@@ -600,22 +751,65 @@ sidebar and the thread header, on desktop and on a phone.
 - Until the board's first read has finished, the dashboard and each
   drill say "This board's first read has not finished: these numbers
   count the tickets read so far.", and nothing is compared.
-- While a new range or narrowing is counted, the last answer stays
-  dimmed and takes no click. A count that fails says "Not counted again"
-  and why beside the last answer.
+- While a new range or narrowing is counted, the last answer's numbers
+  stay dimmed and take no click. A count that fails says "Not counted
+  again" and why beside the last answer. Another dashboard picked shows
+  none of the last one's numbers. The widgets, the proposals and Keep,
+  Dismiss, Edit and Remove are there whatever a count does.
+- Ask your agent opens a new thread in the board's project, its draft
+  unsent and naming the board by name and site/ID, on a provider whose
+  agents get the tracker tools. With none turned on and installed on the
+  board's computer, Ask is disabled and says why.
 - Clicking a person or an epic narrows every widget on the page to it. A
   chip in the toolbar clears it.
-- Rows in a ticket-list widget can be selected, then moved, assigned or
-  given to a new thread.
+- Rows in a ticket-list widget or a drill can be selected: a row's box
+  shows on hover, and on every row once one is selected. The bar says how
+  many are selected and offers Move to, Assign and Start a thread, and
+  says under them why one cannot run. A count again keeps the selected
+  rows it still lists, and closes an open Move to, Assign or Start a
+  thread whose tickets it changed, and an open Move to whose tickets'
+  statuses it changed, so none acts on a ticket the list no longer shows
+  or plans from a status it has left.
+- Move to lists the statuses the selected tickets can move to. A ticket
+  already in the status, as its row shows it or where this list last
+  moved it, is left as it is ("3 tickets moved to Done, 1 already in
+  Done"). A status that a ticket cannot reach, or reaches only
+  by a move that asks for fields, is off and names the ticket. Assign
+  lists the people every selected ticket's project may assign, and
+  Unassigned; when a project's list cannot be read it offers nobody and
+  says which project and why. Each ticket is its own write, at most four sent at a time,
+  and what the tracker refused shows under that ticket's row ("2 of 3
+  tickets moved to Done"). The bar's note says what came of it for 5 s.
+- Start a thread makes one new thread in the board's project on up to 8
+  tickets, one file each on its unsent draft with the text typed, and
+  opens it. It is linked to a ticket only when there is one; several are
+  named in its title ("WEB-1, WEB-2, WEB-3 and 2 more"). Nothing on the
+  tickets changes. A drill closes as its thread opens. A list starts one
+  thread at a time; a start that is refused keeps the text and the
+  selection. Typed text stays with the tickets it was typed for.
 - An answer to a one-off question appears as a provisional widget. It joins
   the dashboard only when kept.
-- A number tile can carry a limit. Over the limit, the tile is marked on
-  the dashboard and on the board's summary row.
+- A number tile can carry a limit, set from its bell: the side it warns
+  on follows whether up is good news. Over the limit, the tile is marked
+  on the dashboard and on the board's summary row. A limit holds in the
+  unit it was set in: while the project counts the tile in another unit,
+  it shows no limit, and a number counted in another unit than the
+  limit's is never marked. A limit can be below 0, as a signed number
+  sets it; Lower stops at 0. A proposal whose agent asked for a limit is
+  marked by it before Keep, with no control of it.
+- A widget's pin shows it on the board's summary row, at most five; a
+  full row takes no other pin and says so. A proposal whose agent asked
+  for the row says before Keep whether Keep puts it there.
 - Charts are drawn to the widget's width and have hover values. The three
   series colors were checked for contrast and color-blind separation on the
   dark and light surfaces.
 
 ### Credit
+
+Status: built: the rules in Settings, support tickets left out of the
+Backlog's count of tickets without an estimate, a support ticket's
+points on the Time screen, the evidence credit reads, and credit counted
+in the built-in dashboard's pace and the Backlog's.
 
 - A support ticket carries no points. It counts as its logged hours divided
   by the project's hours-per-point value, and shows hours where points
@@ -627,10 +821,71 @@ sidebar and the thread header, on desktop and on a phone.
   approved, logged time. The share, the number and the actions are
   settings.
 - Opening a credited number lists each finished ticket, each review with
-  its arithmetic and what the reviewer did, each support ticket with its
-  hours, and anyone who acted but did not qualify.
+  its arithmetic ("10% of 5 points for commented, logged time"), each
+  support ticket with its hours, and anyone who acted but did not
+  qualify, under their own heading, with the actions the rule counts
+  and how many it needs.
+- Support time counts in the sprint whose dates hold it; time logged
+  between sprints counts in the next sprint to start, once it starts.
+  Credit counts only on a Jira site.
+- A ticket whose credit is not read yet is listed and not counted. A
+  finished ticket names who had it when it finished only once its
+  history is read for its latest change and reaches back to the finish;
+  until then its points count for no one and its reviews are not
+  counted. When the history cannot say who finished it (done with no
+  date and reassigned), anyone who never had it is still a reviewer, and
+  the actions of those who had it are listed and not counted. While the last read of who worked on the tickets failed, every
+  widget that counts credit says so with the reason, on a dashboard and
+  in an agent's tried widget.
+- An approval or a comment on a pull request counts for the ticket whose
+  key the pull request's title or branch names, in the repositories the
+  project clones and, for a fork, its pull requests in the parent. The
+  forge account is matched to a person by name: the account the app's
+  own forge token belongs to is the connection's person, and any other
+  is the one person in the tracker with the name the forge shows. An
+  account that matches nobody is listed under its own heading with what
+  it did and counts nothing. Settings > Issues > Points and credit lists
+  the forge accounts that reviewed, each with the person it counts for
+  and how that is known; there you say who an account is by picking a
+  person from the tracker, say that it is not a person (a bot, whose
+  reviews then count for nobody and are not listed), or return it to
+  its name match. What you say holds for that tracker connection on
+  that computer, for every project that uses it. A ticket whose repository is not read back
+  to its creation yet, or cannot be read, is listed and not counted,
+  with the repository and the reason; a rule that counts neither
+  comments nor approvals waits for no repository.
 
 ### Time
+
+Status: built: the person's own logged time on the connection of the
+board the pane shows, a week at a time, By day and By ticket, logged,
+changed and deleted by hand from a cell, a day or an entry; and an
+agent's draft (`time_draft`), shown and approved as the bullets below
+say.
+
+The week's draft shows dashed under each day's logged time in By day,
+with each day's approval, and in its tickets' cells in By ticket, where
+the questions are a last Not placed row. A banner above the week says
+what the agents drafted in it, with Discard and the approval of the
+whole week shown. The drafting thread's card shows the call's entries by
+day, with each day's approval, the call's, Discard and Review in Time,
+which opens Time at the draft's week, over the board the pane shows when
+it is of the entries' connection and otherwise the first board of that
+connection. The week and the card follow an agent's draft, a
+person's change and a post without a reload, on the computer the thread
+runs on, a paired one included. Discard asks once.
+
+An approval says what posted, what did not, and why, in the tracker's
+words. A day's approval skips an entry whose ticket has had time logged
+on that day since the draft, and says so; Log alone posts it. A day with
+an open question posts its entries and leaves the question open. An
+entry whose post may have landed (its outcome unknown) shows that state
+and the sentence of what to do, with Remove and, on Time, Log by hand: a
+log form filled from the entry, after whose save the entry is removed.
+It never offers a way to post it again. A question answered with a
+ticket whose entry that day is still drafted adds its time to that
+entry; the question's text becomes part of the entry's reason, which is
+the worklog's description once posted.
 
 - By day shows the week as five columns. Each entry shows its ticket, its
   hours and the reason for them. By ticket shows a grid of tickets against
@@ -641,7 +896,51 @@ sidebar and the thread header, on desktop and on a phone.
 - A question is answered with one click: one of the offered tickets, any
   other ticket found by key or title, or left out.
 - Time is logged by hand from a cell, a day or a ticket.
-- An entry on a support ticket shows what its hours are worth in points.
+- An entry on a support ticket shows what its hours are worth in points,
+  by the project's newest hours-per-point value, as does the ticket's
+  total in By ticket; in tickets for a project that counts tickets. A
+  board estimated in time shows none, its hours being the estimate, nor
+  does a ticket this computer's copy of the board does not hold.
+- An agent's draft puts meeting hours on the project's meetings ticket and
+  time off on its time-off ticket ([Setup](#setup)) without a question.
+  When one of them is not set, the agent asks instead. One that is gone
+  is refused once Jira is asked, so the agent asks; until this computer
+  reads that ticket again, its copy may still answer. With Never log to an epic on, a draft entry on an epic is
+  refused, and the agent puts the hours on a ticket under the epic or
+  asks. Time logged by hand is not held to it.
+
+### Activity
+
+- While a Jira connection is on, each computer records when the person
+  gave input to the app on its screens, and on which thread, and which
+  threads started a turn each day. A computer with no Jira connection on
+  records nothing: turning the last one off keeps what came before and
+  records nothing after, and turning one on records from then.
+- Input is a key, a press, a scroll or a touch. A minute counts when
+  there was input in the 3 minutes before it, the last input of a burst
+  included. Moving the pointer is not input. A screen asleep or in the
+  background adds nothing when it wakes.
+- The thread is the one the screen shows: on the phone, an agent thread
+  opened from the Agents rail counts on that thread. When the thread or
+  the layout the screen shows changes, the time up to the change stays
+  with what was shown before it, and the time after goes to what is
+  shown now. A change adds no time of its own.
+- `phone` time is time in the compact layout: the phone shell, or a
+  browser on a narrow touch screen.
+- A computer counts the screens attached to it, and only those of its
+  own person: its own window, a browser on it, and its own devices. A
+  screen attached only to another computer is not in its answer.
+- Reading a page in the desktop's browser pane counts only within 3
+  minutes of the last input to the app, since the page takes its own
+  input. The operating system's menus and dialogs do not count either.
+- A thread's minutes go to the ticket it is linked to now, so relinking
+  it moves its past minutes. Days are the computer's local dates. Linear
+  tickets get no minutes.
+- When the computer cannot write what it measured, an agent's read says
+  since when, and so does `GetActivityRecording` for the Time screen. A
+  crash loses at most the last 5 minutes measured.
+- The measure is kept 92 days. Its mechanism, costs and limits are in
+  [Activity](../architecture/tracker-backend.md#activity).
 
 ### Setup
 
@@ -668,11 +967,118 @@ sidebar and the thread header, on desktop and on a phone.
   is unknown says so in the computer's words and reads the setup again.
   A setup that cannot be read is said with its file and Try again; one a
   newer version saved is said, with no change offered.
+- Fields, Starting work, Points and credit, Time and Agents are per project and behave as
+  Status groups does: each change saves at once, and a save that lost, a save
+  whose outcome is unknown, a setup that cannot be read and a section a
+  newer version saved are said the same way.
+- Fields lists, per Jira site of the project's boards and per site its
+  pins name, the fields on top of every ticket and the sections open on
+  every ticket, the same pins as the pin on a ticket. What is pinned shows
+  at once; a field or section that is not pinned is found by typing its
+  name, the exact name first, and at most 20 matches show; two fields of
+  one name show their IDs. A site's fields are its whole field catalog,
+  several hundred on a real site. Each site's fields are read on their
+  own: a site whose fields cannot be read says why beside its pins, with
+  Try again, while the other sites show as usual. A site read before keeps
+  the fields it last read, to pin and to find; one never read shows its
+  pins by ID, which can be taken off. A long text field named as a
+  built-in section (Description) shows its ID beside the name, as two
+  fields of one name do. A project with only Linear boards says it
+  has nothing to pin: a Linear ticket's fields are fixed, and its
+  sections are pinned on the ticket.
+- Starting work lists each tracker project of the project's boards, and
+  any that already has defaults, with what Start work does: move the
+  ticket (off, or on to a status the project's boards offer it, the
+  first one counted in progress when turned on: a Linear team's own
+  boards' statuses, and for a Jira tracker project every status the
+  project's boards on its site show, its own boards' first, since a Jira
+  board can list several tracker projects' tickets; a tracker project offered no status says
+  so, and one whose boards this computer has not read names them),
+  assign it to the person, name the branch after the ticket, and the
+  project the thread runs in. With naming off, the Start work form
+  opens with an empty branch box for the person to name. The form's Save
+  as defaults writes the same defaults, so each shows what the other
+  saved.
+- Agents has three rows: Read tickets, always on; Change tickets, on
+  unless turned off; and Ask before changing several at once, on unless
+  turned off. Change tickets covers logging time, which always waits for
+  the person's approval. With Change tickets off, a thread of the project that
+  creates or changes a ticket, or drafts or logs time, is refused at the call with a sentence that
+  tells the agent to ask the person to turn it on here. With Ask before
+  changing several at once off, a change to several tickets is sent
+  without waiting for approval, an exception to the approval ruling that
+  the project chooses. A setup that cannot be read, or an agents section a
+  newer version saved, refuses every ticket change of the project's
+  threads until it is fixed.
+- Points and credit has the Estimates group, which applies to the
+  project's Jira boards. What a ticket is worth is the boards' estimates
+  ("Story points" when every Jira board this computer has read estimates
+  in points, else "The board's estimates") or Count tickets: counting
+  tickets sums every total of the project's boards in tickets (the
+  Board's columns, the Backlog's sections, a sprint's completion, each
+  person's load, the pace sprint planning measures against, and the
+  dashboards), each open screen following the pick without a reload,
+  while cards, rows and the ticket keep showing and editing their
+  points. A board listed by two projects counts in each by that
+  project's pick. Usual pace is, for each Jira board that plans sprints,
+  the pace sprint planning measures against, in the unit picked, from
+  this computer's copy as it is when the page opens: "44 points a sprint,
+  from the last 5 sprints", a board not read yet as read when it is
+  opened, and a board that finished no sprint as having none. Planning
+  poker is on unless turned off; off, the project's tickets show no
+  poker and ask the site nothing about it, and on again show none of the
+  votes shown before until the ticket's computer answers with the round
+  it holds. A project with only Linear boards says it has no points
+  settings, and one with no boards says to add one; what it chose is
+  kept for when it lists a Jira board.
+- Points and credit has the Credit group for a project with a Jira
+  board. Count credit is off until turned on; off keeps the rules and
+  the picks below, which show again when it is turned on. Review credit
+  is a share of a finished ticket's points (0 to 100%, 10% at first) for
+  each reviewer who did at least a number (2 at first) of the actions
+  picked (commented, approved, logged time; at least one). Support
+  credit is 1 point for every 1 to 16 hours (4 at first) logged on a
+  support ticket. A change counts from this sprint on, and finished
+  sprints keep the rule they were counted with, or for every sprint, as
+  the person picks beside the rules, the pick read when the change is
+  made: a save that changes the rules keeps every rule saved before it,
+  and a finished sprint counts with the rules in effect when it
+  completed. Which tickets are support is picked for each Jira site of the
+  project's boards: issue types (those of the boards' projects, read
+  from the tracker), labels (typed) and the project's boards. A ticket is
+  a support ticket while the pick names it and it has no estimate; on a
+  board with no estimates, every ticket the pick names is. In a project
+  that counts tickets the rules say tickets in place of points, and a
+  project with a board estimated in time is told that board's hours count
+  as they are. While a rule counts comments or approvals, Forge accounts
+  lists, for each tracker connection of the project's Jira boards, the
+  GitHub and GitLab accounts that approved or commented on a pull
+  request of the boards' tickets: its name and login, the person it
+  counts for, and whether that was set here, is the account the
+  computer reads the forge as, was matched by name, is nobody, or is
+  not matched yet. Each account offers picking a person, found in the
+  tracker by typing a name, Not a person, and, once set, Match by name.
+  The list shows what the computer stored; a change that failed says so
+  under its account, and Read again reads the list again. A credit
+  section a newer version saved is said in place of the group's rules
+  and kept.
+- Time names the ticket meetings go on, "Meetings that are not about one
+  ticket", and the ticket time off goes on, each found by key or title on
+  the connections of the project's Jira boards, shown with its title and
+  cleared with Clear, and Never log to an epic, on unless turned off. A
+  ticket set that is gone, or that the connection cannot see, is said
+  beside it, as is one whose site no connection that is on reaches. A
+  project with only Linear boards says it has no time settings, and one
+  with no boards says to add one; tickets it chose while it listed a Jira
+  board are kept and apply again once it lists one. The draft's sources are not offered
+  here until the calendar and call-duration readers are designed.
 - The rest is per project: which boards the picker lists and which opens
   first; which group each status belongs to, including left out of counts;
-  pinned fields, pinned sections and card marks; Start work defaults; the
+  pinned fields and pinned sections; Start work defaults; the
   estimate field, poker and credit rules; the meetings and time-off
-  tickets, draft approval and draft sources; and what agents may do.
+  tickets and whether a draft may log to an epic; and what agents may do.
+  What cards and Backlog rows show is chosen with Display, per board, on
+  each device.
 - A Linear project has no fields, credit or time settings.
 
 ### Compact layout

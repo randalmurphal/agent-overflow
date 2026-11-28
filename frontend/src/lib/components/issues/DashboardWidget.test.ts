@@ -7,23 +7,28 @@
 import { fireEvent, render, within } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import type { RangeView, WidgetValue, WidgetView } from '../../../../bindings/agent-overflow/internal/trackerdash/models';
-import type { DrillState } from '../../stores/trackerDashboard.svelte';
+import type { DrillState, LoggedTimeRead } from '../../stores/trackerDashboard.svelte';
 import DashboardDrill from './DashboardDrill.svelte';
 import DashboardWidget from './DashboardWidget.svelte';
+import type { TicketListSource } from './TicketListActions.svelte';
+import { ticketWriteSurfaceContext } from './ticketWriteSurface';
 
 const HOW = { words: ['The estimate of the tickets finished in each sprint, averaged.'], counts: 'The points of each sprint added up', range: 'It counts the range\'s sprints.', rules: 'none', sql: 'SELECT 1', reads: ['tickets'] };
 const RANGE = { id: 'sprints_5', label: 'Last 5 sprints', periods: [], previous: 'the 5 sprints before' } as unknown as RangeView;
+
+const TICKETS: TicketListSource = { backend: '', connection: 'conn-1', project: 'project-1', writeBlocked: '', threadBlocked: '' };
+const SHOWN = ticketWriteSurfaceContext(() => true);
 
 function view(over: Record<string, unknown>): WidgetView {
   return { id: 'pace', title: 'Usual pace', form: 'number', width: 4, unit: 'estimate', good: 'up', how: HOW, ...over } as unknown as WidgetView;
 }
 
-function draw(v: WidgetView, value: WidgetValue | undefined, range: RangeView = RANGE) {
+function draw(v: WidgetView, value: WidgetValue | undefined, range: RangeView = RANGE, extra: Record<string, unknown> = {}) {
   const onDrill = vi.fn();
   const onPerson = vi.fn();
   const onEpic = vi.fn();
   const onTicket = vi.fn();
-  const r = render(DashboardWidget, { props: { view: v, value, range, estimates: 'points', onDrill, onPerson, onEpic, onTicket } });
+  const r = render(DashboardWidget, { props: { view: v, value, range, estimates: 'points', onDrill, onPerson, onEpic, onTicket, tickets: TICKETS, ...extra }, context: SHOWN });
   return { ...r, onDrill, onPerson, onEpic, onTicket };
 }
 
@@ -34,6 +39,9 @@ describe('a number', () => {
     const mark = getByTestId('dashboard-change');
     expect(mark.dataset.tone).toBe('good');
     expect(mark.textContent).toContain('Up 3 points from 9, the 5 sprints before');
+    // The button's name is its number; the lines under it are its description.
+    const described = document.getElementById(getByTestId('dashboard-number').getAttribute('aria-describedby') ?? '');
+    expect(described?.textContent?.trim()).toBe('Up 3 points from 9, the 5 sprints before');
     await fireEvent.click(getByTestId('dashboard-number'));
     expect(onDrill).toHaveBeenCalledWith({ widget: 'pace' });
   });
@@ -67,7 +75,7 @@ describe('a number with tickets not counted', () => {
       error: null,
       answer: { title: 'Stuck', value, unit: 'tickets', estimates: 'points', count: 0, tickets: 0, counted: 0, page: 0, pages: 1, rows: [], at: 0, ...over },
     } as unknown as DrillState;
-    return render(DashboardDrill, { props: { drill: state, onPage: vi.fn(), onTicket: vi.fn(), onClose: vi.fn() } });
+    return render(DashboardDrill, { props: { drill: state, onPage: vi.fn(), onTicket: vi.fn(), tickets: TICKETS, onClose: vi.fn() }, context: SHOWN });
   }
 
   it('reads in the same words on the tile, a cell\'s tip, the list and the drill', () => {
@@ -93,6 +101,26 @@ describe('a number with tickets not counted', () => {
     expect(d.getByTestId('dashboard-drill-value-not-counted').textContent).toBe('2 not counted');
   });
 
+  it('names the drill by its whole title, which wraps, and leaves out a count of tickets its value already says', () => {
+    const title = 'Committed, added, removed and completed, Sprint E, Added';
+    const same = drill({ v: 3 }, { title, count: 3, tickets: 3 });
+    expect(same.getByRole('dialog', { name: title })).toBeTruthy();
+    const heading = same.getByTestId('dashboard-drill-heading');
+    expect(heading.textContent).toBe(title);
+    expect(heading.className).not.toContain('truncate');
+    expect(same.getByTestId('dashboard-drill-value').textContent).toBe('3 tickets');
+    expect(same.queryByTestId('dashboard-drill-count')).toBeNull();
+    same.unmount();
+
+    // Rows beside the tickets, or a value in another unit, still say the count.
+    const rows = drill({ v: 3 }, { count: 4, tickets: 3 });
+    expect(rows.getByTestId('dashboard-drill-count').textContent).toBe('4 rows, 3 tickets');
+    rows.unmount();
+    const points = drill({ v: 3 }, { unit: 'estimate', count: 3, tickets: 3 });
+    expect(points.getByTestId('dashboard-drill-value').textContent).toBe('3 points');
+    expect(points.getByTestId('dashboard-drill-count').textContent).toBe('3 tickets');
+  });
+
   it('lists a ticket that counts twice as two rows with their periods, and says so in its header', () => {
     // A key that two rows share is repaired and reported, never drawn
     // silently; each row has its own.
@@ -113,6 +141,36 @@ describe('a number with tickets not counted', () => {
     vi.unstubAllGlobals();
   });
 
+  it('heads each group of a drill\'s rows with its name, its rows over every page and its own number, and no heading for one group', () => {
+    const row = { status: 'Done', counted: true };
+    const rows = [
+      { ...row, row: 0, id: '10001', key: 'WEB-1', title: 'First story', value: 5, series: 'Finished tickets' },
+      { ...row, row: 1, id: '10001', key: 'WEB-1', title: 'First story', value: 0.5, series: 'Review credit', note: '10% of 5 points for commented, logged time' },
+      { ...row, row: 2, id: '10002', key: 'WEB-2', title: 'Second story', counted: false, series: 'Review credit', note: 'who worked on it is not read yet' },
+      { ...row, row: 3, id: '10001', key: 'WEB-1', title: 'First story', value: 0, series: 'Review credit', heading: 'Acted but did not qualify', note: 'no credit: commented; needs 2 of commented, logged time' },
+    ];
+    const groups = [
+      { series: 'Finished tickets', value: { v: 1 }, rows: 1 },
+      { series: 'Review credit', value: { v: 0.1, nc: 1 }, rows: 7 },
+      { series: 'Review credit', heading: 'Acted but did not qualify', value: { v: 0 }, rows: 1 },
+    ];
+    const d = drill({ v: 1.1, nc: 1 }, { unit: 'estimate', count: 9, tickets: 2, counted: 8, rows, groups });
+    const heads = d.getAllByTestId('dashboard-drill-group');
+    expect(heads.map((h) => within(h).getByTestId('dashboard-drill-group-name').textContent)).toEqual(['Finished tickets', 'Review credit', 'Review credit · Acted but did not qualify']);
+    expect(heads.map((h) => within(h).getByTestId('dashboard-drill-group-rows').textContent)).toEqual(['1 row', '7 rows', '1 row']);
+    expect(heads.map((h) => h.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+      'Finished tickets 1 row 1 point',
+      'Review credit 7 rows 0.1 points 1 not counted',
+      'Review credit · Acted but did not qualify 1 row 0 points',
+    ]);
+    // Each heading sits before its group's first row.
+    const order = [...d.getByTestId('dashboard-drill-rows').querySelectorAll('[data-testid="ticket-list-group"], [data-testid="dashboard-drill-row"]')].map((e) => (e as HTMLElement).dataset.testid);
+    expect(order).toEqual(['ticket-list-group', 'dashboard-drill-row', 'ticket-list-group', 'dashboard-drill-row', 'dashboard-drill-row', 'ticket-list-group', 'dashboard-drill-row']);
+    d.unmount();
+    const one = drill({ v: 1 }, { unit: 'estimate', count: 1, tickets: 1, counted: 1, rows: rows.slice(0, 1), groups: groups.slice(0, 1) });
+    expect(one.queryByTestId('dashboard-drill-group')).toBeNull();
+  });
+
   it('says in the drill that the board\'s first read has not finished, from its answer', () => {
     const d = drill({ v: 1 }, { reading: true });
     expect(d.getByTestId('dashboard-drill-reading').textContent).toBe("This board's first read has not finished: these numbers count the tickets read so far.");
@@ -130,6 +188,14 @@ describe('a number with tickets not counted', () => {
     expect(d.getByTestId('dashboard-drill-value').textContent).toBe('Not known');
     expect(d.getByTestId('dashboard-drill-value-not-counted').textContent).toBe('2 not counted');
   });
+});
+
+it('says beside a widget of credit that the last read of who worked on the tickets failed, and nothing without it', () => {
+  const sentence = 'Credit may not count everything: the last read of who worked on the tickets failed. Jira refused the request: 401 Unauthorized.';
+  const failing = draw(view({}), { id: 'pace', value: { v: 12 }, evidence: sentence } as WidgetValue);
+  expect(failing.getByTestId('dashboard-widget-evidence').textContent).toBe(sentence);
+  failing.unmount();
+  expect(draw(view({}), { id: 'pace', value: { v: 12 } } as WidgetValue).queryByTestId('dashboard-widget-evidence')).toBeNull();
 });
 
 it('says why its metric failed, in its place', () => {
@@ -193,4 +259,181 @@ it('opens a listed ticket, and the rest and the uncounted in the drill', async (
   expect(getByTestId('dashboard-not-counted').textContent).toBe('1 not counted');
   await fireEvent.click(getByTestId('dashboard-more'));
   expect(onDrill).toHaveBeenCalledWith({ widget: 'stuck_list' });
+});
+
+describe('a chart of the sprint\'s days', () => {
+  const day = (key: string, label: string, v: object, over: object = {}) => ({ key, label, cells: [v], total: v, ...over });
+  const burn = view({ id: 'burndown', title: 'Burndown', form: 'line', bucket: 'day', unit: 'estimate', good: 'down', width: 6, pace: true });
+  const buckets = [
+    day('day:start', 'Start', { v: 12 }),
+    day('day:2026-11-23', 'Nov 23', { v: 10, nc: 1 }),
+    day('day:2026-11-24', 'Nov 24', { v: 7 }, { partial: true }),
+    day('day:2026-11-25', 'Nov 25', {}, { last: true }),
+  ];
+
+  it('names the sprint it counted in How this is counted, and says why it has no days', async () => {
+    const counted = draw(burn, { id: 'burndown', series: [''], buckets, range_words: 'It counts WEB Sprint 9 at its start and at the end of each working day; the range does not change it.' } as unknown as WidgetValue);
+    await fireEvent.click(counted.getByTestId('dashboard-how-toggle'));
+    expect(counted.getByTestId('dashboard-how').textContent).toContain('It counts WEB Sprint 9 at its start');
+    counted.unmount();
+    const none = draw(burn, { id: 'burndown', note: 'No sprint is active on this board.' } as unknown as WidgetValue);
+    expect(none.getByTestId('dashboard-widget-note').textContent).toBe('No sprint is active on this board.');
+    expect(none.queryByTestId('dashboard-line')).toBeNull();
+  });
+
+  it('draws an even pace for the burndown alone, not for any line of days', () => {
+    const value = { id: 'burndown', series: [''], buckets } as unknown as WidgetValue;
+    const paced = draw(burn, value);
+    expect(paced.getByTestId('dashboard-legend').textContent).toContain('On pace');
+    paced.unmount();
+    const made = draw(view({ id: 'w_1', title: 'Made per day', form: 'line', bucket: 'day', unit: 'tickets', width: 6 }), { ...value, id: 'w_1' } as WidgetValue);
+    expect(made.queryByTestId('dashboard-legend')).toBeNull();
+  });
+});
+
+it('adds no total to a table whose series overlap', () => {
+  const value = {
+    id: 'sprint_scope',
+    series: ['Committed', 'Added', 'Removed', 'Completed'],
+    buckets: [{ key: 'sprint:1', label: 'WEB Sprint 1', cells: [{ v: 6 }, { v: 7 }, { v: 3 }, { v: 3 }], total: { v: 19 } }],
+  } as unknown as WidgetValue;
+  const v = { id: 'sprint_scope', title: 'Committed, added, removed and completed', form: 'table', bucket: 'sprint', series: value.series };
+  const overlapping = draw(view({ ...v, overlap: true }), value);
+  expect(overlapping.queryByTestId('dashboard-cell-total')).toBeNull();
+  expect(overlapping.getByTestId('dashboard-table').textContent).not.toContain('Total');
+  overlapping.unmount();
+  expect(draw(view(v), value).getByTestId('dashboard-cell-total')).toBeTruthy();
+});
+
+it('compares a state with what held when the range began, not with the range before', () => {
+  const { getByTestId } = draw(view({ id: 'stuck', state: true, good: 'down', unit: 'tickets' }), { id: 'stuck', value: { v: 4 }, previous: { v: 2, nc: 1 } } as WidgetValue);
+  expect(getByTestId('dashboard-change').textContent?.trim()).toBe('Up 2 tickets from 2, when the range began, 1 not counted then');
+  expect(getByTestId('dashboard-change').dataset.tone).toBe('bad');
+});
+
+describe('your logged time', () => {
+  const logged = view({ id: 'logged', title: 'Logged', unit: 'time', how: { ...HOW, reads: ['worklogs'] } });
+  const unread = { id: 'logged', value: { ur: 2 }, unread: ['2026-11-24', '2026-11-25'] } as unknown as WidgetValue;
+  function read(over: Partial<LoggedTimeRead> = {}): LoggedTimeRead {
+    return { reading: false, failure: '', retry: vi.fn(), ...over };
+  }
+
+  it('says it is reading in place of a number that will change', () => {
+    const w = draw(logged, unread, RANGE, { logged: read({ reading: true }) });
+    expect(w.getByTestId('dashboard-widget-reading').textContent).toBe('Reading your logged time…');
+    expect(w.queryByTestId('dashboard-number')).toBeNull();
+    w.unmount();
+    const counted = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue, RANGE, { logged: read({ reading: true }) });
+    expect(counted.queryByTestId('dashboard-widget-reading')).toBeNull();
+    expect(counted.getByTestId('dashboard-number-value').textContent).toBe('1h');
+  });
+
+  it('is not known with the days not read, and after a failed read says why and reads again on the person\'s press', async () => {
+    const r = read({ failure: 'Jira asked to wait' });
+    const w = draw(logged, unread, RANGE, { logged: r });
+    expect(w.getByTestId('dashboard-number-value').textContent).toBe('Not known');
+    expect(w.getByTestId('dashboard-number-not-read').textContent).toBe('2 days not read');
+    expect(w.getByTestId('dashboard-widget-unread').textContent).toContain('Not known: 2 days not read of your logged time. Jira asked to wait');
+    await fireEvent.click(w.getByTestId('dashboard-widget-unread-retry'));
+    expect(r.retry).toHaveBeenCalledTimes(1);
+    w.unmount();
+  });
+
+  it('keeps a known number beside why reading it again failed, with Read again', async () => {
+    const r = read({ failure: 'Jira asked to wait.' });
+    const w = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue, RANGE, { logged: r });
+    expect(w.getByTestId('dashboard-number-value').textContent).toBe('1h');
+    expect(w.getByTestId('dashboard-widget-unread').textContent).toContain('Your logged time was not read again: Jira asked to wait.');
+    await fireEvent.click(w.getByTestId('dashboard-widget-unread-retry'));
+    expect(r.retry).toHaveBeenCalledTimes(1);
+    w.unmount();
+    const fine = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue, RANGE, { logged: read() });
+    expect(fine.queryByTestId('dashboard-widget-unread')).toBeNull();
+    fine.unmount();
+    const other = draw(view({}), { id: 'pace', value: { v: 2 } } as WidgetValue, RANGE, { logged: read({ failure: 'Jira asked to wait.' }) });
+    expect(other.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
+  it('offers Read again for days still not read when no read is out and none failed', async () => {
+    const r = read();
+    const w = draw(logged, unread, RANGE, { logged: r });
+    expect(w.getByTestId('dashboard-widget-unread').textContent).toContain('Not known: 2 days not read of your logged time.');
+    expect(w.getByTestId('dashboard-widget-unread').textContent).not.toContain('undefined');
+    await fireEvent.click(w.getByTestId('dashboard-widget-unread-retry'));
+    expect(r.retry).toHaveBeenCalledTimes(1);
+    w.unmount();
+    const reading = draw(logged, unread, RANGE, { logged: read({ reading: true }) });
+    expect(reading.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
+  it('says a list that counts days older than the logged time kept is not known, with nothing to read again', () => {
+    const list = view({ id: 'logged', title: 'Logged on', form: 'list', unit: 'time', how: { ...HOW, reads: ['worklogs'] } });
+    const old = { id: 'logged', tickets: [{ row: 0, key: 'WEB-1', title: 'One' }], old: true } as unknown as WidgetValue;
+    const w = draw(list, old, RANGE, { logged: read({ failure: 'Jira asked to wait.' }) });
+    expect(w.getByTestId('dashboard-widget-unread').textContent?.trim()).toBe('Not known: it counts days older than the logged time kept.');
+    expect(w.queryByTestId('dashboard-widget-unread-retry')).toBeNull();
+    w.unmount();
+    const whole = draw(list, { ...old, old: undefined } as unknown as WidgetValue, RANGE, { logged: read() });
+    expect(whole.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
+  it('says an empty chart or list of it is not known while its days are not read, and nothing to count once they are', () => {
+    const r = read();
+    const ranked = view({ id: 'logged', title: 'By assignee', form: 'bars', bucket: 'person', unit: 'time', how: { ...HOW, reads: ['worklogs'] } });
+    const list = view({ id: 'logged', title: 'Logged on', form: 'list', unit: 'time', how: { ...HOW, reads: ['worklogs'] } });
+    for (const [v, empty] of [[ranked, 'Nothing to count.'], [list, 'No tickets.']] as const) {
+      const cold = draw(v, { id: 'logged', unread: ['2026-11-24', '2026-11-25'] } as unknown as WidgetValue, RANGE, { logged: r });
+      expect(cold.queryByTestId('dashboard-widget-empty')).toBeNull();
+      expect(cold.getByTestId('dashboard-widget-unread').textContent).toContain('Not known: 2 days not read of your logged time.');
+      cold.unmount();
+      const old = draw(v, { id: 'logged', old: true } as WidgetValue, RANGE, { logged: r });
+      expect(old.queryByTestId('dashboard-widget-empty')).toBeNull();
+      expect(old.getByTestId('dashboard-widget-unread').textContent?.trim()).toBe('Not known: it counts days older than the logged time kept.');
+      old.unmount();
+      const read_ = draw(v, { id: 'logged' } as WidgetValue, RANGE, { logged: r });
+      expect(read_.getByTestId('dashboard-widget-empty').textContent).toBe(empty);
+      expect(read_.queryByTestId('dashboard-widget-unread')).toBeNull();
+      read_.unmount();
+    }
+  });
+
+  it('offers no Read again beside a number older than the logged time kept, which says so in its place', () => {
+    const w = draw(logged, { id: 'logged', value: { old: true }, trend: [{ old: true }, { ur: 1 }], unread: ['2026-11-25'] } as unknown as WidgetValue, RANGE, { logged: read({ failure: 'Jira asked to wait.' }) });
+    expect(w.getByTestId('dashboard-number-value').textContent).toBe('Not known');
+    expect(w.getByTestId('dashboard-number-not-read').textContent).toBe('older than the logged time kept');
+    expect(w.queryByTestId('dashboard-widget-unread')).toBeNull();
+  });
+
+  it('says in How this is counted which days of it the page reads', async () => {
+    const w = draw(logged, { id: 'logged', value: { v: 3600 } } as WidgetValue);
+    await fireEvent.click(w.getByTestId('dashboard-how-toggle'));
+    expect(w.getByTestId('dashboard-how-worklogs').textContent).toBe('It counts your own logged time, and its numbers are known once every day of the last 182 days up to today is read. While a widget of it is counted, its computer reads from the tracker the days not read yet, 31 days a read, and the newest 31 days again at most once every 5 minutes; once it starts, it reads them all even if this page closes. After a read fails it reads nothing more on its own until Read again or Refresh, which read every day again. A day before those 182 is not read, so a number that counts one is not known.');
+    w.unmount();
+    const tickets = draw(view({}), { id: 'pace', value: { v: 2 } } as WidgetValue);
+    await fireEvent.click(tickets.getByTestId('dashboard-how-toggle'));
+    expect(tickets.queryByTestId('dashboard-how-worklogs')).toBeNull();
+  });
+
+  it('says in the drill the days it could not read', () => {
+    const state = {
+      target: { widget: 'logged' },
+      page: 0,
+      loading: false,
+      error: null,
+      answer: { title: 'Logged', value: { v: 3600, ur: 1 }, unit: 'time', estimates: 'points', count: 0, tickets: 0, counted: 0, page: 0, pages: 1, rows: [], at: 0 },
+    } as unknown as DrillState;
+    const d = render(DashboardDrill, { props: { drill: state, onPage: vi.fn(), onTicket: vi.fn(), tickets: TICKETS, onClose: vi.fn() }, context: SHOWN });
+    expect(d.getByTestId('dashboard-drill-value').textContent).toBe('1h');
+    expect(d.getByTestId('dashboard-drill-value-not-read').textContent).toBe('1 day not read');
+  });
+});
+
+it('says in How this is counted that a count of threads is the board\'s computer\'s', async () => {
+  const threads = draw(view({ how: { ...HOW, reads: ['tickets', 'threads'] } }), { id: 'pace', value: { v: 2 } } as WidgetValue, RANGE, { computer: 'build-box' });
+  await fireEvent.click(threads.getByTestId('dashboard-how-toggle'));
+  expect(threads.getByTestId('dashboard-how-threads').textContent).toBe("It counts the threads on build-box linked to these tickets; a ticket's Work lists those of every attached computer.");
+  threads.unmount();
+  const tickets = draw(view({}), { id: 'pace', value: { v: 2 } } as WidgetValue, RANGE, { computer: 'build-box' });
+  await fireEvent.click(tickets.getByTestId('dashboard-how-toggle'));
+  expect(tickets.queryByTestId('dashboard-how-threads')).toBeNull();
 });

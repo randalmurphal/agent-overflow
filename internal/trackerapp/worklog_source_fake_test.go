@@ -18,23 +18,32 @@ import (
 // the same day: Jira's 20001 and Tempo's 7001.
 
 // worklogGateStore runs gate, once, before the first ReplaceMirrorWorklogs
-// after it is set: a test holds a refresh between its read and its store
-// with it.
+// after it is set, and after, once, after the first one that follows it
+// is set: a test holds a refresh between its read and its store with
+// gate, and changes the connection between two reads with after. It
+// records the days of each replace, "from..to", in spans.
 type worklogGateStore struct {
 	*store.Store
-	mu   sync.Mutex
-	gate func()
+	mu    sync.Mutex
+	gate  func()
+	after func()
+	spans []string
 }
 
 func (g *worklogGateStore) ReplaceMirrorWorklogs(root, sourceGen int64, author, from, to string, read store.MirrorRead, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {
 	g.mu.Lock()
-	gate := g.gate
-	g.gate = nil
+	gate, after := g.gate, g.after
+	g.gate, g.after = nil, nil
+	g.spans = append(g.spans, from+".."+to)
 	g.mu.Unlock()
 	if gate != nil {
 		gate()
 	}
-	return g.Store.ReplaceMirrorWorklogs(root, sourceGen, author, from, to, read, logs)
+	changes, err := g.Store.ReplaceMirrorWorklogs(root, sourceGen, author, from, to, read, logs)
+	if after != nil {
+		after()
+	}
+	return changes, err
 }
 
 // timeScenario is a fake scenario with a Jira connection whose site and
@@ -51,6 +60,13 @@ const tempoTokenFake = "fake-tempo-token-1"
 
 func newTimeScenario(t *testing.T) *timeScenario {
 	t.Helper()
+	return newTimeScenarioWith(t, nil)
+}
+
+// newTimeScenarioWith is newTimeScenario with edit, when set, applied to
+// the Jira site's fixture, made at at.
+func newTimeScenarioWith(t *testing.T, edit func(site *trackerfake.JiraSite, at time.Time)) *timeScenario {
+	t.Helper()
 	var day time.Time
 	s := newFakeScenario(t, func(at time.Time) trackerfake.Fixture {
 		site := jiraSeed(at)
@@ -60,6 +76,9 @@ func newTimeScenario(t *testing.T) *timeScenario {
 		site.Issues[0].Worklogs = []trackerfake.JiraWorklog{{ID: "20001", Author: "acc-user1", Started: day.Add(9 * time.Hour), TimeSpent: 3600}}
 		site.Tempo = &trackerfake.TempoAccount{Token: tempoTokenFake, Worklogs: []trackerfake.TempoWorklog{
 			{ID: 7001, Issue: "10101", Author: "acc-user1", StartDate: day.Format(time.DateOnly), StartTime: "09:00:00", Spent: 1800}}}
+		if edit != nil {
+			edit(&site, at)
+		}
 		return trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}, Linear: []trackerfake.LinearWorkspace{linearSeed(at)}}
 	}, "example.atlassian.net")
 	gate := &worklogGateStore{Store: s.st}

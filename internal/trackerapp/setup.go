@@ -12,6 +12,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -19,6 +20,7 @@ import (
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/tracker"
 )
 
 // A project's tracker setup: the per-project choices of the Issues
@@ -33,7 +35,26 @@ import (
 //   - ticket_pins: by tracker site, the fields and the sections a ticket
 //     shows first;
 //   - start_work: by tracker site and tracker project, what Start work
-//     does to a ticket and where its thread runs (StartWorkDefaults).
+//     does to a ticket and where its thread runs (StartWorkDefaults);
+//   - agents: what a thread of the project may do to tickets through the
+//     tracker tools (AgentRules);
+//   - time: the Jira tickets meeting and time-off hours go on, and
+//     whether an agent's time draft may put hours on an epic
+//     (TimeSettings);
+//   - estimates: whether the project counts its Jira boards' work by
+//     their estimates or by their tickets, and whether its tickets offer
+//     planning poker (Estimates);
+//   - credit: whether the project counts credit, the rules it counts it
+//     by as they changed over time, and by Jira site which tickets are
+//     support (Credit);
+//   - dashboards: by tracker site and board, the dashboards the project
+//     keeps (BoardDashboards);
+//   - board_tiles: by tracker site and board, the widgets pinned to the
+//     board's summary row and each number widget's limit (BoardTiles).
+//
+// The dashboards and the board tiles are not part of Setup: a replace
+// keeps them as held, and only their own edits write them (editBoard), so
+// a screen that saves the setup it read never carries them.
 //
 // A section this build does not know, or one at a version newer than it
 // reads, is kept byte for byte and written back unchanged by a replace,
@@ -72,6 +93,12 @@ const (
 	sectionStatusGroups = "status_groups"
 	sectionTicketPins   = "ticket_pins"
 	sectionStartWork    = "start_work"
+	sectionAgents       = "agents"
+	sectionTime         = "time"
+	sectionEstimates    = "estimates"
+	sectionCredit       = "credit"
+	sectionDashboards   = "dashboards"
+	sectionBoardTiles   = "board_tiles"
 	setupSectionVersion = 1
 )
 
@@ -121,9 +148,11 @@ func (e *SetupWriteError) Is(target error) bool { return target == ErrSetupWrite
 
 func (e *SetupWriteError) Unwrap() error { return e.Err }
 
-// SetupError is a setup that does not validate, with why.
+// SetupError is a setup that does not validate, with why; Full when
+// what does not fit is the file's bound (setupMaxBytes).
 type SetupError struct {
 	Reason string
+	Full   bool
 }
 
 func (e *SetupError) Error() string { return ErrInvalidSetup.Error() + ": " + e.Reason }
@@ -142,6 +171,10 @@ type Setup struct {
 	StatusGroups []SiteStatusGroups  `json:"status_groups"`
 	TicketPins   []SitePins          `json:"ticket_pins"`
 	StartWork    []StartWorkDefaults `json:"start_work"`
+	Agents       *AgentRules         `json:"agents,omitempty"`
+	Time         *TimeSettings       `json:"time,omitempty"`
+	Estimates    *Estimates          `json:"estimates,omitempty"`
+	Credit       *Credit             `json:"credit,omitempty"`
 }
 
 // UnmarshalJSON reads a replace's setup whole or refuses it: a JSON object
@@ -194,8 +227,10 @@ type SitePins struct {
 // move); Assign, whether the ticket is assigned to the connection's
 // account (absent: it is); Branch, the template of the branch's name,
 // whose {key} is the ticket's key and {title} its title made a branch
-// name (absent: {key}-{title}); Repository, the app project the thread
-// runs in (absent: this project). The tracker project is the one identity
+// name (absent: {key}-{title}); NameBranch, whether the Start work form
+// offers that name or an empty branch box for the person to fill (absent:
+// it offers the name); Repository, the app project the thread runs in
+// (absent: this project). The tracker project is the one identity
 // Jira and Linear share that a ticket carries, and a status belongs to a
 // project's workflow or a team, so the entry is per tracker project.
 type StartWorkDefaults struct {
@@ -205,8 +240,141 @@ type StartWorkDefaults struct {
 	Status     string `json:"status,omitempty"`
 	Assign     *bool  `json:"assign,omitempty"`
 	Branch     string `json:"branch,omitempty"`
+	NameBranch *bool  `json:"name_branch,omitempty"`
 	Repository string `json:"repository,omitempty"`
 }
+
+// AgentRules is what a thread of the project may do to tickets through
+// the tracker tools, each absent field meaning the built-in rule:
+// ChangeTickets, whether a thread that is not read-only may create,
+// change and comment on tickets (absent: it may); AskSeveral, whether a
+// change to more than one ticket waits for the person's approval
+// (absent: it does). Reading tickets is never refused. The rules are the
+// calling thread's project's, whichever connection the ticket is on. A
+// setup with no rules set has none (nil), which is no section.
+type AgentRules struct {
+	ChangeTickets *bool `json:"change_tickets,omitempty"`
+	AskSeveral    *bool `json:"ask_several,omitempty"`
+}
+
+// Changes reports whether a thread may change tickets.
+func (r AgentRules) Changes() bool { return r.ChangeTickets == nil || *r.ChangeTickets }
+
+// Asks reports whether a change to several tickets waits for approval.
+func (r AgentRules) Asks() bool { return r.AskSeveral == nil || *r.AskSeveral }
+
+// set reports whether the rules set anything, which is a section.
+func (r AgentRules) set() bool { return r.ChangeTickets != nil || r.AskSeveral != nil }
+
+// TimeSettings is where a project's time goes: the ticket meeting hours
+// go on and the ticket time off goes on, each a Jira ticket, and whether
+// an agent's time draft may put hours on an epic, which it may not
+// unless NeverEpics is false. A person's own log is not held to it.
+type TimeSettings struct {
+	Meetings   *TimeTicket `json:"meetings,omitempty"`
+	TimeOff    *TimeTicket `json:"time_off,omitempty"`
+	NeverEpics *bool       `json:"never_epics,omitempty"`
+}
+
+// RefusesEpics is whether an agent's draft may not put hours on an epic.
+func (t TimeSettings) RefusesEpics() bool { return t.NeverEpics == nil || *t.NeverEpics }
+
+// Estimates is how a project counts the work of its Jira boards, and
+// whether its Jira tickets offer planning poker. Count is "tickets" when
+// the project counts tickets in place of the boards' estimates, as a
+// board with no estimates is counted, and absent for the boards'
+// estimates; Poker is false when the project turned planning poker off.
+// Only a Jira board is counted by it: a project that lists none keeps
+// the section for when it lists one.
+type Estimates struct {
+	Count string `json:"count,omitempty"`
+	Poker *bool  `json:"poker,omitempty"`
+}
+
+// estimatesCountTickets is Estimates.Count for counting tickets.
+const estimatesCountTickets = "tickets"
+
+// countsTickets is whether the project counts its Jira boards' tickets.
+func (e *Estimates) countsTickets() bool { return e != nil && e.Count == estimatesCountTickets }
+
+// Credit is how a project counts credit for the work beside a ticket's
+// own points: whether it counts it (On; off keeps the rules and the
+// support picks), the rules it counts it by (Rules), and which tickets
+// are support (Support). Rules is a list of whole snapshots, each in
+// force from its From until the next one's: a closed sprint counts by
+// the snapshot in force when it completed, anything else by the newest.
+// Support is a classification, not a rule of a sprint: a change of it
+// applies to every sprint. A project with no section counts no credit
+// and reads as off with the default rules (defaultCredit); a section
+// that says no more than that is stored as none. Only a Jira board is
+// counted by it, as by Estimates.
+type Credit struct {
+	On      bool          `json:"on"`
+	Rules   []CreditRules `json:"rules"`
+	Support []SiteSupport `json:"support"`
+}
+
+// CreditRules is one snapshot of a project's credit rules: From, when it
+// took effect (Unix milliseconds; the first is 0), and its values. A
+// reviewer of a finished ticket who is not its assignee and did at least
+// ReviewNeed different kinds of ReviewActions (commented, approved,
+// logged_time) on it gets ReviewShare percent of its points; hours logged
+// on a support ticket count as a point for every HoursPerPoint hours (a
+// ticket for every HoursPerPoint hours where the project counts tickets).
+// A replace's newest snapshot may leave From out, which means from this
+// save; the writer stamps it (stampCredit).
+type CreditRules struct {
+	From          *int64   `json:"from,omitempty"`
+	ReviewShare   int      `json:"review_share"`
+	ReviewNeed    int      `json:"review_need"`
+	ReviewActions []string `json:"review_actions"`
+	HoursPerPoint int      `json:"hours_per_point"`
+}
+
+// SiteSupport is which tickets of one Jira site are support for the
+// project: those of an issue type (by ID), with a label (by name) or on a
+// board (by ID) it lists. A ticket is support when it has no estimate and
+// the entry names it, so on a board that does not estimate every ticket
+// it names is (store mirrorSupportSQL). A support ticket is not counted
+// as a ticket without an estimate, and its logged hours count as credit.
+type SiteSupport struct {
+	Tracker string   `json:"tracker"`
+	Site    string   `json:"site"`
+	Types   []string `json:"types"`
+	Labels  []string `json:"labels"`
+	Boards  []string `json:"boards"`
+}
+
+// creditActions are the review actions a credit rule may count, in the
+// order a rule holds them.
+var creditActions = []string{"commented", "approved", "logged_time"}
+
+// The bounds of a credit rule's values, and of a support entry's lists.
+const (
+	creditMaxShare         = 100
+	creditMaxHoursPerPoint = 16
+	creditMaxSupport       = 100
+)
+
+// defaultCredit is what a project with no credit section reads as: off,
+// with one snapshot from the start, 10% of a finished ticket's points to
+// each reviewer who did at least 2 of the three actions, and a point for
+// every 4 hours of support.
+func defaultCredit() *Credit {
+	from := int64(0)
+	return &Credit{Rules: []CreditRules{{From: &from, ReviewShare: 10, ReviewNeed: 2, ReviewActions: slices.Clone(creditActions), HoursPerPoint: 4}},
+		Support: []SiteSupport{}}
+}
+
+// TimeTicket is a ticket a project's time goes on, by its site and key.
+type TimeTicket struct {
+	Tracker string `json:"tracker"`
+	Site    string `json:"site"`
+	Key     string `json:"key"`
+}
+
+// SiteName is the ticket's site as a TicketSource names it.
+func (t TimeTicket) SiteName() string { return siteName(t.Site) }
 
 // SetupView is a project's tracker setup as it is stored: the revision a
 // replace names (empty while there is no file), the setup itself, which a
@@ -232,19 +400,44 @@ type SetupSave struct {
 // setupChangedSentence is a refused replace's sentence.
 const setupChangedSentence = "this change was not saved: the project's tracker setup changed after it was read; it is shown as it is now"
 
-// StatusGroups is how a project regroups the statuses of one tracker
-// site, as a board read applies it, with its version: a board's view, its
-// section cursors and the totals a patch names carry the version, and a
-// read under another version is refused (ErrStalePage). statuses is the
-// site's entry, each regrouped status's group by name, which a board view
-// carries so that a client counting rows it holds counts each in the
-// group the store's totals do. All three come from one site's entry of
-// the setup, so they change together. The zero value regroups nothing, at
-// version "".
+// StatusGroups is how a project counts the rows of one tracker site's
+// boards, as a board read applies it (store.MirrorRegroup): its
+// regrouping of the site's statuses and, while the project counts credit,
+// its support tickets (SiteSupport), with the version of both: a board's
+// view, its section cursors and the totals a patch names carry the
+// version, and a read under another version is refused (ErrStalePage).
+// statuses is the site's status groups entry, each regrouped status's
+// group by name, which a board view carries so that a client counting
+// rows it holds counts each in the group the store's totals do; a row's
+// support it reads from the row (RowView.Support). All of them come from
+// the site's entries of the setup, so they change together. The zero
+// value regroups nothing and names no row support, at version "".
+// tickets is whether the project counts the site's boards by their
+// tickets (Estimates), which a board view says as its unit of counts
+// (unit) and a dashboard counts by; the store's totals carry both rows
+// and estimates, so it is not part of the version.
 type StatusGroups struct {
 	regroup  store.MirrorRegroup
 	version  string
 	statuses map[string]string
+	tickets  bool
+	// credit is whether the project counts credit, whose rules regroup
+	// carries (store MirrorRegroup.WithCredit) and the version covers.
+	credit bool
+	// forge is whether a credit rule counts an act the forge holds, a
+	// comment or an approval: its boards' credit reads the forge pull
+	// request history (sync_forge.go).
+	forge bool
+}
+
+// unit is the unit the project counts a board of the site whose
+// estimates are in board in: the board's own, or none when the project
+// counts tickets.
+func (g StatusGroups) unit(board tracker.EstimateUnit) tracker.EstimateUnit {
+	if g.tickets {
+		return tracker.UnitNone
+	}
+	return board
 }
 
 // setupGroup is the store's number of the group named name, which a
@@ -287,8 +480,21 @@ type heldSetup struct {
 	// raw is every section the file holds that this build does not read,
 	// by name, as its bytes.
 	raw map[string]json.RawMessage
-	// groups is each site's status groups.
+	// kept is the sections a replace keeps.
+	kept keptSections
+	// groups is each site's status groups, and plain a site's that the
+	// setup names nowhere: none, with the credit rules, on a tracker that
+	// reads evidence (a site of another is counted with none).
 	groups map[siteKey]StatusGroups
+	plain  StatusGroups
+}
+
+// keptSections is the sections of the file a replace keeps as held,
+// which only their own edits write (editBoard): the dashboards and the
+// board tiles, each valid.
+type keptSections struct {
+	dashboards []BoardDashboards
+	tiles      []BoardTiles
 }
 
 // ProjectSetup is projectID's tracker setup as it is stored.
@@ -308,6 +514,53 @@ func (s *Service) ProjectSetup(projectID string) (SetupView, error) {
 		return SetupView{}, err
 	}
 	return held.view, nil
+}
+
+// ProjectAgentRules is what projectID's setup lets a thread of it do to
+// tickets. A setup file that cannot be read fails as ProjectSetup does,
+// and an agents section a newer version saved fails with ErrSetupNewer:
+// this build cannot tell what it allows, so its caller refuses rather
+// than apply the built-in rules.
+func (s *Service) ProjectAgentRules(projectID string) (AgentRules, error) {
+	setup, err := s.projectSection(projectID, sectionAgents)
+	if err != nil || setup.Agents == nil {
+		return AgentRules{}, err
+	}
+	return *setup.Agents, nil
+}
+
+// ProjectTimeSettings is where projectID's setup puts its time, as
+// ProjectAgentRules reads what it allows: a time section a newer version
+// saved fails with ErrSetupNewer. Time settings are a Jira project's: a
+// project that lists no board of a Jira connection has the built-in ones,
+// and the setup keeps what it holds for when one is listed again, as the
+// Time page shows them (TrackerTimeTickets.svelte).
+func (s *Service) ProjectTimeSettings(projectID string) (TimeSettings, error) {
+	boards, err := s.ProjectBoards(projectID)
+	if err != nil {
+		return TimeSettings{}, err
+	}
+	if !slices.ContainsFunc(boards, func(b BoardChoice) bool { return b.ConnectionKind == store.TrackerKindJira }) {
+		return TimeSettings{}, nil
+	}
+	setup, err := s.projectSection(projectID, sectionTime)
+	if err != nil || setup.Time == nil {
+		return TimeSettings{}, err
+	}
+	return *setup.Time, nil
+}
+
+// projectSection is projectID's setup for a reader of section, which
+// fails with ErrSetupNewer when a newer version saved that section.
+func (s *Service) projectSection(projectID, section string) (Setup, error) {
+	view, err := s.ProjectSetup(projectID)
+	if err != nil {
+		return Setup{}, err
+	}
+	if slices.Contains(view.Newer, section) {
+		return Setup{}, fmt.Errorf("%w: section %s", ErrSetupNewer, section)
+	}
+	return view.Setup, nil
 }
 
 // SetProjectSetup replaces projectID's tracker setup with setup, built
@@ -331,7 +584,7 @@ func (s *Service) SetProjectSetup(projectID, revision string, setup Setup) (Setu
 	if err != nil {
 		return SetupSave{}, err
 	}
-	setup, err = validateSetup(setup)
+	setup, err = validateSetup(s.stampCredit(setup))
 	if err != nil {
 		return SetupSave{}, err
 	}
@@ -343,6 +596,48 @@ func (s *Service) SetProjectSetup(projectID, revision string, setup Setup) (Setu
 	return save, nil
 }
 
+// stampCredit is setup with its credit section's newest snapshot given
+// the time it takes effect when the replace leaves it out (CreditRules):
+// the start for a section's first snapshot, else this save. A newest
+// snapshot whose values are the ones before it is dropped, so a save that
+// changes no rule adds none. Every snapshot stays: a sprint counts with the
+// snapshot in effect when it completed, whenever that is known. Any other
+// snapshot without its time is left for checkCredit to refuse.
+func (s *Service) stampCredit(setup Setup) Setup {
+	c := setup.Credit
+	if c == nil || len(c.Rules) == 0 || c.Rules[len(c.Rules)-1].From != nil {
+		return setup
+	}
+	credit := *c
+	credit.Rules = slices.Clone(c.Rules)
+	setup.Credit = &credit
+	newest := len(credit.Rules) - 1
+	switch {
+	case newest == 0:
+		credit.Rules[0].From = new(int64(0))
+	case sameCreditValues(credit.Rules[newest-1], credit.Rules[newest]):
+		credit.Rules = credit.Rules[:newest]
+	default:
+		credit.Rules[newest].From = new(s.now().UnixMilli())
+	}
+	return setup
+}
+
+// sameCreditValues reports whether a and b count the same, whatever their
+// times and the order of their actions.
+func sameCreditValues(a, b CreditRules) bool {
+	if a.ReviewShare != b.ReviewShare || a.ReviewNeed != b.ReviewNeed || a.HoursPerPoint != b.HoursPerPoint ||
+		len(a.ReviewActions) != len(b.ReviewActions) {
+		return false
+	}
+	for _, action := range a.ReviewActions {
+		if !slices.Contains(b.ReviewActions, action) {
+			return false
+		}
+	}
+	return true
+}
+
 // replaceSetup does SetProjectSetup's work under setupMu, comparing the
 // revision with the file's bytes, and returns the held setup before and
 // after, each nil when none is held. After is what the save last saw of
@@ -351,6 +646,29 @@ func (s *Service) SetProjectSetup(projectID, revision string, setup Setup) (Setu
 // file, or its write may or may not have happened, so the next use reads
 // the file.
 func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSave, before, after *heldSetup, err error) {
+	moved := false
+	before, after, err = s.rewriteSetup(slug, func(stored *heldSetup) (Setup, keptSections, bool) {
+		moved = stored.view.Revision != revision
+		return setup, stored.kept, !moved
+	})
+	switch {
+	case err != nil:
+		return SetupSave{}, before, after, err
+	case moved:
+		return SetupSave{Refused: setupChangedSentence, Stored: after.view}, before, after, nil
+	}
+	return SetupSave{Saved: true, Stored: after.view}, before, after, nil
+}
+
+// rewriteSetup reads slug's file again under setupMu and writes what
+// change makes of what it holds: the setup and the kept sections, all
+// valid, or nothing when change answers false. It returns the held setup
+// before and after, each nil when none is held. After is what the write
+// last saw of the file, which the service holds when it returns, whatever
+// it returns: the file it read, or the setup it wrote; nil when it could
+// not read the file, or its write may or may not have happened, so the
+// next use reads the file.
+func (s *Service) rewriteSetup(slug string, change func(stored *heldSetup) (Setup, keptSections, bool)) (before, after *heldSetup, err error) {
 	s.setupMu.Lock()
 	defer s.setupMu.Unlock()
 	before = s.setups[slug]
@@ -363,18 +681,19 @@ func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSa
 	}()
 	path := s.setupPath(slug)
 	if after, err = readSetupFile(path); err != nil {
-		return SetupSave{}, before, nil, err
+		return before, nil, err
 	}
-	if after.view.Revision != revision {
-		return SetupSave{Refused: setupChangedSentence, Stored: after.view}, before, after, nil
+	setup, kept, write := change(after)
+	if !write {
+		return before, after, nil
 	}
-	data, err := encodeSetup(setup, after.raw, after.view.Newer)
+	data, err := encodeSetup(setup, kept, after.raw, after.view.Newer)
 	if err != nil {
-		return SetupSave{}, before, after, err
+		return before, after, err
 	}
-	written, err := heldOf(setup, after.raw, after.view.Newer, setupRevision(data))
+	written, err := heldOf(setup, kept, after.raw, after.view.Newer, setupRevision(data))
 	if err != nil {
-		return SetupSave{}, before, after, err
+		return before, after, err
 	}
 	if data == nil {
 		err = atomicfile.Remove(path)
@@ -382,46 +701,157 @@ func (s *Service) replaceSetup(slug, revision string, setup Setup) (save SetupSa
 		err = atomicfile.Write(path, data)
 	}
 	if err != nil {
-		return SetupSave{}, before, nil, &SetupWriteError{Path: path, Err: err}
+		return before, nil, &SetupWriteError{Path: path, Err: err}
 	}
-	return SetupSave{Saved: true, Stored: written.view}, before, written, nil
+	return before, written, nil
 }
 
 // setupMoved tells what a change of slug's held setup from before to
 // after moves, either nil when none is held: every board subscription of
-// the project on a site whose status groups changed reads again, and a
-// change of what is stored is told. A side that holds nothing is not
-// known to agree with the other on any site, so every site counts as
-// moved: a board of the project read with groups that may be stale, or
-// failed to read them, reads again.
+// the project on a site whose status groups, support tickets, credit
+// rules (all in the version) or count of tickets changed reads again, one
+// of a board whose pins changed is told them (tellPins), a change of the
+// count or of whether it counts credit has the project's dashboards
+// listed and counted again, and a change of what is stored is told. A
+// side that holds nothing is not known to agree with the other on any
+// site, so every site counts as moved: a board of the project read with
+// groups that may be stale, or failed to read them, reads again, its pins
+// with it.
 func (s *Service) setupMoved(slug string, before, after *heldSetup) {
+	if s.afterSetupWrite != nil {
+		s.afterSetupWrite()
+	}
 	switch {
 	case before == nil && after == nil:
 		return
 	case before != nil && after != nil && before.view.Revision == after.view.Revision:
 		return
 	}
-	s.readBoardsAgain(slug, func(site siteKey) bool {
-		return before == nil || after == nil || before.groups[site].version != after.groups[site].version
+	s.readBoardsAgain(slug, func(site siteKey, board tracker.BoardID) bool {
+		if before == nil || after == nil {
+			return true
+		}
+		was, now := before.counting(site), after.counting(site)
+		return was.version != now.version || was.tickets != now.tickets
 	})
+	if before != nil && after != nil {
+		s.tellPins(slug, before, after)
+	}
+	// A board's dashboards are laid out and counted in the unit the
+	// project counts it in, and with credit while it counts credit
+	// (Dashboards): a change of either has every board's listed and
+	// counted again.
+	if before == nil || after == nil || before.view.Setup.Estimates.countsTickets() != after.view.Setup.Estimates.countsTickets() ||
+		(before.credit() == nil) != (after.credit() == nil) {
+		s.tellDashboards(slug, true, func(siteKey, tracker.BoardID) bool { return true })
+	}
 	s.setupChanged()
 }
 
-// readBoardsAgain has every board pump with a handle of project slug on a
-// site moved holds for send ReadAgain.
-func (s *Service) readBoardsAgain(slug string, moved func(siteKey) bool) {
+// tellPins tells every board pump holding a handle of slug's project on a
+// board whose pins changed from before to after the project's pins as
+// the setup holds them when the event is numbered, on the board's event
+// (BoardEvent.Pins), so a subscriber of the project holds them with no
+// read and one of another project on the board holds its own. The pins
+// are read under setupMu inside the hold of subMu that numbers the event,
+// so of two writes that publish in either order the event numbered last
+// carries the pins of the last write: a later write's event carries them,
+// or numbers after this one. No setup held (a write after this one could
+// not tell what it wrote) sends none: that write reads the boards again
+// (setupMoved). A setup's pins are written only by editBoard, which keeps
+// them to the widgets the board has.
+func (s *Service) tellPins(slug string, before, after *heldSetup) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	s.setupMu.Lock()
+	now := s.setups[slug]
+	s.setupMu.Unlock()
+	if now == nil {
+		return
+	}
+	told := map[*boardPump]bool{}
+	for _, h := range s.subs.handles {
+		p := h.board
+		if p == nil || told[p] || h.setup.slug != slug || p.over || p.core.DeadLocked() {
+			continue
+		}
+		board := string(p.scope.Board)
+		if slices.Equal(tilesOf(before.kept.tiles, h.setup.site, board).Pins, tilesOf(after.kept.tiles, h.setup.site, board).Pins) {
+			continue
+		}
+		told[p] = true
+		p.pending.pins = &ProjectPins{Project: h.project, Pins: append([]string{}, tilesOf(now.kept.tiles, h.setup.site, board).Pins...)}
+		p.pending.due = true
+		s.flushBoardLocked(p)
+	}
+}
+
+// tellDashboards tells every board pump holding a handle of slug's
+// project on a board that on picks, on the board's event, that the project's
+// dashboards of the board changed, and with counts that what they count
+// did (BoardEvent.Dashboards).
+func (s *Service) tellDashboards(slug string, counts bool, on func(siteKey, tracker.BoardID) bool) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	told := map[*boardPump]bool{}
 	for _, h := range s.subs.handles {
 		p := h.board
-		if p == nil || told[p] || h.setup.slug != slug || !moved(h.setup.site) || p.over || p.core.DeadLocked() {
+		if p == nil || told[p] || h.setup.slug != slug || !on(h.setup.site, p.scope.Board) || p.over || p.core.DeadLocked() {
+			continue
+		}
+		told[p] = true
+		p.pending.dashboards = &ProjectDashboards{Project: h.project, Counts: counts}
+		p.pending.due = true
+		s.flushBoardLocked(p)
+	}
+}
+
+// boardIs picks board of site, for tellDashboards.
+func boardIs(site siteKey, board string) func(siteKey, tracker.BoardID) bool {
+	return func(st siteKey, b tracker.BoardID) bool { return st == site && string(b) == board }
+}
+
+// readBoardsAgain has every board pump with a handle of project slug on a
+// site and board moved holds for send ReadAgain.
+func (s *Service) readBoardsAgain(slug string, moved func(siteKey, tracker.BoardID) bool) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	told := map[*boardPump]bool{}
+	for _, h := range s.subs.handles {
+		p := h.board
+		if p == nil || told[p] || h.setup.slug != slug || !moved(h.setup.site, p.scope.Board) || p.over || p.core.DeadLocked() {
 			continue
 		}
 		told[p] = true
 		p.pending.add(nil, nil, true)
 		s.flushBoardLocked(p)
 	}
+}
+
+// boardViewOf is board scope as project key reads it (Board): with the
+// status groups the project gives its site, and the widgets the project
+// pins to it.
+func (s *Service) boardViewOf(key setupKey, scope Scope, sections []Section) (BoardView, error) {
+	groups, err := s.boardStatusGroups(key)
+	if err != nil {
+		return BoardView{}, err
+	}
+	view, err := s.Board(scope, groups, sections)
+	if err != nil {
+		return BoardView{}, err
+	}
+	view.Pins, err = s.boardPins(key, string(scope.Board), boardKind(key, groups, view.PlansSprints))
+	return view, err
+}
+
+// SubscriptionBoardView is board handle id's board as its project reads
+// it (boardViewOf).
+func (s *Service) SubscriptionBoardView(id string, sections []Section) (BoardView, error) {
+	scope, key, err := s.boardHandle(id)
+	if err != nil {
+		return BoardView{}, err
+	}
+	return s.boardViewOf(key, scope, sections)
 }
 
 // boardStatusGroups is the status groups key's project gives its site,
@@ -433,7 +863,18 @@ func (s *Service) boardStatusGroups(key setupKey) (StatusGroups, error) {
 	if err != nil {
 		return StatusGroups{}, err
 	}
-	return held.groups[key.site], nil
+	return held.counting(key.site), nil
+}
+
+// counting is how the setup counts the boards of site: its status
+// groups, and on a Jira site whether it counts tickets.
+func (h *heldSetup) counting(site siteKey) StatusGroups {
+	g, ok := h.groups[site]
+	if !ok && capabilitiesOf(site.tracker).Evidence {
+		g = h.plain
+	}
+	g.tickets = site.tracker == store.TrackerKindJira && h.view.Setup.Estimates.countsTickets()
+	return g
 }
 
 // heldSetupLocked is slug's held setup, read from its file when none is
@@ -475,7 +916,7 @@ func (s *Service) setupPath(slug string) string {
 func readSetupFile(path string) (*heldSetup, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return heldOf(Setup{}, nil, nil, "")
+		return heldOf(Setup{}, keptSections{}, nil, nil, "")
 	}
 	if err != nil {
 		return nil, &SetupFileError{Path: path, Reason: err.Error()}
@@ -517,6 +958,28 @@ type (
 		Version  int                 `json:"version"`
 		Projects []StartWorkDefaults `json:"projects"`
 	}
+	agentsV1 struct {
+		Version       int   `json:"version"`
+		ChangeTickets *bool `json:"change_tickets,omitempty"`
+		AskSeveral    *bool `json:"ask_several,omitempty"`
+	}
+	timeV1 struct {
+		Version    int         `json:"version"`
+		Meetings   *TimeTicket `json:"meetings,omitempty"`
+		TimeOff    *TimeTicket `json:"time_off,omitempty"`
+		NeverEpics *bool       `json:"never_epics,omitempty"`
+	}
+	estimatesV1 struct {
+		Version int    `json:"version"`
+		Count   string `json:"count,omitempty"`
+		Poker   *bool  `json:"poker,omitempty"`
+	}
+	creditV1 struct {
+		Version int           `json:"version"`
+		On      bool          `json:"on"`
+		Rules   []CreditRules `json:"rules"`
+		Support []SiteSupport `json:"support,omitempty"`
+	}
 )
 
 // decodeSetup is the setup data holds, every section this build does not
@@ -530,6 +993,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 		return nil, errors.New("it is not a JSON object of sections")
 	}
 	var setup Setup
+	var kept keptSections
 	var raw map[string]json.RawMessage
 	var newer []string
 	keep := func(name string, section json.RawMessage) {
@@ -540,7 +1004,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(sections)) {
 		section := sections[name]
-		if name != sectionStatusGroups && name != sectionTicketPins && name != sectionStartWork {
+		if !slices.Contains([]string{sectionStatusGroups, sectionTicketPins, sectionStartWork, sectionAgents, sectionTime, sectionEstimates, sectionCredit, sectionDashboards, sectionBoardTiles}, name) {
 			keep(name, section)
 			continue
 		}
@@ -569,6 +1033,32 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 			var s startWorkV1
 			err = decodeStrict(section, &s)
 			setup.StartWork = s.Projects
+		case sectionAgents:
+			var s agentsV1
+			err = decodeStrict(section, &s)
+			setup.Agents = &AgentRules{ChangeTickets: s.ChangeTickets, AskSeveral: s.AskSeveral}
+		case sectionTime:
+			var s timeV1
+			err = decodeStrict(section, &s)
+			setup.Time = &TimeSettings{Meetings: s.Meetings, TimeOff: s.TimeOff, NeverEpics: s.NeverEpics}
+		case sectionEstimates:
+			var s estimatesV1
+			err = decodeStrict(section, &s)
+			setup.Estimates = &Estimates{Count: s.Count, Poker: s.Poker}
+		case sectionCredit:
+			var s creditV1
+			err = decodeStrict(section, &s)
+			setup.Credit = &Credit{On: s.On, Rules: s.Rules, Support: s.Support}
+		case sectionDashboards:
+			var s dashboardsV1
+			if err = decodeStrict(section, &s); err == nil {
+				kept.dashboards, err = validateDashboards(s.Boards)
+			}
+		case sectionBoardTiles:
+			var s boardTilesV1
+			if err = decodeStrict(section, &s); err == nil {
+				kept.tiles, err = validateBoardTiles(s.Boards)
+			}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("section %s: %w", name, err)
@@ -582,7 +1072,7 @@ func decodeSetup(data []byte) (*heldSetup, error) {
 		}
 		return nil, err
 	}
-	return heldOf(valid, raw, newer, setupRevision(data))
+	return heldOf(valid, kept, raw, newer, setupRevision(data))
 }
 
 // decodeStrict decodes data into v, refusing a field v does not have.
@@ -592,13 +1082,13 @@ func decodeStrict(data []byte, v any) error {
 	return dec.Decode(v)
 }
 
-// encodeSetup is the file of setup and the sections raw keeps: a JSON
-// object of the sections in name order, each kept section as its bytes;
-// nil when it holds no section, which is no file. A section of setup that
-// would replace one a newer version saved (newer, SetupView.Newer) is
-// ErrSetupNewer: this is the one place a section is written, so every
+// encodeSetup is the file of setup, the kept sections and the sections raw
+// keeps: a JSON object of the sections in name order, each kept section
+// as its bytes; nil when it holds no section, which is no file. A section
+// that would replace one a newer version saved (newer, SetupView.Newer)
+// is ErrSetupNewer: this is the one place a section is written, so every
 // section, one added later included, keeps that rule.
-func encodeSetup(setup Setup, raw map[string]json.RawMessage, newer []string) ([]byte, error) {
+func encodeSetup(setup Setup, kept keptSections, raw map[string]json.RawMessage, newer []string) ([]byte, error) {
 	sections := map[string]json.RawMessage{}
 	for name, section := range raw {
 		sections[name] = section
@@ -629,6 +1119,36 @@ func encodeSetup(setup Setup, raw map[string]json.RawMessage, newer []string) ([
 			return nil, err
 		}
 	}
+	if setup.Agents != nil {
+		if err := add(sectionAgents, agentsV1{Version: setupSectionVersion, ChangeTickets: setup.Agents.ChangeTickets, AskSeveral: setup.Agents.AskSeveral}); err != nil {
+			return nil, err
+		}
+	}
+	if setup.Time != nil {
+		if err := add(sectionTime, timeV1{Version: setupSectionVersion, Meetings: setup.Time.Meetings, TimeOff: setup.Time.TimeOff, NeverEpics: setup.Time.NeverEpics}); err != nil {
+			return nil, err
+		}
+	}
+	if setup.Estimates != nil {
+		if err := add(sectionEstimates, estimatesV1{Version: setupSectionVersion, Count: setup.Estimates.Count, Poker: setup.Estimates.Poker}); err != nil {
+			return nil, err
+		}
+	}
+	if setup.Credit.stored() {
+		if err := add(sectionCredit, creditV1{Version: setupSectionVersion, On: setup.Credit.On, Rules: setup.Credit.Rules, Support: setup.Credit.Support}); err != nil {
+			return nil, err
+		}
+	}
+	if len(kept.dashboards) > 0 {
+		if err := add(sectionDashboards, dashboardsV1{Version: setupSectionVersion, Boards: kept.dashboards}); err != nil {
+			return nil, err
+		}
+	}
+	if len(kept.tiles) > 0 {
+		if err := add(sectionBoardTiles, boardTilesV1{Version: setupSectionVersion, Boards: kept.tiles}); err != nil {
+			return nil, err
+		}
+	}
 	if len(sections) == 0 {
 		return nil, nil
 	}
@@ -649,7 +1169,7 @@ func encodeSetup(setup Setup, raw map[string]json.RawMessage, newer []string) ([
 	}
 	out.WriteString("\n}\n")
 	if out.Len() > setupMaxBytes {
-		return nil, invalidSetup("the setup is over %d KiB", setupMaxBytes>>10)
+		return nil, &SetupError{Reason: fmt.Sprintf("the setup is over %d KiB", setupMaxBytes>>10), Full: true}
 	}
 	return out.Bytes(), nil
 }
@@ -664,32 +1184,121 @@ func setupRevision(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// heldOf is a valid setup as the service holds it, with the sections raw
-// keeps (named by newer) and the revision of its file.
-func heldOf(setup Setup, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
-	held := &heldSetup{
-		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins), StartWork: slicesx.OrEmpty(setup.StartWork)}, Newer: newer},
-		raw:  raw, groups: map[siteKey]StatusGroups{},
+// heldOf is a valid setup and valid kept sections as the service holds
+// them, with the sections raw keeps (named by newer) and the revision of
+// its file.
+// A section a newer version saved reads as none here; a credit section
+// that is none reads as the default (defaultCredit), whose controls the
+// page shows, unless a newer version saved it.
+func heldOf(setup Setup, kept keptSections, raw map[string]json.RawMessage, newer []string, revision string) (*heldSetup, error) {
+	credit := setup.Credit
+	if credit == nil && !slices.Contains(newer, sectionCredit) {
+		credit = defaultCredit()
 	}
+	held := &heldSetup{
+		view: SetupView{Revision: revision, Setup: Setup{StatusGroups: slicesx.OrEmpty(setup.StatusGroups), TicketPins: slicesx.OrEmpty(setup.TicketPins),
+			StartWork: slicesx.OrEmpty(setup.StartWork), Agents: setup.Agents, Time: setup.Time, Estimates: setup.Estimates, Credit: credit}, Newer: newer},
+		raw: raw, kept: kept, groups: map[siteKey]StatusGroups{},
+	}
+	// What a board read applies on each site: its status groups, and its
+	// support entry while the project counts credit.
+	type counted struct {
+		statuses map[string]string
+		support  *SiteSupport
+	}
+	sites := map[siteKey]counted{}
 	for _, site := range setup.StatusGroups {
-		groups := make(map[string]int, len(site.Statuses))
-		for id, name := range site.Statuses {
+		key := siteKey{site.Tracker, site.Site}
+		sites[key] = counted{statuses: site.Statuses}
+	}
+	// rules are the credit rules every site's boards count by, none while
+	// the project counts no credit.
+	var rules []CreditRules
+	var mirrorRules []store.MirrorCreditRule
+	if c := held.credit(); c != nil {
+		for i, site := range c.Support {
+			key := siteKey{site.Tracker, site.Site}
+			entry := sites[key]
+			entry.support = &c.Support[i]
+			sites[key] = entry
+		}
+		rules = c.Rules
+		for _, r := range c.Rules {
+			mirrorRules = append(mirrorRules, store.MirrorCreditRule{From: *r.From, ReviewShare: r.ReviewShare, ReviewNeed: r.ReviewNeed,
+				Commented: slices.Contains(r.ReviewActions, "commented"), Approved: slices.Contains(r.ReviewActions, "approved"),
+				LoggedTime: slices.Contains(r.ReviewActions, "logged_time"), HoursPerPoint: r.HoursPerPoint})
+		}
+	}
+	// counted is how a site's boards are counted: its status groups and
+	// support, and the credit rules where credit counts: on a tracker that
+	// reads who worked on a ticket (tracker.Capabilities.Evidence).
+	countedAs := func(key siteKey, site counted, rules []CreditRules, mirrorRules []store.MirrorCreditRule) (StatusGroups, error) {
+		groups := make(map[string]int, len(site.statuses))
+		for id, name := range site.statuses {
 			groups[id], _ = setupGroup(name)
 		}
 		regroup, err := store.NewMirrorRegroup(groups)
 		if err != nil {
-			return nil, fmt.Errorf("trackerapp: the status groups of %s %s: %w", site.Tracker, site.Site, err)
+			return StatusGroups{}, fmt.Errorf("trackerapp: the status groups of %s %s: %w", key.tracker, key.site, err)
 		}
-		// json.Marshal writes a map's keys in order, so equal groups have
-		// one version.
-		encoded, err := json.Marshal(site.Statuses)
+		if site.support != nil {
+			rule := store.MirrorSupportRule{Types: site.support.Types, Labels: site.support.Labels, Boards: site.support.Boards}
+			if regroup, err = regroup.WithSupport(rule); err != nil {
+				return StatusGroups{}, fmt.Errorf("trackerapp: the support tickets of %s %s: %w", key.tracker, key.site, err)
+			}
+		}
+		if regroup, err = regroup.WithCredit(mirrorRules); err != nil {
+			return StatusGroups{}, fmt.Errorf("trackerapp: the credit rules: %w", err)
+		}
+		// json.Marshal writes a map's keys in order, so equal groups,
+		// support and credit rules have one version.
+		encoded, err := json.Marshal(struct {
+			Statuses map[string]string `json:"statuses"`
+			Support  *SiteSupport      `json:"support"`
+			Credit   []CreditRules     `json:"credit"`
+		}{site.statuses, site.support, rules})
 		if err != nil {
-			return nil, fmt.Errorf("trackerapp: encode the status groups of %s %s: %w", site.Tracker, site.Site, err)
+			return StatusGroups{}, fmt.Errorf("trackerapp: encode how %s %s is counted: %w", key.tracker, key.site, err)
 		}
 		sum := sha256.Sum256(encoded)
-		held.groups[siteKey{site.Tracker, site.Site}] = StatusGroups{regroup: regroup, version: hex.EncodeToString(sum[:8]), statuses: site.Statuses}
+		forge := slices.ContainsFunc(mirrorRules, func(r store.MirrorCreditRule) bool { return r.Commented || r.Approved })
+		return StatusGroups{regroup: regroup, version: hex.EncodeToString(sum[:8]), statuses: site.statuses, credit: rules != nil, forge: forge}, nil
+	}
+	for key, site := range sites {
+		credited, mirrorCredited := rules, mirrorRules
+		if !capabilitiesOf(key.tracker).Evidence {
+			credited, mirrorCredited = nil, nil
+		}
+		g, err := countedAs(key, site, credited, mirrorCredited)
+		if err != nil {
+			return nil, err
+		}
+		held.groups[key] = g
+	}
+	// A site the setup names nowhere counts as the tracker groups it, and
+	// with the credit rules while the project counts credit, on a tracker
+	// that reads evidence (counting).
+	if rules != nil {
+		g, err := countedAs(siteKey{}, counted{}, rules, mirrorRules)
+		if err != nil {
+			return nil, err
+		}
+		held.plain = g
 	}
 	return held, nil
+}
+
+// credit is the project's credit section when the project counts credit,
+// and nil when it does not: it has no section, or one that is off, or
+// one a newer version saved, which this build cannot read and so holds no
+// section for (heldOf). The one answer
+// to whether a project counts credit, for the counts, the reads and the
+// page.
+func (h *heldSetup) credit() *Credit {
+	if c := h.view.Setup.Credit; c != nil && c.On {
+		return c
+	}
+	return nil
 }
 
 // validateSetup checks setup and returns it normalized: each site as its
@@ -730,11 +1339,16 @@ func validateSetup(setup Setup) (Setup, error) {
 		if site.Fields != nil && key.tracker == store.TrackerKindLinear {
 			return Setup{}, invalidSetup("linear %s pins fields, but a Linear ticket's fields are fixed", key.site)
 		}
-		if err := checkSetupList(key, "field", site.Fields, setupMaxFields); err != nil {
+		if err := checkSetupList(key, "pins", "field", site.Fields, setupMaxFields); err != nil {
 			return Setup{}, err
 		}
-		if err := checkSetupList(key, "section", site.Sections, setupMaxSections); err != nil {
+		if err := checkSetupList(key, "pins", "section", site.Sections, setupMaxSections); err != nil {
 			return Setup{}, err
+		}
+		// No field pinned is a ticket's default, and is stored as none; no
+		// section open is a choice of its own.
+		if site.Fields != nil && len(*site.Fields) == 0 {
+			site.Fields = nil
 		}
 		if site.Fields != nil || site.Sections != nil {
 			out.TicketPins = append(out.TicketPins, site)
@@ -752,6 +1366,41 @@ func validateSetup(setup Setup) (Setup, error) {
 		if set {
 			out.StartWork = append(out.StartWork, valid)
 		}
+	}
+	if setup.Agents != nil {
+		// Each rule is on by default: only its off is stored, and a
+		// section that turns nothing off is none.
+		rules := AgentRules{}
+		if setup.Agents.ChangeTickets != nil && !*setup.Agents.ChangeTickets {
+			rules.ChangeTickets = setup.Agents.ChangeTickets
+		}
+		if setup.Agents.AskSeveral != nil && !*setup.Agents.AskSeveral {
+			rules.AskSeveral = setup.Agents.AskSeveral
+		}
+		if rules.set() {
+			out.Agents = &rules
+		}
+	}
+	if setup.Time != nil {
+		settings, err := checkTime(*setup.Time)
+		if err != nil {
+			return Setup{}, err
+		}
+		out.Time = settings
+	}
+	if setup.Estimates != nil {
+		estimates, err := checkEstimates(*setup.Estimates)
+		if err != nil {
+			return Setup{}, err
+		}
+		out.Estimates = estimates
+	}
+	if setup.Credit != nil {
+		credit, err := checkCredit(*setup.Credit)
+		if err != nil {
+			return Setup{}, err
+		}
+		out.Credit = credit
 	}
 	slices.SortFunc(out.StartWork, func(a, b StartWorkDefaults) int {
 		if c := compareSites(a.Tracker, a.Site, b.Tracker, b.Site); c != 0 {
@@ -850,8 +1499,146 @@ func checkStartWork(entry StartWorkDefaults, seen map[startWorkKey]bool) (StartW
 	if strings.ContainsAny(rest, "{}") {
 		return StartWorkDefaults{}, false, invalidSetup("the branch template of %s is %q; its only tokens are {key} and {title}", entry.Project, entry.Branch)
 	}
-	set := entry.Status != "" || entry.Assign != nil || entry.Branch != "" || entry.Repository != ""
+	// Naming the branch is the built-in rule: only its off is stored.
+	if entry.NameBranch != nil && *entry.NameBranch {
+		entry.NameBranch = nil
+	}
+	set := entry.Status != "" || entry.Assign != nil || entry.Branch != "" || entry.NameBranch != nil || entry.Repository != ""
 	return entry, set, nil
+}
+
+// checkTime checks a time section and returns it with each ticket's site
+// as its connection names it: nil when it sets nothing. Refusing epics is
+// the built-in rule: only its off is stored.
+func checkTime(t TimeSettings) (*TimeSettings, error) {
+	for _, held := range []**TimeTicket{&t.Meetings, &t.TimeOff} {
+		if *held == nil {
+			continue
+		}
+		ticket := new(**held)
+		*held = ticket
+		if ticket.Tracker != store.TrackerKindJira {
+			return nil, invalidSetup("%s names a %s ticket, and time is logged on Jira only", sectionTime, truncateID(ticket.Tracker))
+		}
+		key, err := checkSite(ticket.Tracker, ticket.Site, sectionTime, map[siteKey]bool{})
+		if err != nil {
+			return nil, err
+		}
+		ticket.Site = key.site
+		if !IsTicketKey(ticket.Tracker, ticket.Key) {
+			return nil, invalidSetup("%s names %q of %s, which is not a ticket key (WEB-1)", sectionTime, truncateID(ticket.Key), key.site)
+		}
+		ticket.Key = strings.ToUpper(ticket.Key)
+	}
+	if t.NeverEpics != nil && *t.NeverEpics {
+		t.NeverEpics = nil
+	}
+	if t.Meetings == nil && t.TimeOff == nil && t.NeverEpics == nil {
+		return nil, nil
+	}
+	return &t, nil
+}
+
+// checkEstimates checks an estimates section: nil when it sets nothing.
+// Counting by the boards' estimates and planning poker are the built-in
+// rules: only their other choice is stored.
+func checkEstimates(e Estimates) (*Estimates, error) {
+	switch e.Count {
+	case "", estimatesCountTickets:
+	case "estimates":
+		e.Count = ""
+	default:
+		return nil, invalidSetup("%s counts by %q, which is neither estimates nor tickets", sectionEstimates, truncateID(e.Count))
+	}
+	if e.Poker != nil && *e.Poker {
+		e.Poker = nil
+	}
+	if e.Count == "" && e.Poker == nil {
+		return nil, nil
+	}
+	return &e, nil
+}
+
+// checkCredit checks a credit section and returns it normalized: each
+// snapshot's actions in creditActions' order, each support entry's site
+// as its connection names it and its lists never null, the entries in
+// site order without one that names nothing. Every snapshot names its
+// From (stampCredit stamps a replace's newest one), the first 0 and each
+// later one after the one before it.
+func checkCredit(c Credit) (*Credit, error) {
+	if len(c.Rules) == 0 {
+		return nil, invalidSetup("%s has no rules", sectionCredit)
+	}
+	rules := make([]CreditRules, len(c.Rules))
+	for i, r := range c.Rules {
+		switch {
+		case r.From == nil:
+			return nil, invalidSetup("rule %d of %s says no time it took effect", i+1, sectionCredit)
+		case i == 0 && *r.From != 0:
+			return nil, invalidSetup("the first rule of %s takes effect at %d, not at the start (0)", sectionCredit, *r.From)
+		case i > 0 && *r.From <= *rules[i-1].From:
+			return nil, invalidSetup("rule %d of %s takes effect at %d, not after the rule before it (%d)", i+1, sectionCredit, *r.From, *rules[i-1].From)
+		case r.ReviewShare < 0 || r.ReviewShare > creditMaxShare:
+			return nil, invalidSetup("rule %d of %s gives a reviewer %d%% of a ticket's points; the share is 0 to %d", i+1, sectionCredit, r.ReviewShare,
+				creditMaxShare)
+		case r.HoursPerPoint < 1 || r.HoursPerPoint > creditMaxHoursPerPoint:
+			return nil, invalidSetup("rule %d of %s counts a point for every %d hours of support; it is 1 to %d", i+1, sectionCredit, r.HoursPerPoint,
+				creditMaxHoursPerPoint)
+		}
+		actions := make([]string, 0, len(creditActions))
+		for _, a := range r.ReviewActions {
+			if !slices.Contains(creditActions, a) {
+				return nil, invalidSetup("rule %d of %s counts review action %q, which is none of %s", i+1, sectionCredit, truncateID(a),
+					strings.Join(creditActions, ", "))
+			}
+			if slices.Contains(actions, a) {
+				return nil, invalidSetup("rule %d of %s counts review action %s twice", i+1, sectionCredit, a)
+			}
+			actions = append(actions, a)
+		}
+		if len(actions) == 0 {
+			return nil, invalidSetup("rule %d of %s counts no review action", i+1, sectionCredit)
+		}
+		slices.SortFunc(actions, func(a, b string) int { return slices.Index(creditActions, a) - slices.Index(creditActions, b) })
+		if r.ReviewNeed < 1 || r.ReviewNeed > len(actions) {
+			return nil, invalidSetup("rule %d of %s needs %d kinds of review action of the %d it counts", i+1, sectionCredit, r.ReviewNeed, len(actions))
+		}
+		from := *r.From
+		r.From, r.ReviewActions = &from, actions
+		rules[i] = r
+	}
+	out := &Credit{On: c.On, Rules: rules, Support: []SiteSupport{}}
+	seen := map[siteKey]bool{}
+	for _, entry := range c.Support {
+		key, err := checkSite(entry.Tracker, entry.Site, sectionCredit, seen)
+		if err != nil {
+			return nil, err
+		}
+		if key.tracker != store.TrackerKindJira {
+			return nil, invalidSetup("%s names support tickets of linear %s, and credit is counted on Jira only", sectionCredit, key.site)
+		}
+		entry.Site = key.site
+		for _, list := range []struct {
+			what string
+			ids  *[]string
+		}{{"support issue type", &entry.Types}, {"support label", &entry.Labels}, {"support board", &entry.Boards}} {
+			if err := checkSetupList(key, "lists", list.what, list.ids, creditMaxSupport); err != nil {
+				return nil, err
+			}
+			*list.ids = slices.Clone(slicesx.OrEmpty(*list.ids))
+		}
+		if len(entry.Types)+len(entry.Labels)+len(entry.Boards) > 0 {
+			out.Support = append(out.Support, entry)
+		}
+	}
+	slices.SortFunc(out.Support, func(a, b SiteSupport) int { return compareSites(a.Tracker, a.Site, b.Tracker, b.Site) })
+	return out, nil
+}
+
+// stored is whether c says more than no section does (defaultCredit),
+// which is the one case encodeSetup writes a credit section.
+func (c *Credit) stored() bool {
+	return c != nil && (c.On || len(c.Support) > 0 || !reflect.DeepEqual(c.Rules, defaultCredit().Rules))
 }
 
 // isTicketProject is whether project is a ticket key's project, as
@@ -878,14 +1665,14 @@ func checkSetupID(what, id string) error {
 	return nil
 }
 
-// checkSetupList checks a pinned list of key's site: at most most IDs,
-// each valid and named once.
-func checkSetupList(key siteKey, what string, list *[]string, most int) error {
+// checkSetupList checks a list of key's site (what an entry does with it,
+// verb, "pins"): at most most IDs, each valid and named once.
+func checkSetupList(key siteKey, verb, what string, list *[]string, most int) error {
 	if list == nil {
 		return nil
 	}
 	if len(*list) > most {
-		return invalidSetup("%s %s pins %d %ss, over %d", key.tracker, key.site, len(*list), what, most)
+		return invalidSetup("%s %s %s %d %ss, over %d", key.tracker, key.site, verb, len(*list), what, most)
 	}
 	seen := make(map[string]bool, len(*list))
 	for _, id := range *list {
@@ -893,7 +1680,7 @@ func checkSetupList(key siteKey, what string, list *[]string, most int) error {
 			return err
 		}
 		if seen[id] {
-			return invalidSetup("%s %s pins %s %q twice", key.tracker, key.site, what, id)
+			return invalidSetup("%s %s %s %s %q twice", key.tracker, key.site, verb, what, id)
 		}
 		seen[id] = true
 	}

@@ -1,6 +1,7 @@
 // Package trackertools is the ao-tracker-tools contract: the tools an agent
 // in a thread uses to find, read, create and change tickets in the user's
-// issue tracker, their schemas, argument validation, how a ticket key
+// issue tracker and to read, draft and post the user's time (time.go), their
+// schemas, argument validation, how a ticket key
 // names an issue on this computer's connections, what a write checks
 // before it sends anything, the shape of each answer, and the guide the
 // model reads. The product contract is
@@ -9,7 +10,8 @@
 // It depends on the Tracker interface below, which the app implements over
 // trackerapp with each read and write bounded as the matching bound method
 // is, and on Host, the app's answers about the calling thread (whether it
-// may write, the person's approval, its timeline row, a create's board);
+// may write, the person's approval, its timeline row, the boards it can
+// reach);
 // never on internal/app or the store. Which sessions have the server, and
 // whether a capability URL still acts for its session, are the app's. The
 // read marks (marks.go) are the server's own state, per session.
@@ -23,12 +25,15 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/activity"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/mcpargs"
 	"agent-overflow/internal/trackerapp"
+	"agent-overflow/internal/trackerdash"
 )
 
 // MCPServerName is the server's name in every provider's MCP configuration.
@@ -56,6 +61,10 @@ const (
 	// CodeUnknown is a create whose answer never came: it may have been
 	// made, and the same call again finds it.
 	CodeUnknown = "tracker_outcome_unknown"
+	// CodeRulesChanged is a change to several tickets planned while its
+	// project let it go unasked, whose project asks by the time it would
+	// be sent: nothing was sent.
+	CodeRulesChanged = "tracker_rules_changed"
 )
 
 // Tracker is what the tools read and write through: this computer's
@@ -70,6 +79,9 @@ const (
 type Tracker interface {
 	TicketSources() ([]trackerapp.TicketSource, error)
 	LinkedTicket(threadID string) (trackerapp.LinkedTicket, bool, error)
+	// ThreadJiraTickets are the Jira tickets threads are linked to, by
+	// thread (trackerapp.Service.ThreadJiraTickets).
+	ThreadJiraTickets(threadIDs []string) (map[string]trackerapp.JiraTicket, error)
 	TicketsOfKey(key string) ([]trackerapp.KeyedTicket, error)
 	BoardSummary(connection, board string) (trackerapp.BoardSummary, error)
 	// MirrorIssue is an issue's card and its rows as the mirror holds
@@ -89,6 +101,20 @@ type Tracker interface {
 	IssueCards(ctx context.Context, connection string, issues []string) ([]trackerapp.TicketCardRead, error)
 	IssueRows(ctx context.Context, connection string, rows []trackerapp.IssueRow) ([]trackerapp.TicketCardRead, error)
 	Comments(ctx context.Context, connection, issue, page string) (trackerapp.CommentPageView, error)
+	// ReadTime is the time of Jira connection's verified account from day
+	// from to day to, both included (trackerapp.Service.ReadTime).
+	ReadTime(ctx context.Context, connection, from, to string) (trackerapp.WorklogDays, error)
+	// DraftTime stores an agent call's draft of that account's time
+	// (trackerapp.Service.DraftTime); it sends nothing.
+	DraftTime(connection string, in trackerapp.TimeDraftRequest) (trackerapp.TimeDraftView, error)
+	// OpenTimeEntries are that account's entries not yet logged on days,
+	// with no tracker call (trackerapp.Service.OpenTimeEntries).
+	OpenTimeEntries(connection string, days []string) ([]trackerapp.TimeEntryView, error)
+	// PostTime posts the entries in names, as the person's approval of
+	// their day does (trackerapp.Service.PostTimeEntries), and answers each
+	// one's outcome, with an error too when the post failed after it sent.
+	// Only a post the person approved calls it.
+	PostTime(ctx context.Context, connection string, in trackerapp.PostTimeRequest) (trackerapp.PostTimeView, error)
 	IssueTypes(ctx context.Context, connection, project string) ([]trackerapp.IssueTypeView, error)
 	CreateFields(ctx context.Context, connection, project, issueType string) ([]trackerapp.FieldView, error)
 
@@ -101,13 +127,40 @@ type Tracker interface {
 	// EndWrites refreshes what ctx's write session's writes changed
 	// (trackerapp.Service.EndWrites).
 	EndWrites(ctx context.Context) error
+
+	// TryWidget counts w on board of connection, which project lists, and
+	// with show proposes it there for thread (trackerapp.Service.TryWidget).
+	TryWidget(ctx context.Context, project, connection, board string, w trackerapp.KeptWidget, marks trackerapp.TileMarks, thread string, show bool) (trackerdash.Tried, error)
+}
+
+// WritePolicy is what a thread's change of tickets may do.
+type WritePolicy struct {
+	// AskSeveral: a change to more than one ticket waits for the
+	// person's approval (Host.Approve).
+	AskSeveral bool
 }
 
 // Host is what the writing tools ask the app about the calling thread.
 type Host interface {
-	// Writable refuses, with a public error, a thread that may not change
-	// tickets: a read-only thread.
-	Writable(threadID string) error
+	// WritePolicy is what a change of tickets by the thread may do now.
+	// A public error refuses any change: a read-only thread, or one whose
+	// project's Agents settings turn off changes or cannot be read. A
+	// writing tool reads it at three moments, each for one job: at
+	// admission, to refuse before any tracker read; after planning, to
+	// decide whether the change waits for the person (Approve) and to
+	// bound what that approval carries; and just before the first write,
+	// to send nothing the policy no longer allows, including a change
+	// that went unasked while the policy now asks. time_draft's draft,
+	// which sends nothing to a tracker, reads it at admission and just
+	// before its store write; its post, which always waits for the person,
+	// at admission and once they approved, before it sends.
+	WritePolicy(threadID string) (WritePolicy, error)
+	// TimeSettings are where the thread's project puts its time (the
+	// meetings and time-off tickets, the epic rule), with no tracker
+	// request; a project that lists no Jira board has the built-in ones
+	// (trackerapp.Service.ProjectTimeSettings). A public error says
+	// settings this build cannot read.
+	TimeSettings(threadID string) (trackerapp.TimeSettings, error)
 	// Approve asks the person to approve a change and returns when they
 	// answer: nil when they approve, a public error when they deny or do
 	// not answer in time, and ctx's error when the call ends first.
@@ -115,38 +168,84 @@ type Host interface {
 	// Wrote puts the row of a call that changed or created tickets in the
 	// thread's timeline.
 	Wrote(threadID string, row WriteRow)
-	// CreateBoards are the boards any project of this computer lists of
-	// tracker project project (its key), on every connection, each marked
-	// when the thread's project lists it, in the order the listings are.
-	CreateBoards(threadID, project string) ([]CreateBoard, error)
+	// Drafted puts the row of a time_draft call that changed the draft in
+	// the thread's timeline.
+	Drafted(threadID string, row TimeRow)
+	// Posted puts the row of a time_draft post that ran in the thread's
+	// timeline, once.
+	Posted(threadID string, row TimePostRow)
+	// Boards are the boards the projects of this computer list, on every
+	// connection, each marked when the thread's project lists it, in the
+	// order the listings are, and the thread's project ("" for none).
+	Boards(threadID string) (project string, boards []ListedBoard, err error)
 	// Live reports whether session is still thread's session with the
 	// tools: false once its capability was revoked.
 	Live(threadID, session string) bool
+	// Activity is what this computer measured of the person's local days
+	// from to to (YYYY-MM-DD, included): each day's time with input, by
+	// focused thread, the threads that started a turn, and the commits
+	// the person authored in the repositories of those threads.
+	Activity(ctx context.Context, from, to string) (ActivityDays, error)
 }
 
-// CreateBoard is a board a create can go through: its connection and ID,
-// and whether the calling thread's project lists it.
-type CreateBoard struct {
+// ActivityDays is Host.Activity's answer: the days that hold any, earliest
+// first; while the recorder fails to write, the earliest input it has not
+// written (Gap, Unix ms; 0 while it writes); and why the commits of a
+// repository could not be read, one line each.
+type ActivityDays struct {
+	Days          []ActivityDay
+	Gap           int64
+	CommitsUnread []string
+}
+
+// ActivityDay is a day the recorder measured (activity.Day) and the
+// commits authored that day, by author time, earliest first.
+type ActivityDay struct {
+	activity.Day
+	Commits []Commit
+}
+
+// Commit is a commit the person authored: when, and its subject.
+type Commit struct {
+	At      time.Time
+	Subject string
+}
+
+// ListedBoard is a board a project of this computer lists: its connection
+// and ID, its name, the tracker project its tickets are made in (its
+// key), and whether the calling thread's project lists it.
+type ListedBoard struct {
 	Connection, Board string
-	Thread            bool
+	// ConnectionLabel is the name the user gave the connection, "" for none.
+	ConnectionLabel      string
+	Name, TrackerProject string
+	Thread               bool
 }
 
 // Approval is a change the person approves before it is sent: the call's
-// ID, each ticket with the changes it gets, the comment each gets, and
-// each value of the call's set whole, which a change line shows in part.
-// Everything is carried whole: a call whose set and comment pass
-// maxApprovalBytes is refused before it asks.
+// ID, the action as the person reads it (Title) and the tool that asks
+// (Tool), each ticket with the changes it gets, the comment each gets,
+// each value of the call's set whole, which a change line shows in part,
+// and Notes, lines of the call that name no ticket. Everything is carried
+// whole: a call whose approval would pass maxApprovalBytes is refused
+// before it asks.
 type Approval struct {
 	ID      string           `json:"id"`
+	Title   string           `json:"-"`
+	Tool    string           `json:"-"`
 	Tickets []ApprovalTicket `json:"tickets"`
 	Comment string           `json:"comment,omitempty"`
 	Values  []ApprovalValue  `json:"values,omitempty"`
+	Notes   []string         `json:"notes,omitempty"`
 }
 
 // ApprovalTicket is one ticket of an Approval: its key as answers write
-// it, its title, and each change as a person reads it.
+// it, the connection it is changed through when another of its site's
+// connections is in the approval too (the post's postAccount), its
+// title, and each change as a person reads it.
 type ApprovalTicket struct {
 	Key     string           `json:"key"`
+	Account string           `json:"account,omitempty"`
 	Title   string           `json:"title,omitempty"`
 	Changes []ApprovalChange `json:"changes,omitempty"`
 }
@@ -187,10 +286,12 @@ type WrittenTicket struct {
 }
 
 // Caller is who calls a tool: the thread, and the provider session its
-// capability was issued to, which the read marks are kept for.
+// capability was issued to, which the read marks are kept for; Time is a
+// session given the time tools (Tools).
 type Caller struct {
 	Thread  string
 	Session string
+	Time    bool
 }
 
 // Server is the ao-tracker-tools contract bound to one Tracker and Host.
@@ -202,11 +303,13 @@ type Server struct {
 	newID func() string
 	// logf records what fails after the call's outcome is decided.
 	logf func(format string, args ...any)
+	// now is this computer's clock, whose date is today.
+	now func() time.Time
 }
 
 // New returns a server over t and h.
 func New(t Tracker, h Host) *Server {
-	s := &Server{t: t, h: h, newID: func() string { return uuid.NewString() }, logf: log.Printf}
+	s := &Server{t: t, h: h, newID: func() string { return uuid.NewString() }, logf: log.Printf, now: time.Now}
 	s.marks.live = func(c Caller) bool { return h.Live(c.Thread, c.Session) }
 	return s
 }
@@ -224,11 +327,11 @@ func (s *Server) Call(ctx context.Context, caller Caller, name string, args json
 		return nil, invalidf("The tracker tools could not tell which thread called them.")
 	}
 	for _, spec := range toolTable {
-		if spec.name == name {
+		if spec.name == name && (caller.Time || !spec.time) {
 			return spec.call(s, ctx, caller, args)
 		}
 	}
-	return nil, invalidf("There is no tool named %q. The tracker tools are: %s.", name, strings.Join(ToolNames(), ", "))
+	return nil, invalidf("There is no tool named %q. The tracker tools are: %s.", name, strings.Join(ToolNames(caller.Time), ", "))
 }
 
 func invalidf(format string, args ...any) error {

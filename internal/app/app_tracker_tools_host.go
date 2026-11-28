@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log"
 	"slices"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/trackertools"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -58,6 +60,9 @@ const (
 	codeTrackerDenied   = "tracker_write_denied"
 	codeTrackerUnseen   = "tracker_write_unanswered"
 	codeTrackerReadOnly = "tracker_read_only"
+	// codeTrackerChangesOff is a write from a thread whose project's
+	// Agents settings turn off Change tickets.
+	codeTrackerChangesOff = "tracker_changes_off"
 )
 
 // trackerApprovals are the tracker writes waiting on the person, by
@@ -107,15 +112,79 @@ func (t *trackerApprovals) waitFor() time.Duration {
 
 type trackerToolsHost struct{ a *App }
 
-func (h trackerToolsHost) Writable(threadID string) error {
+// WritePolicy refuses a read-only thread, and a thread whose project's
+// Agents settings turn off Change tickets or cannot be read
+// (trackerapp.AgentRules); otherwise it says whether a change to several
+// tickets waits for the person, as those settings say. Every writing tool
+// reads it, at its start and again just before it sends.
+func (h trackerToolsHost) WritePolicy(threadID string) (trackertools.WritePolicy, error) {
 	thread, err := h.a.store.GetThread(threadID)
 	if err != nil {
-		return fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
+		return trackertools.WritePolicy{}, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
 	}
 	if provider.RuntimeMode(thread.RuntimeMode) == provider.RuntimeReadOnly {
-		return errorsx.Public(codeTrackerReadOnly, "This thread is read-only, so it cannot change tickets; ask the user to change its access.", nil)
+		return trackertools.WritePolicy{}, errorsx.Public(codeTrackerReadOnly, "This thread is read-only, so it cannot change tickets or log time; ask the user to change its access.", nil)
 	}
-	return nil
+	rules, err := h.agentRules(thread)
+	if err != nil {
+		return trackertools.WritePolicy{}, err
+	}
+	if !rules.Changes() {
+		return trackertools.WritePolicy{}, errorsx.Public(codeTrackerChangesOff, "This project's Agents settings do not let its threads change tickets or log time, so nothing was sent; ask the user to turn on Change tickets in Settings > Issues > Agents if this change is wanted.", nil)
+	}
+	return trackertools.WritePolicy{AskSeveral: rules.Asks()}, nil
+}
+
+// TimeSettings are where thread's project puts its time; a thread of no
+// project, or of one that lists no Jira board, has the built-in ones. Settings this build cannot read fail the
+// call: the tickets and the epic rule the person set are not known.
+func (h trackerToolsHost) TimeSettings(threadID string) (trackerapp.TimeSettings, error) {
+	thread, err := h.a.store.GetThread(threadID)
+	if err != nil {
+		return trackerapp.TimeSettings{}, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
+	}
+	if thread.ProjectID == "" {
+		return trackerapp.TimeSettings{}, nil
+	}
+	svc, err := h.a.trackerService()
+	if err != nil {
+		return trackerapp.TimeSettings{}, err
+	}
+	settings, err := svc.ProjectTimeSettings(thread.ProjectID)
+	var unreadable *trackerapp.SetupFileError
+	switch {
+	case err == nil:
+		return settings, nil
+	case errors.As(err, &unreadable):
+		return trackerapp.TimeSettings{}, errorsx.Public("tracker_setup_unreadable", "This project's tracker setup cannot be read from "+unreadable.Path+" ("+unreadable.Reason+"), so where its time goes is not known; ask the user to fix or remove the file.", err)
+	case errors.Is(err, trackerapp.ErrSetupNewer):
+		return trackerapp.TimeSettings{}, errorsx.Public("tracker_setup_newer", "A newer version of Agent Overflow saved this project's Time settings, so this version cannot tell where its time goes; ask the user to update the app.", err)
+	}
+	return trackerapp.TimeSettings{}, fmt.Errorf("tracker tools: the Time settings of project %s: %w", thread.ProjectID, err)
+}
+
+// agentRules are the Agents settings of thread's project; a thread of no
+// project has the built-in ones. Rules this build cannot read refuse the
+// write: applying the built-in ones could send what the person turned off.
+func (h trackerToolsHost) agentRules(thread store.Thread) (trackerapp.AgentRules, error) {
+	if thread.ProjectID == "" {
+		return trackerapp.AgentRules{}, nil
+	}
+	svc, err := h.a.trackerService()
+	if err != nil {
+		return trackerapp.AgentRules{}, err
+	}
+	rules, err := svc.ProjectAgentRules(thread.ProjectID)
+	var unreadable *trackerapp.SetupFileError
+	switch {
+	case err == nil:
+		return rules, nil
+	case errors.As(err, &unreadable):
+		return trackerapp.AgentRules{}, errorsx.Public("tracker_setup_unreadable", "Nothing was sent: this project's tracker setup cannot be read from "+unreadable.Path+" ("+unreadable.Reason+"), so what its Agents settings allow is not known; ask the user to fix or remove the file.", err)
+	case errors.Is(err, trackerapp.ErrSetupNewer):
+		return trackerapp.AgentRules{}, errorsx.Public("tracker_setup_newer", "Nothing was sent: a newer version of Agent Overflow saved this project's Agents settings, so this version cannot tell what they allow; ask the user to update the app.", err)
+	}
+	return trackerapp.AgentRules{}, fmt.Errorf("tracker tools: the Agents settings of project %s: %w", thread.ProjectID, err)
 }
 
 func (h trackerToolsHost) Approve(ctx context.Context, threadID string, approval trackertools.Approval) error {
@@ -136,8 +205,8 @@ func (h trackerToolsHost) Approve(ctx context.Context, threadID string, approval
 	// allow, a cancel of the turn) applies to a tracker write.
 	decisions := []json.RawMessage{json.RawMessage(`"accept"`), json.RawMessage(`"decline"`)}
 	meta, err := json.Marshal(provider.ApprovalRequest{
-		RequestID: id, ThreadID: threadID, Kind: triage.ApprovalKindTrackerWrite, ToolName: "ticket_update",
-		Title: fmt.Sprintf("Change %d tickets", len(approval.Tickets)), Input: input, AvailableDecisions: &decisions,
+		RequestID: id, ThreadID: threadID, Kind: triage.ApprovalKindTrackerWrite, ToolName: approval.Tool,
+		Title: approval.Title, Input: input, AvailableDecisions: &decisions,
 	})
 	if err != nil {
 		return fmt.Errorf("tracker tools: encode the approval: %w", err)
@@ -164,7 +233,7 @@ func (h trackerToolsHost) Approve(ctx context.Context, threadID string, approval
 		}
 		return errorsx.Public(codeTrackerDenied, "The user denied this change; nothing was sent.", nil)
 	case <-timer.C:
-		ended = errorsx.Public(codeTrackerUnseen, fmt.Sprintf("The user did not answer within %d minutes; nothing was sent.", int(a.trackerMCP.approvals.waitFor()/time.Minute)), nil)
+		ended = errorsx.Public(codeTrackerUnseen, fmt.Sprintf("The user did not answer within %s; nothing was sent.", waitText(a.trackerMCP.approvals.waitFor())), nil)
 	case <-ctx.Done():
 		ended = ctx.Err()
 	}
@@ -210,6 +279,13 @@ func (a *App) respondToTrackerWrite(threadID string, claim triage.PromptClaim, r
 		a.releasePrompt(claim)
 		return fmt.Errorf("approval %s: a tracker write is approved or denied, not %q", response.RequestID, response.Decision)
 	}
+	if decision == "approved" && !response.Shown {
+		// A screen that did not draw the changes (v0.0.19, a build from
+		// before the tracker write's panel, a panel that failed to draw
+		// them) showed the person nothing to approve.
+		a.releasePrompt(claim)
+		return fmt.Errorf("approval %s: this screen runs an older Agent Overflow that cannot show what this change sends; approve or deny it on a screen with the current version, or update this one", response.RequestID)
+	}
 	if !a.trackerMCP.approvals.settle(threadID, response.RequestID, decision == "approved") {
 		// The call ended first, and withdraws the prompt.
 		a.releasePrompt(claim)
@@ -248,27 +324,78 @@ func (h trackerToolsHost) Wrote(threadID string, row trackertools.WriteRow) {
 	}
 }
 
-func (h trackerToolsHost) CreateBoards(threadID, project string) ([]trackertools.CreateBoard, error) {
+// Drafted writes the row of a time_draft call that changed the draft,
+// once: it names the call, whose entries a card reads live
+// (ThreadTimeEntries), and is never rewritten.
+func (h trackerToolsHost) Drafted(threadID string, row trackertools.TimeRow) {
+	a := h.a
+	if a.triage == nil {
+		return
+	}
+	meta, err := json.Marshal(struct {
+		Kind string `json:"kind"`
+		trackertools.TimeRow
+	}{Kind: "time_draft", TimeRow: row})
+	if err != nil {
+		log.Printf("tracker tools: encode the time draft row of %s: %v", threadID, err)
+		return
+	}
+	if err := a.triage.HandleSynthetic(provider.ProviderEvent{
+		Kind: provider.EventNotification, ThreadID: threadID, ItemID: trackerApprovalPrefix + row.ID, Content: "Drafted time for " + trackerapp.DayRange(row.Days),
+		Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		// The draft stands and its answer reaches the agent; the row the
+		// store refused is shown as unsaved (triage's report).
+		log.Printf("tracker tools: the time draft row of %s: %v", threadID, err)
+	}
+}
+
+// Posted writes the row of a time_draft post that ran, once, with its
+// title fixed as the post left it (trackertools.TimePostRow.Title); it is
+// never rewritten.
+func (h trackerToolsHost) Posted(threadID string, row trackertools.TimePostRow) {
+	a := h.a
+	if a.triage == nil {
+		return
+	}
+	meta, err := json.Marshal(struct {
+		Kind string `json:"kind"`
+		trackertools.TimePostRow
+	}{Kind: "time_post", TimePostRow: row})
+	if err != nil {
+		log.Printf("tracker tools: encode the time post row of %s: %v", threadID, err)
+		return
+	}
+	if err := a.triage.HandleSynthetic(provider.ProviderEvent{
+		Kind: provider.EventNotification, ThreadID: threadID, ItemID: trackerApprovalPrefix + row.ID, Content: row.Title(),
+		Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		// The post stands and its answer reaches the agent; the row the
+		// store refused is shown as unsaved (triage's report).
+		log.Printf("tracker tools: the time post row of %s: %v", threadID, err)
+	}
+}
+
+func (h trackerToolsHost) Boards(threadID string) (string, []trackertools.ListedBoard, error) {
 	a := h.a
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return nil, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
+		return "", nil, fmt.Errorf("tracker tools: read thread %s: %w", threadID, err)
 	}
 	svc, err := a.trackerService()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	choices, err := svc.BoardChoices()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	var out []trackertools.CreateBoard
-	for _, c := range choices {
-		if strings.EqualFold(c.TrackerProject, project) {
-			out = append(out, trackertools.CreateBoard{Connection: c.Connection, Board: c.Board, Thread: c.Project == thread.ProjectID})
-		}
+	out := make([]trackertools.ListedBoard, len(choices))
+	for i, c := range choices {
+		out[i] = trackertools.ListedBoard{Connection: c.Connection, ConnectionLabel: c.ConnectionLabel, Board: c.Board, Name: c.Name, TrackerProject: c.TrackerProject,
+			Thread: thread.ProjectID != "" && c.Project == thread.ProjectID}
 	}
-	return out, nil
+	return thread.ProjectID, out, nil
 }
 
 func (h trackerToolsHost) Live(threadID, session string) bool {
@@ -276,3 +403,22 @@ func (h trackerToolsHost) Live(threadID, session string) bool {
 }
 
 var _ trackertools.Host = trackerToolsHost{}
+
+// waitText is a wait as a person reads it: whole minutes or whole
+// seconds in words ("15 minutes", "2 seconds"), any other wait (a test's)
+// as Go writes it.
+func waitText(d time.Duration) string {
+	unit := func(n int, one string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return strconv.Itoa(n) + " " + one + "s"
+	}
+	switch {
+	case d >= time.Minute && d%time.Minute == 0:
+		return unit(int(d/time.Minute), "minute")
+	case d%time.Second == 0:
+		return unit(int(d/time.Second), "second")
+	}
+	return d.String()
+}

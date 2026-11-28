@@ -12,6 +12,9 @@ type MirrorRow struct {
 	Card     MirrorCard
 	OrderKey string
 	Estimate *float64
+	// Support is whether a read's support rule names the row a support
+	// ticket (mirrorSupportSQL); a write ignores it.
+	Support bool
 }
 
 // MirrorRowPage is one read of a board's rows: the rows, the issues asked
@@ -104,7 +107,8 @@ var (
 	// moves), whether the stored card admits its card from
 	// an earlier read (mirrorCardAdvancesSQL), whether it is new on
 	// the board (gained when the page may add rows, refused when not),
-	// and whether the card names other sprints (mirrorCardSprintsMovedSQL).
+	// whether the card names other sprints (mirrorCardSprintsMovedSQL),
+	// and the stored row's read time.
 	mirrorRowsStateSQL = `SELECT c.value ->> 'i',
 		    (b.root_id IS NULL AND NOT ?5) OR ` + mirrorCardRefusedSQL("?4") + `
 		      OR (b.read_at > ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
@@ -112,7 +116,7 @@ var (
 		      OR (b.read_at <= ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
 		    b.read_at < ?4 AND b.order_key IS c.value ->> 'o' AND b.estimate IS c.value ->> 'e',
 		    (b.root_id IS NOT NULL OR ?5) AND ` + mirrorCardAdvancesSQL("?4") + `,
-		    b.root_id IS NULL, ` + mirrorCardSprintsMovedSQL + `
+		    b.root_id IS NULL, ` + mirrorCardSprintsMovedSQL + `, b.read_at
 		  FROM json_each(?2) c
 		  LEFT JOIN tracker_cache_issues i ON i.root_id = CAST(?1 AS INTEGER) AND i.issue_id = c.value ->> 'i'
 		  LEFT JOIN tracker_cache_board_issues b ON b.root_id = CAST(?1 AS INTEGER) AND b.issue_id = c.value ->> 'i' AND b.board_id = ?3`
@@ -190,7 +194,6 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 		return MirrorChanges{}, err
 	}
 	slices.Sort(changes.Superseded)
-	slices.Sort(changes.Added)
 	slices.Sort(changes.Refused)
 	return changes, nil
 }
@@ -198,7 +201,9 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 // writeMirrorRowsTx stores the page's cards and rows: one statement sorts
 // the rows, then the card statements (storeMirrorCardsTx), the row upsert
 // when a row is to be written, and the read-time move when one is
-// identical. A card the page stores that names a reference the mirror
+// identical; a row whose read time moves past the board's estimate reset
+// is a changed row, as its estimate counts from then
+// (mirrorRowEstimateRead). A card the page stores that names a reference the mirror
 // lacks and has not marked unexplained marks it pending on the page's
 // board (mirrorCardMarkSQL),
 // which makes the board due a structure read when the page began no
@@ -206,12 +211,13 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int64, rows []mirrorCardRow, encoded string, addsRows bool,
 	board mirrorBoard, changes *MirrorChanges) error {
 	var write bool
-	var advance, advancing, moved []string
+	var advance, advancing, moved, reread []string
 	err := scanMirrorRows(tx, mirrorRowsStateSQL, []any{rootID, encoded, page.BoardID, readAt, addsRows}, func(r rowScanner) error {
 		var id string
 		var superseded, writes, advances, cardAdvances, fresh sql.NullBool
 		var sprintsMoved bool
-		if err := r.Scan(&id, &superseded, &writes, &advances, &cardAdvances, &fresh, &sprintsMoved); err != nil {
+		var storedAt sql.NullInt64
+		if err := r.Scan(&id, &superseded, &writes, &advances, &cardAdvances, &fresh, &sprintsMoved, &storedAt); err != nil {
 			return err
 		}
 		if cardAdvances.Bool {
@@ -223,15 +229,15 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int6
 		if superseded.Bool {
 			changes.Superseded = append(changes.Superseded, id)
 		}
-		switch {
-		case fresh.Bool && addsRows:
-			changes.Added = append(changes.Added, id)
-		case fresh.Bool:
+		if fresh.Bool && !addsRows {
 			changes.Refused = append(changes.Refused, id)
 		}
 		write = write || writes.Bool
 		if advances.Bool {
 			advance = append(advance, id)
+			if storedAt.Int64 <= board.estimateResetAt && readAt > board.estimateResetAt {
+				reread = append(reread, id)
+			}
 		}
 		return nil
 	})
@@ -245,7 +251,7 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int6
 	if err != nil {
 		return err
 	}
-	changes.Cards, changes.Threads = stored.changed, unionSorted(changes.Threads, stored.threads)
+	changes.Cards, changes.Parents, changes.Threads = stored.changed, stored.parents, unionSorted(changes.Threads, stored.threads)
 	if write {
 		if changes.Rows, err = queryIDs(tx, mirrorRowsUpsertSQL, rootID, encoded, page.BoardID, readAt, addsRows); err != nil {
 			return fmt.Errorf("upsert rows: %w", err)
@@ -260,6 +266,8 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, readAt int6
 		if _, err := tx.Exec(mirrorRowsAdvanceSQL, rootID, list, page.BoardID, readAt); err != nil {
 			return fmt.Errorf("record the rows' read: %w", err)
 		}
+		slices.Sort(reread)
+		changes.Rows = unionSorted(changes.Rows, reread)
 	}
 	_, marked := slices.BinarySearch(stored.marked, page.BoardID)
 	changes.StructureDue = board.structureDueAt() > 0 || marked && readAt >= board.readAt

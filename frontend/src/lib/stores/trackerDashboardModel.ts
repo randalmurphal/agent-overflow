@@ -4,20 +4,31 @@
 // The numbers themselves are the board's computer's (trackerdash), one
 // evaluation per answer.
 
-import { formatEstimate } from '../components/issues/boardFormat';
+import type { TileLimit } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { formatAmount, unitWord, type DashboardUnit } from '../utils/dashboardAmount';
 
 /** One number of a dashboard (trackerdash.Num, which the bindings type
  * as any for its own JSON form): a value, none ({}), not known (no `v`
- * and `nc` tickets not counted), or a gap; `nc` beside a value is the
- * tickets the metric could not count. */
+ * and `nc` tickets not counted, `ur` days of your logged time not read,
+ * or `old`: it counts logged time older than the days kept, which nothing
+ * reads), or a gap; `nc` beside a value is the tickets the metric could
+ * not count. */
 export interface Num {
   readonly v?: number;
   readonly nc?: number;
+  readonly ur?: number;
+  readonly old?: boolean;
   readonly gap?: boolean;
 }
 
-/** A metric's unit, as trackerdash.Unit. */
-export type DashboardUnit = 'tickets' | 'estimate' | 'days';
+/** What a number of logged time older than the days kept says. */
+export const LOGGED_OLD_TEXT = 'older than the logged time kept';
+
+/** What a number of days of logged time not read says: "3 days not
+ * read"; empty for none. */
+export function notReadWords(ur: number | null | undefined): string {
+  return ur ? `${ur} ${ur === 1 ? 'day' : 'days'} not read` : '';
+}
 
 /** What the screen and the drill say while the board's first read has
  * not finished (an answer's `reading`). */
@@ -30,28 +41,6 @@ export const GAP_TEXT = 'No data';
 export function numValue(n: Num | null | undefined): number | null {
   if (!n || n.gap || n.v === undefined || n.v === null) return null;
   return n.v;
-}
-
-function trim(n: number): string {
-  const rounded = Math.round(n * 10) / 10;
-  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
-}
-
-/** A value in its unit, without the unit's word: points and days to one
- * place, time as hours or minutes, tickets whole unless averaged. */
-export function formatAmount(v: number, unit: DashboardUnit, estimates: string): string {
-  if (unit === 'estimate' && estimates === 'time') return formatEstimate(v, 'time') ?? '0m';
-  return trim(v);
-}
-
-/** The unit's word after an amount: "3 points", "1 ticket", "2.5 days";
- * empty for time, whose amount carries it. */
-export function unitWord(v: number, unit: DashboardUnit, estimates: string): string {
-  const counting = unit === 'tickets' || (unit === 'estimate' && estimates === 'none');
-  if (counting) return v === 1 ? 'ticket' : 'tickets';
-  if (unit === 'days') return v === 1 ? 'day' : 'days';
-  if (estimates === 'time') return '';
-  return v === 1 ? 'point' : 'points';
 }
 
 /** What a number of tickets not counted says: "3 not counted"; empty
@@ -68,6 +57,9 @@ export interface NumWords {
   readonly word: string;
   readonly value: string;
   readonly notCounted: string;
+  /** Its days of logged time not read: "3 days not read", or why none
+   * can be (LOGGED_OLD_TEXT), or ''. */
+  readonly notRead: string;
 }
 
 /** The one reading of a number into words; every surface that shows a
@@ -78,19 +70,21 @@ export function numWords(n: Num | null | undefined, unit: DashboardUnit, estimat
     word,
     value: word ? `${amount} ${word}` : amount,
     notCounted: n?.gap ? '' : notCountedWords(n?.nc),
+    notRead: n?.gap ? '' : n?.old ? LOGGED_OLD_TEXT : notReadWords(n?.ur),
   });
   if (!n) return words('None');
   if (n.gap) return words(GAP_TEXT);
   const v = numValue(n);
-  if (v === null) return words(n.nc ? 'Not known' : 'None');
+  if (v === null) return words(n.nc || n.ur || n.old ? 'Not known' : 'None');
   return words(formatAmount(v, unit, estimates), unitWord(v, unit, estimates));
 }
 
 /** A number as one line of words: "3 points", "3 points, 2 not counted",
- * "Not known, 2 not counted", "None" or GAP_TEXT. */
+ * "Not known, 2 not counted", "Not known, 3 days not read", "None" or
+ * GAP_TEXT. */
 export function formatNum(n: Num | null | undefined, unit: DashboardUnit, estimates: string): string {
   const w = numWords(n, unit, estimates);
-  return w.notCounted ? `${w.value}, ${w.notCounted}` : w.value;
+  return [w.value, w.notCounted, w.notRead].filter(Boolean).join(', ');
 }
 
 /** What a drill's header says of its rows: "5 tickets", or "6 rows, 5
@@ -116,7 +110,9 @@ export interface RangeBefore {
 /**
  * The change mark of a number: none for a widget that counts now (no
  * previous value) or one without a value; a gap with the range's
- * sentence when the range before has no data; else the difference,
+ * sentence when the range before has no data, or with its days of your
+ * logged time not read (those before the copy's 180 days never are); else
+ * the difference,
  * colored by the metric's good direction, with the range before's label
  * and the tickets it did not count, which could turn the direction.
  */
@@ -132,6 +128,8 @@ export function changeMark(
   const v = numValue(value);
   if (v === null) return null;
   if (previous.gap) return { kind: 'gap', text: before?.previous_gap ?? '' };
+  if (previous.old) return { kind: 'gap', text: `The range before is ${LOGGED_OLD_TEXT}.` };
+  if (previous.ur) return { kind: 'gap', text: `${previous.ur} ${previous.ur === 1 ? 'day' : 'days'} of the range before ${previous.ur === 1 ? 'is' : 'are'} not read.` };
   const p = numValue(previous);
   if (p === null) return null;
   const then = [before?.previous ?? '', previous.nc ? `${notCountedWords(previous.nc)} then` : ''].filter(Boolean).map((part) => `, ${part}`).join('');
@@ -142,4 +140,72 @@ export function changeMark(
   const amount = formatAmount(Math.abs(delta), unit, estimates);
   const word = unitWord(Math.abs(delta), unit, estimates);
   return { kind: 'change', direction, tone, text: `${direction === 'up' ? 'Up' : 'Down'} ${amount}${word ? ` ${word}` : ''} from ${formatAmount(p, unit, estimates)}${then}` };
+}
+
+/** Which way a number widget's limit warns: below it when up is good
+ * news (`good`), else above it. The one rule; the board's computer stores
+ * no direction (trackerapp/board_tiles.go). */
+export function limitSide(good: string): 'above' | 'below' {
+  return good === 'up' ? 'below' : 'above';
+}
+
+/** The unit a widget of `unit` counts in where its answer's estimates
+ * are `estimates`, as a limit names it (trackerdash.ValueUnit): tickets,
+ * days, points or seconds, which logged time (`time`) is in too.
+ * `limitFormat` is its inverse. */
+export function countUnit(unit: DashboardUnit, estimates: string): string {
+  if (unit === 'time') return 'seconds';
+  if (unit !== 'estimate') return unit;
+  return estimates === 'points' ? 'points' : estimates === 'time' ? 'seconds' : 'tickets';
+}
+
+/** Whether a number of a widget of `unit`, from an answer whose estimates
+ * are `estimates`, is past the widget's limit on the side `limitSide`
+ * names; false with no limit, no value, or a limit set in another unit
+ * than the number's, such as while a count in the board's former
+ * estimates is still shown. The one comparison, for the Dashboards screen
+ * and the board's row. */
+export function overLimit(value: Num | null | undefined, unit: DashboardUnit, estimates: string, limit: TileLimit | null | undefined, good: string): boolean {
+  const v = numValue(value);
+  if (v === null || !limit || countUnit(unit, estimates) !== limit.unit) return false;
+  return limitSide(good) === 'below' ? v < limit.value : v > limit.value;
+}
+
+/** A limit as the screen's numbers are formatted: the unit it was set in
+ * (trackerapp.TileLimit: tickets, days, points or seconds) as a widget's
+ * unit and the estimates its numbers are counted in. */
+export function limitFormat(limit: TileLimit): { unit: DashboardUnit; estimates: string } {
+  switch (limit.unit) {
+    case 'seconds': return { unit: 'estimate', estimates: 'time' };
+    case 'points': return { unit: 'estimate', estimates: 'points' };
+    case 'days': return { unit: 'days', estimates: '' };
+  }
+  return { unit: 'tickets', estimates: '' };
+}
+
+/** A limit as words, in its own unit: "3 tickets", "2h". */
+export function limitWords(limit: TileLimit): string {
+  const { unit, estimates } = limitFormat(limit);
+  const word = unitWord(limit.value, unit, estimates);
+  return word ? `${formatAmount(limit.value, unit, estimates)} ${word}` : formatAmount(limit.value, unit, estimates);
+}
+
+/** What a number past its limit says: "over your limit of 3 tickets",
+ * or "under …" where the limit warns below. */
+export function pastLimitWords(limit: TileLimit, good: string): string {
+  return `${limitSide(good) === 'below' ? 'under' : 'over'} your limit of ${limitWords(limit)}`;
+}
+
+/** Whether a widget's series are named: more than one, or one with a
+ * name. */
+export function namedSeries(series: readonly string[]): boolean {
+  return series.length > 1 || (series[0] ?? '') !== '';
+}
+
+/** Whether a bucket of a widget's named series shows its total: not when
+ * the metric's series overlap (a ticket counting in several, as the
+ * sprint table's do), whose total would count such a ticket more than
+ * once. The one rule, for the Dashboards screen and the board's row. */
+export function showsTotal(view: { readonly overlap?: boolean }, series: readonly string[]): boolean {
+  return namedSeries(series) && !view.overlap;
 }

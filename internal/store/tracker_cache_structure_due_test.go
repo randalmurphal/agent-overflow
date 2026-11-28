@@ -50,14 +50,14 @@ func replaceDueStructure(t *testing.T, s *Store, root, readAt int64, complete bo
 func TestMirrorRowNamingAnUnknownSprintMakesTheStructureDue(t *testing.T) {
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
-	if changes, statements := writeDuePage(t, s, root, 2, webRow("10001", 5, "a", "21")); changes.StructureDue || statements != 10 {
-		t.Fatalf("a page naming known references = %+v in %d statements; want not due in 10", changes, statements)
+	if changes, statements := writeDuePage(t, s, root, 2, webRow("10001", 5, "a", "21")); changes.StructureDue || statements != 11 {
+		t.Fatalf("a page naming known references = %+v in %d statements; want not due in 11", changes, statements)
 	}
-	if changes, statements := writeDuePage(t, s, root, 5, webRow("10002", 5, "b", "23")); !changes.StructureDue || statements != 10 {
-		t.Fatalf("a page naming a new sprint = %+v in %d statements; want due in 10", changes, statements)
+	if changes, statements := writeDuePage(t, s, root, 5, webRow("10002", 5, "b", "23")); !changes.StructureDue || statements != 11 {
+		t.Fatalf("a page naming a new sprint = %+v in %d statements; want due in 11", changes, statements)
 	}
-	if changes, statements := writeDuePage(t, s, root, 6, webRow("10003", 5, "c", "21")); !changes.StructureDue || statements != 10 {
-		t.Fatalf("a later page naming known references = %+v in %d statements; want still due in 10", changes, statements)
+	if changes, statements := writeDuePage(t, s, root, 6, webRow("10003", 5, "c", "21")); !changes.StructureDue || statements != 11 {
+		t.Fatalf("a later page naming known references = %+v in %d statements; want still due in 11", changes, statements)
 	}
 	for name, attempt := range map[string]MirrorSyncAttempt{
 		"a delta that succeeded":   {ReadAt: mirrorReadAt(7)},
@@ -142,10 +142,11 @@ func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
 	replaceDueStructure(t, s, root, 5, true)
 	assertRows(t, s.db, mirrorMarksSQL, "1:77,2:acc-gone,3:99")
 	// The page is the one read at 4 again: it moves its row's and its
-	// card's read time, one statement each, and runs the copy to the links
-	// of its cards, which no link stops at its guard.
-	if changes, statements := writeDuePage(t, s, root, 6, odd); changes.StructureDue || statements != 8 {
-		t.Fatalf("a page naming marked references = %+v in %d statements; want not due in 8", changes, statements)
+	// card's read time, one statement each, runs the copy to the links of
+	// its cards, which no link stops at its guard, and the write of the
+	// parents' names its cards give, which names none.
+	if changes, statements := writeDuePage(t, s, root, 6, odd); changes.StructureDue || statements != 9 {
+		t.Fatalf("a page naming marked references = %+v in %d statements; want not due in 9", changes, statements)
 	}
 	var many []MirrorRow
 	for r := range 6 {

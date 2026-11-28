@@ -172,6 +172,9 @@ type mirrorHistoryState struct {
 	// stored status time and the update time a final read decided it for.
 	status                     string
 	createdAt, since, finalFor int64
+	// readForCard is whether the stored history is read for the card's
+	// version (mirrorHistoryReadForCard).
+	readForCard bool
 }
 
 // final reports that a final read decided the stored status time for the
@@ -245,7 +248,7 @@ func readMirrorHistoryStatesTx(q sqlQueryer, rootID int64, listed string) (map[s
 		var id string
 		var st mirrorHistoryState
 		err := r.Scan(&id, &st.storedFrom, &st.storedFor, &st.storedAnswered, &st.storedWait, &st.storedBoardsRev, &st.receipt,
-			&st.boardsRev, &st.updatedAt, &st.gen, &st.dirty, &st.kept, &st.removes, &st.status, &st.createdAt, &st.since, &st.finalFor)
+			&st.boardsRev, &st.updatedAt, &st.gen, &st.dirty, &st.kept, &st.removes, &st.status, &st.createdAt, &st.since, &st.finalFor, &st.readForCard)
 		states[id] = st
 		return err
 	})

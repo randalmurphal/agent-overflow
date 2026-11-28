@@ -32,11 +32,13 @@ type Store interface {
 	ProjectTrackerBoardListed(projectID, connectionID, boardID string) (string, bool, error)
 	GetProject(id string) (store.Project, error)
 	ListTrackerBoardChoices(projectID string) ([]store.TrackerBoardChoice, error)
+	ListConnectionProjectBoards(connectionID string) ([]store.ConnectionProjectBoard, error)
 	ReplaceProjectTrackerBoards(projectID string, held []store.HeldTrackerBoard, boards []store.ProjectTrackerBoard) (bool, store.TrackerBoardListing, error)
 	ReadyTrackerBoards(ctx context.Context, boards []store.TrackerBoardRef) error
 
 	TicketConnection(ticket store.TicketRef) (string, string, error)
 	GetThreadTicket(threadID string) (store.ThreadTicket, bool, error)
+	ListThreadTickets(threadIDs []string) (map[string]store.ThreadTicket, error)
 	SetThreadTicket(w store.ThreadTicketWrite) (store.ThreadTicketSet, error)
 	ClearThreadTicket(threadID string) (store.ThreadTicketClear, error)
 	ListThreadsLinkedToSite(kind, site string) ([]string, error)
@@ -46,6 +48,16 @@ type Store interface {
 	ClaimAgentWrite(w store.AgentWrite, since int64) (store.AgentWrite, bool, error)
 	ResendAgentWrite(id, sent int64) error
 	RecordAgentWrites(sent int64, ws []store.AgentWrite) error
+	// The time draft (store tracker_time_entries.go).
+	ReplaceAgentTimeDays(connection, author string, entries []store.TimeEntry, now int64) (store.TimeDraftWrite, error)
+	TimeEntriesByID(connection string, ids []int64) ([]store.TimeEntry, error)
+	ThreadTimeEntries(thread, call string) ([]store.TimeEntry, error)
+	OpenTimeEntries(connection, author string, days []string) ([]store.TimeEntry, error)
+	EditTimeEntry(connection, author string, ref store.TimeEntryRef, ch store.TimeEntryChange, now int64) (store.TimeEntryEdited, bool, error)
+	RemoveTimeEntries(connection, author string, refs []store.TimeEntryRef) ([]store.TimeEntry, error)
+	MarkTimeEntriesSent(connection string, refs []store.TimeEntryRef, now int64) ([]store.TimeEntry, error)
+	SettleTimeEntries(connection string, outcomes []store.TimeEntrySettle, now int64) ([]store.TimeEntry, error)
+	RecoverEarlierTimeSends(now int64) ([]store.TimeEntry, error)
 	SettleAgentWrite(id int64, issue, key, comment string) error
 	AgentWritesOf(ticket store.TicketRef) ([]store.AgentWriteMark, error)
 }
@@ -81,6 +93,9 @@ type Deps struct {
 	// subscription lock held: they must not block or call the service.
 	EmitBoard func(BoardEvent)
 	EmitIssue func(IssueEvent)
+	// TimeEntriesChanged is told each change of a time draft's entries
+	// (time_draft.go). It must not block or call the service.
+	TimeEntriesChanged func(TimeEntriesEvent)
 	// Settled waits until the first client's reads have settled, or ctx
 	// ends; the linked-issues loop waits for it before its first round.
 	Settled func(ctx context.Context) error
@@ -96,6 +111,10 @@ type Deps struct {
 	// shows, or whether it is current), so their rows are sent again. It
 	// must not block.
 	LinksChanged func(threadIDs []string)
+	// ReadForgeHistory reads the forge pull request history that is due
+	// (the app's), within ctx; the linked loop calls it after each round
+	// it runs and reports its error as its own failure.
+	ReadForgeHistory func(ctx context.Context) error
 	// Cadence is the sync intervals; its zero value is production's.
 	Cadence Cadence
 }
@@ -149,10 +168,20 @@ type Service struct {
 	endHalt context.CancelFunc
 
 	// setupMu guards setups, each used project's tracker setup by slug
-	// (setup.go). It is held across the setup file's read and write and
-	// never with another of the service's locks.
+	// (setup.go). It is held across the setup file's read and write, and
+	// is taken last: a pins event reads the setup under it inside subMu
+	// (tellPins), and no other of the service's locks is taken while it
+	// is held.
 	setupMu sync.Mutex
 	setups  map[string]*heldSetup
+
+	// propMu guards proposals, the widgets agents proposed on each
+	// project's boards (dashboards.go). A Keep holds it across its write
+	// of the setup file and tells the board's subscriptions after, so
+	// propMu is taken before setupMu and subMu and never while holding
+	// either or any other of the service's locks.
+	propMu    sync.Mutex
+	proposals map[proposalKey][]heldProposal
 
 	// opMu serializes every change to a connection, from its first store
 	// read to its last write. It is never held across a tracker call.
@@ -187,6 +216,10 @@ type Service struct {
 	// beforePublish, set only by tests, runs in settle between its record
 	// and the publication, where Stop may overtake a settlement.
 	beforePublish func()
+	// afterSetupWrite, set only by tests, runs in setupMoved before it
+	// tells anyone of a setup write, where another write may commit and
+	// be told first.
+	afterSetupWrite func()
 	// afterIdentity, set only by tests, runs in Verify between its
 	// tracker call and its settlement, where other calls may change the
 	// token the client holds.
@@ -197,10 +230,12 @@ type Service struct {
 
 	emitBoard       func(BoardEvent)
 	emitIssue       func(IssueEvent)
+	emitTimeEntries func(TimeEntriesEvent)
 	settled         func(context.Context) error
 	clientConnected func() bool
 	loopFailed      func(error)
 	linksChanged    func([]string)
+	readForgeHist   func(context.Context) error
 	cadence         Cadence
 	// dash evaluates the boards' dashboards (dashboards.go).
 	dash *trackerdash.Evaluator
@@ -210,7 +245,8 @@ type Service struct {
 	// session names this service's open tickets in the mirror, each a
 	// pump of it (bindTickets): the rows of another session were left by
 	// a process that ended, and the first run drops them; earlier.done
-	// reports that delete made (dropEarlierTickets).
+	// reports that delete made, and the time sends that process left
+	// recovered (recoverEarlier).
 	session int64
 	earlier struct {
 		sync.Mutex
@@ -220,6 +256,10 @@ type Service struct {
 	// (agent_writes.go).
 	agentSends agentSends
 
+	// worklogs are the reads of each connection's logged time
+	// (worklog_reads.go).
+	worklogs worklogReads
+
 	// owedDrops are the keeps of ended pumps whose drop failed, owed until
 	// one commits (dropKeep, payOwedDrops). Guarded by opMu.
 	owedDrops []owedDrop
@@ -227,7 +267,8 @@ type Service struct {
 	// subMu is the one lock of the subscriptions, their pumps and the
 	// linked loop (subscriptions.go). It is held for map and flag work and
 	// for the emit callbacks, never across a store or tracker call; opMu
-	// is taken before it, and mu is never held with it.
+	// is taken before it, setupMu only inside it (tellPins), and mu is
+	// never held with it.
 	subMu sync.Mutex
 	subs  subscriptions
 	// workers joins every pump goroutine and the linked loop; Stop waits
@@ -244,8 +285,8 @@ func New(deps Deps) (*Service, error) {
 	case deps.Store == nil, deps.Changed == nil, deps.Origin == nil, deps.Now == nil, deps.Life == nil:
 		return nil, errors.New("trackerapp: Deps needs Store, Changed, Origin, Now and Life")
 	case deps.EmitBoard == nil, deps.EmitIssue == nil, deps.Settled == nil, deps.ClientConnected == nil, deps.LoopFailed == nil,
-		deps.LinksChanged == nil:
-		return nil, errors.New("trackerapp: Deps needs EmitBoard, EmitIssue, Settled, ClientConnected, LoopFailed and LinksChanged")
+		deps.LinksChanged == nil, deps.ReadForgeHistory == nil:
+		return nil, errors.New("trackerapp: Deps needs EmitBoard, EmitIssue, Settled, ClientConnected, LoopFailed, LinksChanged and ReadForgeHistory")
 	case deps.CredentialsDir == "", deps.ConfigDir == "":
 		return nil, errors.New("trackerapp: Deps needs CredentialsDir and ConfigDir")
 	case deps.SetupChanged == nil:
@@ -267,8 +308,8 @@ func New(deps Deps) (*Service, error) {
 		clients: map[string]*clients{}, problems: map[string]Problem{},
 		locks: map[lockKey]*scopeLock{}, holds: map[string]*connHold{},
 		logf:      log.Printf,
-		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
-		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, linksChanged: deps.LinksChanged, cadence: deps.Cadence.withDefaults(),
+		emitBoard: deps.EmitBoard, emitIssue: deps.EmitIssue, emitTimeEntries: deps.TimeEntriesChanged, settled: deps.Settled,
+		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, linksChanged: deps.LinksChanged, readForgeHist: deps.ReadForgeHistory, cadence: deps.Cadence.withDefaults(),
 		digestSeed: maphash.MakeSeed(), session: int64(binary.LittleEndian.Uint64(session[:]) >> 1),
 		dash: trackerdash.NewEvaluator(deps.Now),
 	}
@@ -278,12 +319,14 @@ func New(deps Deps) (*Service, error) {
 	return s, nil
 }
 
-// Stop stops every pump and the linked loop, which cancels their ticks in
-// flight, closes every client, which ends the tracker calls in flight, and
-// waits for the service's calls in flight, its pumps and its loop to
+// Stop stops every pump, the linked loop and the reads of logged time
+// (worklog_reads.go), which cancels their ticks and reads in flight,
+// closes every client, which ends the tracker calls in flight, and waits
+// for the service's calls in flight, its pumps, its loop and its reads to
 // return. Subscribers are told nothing. Every later call fails with
 // ErrStopped. Stop may be called more than once.
 func (s *Service) Stop() {
+	s.worklogs.halt()
 	s.haltSubscriptions()
 	for _, c := range s.halt() {
 		c.close()
@@ -350,8 +393,10 @@ func (s *Service) use(row store.TrackerConnection) (*clients, error) {
 // connection takes the Tempo connection that belongs to it along, since
 // a provider made while both were in use holds both clients; the Tempo
 // row is left as it is, and its next use builds a new client. It reports
-// whether a problem was forgotten. The caller holds opMu.
+// whether a problem was forgotten. The reads of its logged time stop and
+// forget what they queued and what failed. The caller holds opMu.
 func (s *Service) stopUsing(id string) bool {
+	s.worklogs.stop(id)
 	s.mu.Lock()
 	_, had := s.problems[id]
 	delete(s.problems, id)

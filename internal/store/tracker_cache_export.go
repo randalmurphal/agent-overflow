@@ -28,7 +28,10 @@ import (
 //   - It fills the relations the caller asks for, what their fills read of
 //     the copy, and the board and its sprints; the rest stay empty. So a
 //     count whose metrics read no changes copies none, and its people are
-//     the assignees alone.
+//     the assignees alone. A column of MirrorExportColumns is filled only
+//     when asked for by name, and is NULL otherwise: its value is decoded
+//     from each ticket's card blob, in the shape the caller gives
+//     (MirrorCardShape), which only the caller knows.
 //   - Each statement searches the mirror by the board's keys, root and
 //     board first, then each row's issue: its cost follows the board, never
 //     the mirror's or the file's size (TestMirrorExportSearchesByTheBoard),
@@ -46,43 +49,148 @@ import (
 
 // MirrorExportTables are the relations the export writes, the only tables
 // of the database it fills.
-var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epics", "sprints", "sprint_tickets", "changes", "sprint_finished"}
+var MirrorExportTables = []string{"board", "tickets", "statuses", "people", "epics", "sprints", "sprint_tickets", "changes", "sprint_finished", "labels",
+	"status_intervals", "sprint_intervals", "credit", "threads", "worklogs", "worklog_days"}
 
-// MirrorExportSchema is the export's relations. Times are milliseconds;
-// a time the mirror does not hold is NULL. tickets.history_from is when
-// the ticket's changes are complete from, NULL while its history is not
-// read. started_known is 1 when its history shows when it started: the
-// status it had when its history begins (what its first status change
-// left, else its status now) was in neither an in-progress nor a done
-// group, so a move into progress is in the history (mirrorExportStartKnownSQL).
-// started_at is then its first change into an in-progress status, and
-// NULL otherwise. done_at, for a ticket whose status counts as done, is
-// its last change into a done status, NULL when its changes hold none.
-// Groups are the regrouping's over the root's catalog. tickets.open is 1
-// for a ticket the board's sections count as not done (mirrorRegroupedNotDone:
-// not done, canceled or left out, an unclassified status open), and
-// tickets.counts 0 for one whose status the regrouping leaves out of
-// counts (mirrorLeftOut). sprint_finished holds each member of a closed
-// sprint, done when its status at the sprint's completion counted as done
-// (the pace's rule), and each member of an active sprint, done when its
-// status counts as done now. A status group is named as the project setup
-// names it (mirrorRegroupedGroupNameSQL), NULL for a status the mirror does
-// not know.
+// mirrorExportCardColumns are the tickets' columns decoded from the card
+// blob, in the tickets fill's order: each one's name in the export
+// (relation.column) and the member of the blob that holds it. An export
+// fills one only when asked for it by that name, as it is asked for a
+// relation, and selects NULL for it otherwise (mirrorExportFill.text),
+// so a count that reads none of them decodes no blob.
+var mirrorExportCardColumns = []struct {
+	name   string
+	member func(MirrorCardShape) string
+}{
+	{"tickets.type", func(c MirrorCardShape) string { return c.Type }},
+	{"tickets.priority", func(c MirrorCardShape) string { return c.Priority }},
+}
+
+// MirrorExportColumns are the names of mirrorExportCardColumns, the
+// columns an export fills only when asked for them.
+var MirrorExportColumns = func() []string {
+	names := make([]string, len(mirrorExportCardColumns))
+	for i, c := range mirrorExportCardColumns {
+		names[i] = c.name
+	}
+	return names
+}()
+
+// MirrorCardShape is where a card blob (MirrorCard.Data) holds what the
+// export decodes from it, as the blob's owner writes it: the version a
+// blob of this shape has and the member holding it, the members holding
+// the type's and the priority's names and the labels, and each label's
+// ID and name members. A blob of another version gives no names and no
+// labels.
+type MirrorCardShape struct {
+	Version                               int
+	VersionMember, Type, Priority, Labels string
+	LabelID, LabelName                    string
+}
+
+// mirrorExportCardArg is the parameter of the first column of
+// mirrorExportCardColumns, the others following in order (args).
+const mirrorExportCardArg = 11
+
+// mirrorExportWindowArg is the parameter of the earliest instant a count
+// can ask of the intervals (mirrorExportEarliest), after the card blob's
+// shape; the four after it are credit's (mirrorExportCreditParams).
+var mirrorExportWindowArg = mirrorExportCardArg + len(mirrorExportCardColumns)
+
+// mirrorExportCreditParams are the credit fill's parameters
+// (mirrorCreditSQL): the history window's start, from which a board
+// without sprints reads its weeks, the support rule, the credit rules,
+// and the export's clock, after which no act counts.
+var mirrorExportCreditParams = mirrorCreditParams{groups: "?3", reset: "CAST(?4 AS INTEGER)",
+	from: intParam("?" + strconv.Itoa(mirrorExportWindowArg+1)), support: "?" + strconv.Itoa(mirrorExportWindowArg+2),
+	rules: "?" + strconv.Itoa(mirrorExportWindowArg+3), until: intParam("?" + strconv.Itoa(mirrorExportWindowArg+4))}
+
+// mirrorExportLoggedArg is the parameter of the first day the logged
+// time holds (MirrorLoggedDays.From), after the credit fill's
+// (mirrorExportCreditParams), and the one after it its last
+// (MirrorLoggedDays.Through).
+var mirrorExportLoggedArg = mirrorExportWindowArg + 5
+
+// args is the shape as the fills bind it, ?6 to ?10 and then a member
+// path for each column of mirrorExportCardColumns (mirrorExportFills).
+func (c MirrorCardShape) args() []any {
+	path := func(member string) string { return "$." + member }
+	args := []any{c.Version, path(c.VersionMember), path(c.Labels), path(c.LabelID), path(c.LabelName)}
+	for _, column := range mirrorExportCardColumns {
+		args = append(args, path(column.member(c)))
+	}
+	return args
+}
+
+// MirrorExportSchema is the export's relations, whose comments say what
+// each column holds; an agent writing a widget reads them as written
+// (trackerdash.Rules). How the fill derives them: started_known is
+// mirrorExportStartKnownSQL, the status a ticket's history begins with
+// being what its first status change left, else its status now; open is
+// mirrorRegroupedNotDone (an unclassified status open) and counts 0 is
+// mirrorLeftOut; a status group is named by mirrorRegroupedGroupNameSQL
+// over the root's catalog; a closed sprint's done is the pace's rule
+// (mirrorStatusAtCompletionSQL); a ticket's epic is found through
+// tracker_cache_parents, its parent's parent read only when the mirror
+// keeps the parent.
 const MirrorExportSchema = `
+-- Times are milliseconds since 1970 UTC; a time the app does not hold is NULL.
+-- estimates: points, time (seconds) or none.
 CREATE TABLE main.board(name TEXT NOT NULL, plans_sprints INTEGER NOT NULL, estimates TEXT NOT NULL);
+-- status_group: backlog, todo, in_progress, done, canceled or left_out, as the project groups statuses; NULL when not known.
+-- A status is open (tickets.open) unless done, canceled or left_out.
 CREATE TABLE main.statuses(id TEXT PRIMARY KEY, name TEXT NOT NULL, status_group TEXT) WITHOUT ROWID;
+-- type_level: 1 an epic, 0 a story, task or bug, -1 a subtask. assignee: a people.id. epic: an epics.id.
+-- points: the board's estimate, in board.estimates. history_from: changes are complete from then; NULL while not read.
+-- history_behind 1: it changed after its history was read; its sprint_intervals are left out until that is read again.
+-- started_known 1: the history shows when it started, started_at its first move into in_progress.
+-- done_at: its last move into done, for a ticket done now. open 1: the board counts it not done.
+-- counts 0: its status is left out of counts.
+-- type: the issue type's name (Bug); NULL on Linear, which has none: use labels. priority: its name (High), NULL for none; no order.
 CREATE TABLE main.tickets(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL, type_level INTEGER NOT NULL,
   status TEXT, status_group TEXT, assignee TEXT, parent TEXT, epic TEXT, created_at INTEGER, updated_at INTEGER, resolved_at INTEGER,
-  status_since INTEGER, points REAL, history_from INTEGER, started_known INTEGER NOT NULL, started_at INTEGER, done_at INTEGER,
-  open INTEGER NOT NULL, counts INTEGER NOT NULL) WITHOUT ROWID;
+  status_since INTEGER, points REAL, history_from INTEGER, history_behind INTEGER NOT NULL, started_known INTEGER NOT NULL, started_at INTEGER, done_at INTEGER,
+  open INTEGER NOT NULL, counts INTEGER NOT NULL, type TEXT, priority TEXT) WITHOUT ROWID;
+-- A ticket's labels by name, an unnamed one by its ID; a ticket with none has no row.
+CREATE TABLE main.labels(ticket TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (ticket, name)) WITHOUT ROWID;
 CREATE TABLE main.epics(id TEXT PRIMARY KEY, key TEXT NOT NULL, title TEXT NOT NULL) WITHOUT ROWID;
+-- state: future, active or closed. position: the board's order.
 CREATE TABLE main.sprints(id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, start_at INTEGER, end_at INTEGER,
   completed_at INTEGER, position INTEGER NOT NULL) WITHOUT ROWID;
 CREATE TABLE main.sprint_tickets(sprint TEXT NOT NULL, ticket TEXT NOT NULL, PRIMARY KEY (sprint, ticket)) WITHOUT ROWID;
+-- kind: status (from_value and to_value are statuses.id), assignee (people.id), sprint (each the ticket's whole set of
+-- sprints.id as a JSON array, such as ["14","15"]) or estimate (from_number and to_number). author: a people.id.
 CREATE TABLE main.changes(ticket TEXT NOT NULL, kind TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, author TEXT,
   from_value TEXT, to_value TEXT, from_number REAL, to_number REAL, PRIMARY KEY (ticket, kind, seq)) WITHOUT ROWID;
-CREATE TABLE main.sprint_finished(sprint TEXT NOT NULL, ticket TEXT NOT NULL, done INTEGER NOT NULL, PRIMARY KEY (sprint, ticket)) WITHOUT ROWID;
+-- Each member of a closed or active sprint; done 1 when it counted done at the sprint's completion, or for an active sprint now;
+-- NULL when its status at the completion is not known.
+CREATE TABLE main.sprint_finished(sprint TEXT NOT NULL, ticket TEXT NOT NULL, done INTEGER, PRIMARY KEY (sprint, ticket)) WITHOUT ROWID;
 CREATE TABLE main.people(id TEXT PRIMARY KEY, name TEXT NOT NULL) WITHOUT ROWID;
+-- status_intervals: a ticket's status from from_at until to_at (NULL: now), back to 180 days ago or an older sprint's start.
+-- Where no row covers an instant, the status then is not known. began: when the status began; NULL when before from_at,
+-- at a time not known. open 1: the board counts the status not done, as tickets.open.
+CREATE TABLE main.status_intervals(ticket TEXT NOT NULL, status TEXT NOT NULL, from_at INTEGER NOT NULL, to_at INTEGER,
+  began INTEGER, open INTEGER NOT NULL, PRIMARY KEY (ticket, from_at)) WITHOUT ROWID;
+-- sprint_intervals: a ticket in a sprint at one estimate (points), likewise; none for a ticket whose history_behind is 1.
+CREATE TABLE main.sprint_intervals(sprint TEXT NOT NULL, ticket TEXT NOT NULL, points REAL, from_at INTEGER NOT NULL, to_at INTEGER,
+  PRIMARY KEY (sprint, ticket, from_at)) WITHOUT ROWID;
+-- credit: empty unless the project counts credit. kind finished: a finished ticket, for its assignee when it moved to done (at);
+-- review: each other person who acted on it (did: commented, approved, logged time), counted review_share percent of points when
+-- that is review_need of the kinds of action the rule counts (review_kinds, named as did names them; qualified 1), else 0; support: time logged on a support ticket, hours,
+-- counted a point a hours_per_point. sprint: the sprint it counts in (NULL on a board without sprints, where at places it; support's
+-- at is the worklog's start there). value: in board.estimates (seconds for time); share: the same in tickets (1 a finished ticket).
+-- value NULL: not counted, note says why; a ticket whose evidence is not read has one such review or support row and no person.
+-- Approvals and comments on a ticket's pull requests are review actions of the person their forge account is matched to. unmatched:
+-- a forge account no person is matched to, by its name and login there: a review row with no person, value 0 and qualified NULL.
+CREATE TABLE main.credit(sprint TEXT, at INTEGER, ticket TEXT NOT NULL, kind TEXT NOT NULL, person TEXT, value REAL, share REAL, points REAL,
+  review_share INTEGER, review_need INTEGER, review_kinds TEXT, did TEXT, qualified INTEGER, hours REAL, hours_per_point INTEGER, note TEXT,
+  unmatched TEXT);
+-- threads: the threads on this board's computer linked to a ticket. origin: start_work, ask, manual or agent. last_turn_at: its newest turn's start.
+CREATE TABLE main.threads(id TEXT PRIMARY KEY, ticket TEXT NOT NULL, origin TEXT NOT NULL, linked_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
+  archived INTEGER NOT NULL, last_turn_at INTEGER) WITHOUT ROWID;
+-- worklogs: your own logged time on this board's tickets, by day (YYYY-MM-DD), over the last 182 days up to today. Only the days in worklog_days were read: a number counted from worklogs is not known until every one of those days is, and says how many are not; one that counts a period that began before them is never known.
+CREATE TABLE main.worklogs(id TEXT PRIMARY KEY, ticket TEXT NOT NULL, day TEXT NOT NULL, seconds INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE main.worklog_days(day TEXT PRIMARY KEY) WITHOUT ROWID;
 `
 
 // mirrorExportSchemaName is the attached file's schema name.
@@ -98,11 +206,19 @@ var mirrorExportBoardSQL = `SELECT b.name, b.plans_sprints, b.estimate_unit, b.e
 	WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND ` + mirrorBoardShown(intParam("?1"), "?2")
 
 // mirrorExportStatusChangeSQL is the changes into a status of list of
-// issue i's current history generation, by key: agg(c.at) of them.
-func mirrorExportStatusChangeSQL(agg, list string) string {
+// the issue of alias i (its root_id, issue_id and history_gen) of its
+// current history generation, at or before bound (an SQL expression; ""
+// for none), by key: agg(c.at) of them. The tickets' done time and
+// credit's moment a sprint member moved to done (mirrorCreditFinishedSQL)
+// are its max.
+func mirrorExportStatusChangeSQL(i, agg, list, bound string) string {
+	upTo := ""
+	if bound != "" {
+		upTo = ` AND c.at <= ` + bound
+	}
 	return `(SELECT ` + agg + `(c.at) FROM tracker_cache_changes c
-	      WHERE c.root_id = i.root_id AND c.issue_id = i.issue_id AND c.gen = i.history_gen AND c.kind = 1
-	        AND c.to_value IN (` + list + `))`
+	      WHERE c.root_id = ` + i + `.root_id AND c.issue_id = ` + i + `.issue_id AND c.gen = ` + i + `.history_gen AND c.kind = 1
+	        AND c.to_value IN (` + list + `)` + upTo + `)`
 }
 
 // mirrorExportStartKnownSQL holds for issue i when its read history shows
@@ -126,53 +242,109 @@ func mirrorExportStatusesSQL(insert, x string) string {
 	  CROSS JOIN tracker_cache_statuses st ON st.root_id = CAST(?1 AS INTEGER) AND st.status_id = x.id`
 }
 
+// mirrorExportCardSQL is the member at path p of issue i's card blob,
+// NULL when it is empty or the blob is not of the shape's version (?6 at
+// ?7). The blob is read as text: SQLite reads a BLOB argument as JSONB.
+func mirrorExportCardSQL(p string) string {
+	return `iif(json_extract(CAST(i.data AS TEXT), ?7) = CAST(?6 AS INTEGER), nullif(json_extract(CAST(i.data AS TEXT), ` + p + `), ''), NULL)`
+}
+
+// mirrorExportCardNames is the tickets fill's insert list's names of
+// mirrorExportCardColumns, each after a comma.
+func mirrorExportCardNames() string {
+	var b strings.Builder
+	for _, c := range mirrorExportCardColumns {
+		_, column, _ := strings.Cut(c.name, ".")
+		b.WriteString(", " + column)
+	}
+	return b.String()
+}
+
 // mirrorExportFill is one statement of the export: the relation it fills
 // (a fill of another relation's rows is that relation's, as the statuses
 // and people its changes name are the changes'), and the relations of the
-// copy it reads, which the export fills first.
+// copy it reads, which the export fills first. A fill whose select list
+// ends with mirrorExportCardColumns has the text after them in afterCard.
+//
+// A fill with with runs only when the export fills that relation too, and
+// one with without only when it does not; neither makes the export fill
+// it. They choose where a fill reads (the file or the copy) and skip rows
+// of a relation no count reads.
 type mirrorExportFill struct {
-	relation, name, sql string
-	needs               []string
+	relation, name, sql, afterCard string
+	needs                          []string
+	with, without                  string
+}
+
+// runs is whether an export of relations runs f.
+func (f mirrorExportFill) runs(relations map[string]bool) bool {
+	return relations[f.relation] && (f.with == "" || relations[f.with]) && (f.without == "" || !relations[f.without])
+}
+
+// text is the fill's statement in an export of relations: sql, and for a
+// fill with card columns each column of mirrorExportCardColumns decoded
+// when relations names it and NULL otherwise, then afterCard.
+func (f mirrorExportFill) text(relations map[string]bool) string {
+	if f.afterCard == "" {
+		return f.sql
+	}
+	var b strings.Builder
+	b.WriteString(f.sql)
+	for i, c := range mirrorExportCardColumns {
+		b.WriteString(", ")
+		if relations[c.name] {
+			b.WriteString(mirrorExportCardSQL("?" + strconv.Itoa(mirrorExportCardArg+i)))
+		} else {
+			b.WriteString("NULL")
+		}
+	}
+	b.WriteString(f.afterCard)
+	return b.String()
 }
 
 // mirrorExportFills are the fill statements in order: ?1 root, ?2 board,
 // ?3 the regrouping (a JSON object, '{}' for none), ?4 the board's
-// estimate reset, ?5 whether the board has an estimate (0 or 1). Each
-// names the snapshot's tables by main and the file's unqualified: the
-// snapshot names none of the file's tables. An export runs those of the
+// estimate reset, ?5 whether the board has an estimate (0 or 1), from
+// ?6 the card blob's shape (MirrorCardShape.args), then the earliest
+// instant a count can ask (mirrorExportWindowArg) and the first and last
+// days of the logged time (mirrorExportLoggedArg). Each
+// names the snapshot's tables by main and the file's unqualified, so a
+// file table the snapshot has a relation of the same name as (threads) is
+// read only through a view of the file's (mirrorExportRelationFills). An export runs those of the
 // relations asked for and the relations they need (mirrorExportRelations).
-var mirrorExportFills = []mirrorExportFill{
+var mirrorExportFills = append([]mirrorExportFill{
 	{relation: "board", name: "board", sql: `INSERT INTO main.board(name, plans_sprints, estimates)
 	  SELECT b.name, b.plans_sprints, CASE b.estimate_unit WHEN ` + strconv.Itoa(MirrorEstimatePoints) + ` THEN 'points' WHEN ` +
 		strconv.Itoa(MirrorEstimateTime) + ` THEN 'time' ELSE 'none' END
 	  FROM tracker_cache_boards b WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`},
 	{relation: "tickets", name: "tickets", sql: `INSERT INTO main.tickets(id, key, title, type_level, status, status_group, assignee, parent, epic,
-	    created_at, updated_at, resolved_at, status_since, points, history_from, started_known, started_at, done_at, open, counts)
+	    created_at, updated_at, resolved_at, status_since, points, history_from, history_behind, started_known, started_at, done_at, open, counts` + mirrorExportCardNames() + `)
 	  SELECT i.issue_id, i.issue_key, i.title, i.type_level, nullif(i.status_id, ''),
 	    ` + mirrorRegroupedGroupNameSQL(`coalesce((SELECT o.value FROM json_each(?3) o WHERE o.key = i.status_id),
 	      (SELECT st.status_group FROM tracker_cache_statuses st WHERE st.root_id = i.root_id AND st.status_id = i.status_id))`) + `,
 	    nullif(i.assignee_id, ''), nullif(i.parent_id, ''),
-	    CASE WHEN p.type_level = 1 THEN p.issue_id WHEN gp.type_level = 1 THEN gp.issue_id END,
+	    CASE WHEN n.type_level = 1 THEN i.parent_id WHEN gn.type_level = 1 THEN p.parent_id END,
 	    nullif(i.created_at, 0), i.updated_at, nullif(i.resolved_at, 0), nullif(i.status_since, 0),
 	    iif(CAST(?5 AS INTEGER) = 1, ` + mirrorRowEstimate("CAST(?4 AS INTEGER)") + `, NULL),
 	    iif(i.history_for > 0, iif(i.history_from > 0, i.history_from, i.created_at), NULL),
+	    iif(i.history_for > 0 AND NOT ` + mirrorExportHistoryCurrent + `, 1, 0),
 	    iif(` + mirrorExportStartKnownSQL + `, 1, 0),
-	    iif(` + mirrorExportStartKnownSQL + `, ` + mirrorExportStatusChangeSQL("min", mirrorGroupStatusesSQL("?3", MirrorGroupInProgress)) + `, NULL),
-	    iif(i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `), ` + mirrorExportStatusChangeSQL("max", mirrorDoneStatusesSQL("?3")) + `, NULL),
-	    iif(` + mirrorRegroupedNotDone("?3") + `, 1, 0), iif(` + mirrorLeftOut("?3") + `, 0, 1)
+	    iif(` + mirrorExportStartKnownSQL + `, ` + mirrorExportStatusChangeSQL("i", "min", mirrorGroupStatusesSQL("?3", MirrorGroupInProgress), "") + `, NULL),
+	    iif(i.status_id IN (` + mirrorDoneStatusesSQL("?3") + `), ` + mirrorExportStatusChangeSQL("i", "max", mirrorDoneStatusesSQL("?3"), "") + `, NULL),
+	    iif(` + mirrorRegroupedNotDone("?3") + `, 1, 0), iif(` + mirrorLeftOut("?3") + `, 0, 1)`, afterCard: `
 	  FROM tracker_cache_board_issues b
 	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
-	  LEFT JOIN tracker_cache_issues p ON p.root_id = i.root_id AND p.issue_id = i.parent_id AND i.parent_id <> ''
+	  LEFT JOIN tracker_cache_parents n ON n.root_id = i.root_id AND n.issue_id = i.parent_id AND i.parent_id <> ''
+	  LEFT JOIN tracker_cache_issues p ON p.root_id = i.root_id AND p.issue_id = i.parent_id AND i.parent_id <> '' AND n.type_level IS NOT 1
 	    AND ` + mirrorIssueKept("p.root_id", "p.issue_id") + `
-	  LEFT JOIN tracker_cache_issues gp ON gp.root_id = p.root_id AND gp.issue_id = p.parent_id AND p.parent_id <> ''
-	    AND ` + mirrorIssueKept("gp.root_id", "gp.issue_id") + `
+	  LEFT JOIN tracker_cache_parents gn ON gn.root_id = p.root_id AND gn.issue_id = p.parent_id AND p.parent_id <> ''
 	  WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2`},
 	{relation: "statuses", name: "statuses", needs: []string{"tickets"}, sql: mirrorExportStatusesSQL("INSERT",
 		`SELECT c.status_id AS id FROM tracker_cache_board_column_statuses c WHERE c.root_id = CAST(?1 AS INTEGER) AND c.board_id = ?2
 		 UNION SELECT status FROM main.tickets WHERE status IS NOT NULL`)},
 	{relation: "epics", name: "epics", needs: []string{"tickets"}, sql: `INSERT INTO main.epics(id, key, title)
 	  SELECT e.issue_id, e.issue_key, e.title FROM (SELECT DISTINCT epic FROM main.tickets WHERE epic IS NOT NULL) x
-	  CROSS JOIN tracker_cache_issues e ON e.root_id = CAST(?1 AS INTEGER) AND e.issue_id = x.epic`},
+	  CROSS JOIN tracker_cache_parents e ON e.root_id = CAST(?1 AS INTEGER) AND e.issue_id = x.epic`},
 	{relation: "sprints", name: "sprints", sql: `INSERT INTO main.sprints(id, name, state, start_at, end_at, completed_at, position)
 	  SELECT sp.sprint_id, sp.name, CASE sp.state WHEN ` + strconv.Itoa(MirrorSprintFuture) + ` THEN 'future' WHEN ` +
 		strconv.Itoa(MirrorSprintActive) + ` THEN 'active' ELSE 'closed' END,
@@ -198,7 +370,7 @@ var mirrorExportFills = []mirrorExportFill{
 	    SELECT sprint_id, completed_at FROM tracker_cache_sprints
 	     WHERE root_id = CAST(?1 AS INTEGER) AND board_id = ?2 AND state = ` + strconv.Itoa(MirrorSprintClosed) + ` AND completed_at > 0)
 	  INSERT INTO main.sprint_finished(sprint, ticket, done)
-	  SELECT l.sprint_id, i.issue_id, coalesce(` + mirrorStatusAtCompletionSQL + ` IN (` + mirrorDoneStatusesSQL("?3") + `), 0)
+	  SELECT l.sprint_id, i.issue_id, ` + mirrorStatusAtCompletionSQL + ` IN (` + mirrorDoneStatusesSQL("?3") + `)
 	  FROM l
 	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = CAST(?1 AS INTEGER) AND m.sprint_id = l.sprint_id
 	  CROSS JOIN tracker_cache_board_issues b ON b.root_id = m.root_id AND b.board_id = ?2 AND b.issue_id = m.issue_id
@@ -207,6 +379,14 @@ var mirrorExportFills = []mirrorExportFill{
 	  SELECT sprint_tickets.sprint, sprint_tickets.ticket, coalesce(tickets.status_group = 'done', 0)
 	  FROM main.sprints JOIN main.sprint_tickets ON sprint_tickets.sprint = sprints.id
 	  JOIN main.tickets ON tickets.id = sprint_tickets.ticket WHERE sprints.state = 'active'`},
+	// A label is named by its name, else its ID; OR IGNORE keeps one row of
+	// a name a ticket has twice and skips a label with neither.
+	{relation: "labels", name: "labels", sql: `INSERT OR IGNORE INTO main.labels(ticket, name)
+	  SELECT i.issue_id, coalesce(nullif(json_extract(l.value, ?10), ''), nullif(json_extract(l.value, ?9), ''))
+	  FROM tracker_cache_board_issues b
+	  CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
+	  CROSS JOIN json_each(CAST(i.data AS TEXT), ?8) l
+	  WHERE b.root_id = CAST(?1 AS INTEGER) AND b.board_id = ?2 AND json_extract(CAST(i.data AS TEXT), ?7) = CAST(?6 AS INTEGER)`},
 	{relation: "people", name: "people", needs: []string{"tickets"}, sql: `INSERT INTO main.people(id, name)
 	  SELECT u.user_id, u.name FROM (SELECT DISTINCT assignee AS id FROM main.tickets WHERE assignee IS NOT NULL) x
 	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
@@ -216,7 +396,23 @@ var mirrorExportFills = []mirrorExportFill{
 	    UNION SELECT from_value FROM main.changes WHERE kind = 'assignee' AND from_value IS NOT NULL
 	    UNION SELECT to_value FROM main.changes WHERE kind = 'assignee' AND to_value IS NOT NULL) x
 	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
-}
+	{relation: "credit", name: "credit", sql: func() string {
+		with, rows := mirrorCreditSQL(mirrorExportCreditParams, "", func(string) string { return "1" }, true)
+		return with + `
+	  INSERT INTO main.credit(` + mirrorCreditColumns + `)
+	  ` + rows
+	}()},
+	{relation: "credit", name: "people credit names", needs: []string{"people"}, sql: `INSERT OR IGNORE INTO main.people(id, name)
+	  SELECT u.user_id, u.name FROM (SELECT DISTINCT person AS id FROM main.credit WHERE person IS NOT NULL) x
+	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
+	// A person a forge account is paired with whom the mirror has not
+	// read is named as picked.
+	{relation: "credit", name: "people paired names", needs: []string{"people"}, sql: `INSERT OR IGNORE INTO main.people(id, name)
+	  SELECT p.person, max(p.person_name) FROM tracker_forge_pairings p
+	  WHERE p.connection_id = ` + mirrorRootConnectionSQL + ` AND p.person <> '' AND p.person_name <> ''
+	    AND p.person IN (SELECT person FROM main.credit WHERE person IS NOT NULL)
+	  GROUP BY p.person`},
+}, slices.Concat(mirrorExportIntervalFills(), mirrorExportRelationFills())...)
 
 // mirrorExportAlways are the relations every export fills: what a range
 // is resolved against.
@@ -224,8 +420,9 @@ var mirrorExportAlways = []string{"board", "sprints"}
 
 // mirrorExportRelations is the set of relations an export of relations
 // fills: those, the ones every export fills, and what each of their fills
-// needs, through every fill. A name that is not an export relation is the
-// caller's error.
+// needs, through every fill, with each column of MirrorExportColumns
+// named and its relation. A name that is neither an export relation nor
+// one of those columns is the caller's error.
 func mirrorExportRelations(relations []string) (map[string]bool, error) {
 	set := map[string]bool{}
 	queue := slices.Concat(mirrorExportAlways, relations)
@@ -235,8 +432,15 @@ func mirrorExportRelations(relations []string) (map[string]bool, error) {
 		if set[r] {
 			continue
 		}
+		if slices.Contains(MirrorExportColumns, r) {
+			set[r] = true
+			relation, _, _ := strings.Cut(r, ".")
+			queue = append(queue, relation)
+			continue
+		}
 		if !slices.Contains(MirrorExportTables, r) {
-			return nil, fmt.Errorf("store: %q is not one of the export's relations (%s)", r, strings.Join(MirrorExportTables, ", "))
+			return nil, fmt.Errorf("store: %q is not one of the export's relations (%s) or columns (%s)", r,
+				strings.Join(MirrorExportTables, ", "), strings.Join(MirrorExportColumns, ", "))
 		}
 		set[r] = true
 		for _, f := range mirrorExportFills {
@@ -258,6 +462,19 @@ type MirrorExport struct {
 	// FirstReadDone is whether the board's first read has finished: until
 	// then the export holds the tickets read so far.
 	FirstReadDone bool
+	// Earliest is the earliest instant a count can ask of the history
+	// (mirrorExportEarliest): no interval and no day of logged time before
+	// it is in the export.
+	Earliest int64
+	// LoggedFrom is the first day (YYYY-MM-DD) of the logged time the
+	// export holds, as the export was given it (MirrorLoggedDays.From):
+	// worklogs and worklog_days hold no day before it (trackerdash
+	// worklogs.go).
+	LoggedFrom string
+	// Viewer is the board's connection's verified account, whose logged
+	// time worklogs and worklog_days hold, read in the export's snapshot;
+	// "" before one is verified.
+	Viewer string
 }
 
 // ErrMirrorExportUnsupported is an export from a store with no database
@@ -267,13 +484,17 @@ var ErrMirrorExportUnsupported = errors.New("store: this store has no database f
 // ExportMirrorBoard fills the main database of conn, which must be empty,
 // with board boardID of root rootID as the export's relations hold it
 // (MirrorExportTables): relations, what their fills need and the ones
-// every export fills (mirrorExportRelations), the others left empty. It
-// reads with regroup in one read transaction of this
+// every export fills (mirrorExportRelations), the others left empty, and
+// the columns of MirrorExportColumns relations names, decoded from card
+// blobs of shape card, the intervals from window, the start of the
+// mirror's history window in milliseconds (mirrorExportIntervalsFrom),
+// the logged time of the days logged, and credit by now, the
+// evaluation's clock, after which no act counts. It reads with regroup in one read transaction of this
 // store's file, attached to conn read-only for the fill and detached
 // before it returns. ok is false, with nothing filled, for a board the
 // mirror does not show. It takes a history read slot, as every read that
 // walks a board does; ctx bounds the wait for it and every statement.
-func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations []string) (export MirrorExport, ok bool, err error) {
+func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations []string, window, now int64, logged MirrorLoggedDays, card MirrorCardShape) (export MirrorExport, ok bool, err error) {
 	if s.path == "" || s.path == ":memory:" || strings.Contains(s.path, "mode=memory") {
 		return MirrorExport{}, false, ErrMirrorExportUnsupported
 	}
@@ -305,13 +526,13 @@ func (s *Store) ExportMirrorBoard(ctx context.Context, conn *sql.Conn, rootID in
 			ok = false
 		}
 	}()
-	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup, set)
+	export, ok, err = exportMirrorBoardTx(ctx, conn, rootID, boardID, regroup, set, window, now, logged, card)
 	return export, ok, err
 }
 
 // exportMirrorBoardTx runs the fill in one transaction on conn, the file
 // attached.
-func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations map[string]bool) (MirrorExport, bool, error) {
+func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boardID string, regroup MirrorRegroup, relations map[string]bool, window, now int64, logged MirrorLoggedDays, card MirrorCardShape) (MirrorExport, bool, error) {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: begin the export of board %s: %w", boardID, err)
@@ -331,19 +552,21 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	if err != nil {
 		return MirrorExport{}, false, fmt.Errorf("store: read board %s to export it: %w", boardID, err)
 	}
-	groups := regroup.statuses
-	if groups == "" {
-		groups = "{}"
+	var earliestSprint sql.NullInt64
+	if err := tx.QueryRowContext(ctx, mirrorExportEarliestSprintSQL, rootID, boardID).Scan(&earliestSprint); err != nil {
+		return MirrorExport{}, false, fmt.Errorf("store: read board %s's earliest sprint to export it: %w", boardID, err)
 	}
-	estimated := 0
-	if export.EstimateUnit != MirrorEstimateNone {
-		estimated = 1
+	export.Earliest = mirrorExportEarliest(window, earliestSprint)
+	export.LoggedFrom = logged.From
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(`+mirrorExportViewerSQL+`, '')`, rootID).Scan(&export.Viewer); err != nil {
+		return MirrorExport{}, false, fmt.Errorf("store: read board %s's viewer to export it: %w", boardID, err)
 	}
+	args := mirrorExportArgs(rootID, boardID, regroup, resetAt, export.EstimateUnit != MirrorEstimateNone, export.Earliest, window, now, logged, card)
 	for _, fill := range mirrorExportFills {
-		if !relations[fill.relation] {
+		if !fill.runs(relations) {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, fill.sql, rootID, boardID, groups, resetAt, estimated); err != nil {
+		if _, err := tx.ExecContext(ctx, fill.text(relations), args...); err != nil {
 			return MirrorExport{}, false, fmt.Errorf("store: export board %s's %s: %w", boardID, fill.name, err)
 		}
 	}
@@ -352,6 +575,23 @@ func exportMirrorBoardTx(ctx context.Context, conn *sql.Conn, rootID int64, boar
 	}
 	commit = true
 	return export, true, nil
+}
+
+// mirrorExportArgs is what the fills bind (mirrorExportFills).
+// from is the earliest instant a count can ask of the intervals
+// (mirrorExportEarliest), window the history window's start, now the
+// export's clock and logged the days of the logged time.
+func mirrorExportArgs(rootID int64, boardID string, regroup MirrorRegroup, resetAt int64, estimated bool, from, window, now int64, logged MirrorLoggedDays, card MirrorCardShape) []any {
+	groups := regroup.statuses
+	if groups == "" {
+		groups = "{}"
+	}
+	hasEstimate := 0
+	if estimated {
+		hasEstimate = 1
+	}
+	return append(append([]any{rootID, boardID, groups, resetAt, hasEstimate}, card.args()...), from, window, regroup.supportArg(), regroup.creditArg(), now,
+		logged.From, logged.Through)
 }
 
 // mirrorExportURI is the read-only URI of the database file at path.

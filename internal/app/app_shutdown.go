@@ -481,6 +481,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 	record("close thread MCP server", a.threadMCPServer().Close())
 	record("close workflow MCP server", a.workflowMCPServer().Close())
 	record("close tracker MCP server", a.trackerMCPServer().Close())
+	// The recorder writes its open spans; no screen reports after the
+	// transport closed, and the tracker tools that read it closed above.
+	if a.activity != nil {
+		record("close activity recorder", a.activity.Close())
+	}
 	// A workflow tool call's wait hold releases on the wake queue once its
 	// response is written, which can follow the engine's close and the drain
 	// there. Closing the server joins those calls, so their wake work is

@@ -26,13 +26,45 @@
 // the held setup (`trackerRegroupsOf`): the ticket screen holds its
 // project's, the thread rows and header theirs (`threadLinkMarks`).
 //
-// The page's statuses (`ProjectTrackerStatuses`) are held the same way,
+// The pages' statuses (`ProjectTrackerStatuses`) are held the same way,
 // read on hold, on the event and on reconnect: the statuses the setup
-// regroups off the boards are part of their answer.
+// regroups off the boards, and the places its Start work defaults name,
+// are part of their answer.
+//
+// The Points and credit page's boards with the pace of each Jira board
+// (`ProjectTrackerPace`) are held the same way as the statuses: read on
+// hold, on the event and on reconnect, since the unit it is in and the
+// status groups it counts done by are the setup's.
+//
+// The Fields page's fields to pin are held by site
+// (`ProjectTrackerSiteFields`), each its own read, so a site that fails
+// or stalls holds up no other: read on hold, on reconnect and on the
+// site's Try again. A tracker read, which no change of the setup moves;
+// the page holds a site again when the connections that reach it change.
+//
+// The Time screen's support tickets of a board (`ProjectTrackerSupport`)
+// are held by the project, the board and the week's issues, read on hold,
+// on the event and on reconnect: which tickets are support and the hours
+// a point are the setup's, read from the board's copy on its computer.
+//
+// The Points and credit page's forge accounts of a connection
+// (`TrackerForgeAccounts`) are held by the computer and the connection,
+// read on hold, on reconnect and on Read again: this computer's copy of
+// who each account is, which its own background reads move and no event
+// tells a page. A person's word on an account (`SetTrackerForgeAccount`)
+// answers the list as it then is; the words of a connection are sent one
+// at a time, and a read asked for meanwhile runs once they have settled,
+// so no answer older than a word lands over it.
+//
+// The Time page's check of its tickets (`TrackerLookup`) is held by the
+// connection asked and the keys, one read for every ticket of a
+// connection, read on hold, on reconnect and on Try again: the page's
+// computer's tracker read, which a new ticket makes a new read of.
 
-import { SvelteMap } from 'svelte/reactivity';
-import type { Setup, SetupView, SiteStatuses } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { ProjectTrackerSetup, ProjectTrackerStatuses, SetProjectTrackerSetup } from './bindings';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import type { AgentRules, BoardPace, CreditRules, ForgeAccountInput, ForgeAccountsView, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace, SupportView, TimeTicket, UserListView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { ProjectTrackerPace, ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, ProjectTrackerSupport, SetProjectTrackerSetup, SetTrackerForgeAccount, TrackerForgeAccounts, TrackerLookup, TrackerPeople } from './bindings';
+import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend } from '../transport/entityIndex';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
@@ -150,20 +182,127 @@ class HeldSetup extends HeldRead<SetupView> {
   }
 }
 
-class HeldStatuses extends HeldRead<SiteStatuses[]> {
-  protected call(): Promise<SiteStatuses[]> {
+class HeldStatuses extends HeldRead<ProjectStatuses> {
+  protected call(): Promise<ProjectStatuses> {
     return ProjectTrackerStatuses(this.project);
   }
 }
 
-const setups = new SvelteMap<string, HeldSetup>();
-const statuses = new SvelteMap<string, HeldStatuses>();
+class HeldPace extends HeldRead<BoardPace[]> {
+  protected call(): Promise<BoardPace[]> {
+    return ProjectTrackerPace(this.project);
+  }
+}
 
-function acquire<E extends HeldRead<unknown>>(map: SvelteMap<string, E>, project: string, make: () => E): () => void {
-  let entry = map.get(project);
+class HeldSiteFields extends HeldRead<PinField[]> {
+  constructor(project: string, readonly tracker: string, readonly site: string) {
+    super(project);
+  }
+
+  protected call(): Promise<PinField[]> {
+    return ProjectTrackerSiteFields(this.project, this.tracker, this.site);
+  }
+}
+
+class HeldSupport extends HeldRead<SupportView> {
+  constructor(project: string, readonly connection: string, readonly board: string, readonly issues: readonly string[]) {
+    super(project);
+  }
+
+  protected call(): Promise<SupportView> {
+    return ProjectTrackerSupport(this.project, this.connection, this.board, [...this.issues]);
+  }
+}
+
+class HeldTicketCheck extends HeldRead<LookupView> {
+  constructor(project: string, readonly on: BackendKey, readonly connection: string, readonly keys: readonly string[]) {
+    super(project);
+  }
+
+  override backend(): BackendKey {
+    return this.on;
+  }
+
+  protected call(): Promise<LookupView> {
+    return withBackendTarget(this.on, () => TrackerLookup(this.connection, [...this.keys]));
+  }
+}
+
+class HeldForgeAccounts extends HeldRead<ForgeAccountsView> {
+  /** The accounts whose word is being sent, by `forgeAccountKey`. */
+  readonly saving = new SvelteSet<string>();
+  /** A read is out. */
+  busy = $state(false);
+  private words: Promise<void> = Promise.resolve();
+  private readOwed = false;
+
+  constructor(project: string, readonly on: BackendKey, readonly connection: string) {
+    super(project);
+  }
+
+  override backend(): BackendKey {
+    return this.on;
+  }
+
+  protected call(): Promise<ForgeAccountsView> {
+    return withBackendTarget(this.on, () => TrackerForgeAccounts(this.connection));
+  }
+
+  override read(): Promise<void> {
+    if (this.saving.size > 0) {
+      this.readOwed = true;
+      return this.words;
+    }
+    this.busy = true;
+    const reading = super.read();
+    void reading.finally(() => {
+      if (this.reading === null) this.busy = false;
+    });
+    return reading;
+  }
+
+  say(word: ForgeAccountInput): Promise<void> {
+    const key = forgeAccountKey(word.host, word.login);
+    if (this.saving.has(key)) return Promise.reject(new Error('This account is still saving; try again once it has saved.'));
+    this.saving.add(key);
+    const sent = this.words.then(() => this.send(word));
+    this.words = sent.then(() => undefined, () => undefined).finally(() => {
+      this.saving.delete(key);
+      if (this.saving.size === 0 && this.readOwed) {
+        this.readOwed = false;
+        void this.read();
+      }
+    });
+    return sent;
+  }
+
+  private async send(word: ForgeAccountInput): Promise<void> {
+    // A read out when the word is sent does not land over its answer.
+    const generation = ++this.generation;
+    try {
+      const view = await withBackendTarget(this.on, () => SetTrackerForgeAccount(this.connection, word));
+      if (generation === this.generation) this.settle(view);
+    } catch (err) {
+      // The computer may hold the word or not: read what it holds.
+      this.readOwed = true;
+      throw err;
+    }
+  }
+}
+
+const setups = new SvelteMap<string, HeldSetup>();
+const forgeAccounts = new SvelteMap<string, HeldForgeAccounts>();
+const statuses = new SvelteMap<string, HeldStatuses>();
+const paces = new SvelteMap<string, HeldPace>();
+const fields = new SvelteMap<string, HeldSiteFields>();
+const checks = new SvelteMap<string, HeldTicketCheck>();
+const supports = new SvelteMap<string, HeldSupport>();
+
+function acquire<E extends HeldRead<unknown>>(map: SvelteMap<string, E>, key: string, make: () => E): () => void {
+  let entry = map.get(key);
   if (!entry) {
     entry = make();
-    map.set(project, entry);
+    map.set(key, entry);
   }
   entry.holders++;
   if (entry.holders === 1) void entry.read();
@@ -173,7 +312,7 @@ function acquire<E extends HeldRead<unknown>>(map: SvelteMap<string, E>, project
     if (released) return;
     released = true;
     mine.holders--;
-    if (mine.holders === 0 && map.get(project) === mine) map.delete(project);
+    if (mine.holders === 0 && map.get(key) === mine) map.delete(key);
   };
 }
 
@@ -266,13 +405,15 @@ export function withStatusGroup(setup: Setup, tracker: string, site: string, sta
   return { ...setup, status_groups: Object.keys(statuses).length > 0 ? [...others, { tracker, site, statuses }] : others };
 }
 
-/** A project's statuses as the Status groups page shows them. */
+/** A project's statuses as the Status groups and Starting work pages
+ * show them. */
 export interface TrackerStatusesState {
   readonly sites: readonly SiteStatuses[] | null;
+  readonly places: readonly StartPlace[] | null;
   readonly error: unknown;
 }
 
-const NO_STATUSES: TrackerStatusesState = { sites: null, error: null };
+const NO_STATUSES: TrackerStatusesState = { sites: null, places: null, error: null };
 
 /** Holds `project`'s statuses while the caller shows them, reading them
  * now; the returned function releases the hold. */
@@ -283,12 +424,342 @@ export function acquireTrackerStatuses(project: string): () => void {
 /** `project`'s statuses as held. Reactive. */
 export function trackerStatusesOf(project: string): TrackerStatusesState {
   const entry = statuses.get(project);
-  return entry ? { sites: entry.value, error: entry.error } : NO_STATUSES;
+  return entry ? { sites: entry.value?.sites ?? null, places: entry.value?.places ?? null, error: entry.error } : NO_STATUSES;
 }
 
 /** Reads `project`'s statuses again if a surface holds them. */
 export function refreshTrackerStatuses(project: string): Promise<void> {
   return statuses.get(project)?.read() ?? Promise.resolve();
+}
+
+/** A project's boards with the pace of each Jira board, as the Points
+ * and credit page shows them. */
+export interface TrackerPaceState {
+  readonly boards: readonly BoardPace[] | null;
+  readonly error: unknown;
+}
+
+const NO_PACE: TrackerPaceState = { boards: null, error: null };
+
+/** Holds `project`'s pace while the caller shows it, reading it now; the
+ * returned function releases the hold. */
+export function acquireTrackerPace(project: string): () => void {
+  return acquire(paces, project, () => new HeldPace(project));
+}
+
+/** `project`'s pace as held. Reactive. */
+export function trackerPaceOf(project: string): TrackerPaceState {
+  const entry = paces.get(project);
+  return entry ? { boards: entry.value, error: entry.error } : NO_PACE;
+}
+
+/** Reads `project`'s pace again if a surface holds it. */
+export function refreshTrackerPace(project: string): Promise<void> {
+  return paces.get(project)?.read() ?? Promise.resolve();
+}
+
+/** A site's fields to pin as the Fields page shows them. */
+export interface TrackerSiteFieldsState {
+  readonly fields: readonly PinField[] | null;
+  readonly error: unknown;
+}
+
+const NO_FIELDS: TrackerSiteFieldsState = { fields: null, error: null };
+
+/** The held read of `site`'s fields for `project`'s page; `holds` names
+ * what it was read under (the connections that reach the site), so a
+ * change of them is a new read. */
+function siteFieldsKey(project: string, tracker: string, site: string, holds: string): string {
+  return `${project}\u0000${tracker}\u0000${site}\u0000${holds}`;
+}
+
+/** Holds `site`'s fields to pin for `project` while the caller shows them,
+ * reading them now; the returned function releases the hold. A new
+ * `holds` is a new read. */
+export function acquireTrackerSiteFields(project: string, tracker: string, site: string, holds: string): () => void {
+  return acquire(fields, siteFieldsKey(project, tracker, site, holds), () => new HeldSiteFields(project, tracker, site));
+}
+
+/** `site`'s fields to pin for `project` as held. Reactive. */
+export function trackerSiteFieldsOf(project: string, tracker: string, site: string, holds: string): TrackerSiteFieldsState {
+  const entry = fields.get(siteFieldsKey(project, tracker, site, holds));
+  return entry ? { fields: entry.value, error: entry.error } : NO_FIELDS;
+}
+
+/** Reads `site`'s fields for `project` again if a surface holds them. */
+export function refreshTrackerSiteFields(project: string, tracker: string, site: string, holds: string): Promise<void> {
+  return fields.get(siteFieldsKey(project, tracker, site, holds))?.read() ?? Promise.resolve();
+}
+
+/** An Agents setting of a project: Change tickets, or Ask before
+ * changing several at once. */
+export type AgentRule = keyof AgentRules;
+
+/** Whether the setup's Agents settings turn `rule` on: absent is on, the
+ * app's built-in rule. */
+export function agentRuleOn(setup: Setup | null | undefined, rule: AgentRule): boolean {
+  return setup?.agents?.[rule] !== false;
+}
+
+/** `setup` with Agents setting `rule` on or off. The computer stores a
+ * rule turned on as none (trackerapp's validateSetup). */
+export function withAgentRule(setup: Setup, rule: AgentRule, on: boolean): Setup {
+  return { ...setup, agents: { ...setup.agents, [rule]: on } };
+}
+
+/** The roles a project's time settings name a ticket for. */
+export type TimeTicketRole = 'meetings' | 'time_off';
+
+/** `setup` with the ticket `role`'s time goes on, or none for null. */
+export function withTimeTicket(setup: Setup, role: TimeTicketRole, ticket: TimeTicket | null): Setup {
+  return { ...setup, time: { ...setup.time, [role]: ticket } };
+}
+
+/** Whether the setup keeps an agent's time draft off epics: absent is
+ * on, the app's built-in rule (trackerapp.TimeSettings.RefusesEpics). */
+export function neverEpicsOn(setup: Setup | null | undefined): boolean {
+  return setup?.time?.never_epics !== false;
+}
+
+/** `setup` with Never log to an epic on or off. The computer stores it
+ * turned on as none (trackerapp's validateSetup). */
+export function withNeverEpics(setup: Setup, on: boolean): Setup {
+  return { ...setup, time: { ...setup.time, never_epics: on } };
+}
+
+/** Whether the project counts its Jira boards' tickets in place of their
+ * estimates: absent counts the estimates (trackerapp.Estimates). */
+export function countsTickets(setup: Setup | null | undefined): boolean {
+  return setup?.estimates?.count === 'tickets';
+}
+
+/** `setup` counting tickets or the boards' estimates. The computer stores
+ * the estimates as none (trackerapp's checkEstimates). */
+export function withCountTickets(setup: Setup, on: boolean): Setup {
+  return { ...setup, estimates: { ...setup.estimates, count: on ? 'tickets' : 'estimates' } };
+}
+
+/** Whether the project's tickets offer planning poker: absent is on. */
+export function pokerOn(setup: Setup | null | undefined): boolean {
+  return setup?.estimates?.poker !== false;
+}
+
+/** `setup` with planning poker on or off. The computer stores it turned
+ * on as none. */
+export function withPoker(setup: Setup, on: boolean): Setup {
+  return { ...setup, estimates: { ...setup.estimates, poker: on } };
+}
+
+/** The support read of `issues` on `project`'s `board` of `connection`. */
+function supportKey(project: string, connection: string, board: string, issues: readonly string[]): string {
+  return [project, connection, board, ...issues].join('\u0000');
+}
+
+/** Holds which of `issues` are support tickets of `project` on `board`
+ * of `connection` while the caller shows them, reading them now; the
+ * returned function releases the hold. Other issues are a new read. */
+export function acquireTrackerSupport(project: string, connection: string, board: string, issues: readonly string[]): () => void {
+  return acquire(supports, supportKey(project, connection, board, issues), () => new HeldSupport(project, connection, board, issues));
+}
+
+/** Which of a week's issues are support tickets as a surface shows it. */
+export interface TrackerSupportState {
+  /** The support tickets, the hours a point and the unit; null before a
+   * read answers or while the last read failed, when the screen shows no
+   * line. */
+  readonly support: SupportView | null;
+  /** The last read's failure; null when it answered. */
+  readonly error: unknown;
+}
+
+const NO_SUPPORT: TrackerSupportState = { support: null, error: null };
+
+/** Which of `issues` are support tickets as held. Reactive. */
+export function trackerSupportOf(project: string, connection: string, board: string, issues: readonly string[]): TrackerSupportState {
+  const entry = supports.get(supportKey(project, connection, board, issues));
+  if (!entry) return NO_SUPPORT;
+  return { support: entry.error == null ? entry.value : null, error: entry.error };
+}
+
+/** Reads which of `issues` are support tickets again if a surface holds
+ * them: the surface's Refresh, its retry, and a change of the board's
+ * mirror, which can make a ticket support or not (an estimate, a label, a
+ * type, the board's rows). */
+export function refreshTrackerSupport(project: string, connection: string, board: string, issues: readonly string[]): Promise<void> {
+  return supports.get(supportKey(project, connection, board, issues))?.read() ?? Promise.resolve();
+}
+
+/** The least time between two reads of a week's support tickets that the
+ * board's changes ask for, as a dashboard's counts. */
+export const SUPPORT_CHANGE_INTERVAL_MS = 5_000;
+
+/** Whether the project counts credit: its credit section is on. A
+ * project with no section reads as off (trackerapp's heldSetup.credit). */
+export function creditOn(setup: Setup | null | undefined): boolean {
+  return setup?.credit?.on === true;
+}
+
+/** `setup` counting credit or not. Off keeps the rules, the snapshots
+ * and the support picks, so on again loses nothing. */
+export function withCreditOn(setup: Setup, on: boolean): Setup {
+  return { ...setup, credit: { ...setup.credit!, on } };
+}
+
+/** One change to the credit rules, as the person chose it: a value to
+ * set, or whether a review action counts. It holds no step relative to a
+ * snapshot's own value, so every snapshot it is made in ends with the
+ * value chosen. */
+export type CreditChange =
+  | { readonly review_share: number }
+  | { readonly review_need: number }
+  | { readonly hours_per_point: number }
+  | { readonly action: string; readonly on: boolean };
+
+function withCreditChange(r: CreditRules, change: CreditChange): CreditRules {
+  if (!('action' in change)) return { ...r, ...change };
+  const actions = r.review_actions.filter((a) => a !== change.action);
+  if (change.on) actions.push(change.action);
+  // Fewer actions lower the number needed to the actions left.
+  return { ...r, review_actions: actions, review_need: Math.min(r.review_need, actions.length) };
+}
+
+/** `setup` with `change` made to its credit rules: for every sprint, in
+ * each snapshot, each keeping when it took effect; else from this sprint,
+ * as a new newest snapshot with no time, which the computer stamps from
+ * the save (trackerapp's stampCredit). For every sprint, an earlier
+ * snapshot that counts fewer kinds of action than the number needed
+ * needs all it counts, since the page's bound is the newest snapshot's. */
+export function withCreditRules(setup: Setup, change: CreditChange, everySprint: boolean): Setup {
+  const credit = setup.credit!;
+  const newest = credit.rules.length - 1;
+  const rules = everySprint
+    ? credit.rules.map((r, i) => withCreditChange(r, i < newest && 'review_need' in change
+      ? { review_need: Math.min(change.review_need, r.review_actions.length) } : change))
+    : [...credit.rules, { ...withCreditChange(credit.rules[credit.rules.length - 1], change), from: undefined }];
+  return { ...setup, credit: { ...credit, rules } };
+}
+
+/** Whether turning review action `action` off would leave a snapshot of
+ * `rules` that the change reaches counting none: the newest, and for
+ * every sprint each earlier one. The computer refuses such a rule. */
+export function creditActionIsLast(rules: readonly CreditRules[], action: string, everySprint: boolean): boolean {
+  return (everySprint ? rules : rules.slice(-1)).some((r) => r.review_actions.length === 1 && r.review_actions[0] === action);
+}
+
+/** One change to which tickets of a site are support, as the person
+ * chose it: whether a type, a label or a board is picked. Like a
+ * CreditChange it holds no flip, so the setup it is made in ends with the
+ * pick chosen, whatever that setup picked. */
+export interface SupportChange {
+  readonly list: 'types' | 'labels' | 'boards';
+  readonly id: string;
+  readonly on: boolean;
+}
+
+/** `setup` with `change` made to which tickets of `tracker`'s site `site`
+ * are support. The computer drops an entry that names none. */
+export function withSupport(setup: Setup, tracker: string, site: string, change: SupportChange): Setup {
+  const credit = setup.credit!;
+  const i = credit.support.findIndex((s) => s.tracker === tracker && s.site === site);
+  const support = [...credit.support];
+  const entry = i >= 0 ? support[i] : { tracker, site, types: [], labels: [], boards: [] };
+  const list = entry[change.list].filter((id) => id !== change.id);
+  if (change.on) list.push(change.id);
+  const next = { ...entry, [change.list]: list };
+  if (i >= 0) support[i] = next;
+  else support.push(next);
+  return { ...setup, credit: { ...credit, support } };
+}
+
+/** A check of the tickets `keys` through `connection` on computer
+ * `backend` for `project`'s Time page. */
+function ticketCheckKey(project: string, backend: BackendKey, connection: string, keys: readonly string[]): string {
+  return [project, backend, connection, ...keys].join('\u0000');
+}
+
+/** Holds the check of `keys` through `connection` on `backend` while the
+ * caller shows it, reading it now; the returned function releases the
+ * hold. Other keys are a new read. */
+export function acquireTrackerTicketCheck(project: string, backend: BackendKey, connection: string, keys: readonly string[]): () => void {
+  return acquire(checks, ticketCheckKey(project, backend, connection, keys), () => new HeldTicketCheck(project, backend, connection, keys));
+}
+
+/** A check of tickets as the Time page shows it. */
+export interface TrackerTicketCheckState {
+  readonly found: LookupView | null;
+  readonly error: unknown;
+}
+
+const NO_CHECK: TrackerTicketCheckState = { found: null, error: null };
+
+/** The check of `keys` through `connection` as held. Reactive. */
+export function trackerTicketCheckOf(project: string, backend: BackendKey, connection: string, keys: readonly string[]): TrackerTicketCheckState {
+  const entry = checks.get(ticketCheckKey(project, backend, connection, keys));
+  return entry ? { found: entry.value, error: entry.error } : NO_CHECK;
+}
+
+/** Checks `keys` through `connection` again if a surface holds them. */
+export function refreshTrackerTicketCheck(project: string, backend: BackendKey, connection: string, keys: readonly string[]): Promise<void> {
+  return checks.get(ticketCheckKey(project, backend, connection, keys))?.read() ?? Promise.resolve();
+}
+
+/** A forge account of a connection: its login on its host. */
+export function forgeAccountKey(host: string, login: string): string {
+  return `${host}\u0000${login}`;
+}
+
+function forgeAccountsKey(backend: BackendKey, connection: string): string {
+  return `${backend}\u0000${connection}`;
+}
+
+/** Holds the forge accounts of `connection` on computer `backend` while
+ * the caller shows them for `project`, reading them now; the returned
+ * function releases the hold. */
+export function acquireForgeAccounts(project: string, backend: BackendKey, connection: string): () => void {
+  return acquire(forgeAccounts, forgeAccountsKey(backend, connection), () => new HeldForgeAccounts(project, backend, connection));
+}
+
+/** A connection's forge accounts as the Points and credit page shows
+ * them. */
+export interface ForgeAccountsState {
+  /** The accounts as last read or answered; null until a read answers. */
+  readonly view: ForgeAccountsView | null;
+  readonly error: unknown;
+  /** A read is out. */
+  readonly reading: boolean;
+  /** The accounts whose word is being sent, by `forgeAccountKey`. */
+  readonly saving: ReadonlySet<string>;
+}
+
+const NO_SAVING: ReadonlySet<string> = new Set();
+const NO_FORGE_ACCOUNTS: ForgeAccountsState = { view: null, error: null, reading: false, saving: NO_SAVING };
+
+/** The forge accounts of `connection` on `backend` as held. Reactive. */
+export function forgeAccountsOf(backend: BackendKey, connection: string): ForgeAccountsState {
+  const entry = forgeAccounts.get(forgeAccountsKey(backend, connection));
+  return entry ? { view: entry.value, error: entry.error, reading: entry.busy, saving: entry.saving } : NO_FORGE_ACCOUNTS;
+}
+
+/** Reads the forge accounts of `connection` again if a surface holds
+ * them. */
+export function refreshForgeAccounts(backend: BackendKey, connection: string): Promise<void> {
+  return forgeAccounts.get(forgeAccountsKey(backend, connection))?.read() ?? Promise.resolve();
+}
+
+/** Sends a person's word on who a forge account of `connection` is; the
+ * held accounts then show what the computer answered. Rejects with the
+ * computer's refusal or failure, and when no surface holds the accounts. */
+export function sayForgeAccount(backend: BackendKey, connection: string, word: ForgeAccountInput): Promise<void> {
+  const entry = forgeAccounts.get(forgeAccountsKey(backend, connection));
+  if (!entry) return Promise.reject(new Error('The forge accounts are no longer shown; open the page again.'));
+  return entry.say(word);
+}
+
+/** The people of `connection`'s tracker `text` matches, for picking who
+ * a forge account is; `projects` are the tracker projects whose
+ * assignable people answer when the site's own search names none. */
+export function trackerPeople(backend: BackendKey, connection: string, projects: readonly string[], text: string): Promise<UserListView> {
+  return withBackendTarget(backend, () => TrackerPeople(connection, [...projects], text));
 }
 
 /** Reads again every held entry of a project on `backend`, or of a project
@@ -303,7 +774,7 @@ function readAgainOn(backend: BackendKey): void {
     if (entry.saving) entry.readOwed = true;
     else void entry.read();
   }
-  for (const entry of statuses.values()) {
+  for (const entry of [...statuses.values(), ...paces.values(), ...supports.values()]) {
     const owner = entry.backend();
     if (owner === undefined || owner === backend) void entry.read();
   }
@@ -312,10 +783,20 @@ function readAgainOn(backend: BackendKey): void {
 onTrackerSetupUpdated(readAgainOn);
 
 onBackendStatusChange((backend, status) => {
-  if (status.status === 'connected') readAgainOn(backend);
+  if (status.status !== 'connected') return;
+  readAgainOn(backend);
+  for (const entry of [...fields.values(), ...checks.values(), ...forgeAccounts.values()]) {
+    const owner = entry.backend();
+    if (owner === undefined || owner === backend) void entry.read();
+  }
 });
 
 export function resetTrackerSetupForTest(): void {
   setups.clear();
   statuses.clear();
+  paces.clear();
+  fields.clear();
+  checks.clear();
+  supports.clear();
+  forgeAccounts.clear();
 }

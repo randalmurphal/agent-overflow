@@ -179,11 +179,11 @@ func trackerSubscriptionCleanupKey(id string) string { return "tracker-subscript
 //ao:scope tracker:read
 //ao:route home
 func (a *App) TrackerBoard(ctx context.Context, subscriptionID string, sections []trackerapp.Section) (trackerapp.BoardView, error) {
-	svc, scope, groups, err := a.trackerSubscriptionBoard(subscriptionID)
+	svc, err := a.trackerService()
 	if err != nil {
 		return trackerapp.BoardView{}, err
 	}
-	out, err := svc.Board(scope, groups, sections)
+	out, err := svc.SubscriptionBoardView(subscriptionID, sections)
 	return out, trackerError(err)
 }
 
@@ -316,6 +316,7 @@ func trackerRefusal(err error) (code, message string) {
 	var unreadable *trackerapp.SetupFileError
 	var refusedSetup *trackerapp.SetupError
 	var unsureWrite *trackerapp.SetupWriteError
+	var noSite *trackerapp.NoSiteConnectionError
 	failed, isCall := errors.AsType[*trackerapp.CallFailure](err)
 	switch {
 	case err == nil:
@@ -348,6 +349,8 @@ func trackerRefusal(err error) (code, message string) {
 		return "tracker_board_not_read", "this computer has not read this board from the tracker yet; it shows once the first read finishes"
 	case errors.Is(err, trackerapp.ErrStalePage):
 		return "tracker_page_stale", "the board, or the project's status groups, changed since this section was read; read the section again from its start"
+	case errors.As(err, &noSite):
+		return "tracker_site_unreached", "no tracker connection of this computer reaches " + noSite.Site + "; add one in Settings > Issues > Connections to find its fields, or take its pins off here"
 	case errors.Is(err, trackerapp.ErrProjectNotFound):
 		return "tracker_project_missing", "this project no longer exists on this computer"
 	case errors.Is(err, trackerapp.ErrBoardsChanged):
@@ -364,6 +367,10 @@ func trackerRefusal(err error) (code, message string) {
 		return "tracker_setup_newer", "this part of the setup was saved by a newer version of Agent Overflow; update this computer to change it"
 	case errors.As(err, &refusedSetup):
 		return "tracker_setup_refused", "this setup cannot be saved: " + refusedSetup.Reason
+	case errors.Is(err, trackerapp.ErrUnverified):
+		return "tracker_connection_unverified", "this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings"
+	case errors.Is(err, trackerapp.ErrTimeEntryStale):
+		return "tracker_time_entry_stale", "this time entry changed, was posted or was removed since it was read; read the day again"
 	case errors.Is(err, trackerapp.ErrUnknownAttachment):
 		return "tracker_attachment_unknown", "this ticket no longer shows that attachment; look at the ticket again"
 	}

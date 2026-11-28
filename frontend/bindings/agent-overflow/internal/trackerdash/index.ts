@@ -8,19 +8,22 @@ export {
     DashboardView,
     DrillAnswer,
     DrillCell,
+    DrillGroup,
     DrillRequest,
     Form,
     Good,
     How,
     Name,
     PeriodView,
+    ProposalView,
     RangeOption,
     RangeView,
     Request,
     TicketRow,
     Unit,
     WidgetValue,
-    WidgetView
+    WidgetView,
+    WorklogState
 } from "./models.js";
 
 export type {

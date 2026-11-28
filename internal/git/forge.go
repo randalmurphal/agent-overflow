@@ -38,6 +38,16 @@ type Forge interface {
 
 	// ListOpenPRs returns open PRs/MRs for the given head/source branch.
 	ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error)
+	// ListPRsByHead returns the PRs/MRs in any state for the given
+	// head/source branch, as ListOpenPRs reads the open ones, and what
+	// it read beside an error.
+	ListPRsByHead(ctx context.Context, cwd, head string) ([]PRFound, error)
+	// SearchPRsByKey reads the PRs/MRs of repo the forge's search finds
+	// for a ticket key (see pr_key_search.go).
+	SearchPRsByKey(ctx context.Context, repo RepoReference, key string) (PRKeySearch, error)
+	// ReadPRHistory reads the next part of repo's pull request history
+	// (Core.ReadPRHistory).
+	ReadPRHistory(ctx context.Context, repo RepoReference, in PRHistoryInput) (PRHistory, error)
 	// ListMergedPRHeads returns the head branch name + head SHA of up to
 	// `limit` recently merged PRs/MRs, and of a fork's merged into its
 	// parent. One bulk read backing the prune preview's squash-merge

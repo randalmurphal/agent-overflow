@@ -88,6 +88,12 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   3554577306: 'subscription', // TrackerDashboards
   2206254666: 'subscription', // EvaluateTrackerDashboard
   124644262: 'subscription', // TrackerDashboardDrill
+  2951524960: 'subscription', // KeepTrackerWidget
+  3031630647: 'subscription', // StartTrackerDashboardThread
+  350315805: 'subscription', // DismissTrackerWidget
+  446977083: 'subscription', // RemoveTrackerWidget
+  3937459196: 'subscription', // SetTrackerWidgetLimit
+  610896236: 'subscription', // PinTrackerWidget
 
   // Tracker connection ids: every call that names a connection belongs to
   // the computer that holds it.
@@ -103,6 +109,7 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   3193179933: 'trackerConnection', // SubscribeTrackerTicket
   118334031: 'trackerConnection', // MintTrackerAttachmentUploadTicket
   2749961211: 'trackerConnection', // TrackerIssueTypes
+  2496760576: 'trackerConnection', // TrackerProjectIssueTypes
   2859662243: 'trackerConnection', // TrackerBoardProjects
   440800234: 'trackerConnection', // TrackerCreateFields
   3632796459: 'trackerConnection', // TrackerMoves
@@ -132,10 +139,17 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   2679403039: 'trackerConnection', // DeleteTrackerWorklog
   1862710581: 'trackerConnection', // TrackerWorklogs
   2905282814: 'trackerConnection', // RefreshTrackerWorklogs
+  751780983: 'trackerConnection', // ReadTrackerWorklogDays
+  3741061790: 'trackerConnection', // EditTrackerTimeEntry
+  2493130714: 'trackerConnection', // RemoveTrackerTimeEntries
+  4218259664: 'trackerConnection', // PostTrackerTimeEntries
   4253452655: 'trackerConnection', // TrackerPokerSupport
   141171752: 'trackerConnection', // VoteTrackerPoker
   3151648721: 'trackerConnection', // RevealTrackerPoker
   3142429700: 'trackerConnection', // ClearTrackerPokerVotes
+  95685002: 'trackerConnection', // TrackerForgeAccounts
+  3552836583: 'trackerConnection', // SetTrackerForgeAccount
+  3642610888: 'trackerConnection', // TrackerPeople
 
   // A thread group is a sidebar row of ONE project on one backend; its id
   // is minted there and the group list is fanned out to every backend, so

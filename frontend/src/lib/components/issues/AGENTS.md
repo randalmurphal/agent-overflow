@@ -84,7 +84,13 @@ board methods, events and the patch read in
   named one, an opener of the ticket already shown included, else the
   Issues pane's board's; Ask and Start work use it) and Back trail, for
   the Issues pane and a ticket pane alike; `TicketHost.svelte` mounts
-  what a trail shows.
+  what a trail shows. The trail also holds the pull request a Work row
+  shows in the ticket's place (`TicketTrail.pullRequest`, kept in the
+  trail's state, a ticket pane's record included, and ended by any other
+  open, Back or Close); `TicketHost` draws its bar and lays
+  `TicketReview.svelte`, loaded on the first such open, over the ticket,
+  which stays mounted, hidden and inert, and votes hidden. The review is the Pull requests page's pinned one,
+  held under the host's layout pane, which disposes it when it goes.
 - `stores/ticketPanes.svelte.ts` (in the startup graph) owns ticket panes:
   which ticket each shows, the Ctrl or Cmd rule for opening one
   (`opensTicketPane`), the move's hold on the subscription until the
@@ -120,17 +126,20 @@ board methods, events and the patch read in
   ticket and trail. Files are attached through it one at a time per
   ticket, each its own `attach:` write; it holds what a form reads (a
   connection's link types for the link form; a board's projects, a
-  project's issue types and a type's create fields for New ticket), read
+  project's issue types and a type's create fields for New ticket, the
+  first two also for Settings' Credit group's support types), read
   on a person's act and read again by one once it is older than
   `FORM_READ_AGE_MS`, after the screen's Refresh, or after its computer
   connects again. New
   ticket's draft, one per section, is held by the Backlog screen
   (`BacklogScreen.svelte` `createDrafts`), so it outlives the form.
-- `stores/trackerSetup.svelte.ts` holds a project's tracker setup and
-  its statuses in this window, one read for every surface that holds
-  them (the ticket's pins, the Start work form and defaults, Settings >
-  Issues > Status groups), read again on `tracker:setup_updated` and on
-  reconnect only while held; `editTrackerSetup` is the one save, one at a
+- `stores/trackerSetup.svelte.ts` holds a project's tracker setup, its
+  statuses, its fields and which of the Time screen's tickets are support
+  tickets of a board in this window, one read for every surface that
+  holds them (the ticket's pins, the Start work form and defaults, the
+  Settings > Issues pages, the Time screen), read again, only while held,
+  on reconnect and, for the setup, the statuses and the support tickets,
+  on `tracker:setup_updated`; `editTrackerSetup` is the one save, one at a
   time per project, built from the held setup under its revision, and
   what it settles to is what the computer stored. `TicketPin.svelte` is
   the pin a ticket's field row and section header show.
@@ -153,10 +162,20 @@ board methods, events and the patch read in
   are written at the top of the store. `stores/trackerTimeModel.ts` is
   the pure part: the days of a week, what a day's total leaves out, and
   the By ticket rows (`weekTickets`, derived only while By ticket or the
-  form reads them).
+  form reads them), and the agent's draft as the week, a day and a card
+  show it (`weekShape`, `cardDays`, `cardState`). The week's read holds
+  the draft; the week reads it again on `tracker:time_entries_updated`.
+- `stores/trackerTimeDraft.svelte.ts` holds the entries of each
+  `time_draft` call whose card a thread shows (`ThreadTimeEntries`), read
+  on the thread's computer, again on a frame naming the thread, a gap or
+  a reconnect, and dropped with the card. The card
+  (`TimeDraftCard.svelte`, loaded by `chat/NotificationRow.svelte` on
+  the call's row) and the Time screen draw a draft with the same
+  components (`TimeDraftEntry`, `TimeDraftQuestion`, `TimeDraftForm`,
+  `TimeDraftApprove`, `TimeDraftDiscard`).
 - `stores/trackerTimeWrites.svelte.ts` makes the Time screen's writes
-  (log, change, delete), one pending write per entry or per ticket and
-  day, and holds each outcome, with a toast for one that settles after
+  (log, change, delete, and a draft's change, removal and approval),
+  one pending write per entry or per ticket and day, and holds each outcome, with a toast for one that settles after
   its form and entry are gone. It does not import the weeks: the weeks'
   store takes what a write asks of them (`takeWorklogWrites`), so a
   surface that only logs time loads no week.
@@ -165,29 +184,55 @@ board methods, events and the patch read in
   browser downloads it up to 256 MB), its bytes, and the images a ticket's
   text shows in place, held in the media cache until the ticket's last
   surface goes.
-- `stores/ticketWork.svelte.ts` holds a ticket's Work read, its Ask in
+- `stores/ticketWork.svelte.ts` holds a ticket's Work read (the stored
+  sources' answer at once, then the forge search's in its place), its Ask in
   flight and its Start work run: the plan, the thread it made and each
   step's outcome, with the rules that keep a retry from doing anything
   twice written at the top. `TicketWork.svelte` is the rail's Work
   section, mounted by one line at the end of the rail, and
-  `StartWorkForm.svelte` the form it opens; the threads it lists are the
+  `StartWorkForm.svelte` the form it opens; which defaults apply to a
+  ticket and how a change of them is stored is
+  `stores/startWorkDefaults.ts`, which Settings > Issues > Starting work
+  shares; a failed search shows the Pull requests page's
+  `PullsProjectError`; the threads it lists are the
   client's catalog filtered by the link's tracker kind, site and issue,
   which the ticket's subscription names, with no call. A step's row is no
   control of the write it sent: it shows that write only while it is its
   target's latest, and the Status and Assignee fields say what became of
   it.
 - `stores/trackerDashboard.svelte.ts` holds the Dashboards screen's
-  state, one per screen: the board's dashboards, the one answer the
-  screen draws and the one evaluation in flight, the range and Team or
-  Mine saved for the next screen, the person or epic narrowed to, and the
-  one drill open. It counts again on the board's changes
-  (`TrackerBoardState.changes`), at most once every 5 s, and every 10
-  minutes; its rules are at the top of the store.
-  `stores/trackerDashboardModel.ts` is the pure part: how a number reads
-  and its change mark. The charts (`charts/`) draw to their measured
-  width from `charts/chartScale.ts`.
+  state, one per screen: the board's dashboards and proposals as its
+  list gives them, the one answer the screen draws and the one evaluation
+  in flight, the range and Team or
+  Mine saved for the next screen, the person or epic narrowed to, the
+  one drill open, and the person's Refresh and Read again of your
+  logged time (`refreshLogged`, which the board's Refresh calls through
+  the summary row while a tile counts it; the board's computer reads it
+  on its own from its
+  evaluations, `trackerapp/worklog_reads.go`, and the answer says whether
+  it reads and why it failed; `DashboardLoggedLine.svelte` says so on a
+  widget and on the summary row's tile; `DashboardCreditLine.svelte` says
+  beside a widget of credit, in both places, that the last read of who
+  worked on the tickets failed). It counts again on the board's changes
+  (`TrackerBoardState.changes`, which the end of those reads moves too), at most once every 5 s, and every 10
+  minutes, and lists again when the project's dashboards of the board
+  change (`TrackerBoardState.dashboards`); its rules are at the top of
+  the store. The board's summary
+  row (`BoardSummaryRow.svelte`) is one of these stores made with `row`,
+  counting the pinned widgets alone, whose pins are the board
+  subscription's (`TrackerBoardState.pins`); the tickets its tile filters the
+  board to are `stores/boardTicketSet.svelte.ts`, one per pane, which
+  follows the tile's count by the same rule.
+  `stores/trackerDashboardModel.ts` is the pure part: how a number reads,
+  its change mark and its limit. The charts (`charts/`) draw to their
+  measured width from `charts/chartScale.ts`. A widget's ticket list and the
+  drill's rows are one `TicketListActions.svelte`, which holds the
+  selection by ticket ID and acts on it through `ticketSelection.ts`:
+  the statuses every ticket can reach, the people every project may
+  assign, and the bound of 4 calls out at once over all its batches.
 - `stores/ticketOpen.ts` is the one opener of a ticket from outside the
-  pane (a thread's linked ticket, a pull request's ticket chip); it is in
+  pane (a thread's linked ticket, a pull request's ticket chip), and of
+  the Time screen at a week (a draft card's Review in Time); it is in
   the startup graph and reaches the pane's stores through one dynamic
   import.
 
@@ -196,7 +241,10 @@ or the first ticket pane (`panes/TicketPane.svelte` imports
 `TicketPaneBody.svelte` on demand), `TicketScreen.svelte` loads on the
 first open of a ticket (`TicketHost.svelte`),
 `BacklogScreen.svelte` on the first switch to Backlog,
-`DashboardScreen.svelte` on the first switch to Dashboards and
+`DashboardScreen.svelte` on the first switch to Dashboards,
+`BoardSummaryRow.svelte` for the first board that pins a widget or
+whose Add a tile is pressed,
+`stores/boardTicketSet.svelte.ts` with the first tile picked, and
 `TimeScreen.svelte` on the first switch to Time.
 The always-loaded stores reach them only through
 `stores/trackerBoardEvents.ts`, where the board and ticket stores take

@@ -38,6 +38,7 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
 import { getCompactScreen, setCompactLayoutForTest, showCompactList } from '../../stores/layoutMode.svelte';
 import { navigateToAdjacentPane } from './paneNavigation';
+import { intendFocus } from '../../utils/focusIntent';
 
 class FireableResizeObserver {
   static instances: FireableResizeObserver[] = [];
@@ -305,6 +306,33 @@ describe('PaneHost', () => {
     } finally {
       input.remove();
     }
+  });
+
+  // A keyboard pane move is a focus choice even when no caret goes with it
+  // (focus on the body, as while a surface that will take it still loads):
+  // a focus asked for before the move never lands after it.
+  it('cancels a pending focus intent on a keyboard pane move that carries no caret', () => {
+    registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
+    registerPaneForTest('other', createThreadPane({ paneId: 'other' }));
+    setPaneLayoutItemsForTest([
+      { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
+      { id: 'other', paneId: 'other', kind: 'thread', widthPx: 1 },
+    ]);
+    render(PaneHost);
+    focusPane('source');
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+    const intent = intendFocus({ holdsFocus: () => false, holdsPress: () => false });
+
+    expect(navigateToAdjacentPane(1)).toBe(true);
+    expect(getFocusedPaneId()).toBe('other');
+    expect(intent.current).toBe(false);
+
+    // A move the strip's end refuses is no choice.
+    const kept = intendFocus({ holdsFocus: () => false, holdsPress: () => false });
+    expect(navigateToAdjacentPane(1)).toBe(false);
+    expect(kept.current).toBe(true);
+    kept.end();
   });
 
   // Regression: CompanionPane called its lazy loader inside the {#await}

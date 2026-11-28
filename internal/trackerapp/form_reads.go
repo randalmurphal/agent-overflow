@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"strings"
 
 	"agent-overflow/internal/tracker"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // The reads a write form needs. Each goes to the tracker: the mirror holds
@@ -97,6 +100,20 @@ func projectViews(ps []tracker.Project) []ProjectView {
 func (s *Service) IssueTypes(ctx context.Context, id, project string) ([]IssueTypeView, error) {
 	return ask(s, ctx, id, func(r *run) ([]IssueTypeView, error) {
 		ts, err := r.p.IssueTypes(r.ctx, tracker.ProjectID(project))
+		out := make([]IssueTypeView, len(ts))
+		for i, t := range ts {
+			out[i] = IssueTypeView{ID: string(t.ID), Name: t.Name, Level: t.Level}
+		}
+		return out, call(err)
+	})
+}
+
+// ProjectIssueTypes are the issue types project has, which a user who can
+// see it reads whatever it may create; none on a tracker without issue
+// types.
+func (s *Service) ProjectIssueTypes(ctx context.Context, id, project string) ([]IssueTypeView, error) {
+	return ask(s, ctx, id, func(r *run) ([]IssueTypeView, error) {
+		ts, err := r.p.ProjectIssueTypes(r.ctx, tracker.ProjectID(project))
 		out := make([]IssueTypeView, len(ts))
 		for i, t := range ts {
 			out[i] = IssueTypeView{ID: string(t.ID), Name: t.Name, Level: t.Level}
@@ -288,13 +305,74 @@ func (s *Service) Lookup(ctx context.Context, id string, keys []string) (LookupV
 }
 
 // SearchRequest is a search for issues by free text, optionally within
-// one project; Page is the token the previous page returned, empty for the
-// first, and Limit the most cards a page holds (0: the most there are).
+// one project, narrowed by who has them, their status and the active
+// sprint (tracker.SearchQuery); Page is the token the previous page
+// returned, empty for the first, and Limit the most cards a page holds
+// (0: the most there are). Status is a status's name; Group a status
+// group by the name a status view gives it (StatusView.Group), or
+// GroupNotDone for every group but done and canceled (SearchGroups); at
+// most one of the two.
 type SearchRequest struct {
-	Text    string `json:"text,omitempty"`
-	Project string `json:"project,omitempty"`
-	Limit   int    `json:"limit,omitempty"`
-	Page    string `json:"page,omitempty"`
+	Text         string `json:"text,omitempty"`
+	Project      string `json:"project,omitempty"`
+	Mine         bool   `json:"mine,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Group        string `json:"group,omitempty"`
+	ActiveSprint bool   `json:"active_sprint,omitempty"`
+	Limit        int    `json:"limit,omitempty"`
+	Page         string `json:"page,omitempty"`
+}
+
+// GroupNotDone is the SearchRequest.Group of every status group but done
+// and canceled: the work not finished.
+const GroupNotDone = "not_done"
+
+// SearchGroups are the names SearchRequest.Group takes: the groups in
+// group order, then GroupNotDone.
+func SearchGroups() []string { return append(slices.Clone(groupNames[1:]), GroupNotDone) }
+
+func (in SearchRequest) model() (tracker.SearchQuery, error) {
+	q := tracker.SearchQuery{Text: in.Text, Project: tracker.ProjectID(in.Project), Mine: in.Mine,
+		Status: tracker.StatusMatch{Name: in.Status}, ActiveSprint: in.ActiveSprint, Limit: in.Limit, Page: tracker.PageToken(in.Page)}
+	switch in.Group {
+	case "":
+	case GroupNotDone:
+		q.Status.Open = true
+	default:
+		n := slices.Index(groupNames[:], in.Group)
+		if n <= 0 {
+			return tracker.SearchQuery{}, fmt.Errorf("%w: %q is no status group", ErrInvalidRequest, in.Group)
+		}
+		q.Status.Group = tracker.StatusGroup(n)
+	}
+	return q, nil
+}
+
+// searchRefusal is the sentence of a search the tracker of kind refused
+// as sent (tracker.ErrSearchRefused). A later page's refusal is its page
+// token's, since its first page's query was accepted, so it says to
+// start again; a first page's names what in asked that the
+// tracker may not have: the status, and sprints, which a Jira site
+// without Jira Software lacks.
+func searchRefusal(kind string, in SearchRequest, err error) Failure {
+	msg := trackerName(kind) + " refused the search"
+	if status, ok := errors.AsType[*trackerapi.StatusError](err); ok {
+		msg += fmt.Sprintf(" (HTTP %d)", status.Status)
+	}
+	if in.Page != "" {
+		return Failure{Kind: FailureTracker, Message: msg + "; search again from the first page"}
+	}
+	var lacks []string
+	if in.Status != "" {
+		lacks = append(lacks, fmt.Sprintf("it has a status named %q", in.Status))
+	}
+	if in.ActiveSprint {
+		lacks = append(lacks, "it has sprints")
+	}
+	if len(lacks) > 0 {
+		msg += "; check that " + strings.Join(lacks, " and that ")
+	}
+	return Failure{Kind: FailureTracker, Message: msg}
 }
 
 // SearchPageView is a page of the cards a search matched, in the order the
@@ -304,10 +382,20 @@ type SearchPageView struct {
 	Next  string     `json:"next,omitempty"`
 }
 
-// Search is one page of the cards in's text matches.
+// Search is one page of the cards in matches. A search the tracker
+// refused as sent answers a *CallFailure that names what in asked that
+// the tracker may not have, and is not the connection's problem: the
+// tracker answered.
 func (s *Service) Search(ctx context.Context, id string, in SearchRequest) (SearchPageView, error) {
+	q, err := in.model()
+	if err != nil {
+		return SearchPageView{}, err
+	}
 	return ask(s, ctx, id, func(r *run) (SearchPageView, error) {
-		page, err := r.p.Search(r.ctx, tracker.SearchQuery{Text: in.Text, Project: tracker.ProjectID(in.Project), Limit: in.Limit, Page: tracker.PageToken(in.Page)})
+		page, err := r.p.Search(r.ctx, q)
+		if errors.Is(err, tracker.ErrSearchRefused) {
+			return SearchPageView{}, &CallFailure{Failure: searchRefusal(r.row.Kind, in, err), Err: err}
+		}
 		if err != nil {
 			return SearchPageView{}, call(err)
 		}
