@@ -19,8 +19,9 @@ export interface PaneStripRevealOptions {
   held: (paneId: string) => boolean;
   /**
    * Whether a glide yields to a scroll it did not make. It does on a strip
-   * a person scrolls. On one that only reveals move, it carries on to its
-   * pane from where that scroll left the strip.
+   * a person scrolls. On one that only reveals move, its next frame writes
+   * its own position over that scroll, so the scroll moves the strip for no
+   * painted frame.
    */
   yields: () => boolean;
   /**
@@ -130,14 +131,13 @@ export function createPaneStripReveal(options: PaneStripRevealOptions): PaneStri
       frame = 0;
       return;
     }
-    if (!placed(el)) {
-      // A glide that yields leaves the strip to the scroll rather than
-      // writing its own position back over the move.
-      if (options.yields()) {
-        cancelGlide();
-        return;
-      }
-      currentLeft = el.scrollLeft;
+    // A glide that yields leaves the strip to a scroll it did not make. One
+    // that does not goes on from where it was: taking the scroll's position
+    // would throw the pane across the screen and glide it back, moving every
+    // control in it for as long again.
+    if (!placed(el) && options.yields()) {
+      cancelGlide();
+      return;
     }
     const dt = lastTs === null ? 16 : Math.min(GLIDE_MAX_FRAME_MS, Math.max(0, ts - lastTs));
     lastTs = ts;

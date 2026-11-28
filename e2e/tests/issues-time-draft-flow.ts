@@ -102,6 +102,14 @@ async function backToList(page: Page): Promise<void> {
 async function showThread(page: Page, title: string, compact: boolean): Promise<void> {
   if ((await page.locator('html').getAttribute('data-compact-screen')) === 'thread') await backToList(page);
   await press(page.getByTestId('thread-row-title').filter({ hasText: title }).first(), compact);
+  await threadShown(page, compact);
+}
+
+/** The thread a press opened, on screen with its activity runs open. On
+ * compact the strip glides to it, and a control tapped before it lands is
+ * tapped while it moves. */
+async function threadShown(page: Page, compact: boolean): Promise<void> {
+  if (compact) await expect(page.locator('[data-pane-kind="thread"]')).toBeInViewport({ ratio: 1 });
   await expandActivityRuns(page);
 }
 
@@ -287,7 +295,33 @@ export function registerIssuesTimeDraftFlow({ compact }: TimeDraftSurface): void
     await expect(day2.getByTestId('time-draft-question')).toHaveCount(1);
 
     // The card shows the same: D1 logged, D2's refusal, and approves D2 now.
-    await showThread(page, thread.title, compact);
+    if (compact) {
+      // A tap that Playwright retries during the glide to the thread
+      // scrolls its control to the screen's far edge, which throws the
+      // strip back. The glide goes on from where it was: taking the
+      // scroll's position slid the card across the screen and the tap
+      // missed it.
+      await backToList(page);
+      const glide = await page.getByTestId('thread-row-title').filter({ hasText: thread.title }).first().evaluate(async (row) => {
+        const strip = document.querySelector<HTMLElement>('[data-testid="pane-host"]')!;
+        const frame = (): Promise<void> => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+        const start = strip.scrollLeft;
+        if (!(row instanceof HTMLElement)) throw new Error('the thread row is not an element to press');
+        row.click();
+        for (let i = 0; i < 600 && strip.scrollLeft >= 100; i += 1) await frame();
+        const before = strip.scrollLeft;
+        strip.scrollLeft = 300;
+        await frame();
+        return { start, before, after: strip.scrollLeft };
+      });
+      expect(glide.start, 'the strip was on Issues').toBeGreaterThan(300);
+      expect(glide.before, 'the glide was under way').toBeGreaterThan(0);
+      expect(glide.before).toBeLessThan(100);
+      expect(glide.after, 'the scroll did not move the glide').toBeLessThanOrEqual(glide.before);
+      await threadShown(page, compact);
+    } else {
+      await showThread(page, thread.title, compact);
+    }
     await expect(cardDay(card, D1)).toContainText('logged 2h 30m', { timeout: 30_000 });
     await expect(cardDay(card, D2).getByTestId('time-draft-entry-refusal')).toHaveText('Not posted: Worklogs are closed for this period');
     const fromCard = (await trackerRequests(harness, WORKLOG_ADD)).length;

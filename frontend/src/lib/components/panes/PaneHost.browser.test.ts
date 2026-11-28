@@ -311,6 +311,26 @@ it('a reveal on compact lands though a control of its pane is scrolled into view
   expectShown(strip, 'b', ['a']);
 });
 
+it('a scroll during a reveal on compact moves the strip for no frame, and the glide goes on from where it was', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b'], 360);
+  revealPane('a');
+  await stripAtRest(strip);
+
+  revealPane('b');
+  await waitFor(() => strip.scrollLeft > 200, 'the glide most of the way to b');
+  const before = strip.scrollLeft;
+  // A control aligned to the screen's far edge, as a retried tap's forced
+  // scroll does, throws the strip most of the way back.
+  strip.scrollLeft = 60;
+  expect(strip.scrollLeft).toBe(60);
+  await raf();
+  expect(strip.scrollLeft).toBeGreaterThanOrEqual(before);
+  await waitFor(() => strip.scrollLeft === paneLeft('b'), 'the strip at b');
+  await stripAtRest(strip);
+  expectShown(strip, 'b', ['a']);
+});
+
 it('a horizontal wheel over the compact strip does not stop a reveal', async () => {
   installViewportQuery(true);
   const strip = await mountStrip(['a', 'b'], 360);
