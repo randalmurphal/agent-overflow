@@ -41,6 +41,9 @@ belong to `stores/ticketPanes.svelte.ts`.
 - Desktop owns resizers and multi-pane layout. Compact mode shows one pane at a
   time while keeping the strip mounted; use the shared layout mode rather than
   device or runtime detection.
+- On compact only a reveal (`revealPane`) moves the strip. `PaneHost` puts
+  the strip back after any other scroll of it, so show a pane by revealing
+  it, never by focusing or scrolling one of its controls into view.
 - A promoted pane (`paneLayout.svelte#getPromotedPaneId`, animated by
   `panePromotion.svelte.ts`) keeps its section, laid over the strip, while
   a `data-pane-slot` placeholder holds its flex slot. Code that reads a
