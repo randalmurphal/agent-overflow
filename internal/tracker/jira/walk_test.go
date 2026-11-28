@@ -480,6 +480,29 @@ var walkCases = map[string]walkCase{
 			return u.AccountID, err
 		}, "acc-b2",
 	},
+	"UserNamed": {
+		func(s *walkSite) {
+			s.route("GET", "/rest/api/3/user/search", func(u string, r *http.Request, _ []byte) string {
+				start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+				user := func(id, name string) string {
+					return fmt.Sprintf(`[{"accountId":%q,"displayName":%q,"active":true,"accountType":"atlassian"}]`, id, name)
+				}
+				switch {
+				case u == "a" && start == 0:
+					return user("acc-a1", "Same Name")
+				case start == 0:
+					return user("acc-"+u+"1", "Other")
+				case start == 1:
+					return user("acc-"+u+"2", "Same Name")
+				}
+				return `[]`
+			})
+		},
+		func(ctx context.Context, c *Client) (string, error) {
+			u, ok, err := c.UserNamed(ctx, "Same Name")
+			return fmt.Sprintln(u.AccountID, ok), err
+		}, "acc-b2 true\n",
+	},
 }
 
 // pokerRoutes answer the poker calls by user: the cloud ID and the token

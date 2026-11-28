@@ -345,6 +345,10 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	if _, _, err := s.KeepMirrorTicket(root, "10001", 1, 1, mirrorReadOf(root, 7)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.SetMirrorForgePeople(root, mirrorReadOf(root, 7), []MirrorForgeMatch{{MirrorForgePerson: MirrorForgePerson{Host: "github.com", Login: "user2", Name: "User 2"},
+		Person: "acc-user2"}}, MirrorCatalog{}, 1, nil); err != nil {
+		t.Fatal(err)
+	}
 	// A linked issue a read missed, kept by its link.
 	linkIssue(t, s, "seed-absent", "10009")
 	if _, err := s.MarkMirrorIssuesMissing(root, mirrorReadOf(root, 8), []string{"10009"}); err != nil {

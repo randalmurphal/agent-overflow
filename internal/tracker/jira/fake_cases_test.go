@@ -97,6 +97,28 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 			t.Fatalf("found %+v", u)
 		}
 	},
+	// A forge account named by name alone is matched to the one person
+	// who has the name, case ignored: a customer's account, a name two
+	// people share and a name no one has match none.
+	"UserNamed": func(t *testing.T, f *fakeEnv) {
+		site := conformanceSite(f.clock.Now())
+		site.Users = append(site.Users, trackerfake.JiraUser{AccountID: "acc-customer", DisplayName: "Customer 1", AccountType: "customer"},
+			trackerfake.JiraUser{AccountID: "acc-same1", DisplayName: "Same Name"}, trackerfake.JiraUser{AccountID: "acc-same2", DisplayName: "Same Name"})
+		check(t, f.e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}))
+		named := func(name string) (User, bool) {
+			u, ok, err := f.c.UserNamed(f.ctx, name)
+			check(t, err)
+			return u, ok
+		}
+		if u, ok := named("user 2"); !ok || u.AccountID != "acc-user2" {
+			t.Fatalf("user 2 = %+v, %v", u, ok)
+		}
+		for _, name := range []string{"Customer 1", "Same Name", "Nobody"} {
+			if u, ok := named(name); ok {
+				t.Errorf("%s matched %+v", name, u)
+			}
+		}
+	},
 	"ForgetBoard":      func(t *testing.T, f *fakeEnv) { f.c.ForgetBoard(1) },
 	"ForgetCredential": func(t *testing.T, f *fakeEnv) { f.c.ForgetCredential(); got(f.c.Myself(f.ctx)).must(t) },
 	"Close": func(t *testing.T, f *fakeEnv) {

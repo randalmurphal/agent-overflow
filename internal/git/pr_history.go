@@ -64,6 +64,9 @@ type PRHistory struct {
 	// Parent is the repository the forge says it is a fork of; nil when
 	// it is none.
 	Parent *RepoReference
+	// Viewer is the login of the account whose token read the
+	// repository; empty when the read did not learn it.
+	Viewer string
 	PRs    []PRHistoryPR
 	// Acts are the approvals and comments the read found, each person's
 	// earliest of each kind, to add to the stored ones. Each names a pull
@@ -78,6 +81,11 @@ type PRHistory struct {
 	HasReach bool
 	// Owed reports that the walk has work left: a gap or follow-up pages.
 	Owed bool
+	// ActsOwed reports that the read left acts of a pull request it read
+	// unread (follow-up pages): the acts inside Reach are not all read
+	// until a read reports none. A forge whose acts are streams of their
+	// own, which Reach counts, never sets it.
+	ActsOwed bool
 }
 
 // PRHistoryPR is one pull request. State is open, draft, merged or

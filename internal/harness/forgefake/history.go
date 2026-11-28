@@ -94,7 +94,8 @@ func (e *Engine) githubHistoryPull(r *Repo, p *Pull) map[string]any {
 // ghPullHistory answers a page of 50 of the repository's pulls, most
 // recently updated first, each with its newest 50 COMMENTED and
 // CHANGES_REQUESTED reviews, its first 3 approvals and its newest 50
-// conversation comments, beside the repository's node id and parent.
+// conversation comments, beside the repository's node id and parent and
+// the viewer's login.
 func ghPullHistory(e *Engine, c *call, v graphQLVars) response {
 	owner, err1 := v.str("owner")
 	name, err2 := v.str("name")
@@ -104,7 +105,8 @@ func ghPullHistory(e *Engine, c *call, v graphQLVars) response {
 	}
 	r := e.repoOn("github", c.http.host, owner+"/"+name)
 	if r == nil {
-		return graphQLNotFound(map[string]any{"repository": nil}, []string{"repository"}, fmt.Sprintf("Could not resolve to a Repository with the name '%s/%s'.", owner, name))
+		return graphQLNotFound(map[string]any{"viewer": map[string]any{"login": e.viewer}, "repository": nil}, []string{"repository"},
+			fmt.Sprintf("Could not resolve to a Repository with the name '%s/%s'.", owner, name))
 	}
 	nodes := []map[string]any{}
 	for _, p := range historyOrder(r) {
@@ -117,7 +119,7 @@ func ghPullHistory(e *Engine, c *call, v graphQLVars) response {
 	}
 	repository := e.githubRepoParent(r)
 	repository["pullRequests"] = graphQLConnection(nodes, offset, 50)
-	return graphQLData(map[string]any{"repository": repository})
+	return graphQLData(map[string]any{"viewer": map[string]any{"login": e.viewer}, "repository": repository})
 }
 
 // ghPullHistoryMore answers, of one pull, each kind of act its want

@@ -117,6 +117,8 @@ type Client struct {
 	cloudID     *cache[struct{}, string]
 	poker       *cache[struct{}, pokerApp]
 	pokerTokens *cache[string, pokerToken]
+	// named are the people UserNamed found by name, lowercased.
+	named *cache[string, nameMatch]
 }
 
 // rateLimitHeaders are the rate limit headers Jira Cloud documents
@@ -158,6 +160,7 @@ func New(opts Options) (*Client, error) {
 		api: api, maxImages: opts.MaxImageBytes,
 		users:         newCache[string, User](userCacheSize, siteAge, nil, api.CredentialMark),
 		voterMisses:   newCache[string, error](userCacheSize, siteAge, nil, api.CredentialMark),
+		named:         newCache[string, nameMatch](userCacheSize, siteAge, nil, api.CredentialMark),
 		catalog:       newCache[struct{}, *Catalog](1, siteAge, nil, api.CredentialMark),
 		configs:       newCache[int64, BoardConfig](boardConfigCacheSize, 0, cloneBoardConfig, api.CredentialMark),
 		createScreens: newCache[[2]string, Screen](createScreenCacheSize, createScreenAge, cloneScreen, api.CredentialMark),

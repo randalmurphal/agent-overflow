@@ -52,43 +52,37 @@ func TestTheActsMigrationFollowsTheTimeSource(t *testing.T) {
 }
 
 // v177 checks each source's acts on their own: a comment and a worklog
-// name an account and a time, a comment spends no time, and a pull
-// request approval (source 3) has no time and names its reviewer by
-// account or by an unmatched name, one of the two; no other source is
-// stored.
+// name an account and a time, and a comment spends no time; no other
+// source is stored.
 func TestTheActsMigrationChecksEachSourcesShape(t *testing.T) {
 	db := migrateThrough(t, trackerActsMigrationVersion)
 	mustExec(t, db, `INSERT INTO tracker_connections(id, kind, site, account, created_at) VALUES ('j1', 'jira', 'https://example.atlassian.net', 'user1@example.com', 1)`)
 	mustExec(t, db, `INSERT INTO tracker_cache_roots(id, connection_id, created_at) VALUES (7, 'j1', 1)`)
 	mustExec(t, db, `INSERT INTO tracker_cache_issues(root_id, issue_id, issue_key, updated_at) VALUES (7, '10001', 'WEB-1', 5)`)
 	for i, c := range []struct {
-		source            int
-		person, unmatched string
-		at, seconds       int64
-		ok                bool
+		source      int
+		person      string
+		at, seconds int64
+		ok          bool
 	}{
-		{1, "acc-user1", "", 2, 0, true},
-		{1, "", "", 2, 0, false},
-		{1, "acc-user1", "User 1", 2, 0, false},
-		{1, "acc-user1", "", 0, 0, false},
-		{1, "acc-user1", "", 2, 60, false},
-		{2, "acc-user1", "", 2, 60, true},
-		{2, "acc-user1", "", 2, -1, false},
-		{2, "", "", 2, 60, false},
-		{2, "acc-user1", "", 0, 60, false},
-		{3, "acc-user1", "", 0, 0, true},
-		{3, "", "User 9", 0, 0, true},
-		{3, "acc-user1", "User 1", 0, 0, false},
-		{3, "", "", 0, 0, false},
-		{3, "acc-user1", "", 2, 0, false},
-		{3, "acc-user1", "", 0, 60, false},
-		{4, "acc-user1", "", 2, 0, false},
+		{1, "acc-user1", 2, 0, true},
+		{1, "", 2, 0, false},
+		{1, "acc-user1", 0, 0, false},
+		{1, "acc-user1", 2, 60, false},
+		{2, "acc-user1", 2, 60, true},
+		{2, "acc-user1", 2, -1, false},
+		{2, "", 2, 60, false},
+		{2, "acc-user1", 0, 60, false},
+		{3, "acc-user1", 2, 0, false},
 	} {
-		_, err := db.Exec(`INSERT INTO tracker_cache_issue_acts(root_id, issue_id, source, act_id, person, unmatched, at, seconds) VALUES (7, '10001', ?, ?, ?, ?, ?, ?)`,
-			c.source, fmt.Sprint("a", i), c.person, c.unmatched, c.at, c.seconds)
+		_, err := db.Exec(`INSERT INTO tracker_cache_issue_acts(root_id, issue_id, source, act_id, person, at, seconds) VALUES (7, '10001', ?, ?, ?, ?, ?)`,
+			c.source, fmt.Sprint("a", i), c.person, c.at, c.seconds)
 		if (err == nil) != c.ok {
 			t.Errorf("%+v: %v", c, err)
 		}
+	}
+	if _, err := db.Exec(`INSERT INTO tracker_cache_issue_act_reads(root_id, issue_id, source, tried_at, tried_reason) VALUES (7, '10001', 3, 1, 'x')`); err == nil {
+		t.Error("a read row of a source that is no comment or worklog was stored")
 	}
 	// The worklog index holds a root's worklogs by their start, and no
 	// other source's acts.

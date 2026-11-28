@@ -29,6 +29,7 @@ type scripted struct {
 	cards       func([]tracker.IssueID) (tracker.Cards, error)
 	history     func(tracker.HistoryQuery) (tracker.History, error)
 	evidence    func(tracker.EvidenceQuery) (tracker.Evidence, error)
+	personNamed func(string) (tracker.User, bool, error)
 	detail      func(tracker.IssueID) (tracker.Detail, error)
 	structure   func(tracker.BoardID, time.Time) (tracker.Structure, error)
 	fields      func() ([]tracker.Field, error)
@@ -243,6 +244,21 @@ func (p *scripted) Evidence(ctx context.Context, q tracker.EvidenceQuery) (track
 		return tracker.Evidence{}, err
 	}
 	return h(q)
+}
+
+// PersonNamed answers through p.personNamed when called, one "PersonNamed"
+// call a name.
+func (p *scripted) PersonNamed(ctx context.Context, name string) (tracker.User, bool, error) {
+	p.mu.Lock()
+	h := p.personNamed
+	p.mu.Unlock()
+	if !p.called(ctx, "PersonNamed", func() bool { return h != nil }) {
+		return tracker.User{}, false, errUnscripted
+	}
+	if err := p.wait(ctx, "PersonNamed"); err != nil {
+		return tracker.User{}, false, err
+	}
+	return h(name)
 }
 
 // Details reads each issue through p.detail when called, one "Details"

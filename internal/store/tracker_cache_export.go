@@ -180,8 +180,11 @@ CREATE TABLE main.sprint_intervals(sprint TEXT NOT NULL, ticket TEXT NOT NULL, p
 -- counted a point a hours_per_point. sprint: the sprint it counts in (NULL on a board without sprints, where at places it; support's
 -- at is the worklog's start there). value: in board.estimates (seconds for time); share: the same in tickets (1 a finished ticket).
 -- value NULL: not counted, note says why; a ticket whose evidence is not read has one such review or support row and no person.
+-- Approvals and comments on a ticket's pull requests are review actions of the person their forge account is matched to. unmatched:
+-- a forge account no person is matched to, by its name and login there: a review row with no person, value 0 and qualified NULL.
 CREATE TABLE main.credit(sprint TEXT, at INTEGER, ticket TEXT NOT NULL, kind TEXT NOT NULL, person TEXT, value REAL, share REAL, points REAL,
-  review_share INTEGER, review_need INTEGER, review_kinds TEXT, did TEXT, qualified INTEGER, hours REAL, hours_per_point INTEGER, note TEXT);
+  review_share INTEGER, review_need INTEGER, review_kinds TEXT, did TEXT, qualified INTEGER, hours REAL, hours_per_point INTEGER, note TEXT,
+  unmatched TEXT);
 -- threads: the threads on this board's computer linked to a ticket. origin: start_work, ask, manual or agent. last_turn_at: its newest turn's start.
 CREATE TABLE main.threads(id TEXT PRIMARY KEY, ticket TEXT NOT NULL, origin TEXT NOT NULL, linked_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
   archived INTEGER NOT NULL, last_turn_at INTEGER) WITHOUT ROWID;

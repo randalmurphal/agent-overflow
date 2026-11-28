@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -60,6 +61,10 @@ type ForgeHistorySource struct {
 	// Owed reports that the walk has work left, which the next round
 	// reads.
 	Owed bool
+	// ActsOwed reports that the last read left acts of a pull request it
+	// read unread (the walk's follow-up pages): until the next read, the
+	// stored acts of the pull requests inside Reach are not all of them.
+	ActsOwed bool
 	// ReadAt is the wall time (Unix ms) the last read landed, failed or
 	// not; 0 before one.
 	ReadAt int64
@@ -69,6 +74,12 @@ type ForgeHistorySource struct {
 	FailureKind, Failure string
 	FailureDetail        []byte
 	FailedAt             int64
+	// GoodAt is the wall time (Unix ms) of the last read that landed
+	// without a failure; 0 before one.
+	GoodAt int64
+	// Viewer is the login of the account whose token read the
+	// repository; empty until a read says.
+	Viewer string
 }
 
 // Covers is the one rule for whether the source has read every pull
@@ -123,18 +134,21 @@ type ForgeHistoryRead struct {
 	// OwnHead and Parent replace the stored ones when OwnHead is set.
 	OwnHead string
 	Parent  ForgeHistoryRef
-	PRs     []ForgeHistoryPR
+	// Viewer replaces the stored one when set.
+	Viewer string
+	PRs    []ForgeHistoryPR
 	// Acts are acts of pull requests stored or in PRs, added to theirs.
 	// One whose pull request neither holds fails the write: the reader
 	// resolves every act's pull request before it moves past the act.
 	Acts []ForgeHistoryAct
-	// Walk, Reach, HasReach and Owed replace the stored ones when Walk is
-	// set: a read that read nothing leaves them. Without HasReach the
-	// source has no reach (ForgeHistorySource.HasReach).
+	// Walk, Reach, HasReach, Owed and ActsOwed replace the stored ones
+	// when Walk is set: a read that read nothing leaves them. Without
+	// HasReach the source has no reach (ForgeHistorySource.HasReach).
 	Walk     []byte
 	Reach    int64
 	HasReach bool
 	Owed     bool
+	ActsOwed bool
 	// ReadAt is the read's wall time (Unix ms).
 	ReadAt int64
 	// FailureKind, Failure and FailureDetail are the read's failure
@@ -207,52 +221,161 @@ func (r ForgeHistoryRead) check() error {
 	return nil
 }
 
-// SetForgeHistorySources makes the stored sources wanted: it adds the
-// ones missing and removes every other, with its pull requests. A source
-// kept keeps its id and its rows. It reports whether it changed any.
-func (s *Store) SetForgeHistorySources(wanted []ForgeHistoryRef) (changed bool, err error) {
+// ForgeHistoryUse says that the credit of tracker connection ConnectionID
+// reads the source of repository RepoKey: a project listing a board of
+// the connection clones it.
+type ForgeHistoryUse struct {
+	ConnectionID string `json:"c"`
+	RepoKey      string `json:"r"`
+}
+
+// forgeHistoryCreditSourcesSQL lists, by connection, the sources its
+// credit reads: the ones it uses and the parent of each that is a fork.
+const forgeHistoryCreditSourcesSQL = `SELECT u.connection_id, u.source_id FROM forge_history_uses u
+UNION SELECT u.connection_id, par.id FROM forge_history_uses u
+	CROSS JOIN forge_history_sources o ON o.id = u.source_id AND o.parent_key <> ''
+	CROSS JOIN forge_history_sources par ON par.repo_key = o.parent_key`
+
+// forgeHistoryCreditSources reads forgeHistoryCreditSourcesSQL as one
+// string per connection and source.
+func forgeHistoryCreditSources(q sqlQueryer) (map[string]map[int64]bool, error) {
+	out := map[string]map[int64]bool{}
+	err := scanMirrorRows(q, forgeHistoryCreditSourcesSQL, nil, func(r rowScanner) error {
+		var conn string
+		var id int64
+		if err := r.Scan(&conn, &id); err != nil {
+			return err
+		}
+		if out[conn] == nil {
+			out[conn] = map[int64]bool{}
+		}
+		out[conn][id] = true
+		return nil
+	})
+	return out, err
+}
+
+// SetForgeHistorySources makes the stored sources wanted and the stored
+// uses uses, in one transaction: it adds the sources missing and removes
+// every other, with its pull requests, and likewise the uses; a use of a
+// connection or a repository that is not stored is not written. A source
+// kept keeps its id and its rows. It reports whether it changed any
+// source, and the connections whose credit reads other sources than
+// before (forgeHistoryCreditSourcesSQL), sorted.
+func (s *Store) SetForgeHistorySources(wanted []ForgeHistoryRef, uses []ForgeHistoryUse) (changed bool, connections []string, err error) {
 	for _, r := range wanted {
 		if err := r.check(); err != nil {
-			return false, err
+			return false, nil, err
 		}
 	}
 	listed, err := jsonArray(wanted)
 	if err != nil {
-		return false, fmt.Errorf("store: encode forge history sources: %w", err)
+		return false, nil, fmt.Errorf("store: encode forge history sources: %w", err)
+	}
+	used, err := jsonArray(uses)
+	if err != nil {
+		return false, nil, fmt.Errorf("store: encode forge history uses: %w", err)
 	}
 	const action = "store: set forge history sources"
 	tx, err := s.db.Begin()
 	if err != nil {
-		return false, fmt.Errorf("%s: begin: %w", action, err)
+		return false, nil, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
+	before, err := forgeHistoryCreditSources(tx)
+	if err != nil {
+		return false, nil, fmt.Errorf("%s: read the uses: %w", action, err)
+	}
 	removed, err := tx.Exec(`DELETE FROM forge_history_sources WHERE repo_key NOT IN (SELECT w.value ->> 'repoKey' FROM json_each(?1) w)`, listed)
 	if err != nil {
-		return false, fmt.Errorf("%s: remove: %w", action, err)
+		return false, nil, fmt.Errorf("%s: remove: %w", action, err)
 	}
 	added, err := tx.Exec(`INSERT INTO forge_history_sources(repo_key, forge, host, namespace, repo)
 		SELECT w.value ->> 'repoKey', w.value ->> 'forge', w.value ->> 'host', w.value ->> 'namespace', w.value ->> 'repo'
 		FROM json_each(?1) w WHERE true
 		ON CONFLICT(repo_key) DO NOTHING`, listed)
 	if err != nil {
-		return false, fmt.Errorf("%s: add: %w", action, err)
+		return false, nil, fmt.Errorf("%s: add: %w", action, err)
+	}
+	if _, err := tx.Exec(`WITH w AS MATERIALIZED (SELECT u.value ->> 'c' AS c, s.id FROM json_each(?1) u
+			CROSS JOIN forge_history_sources s ON s.repo_key = u.value ->> 'r')
+		DELETE FROM forge_history_uses WHERE (connection_id, source_id) NOT IN (SELECT c, id FROM w)`, used); err != nil {
+		return false, nil, fmt.Errorf("%s: remove uses: %w", action, err)
+	}
+	if _, err := tx.Exec(`INSERT INTO forge_history_uses(connection_id, source_id)
+		SELECT DISTINCT c.id, s.id FROM json_each(?1) u
+		CROSS JOIN tracker_connections c ON c.id = u.value ->> 'c'
+		CROSS JOIN forge_history_sources s ON s.repo_key = u.value ->> 'r'
+		WHERE true ON CONFLICT(connection_id, source_id) DO NOTHING`, used); err != nil {
+		return false, nil, fmt.Errorf("%s: add uses: %w", action, err)
+	}
+	after, err := forgeHistoryCreditSources(tx)
+	if err != nil {
+		return false, nil, fmt.Errorf("%s: read the uses written: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("%s: commit: %w", action, err)
+		return false, nil, fmt.Errorf("%s: commit: %w", action, err)
 	}
 	gone, err := removed.RowsAffected()
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	made, err := added.RowsAffected()
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
-	return gone+made > 0, nil
+	for conn := range before {
+		if !maps.Equal(before[conn], after[conn]) {
+			connections = append(connections, conn)
+		}
+	}
+	for conn := range after {
+		if before[conn] == nil {
+			connections = append(connections, conn)
+		}
+	}
+	slices.Sort(connections)
+	return gone+made > 0, connections, nil
+}
+
+// ListForgeHistoryUses reads every use, by connection and repository.
+func (s *Store) ListForgeHistoryUses() ([]ForgeHistoryUse, error) {
+	var out []ForgeHistoryUse
+	err := scanMirrorRows(s.reader(), `SELECT u.connection_id, s.repo_key FROM forge_history_uses u
+		CROSS JOIN forge_history_sources s ON s.id = u.source_id ORDER BY u.connection_id, s.repo_key`, nil, func(r rowScanner) error {
+		var u ForgeHistoryUse
+		err := r.Scan(&u.ConnectionID, &u.RepoKey)
+		out = append(out, u)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list forge history uses: %w", err)
+	}
+	return out, nil
+}
+
+// ForgeHistoryUsers are the connections whose credit reads source id: the
+// ones that use it, and the ones that use a fork of it.
+func (s *Store) ForgeHistoryUsers(id int64) ([]string, error) {
+	var out []string
+	err := scanMirrorRows(s.reader(), `SELECT u.connection_id FROM forge_history_uses u WHERE u.source_id = CAST(?1 AS INTEGER)
+		UNION SELECT u.connection_id FROM forge_history_sources par
+		CROSS JOIN forge_history_sources o ON o.parent_key = par.repo_key
+		CROSS JOIN forge_history_uses u ON u.source_id = o.id
+		WHERE par.id = CAST(?1 AS INTEGER) ORDER BY 1`, []any{id}, func(r rowScanner) error {
+		var conn string
+		err := r.Scan(&conn)
+		out = append(out, conn)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: read the connections that use forge history source %d: %w", id, err)
+	}
+	return out, nil
 }
 
 const forgeHistorySourceColumns = `id, repo_key, forge, host, namespace, repo, own_head, parent_key, parent_namespace, parent_repo,
-	walk, reach, owed, read_at, failure_kind, failure, failure_detail, failed_at`
+	walk, reach, owed, read_at, failure_kind, failure, failure_detail, failed_at, acts_owed, good_at, viewer`
 
 func scanForgeHistorySource(row interface{ Scan(...any) error }) (ForgeHistorySource, error) {
 	var src ForgeHistorySource
@@ -260,7 +383,7 @@ func scanForgeHistorySource(row interface{ Scan(...any) error }) (ForgeHistorySo
 	var reach sql.NullInt64
 	err := row.Scan(&src.ID, &src.RepoKey, &src.Forge, &src.Host, &src.Namespace, &src.Repo, &src.OwnHead,
 		&src.Parent.RepoKey, &src.Parent.Namespace, &src.Parent.Repo, &walk, &reach, &src.Owed, &src.ReadAt,
-		&src.FailureKind, &src.Failure, &detail, &src.FailedAt)
+		&src.FailureKind, &src.Failure, &detail, &src.FailedAt, &src.ActsOwed, &src.GoodAt, &src.Viewer)
 	if src.Parent.RepoKey != "" {
 		src.Parent.Forge, src.Parent.Host = src.Forge, src.Host
 	}
@@ -307,19 +430,36 @@ func (s *Store) GetForgeHistorySource(id int64) (ForgeHistorySource, bool, error
 	return src, true, nil
 }
 
+// ForgeHistoryChange is what an applied read changed of what credit
+// counts from its source (tracker_cache_credit_forge.go): Keys are the
+// ticket keys whose pull requests' acts are other than before (an act
+// added, moved earlier or named, a key or a head repository of a pull
+// request with acts changed, a pull request with acts pruned), sorted;
+// State reports that what the source covers or says of its failure is:
+// its reach, whether acts are owed, its failure, or its own head or
+// parent. A read that changes neither moves no credit.
+type ForgeHistoryChange struct {
+	Keys  []string
+	State bool
+}
+
+// Empty reports that the read moved no credit.
+func (c ForgeHistoryChange) Empty() bool { return len(c.Keys) == 0 && !c.State }
+
 // ApplyForgeHistory applies one read of a source in one transaction, and
 // only while the source it began from is stored: its pull requests
 // replace the stored ones of their numbers, with their keys and seen_at;
 // its acts add to the stored ones, never removing one (ForgeHistoryAct);
 // the source's state and failure are recorded; and every pull request
-// with no update and no act since the window's start is pruned.
-func (s *Store) ApplyForgeHistory(read ForgeHistoryRead) (err error) {
+// with no update and no act since the window's start is pruned. It
+// answers what the read changed of what credit counts.
+func (s *Store) ApplyForgeHistory(read ForgeHistoryRead) (_ ForgeHistoryChange, err error) {
 	if err := read.check(); err != nil {
-		return err
+		return ForgeHistoryChange{}, err
 	}
 	prs, err := jsonArray(read.PRs)
 	if err != nil {
-		return fmt.Errorf("store: encode forge history pull requests: %w", err)
+		return ForgeHistoryChange{}, fmt.Errorf("store: encode forge history pull requests: %w", err)
 	}
 	type keyRow struct {
 		Key    string `json:"k"`
@@ -333,85 +473,150 @@ func (s *Store) ApplyForgeHistory(read ForgeHistoryRead) (err error) {
 	}
 	keysJSON, err := jsonArray(keys)
 	if err != nil {
-		return err
+		return ForgeHistoryChange{}, err
 	}
 	actsJSON, err := jsonArray(read.Acts)
 	if err != nil {
-		return err
+		return ForgeHistoryChange{}, err
 	}
 	action := "store: apply forge history read of " + read.Source.RepoKey
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("%s: begin: %w", action, err)
+		return ForgeHistoryChange{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
+	// was is the state credit reads of the source before the read.
+	type state struct {
+		reach                             sql.NullInt64
+		actsOwed                          bool
+		kind, failure, ownHead, parentKey string
+	}
 	var id int64
-	err = tx.QueryRow(`SELECT id FROM forge_history_sources WHERE id = ? AND repo_key = ?`, read.SourceID, read.Source.RepoKey).Scan(&id)
+	var was state
+	err = tx.QueryRow(`SELECT id, reach, acts_owed, failure_kind, failure, own_head, parent_key FROM forge_history_sources WHERE id = ? AND repo_key = ?`,
+		read.SourceID, read.Source.RepoKey).Scan(&id, &was.reach, &was.actsOwed, &was.kind, &was.failure, &was.ownHead, &was.parentKey)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return fmt.Errorf("%s (source %d): %w", action, read.SourceID, ErrForgeHistoryGone)
+		return ForgeHistoryChange{}, fmt.Errorf("%s (source %d): %w", action, read.SourceID, ErrForgeHistoryGone)
 	case err != nil:
-		return fmt.Errorf("%s: read source: %w", action, err)
+		return ForgeHistoryChange{}, fmt.Errorf("%s: read source: %w", action, err)
 	}
-	steps := []struct {
+	// moved are the keys of pull requests whose acts credit reads changed,
+	// and maybe the keys and numbers a key or head change touched, which
+	// count only for a pull request that has acts.
+	moved := map[string]bool{}
+	var maybe []keyRow
+	keyOf := func(r rowScanner) error {
+		var key string
+		err := r.Scan(&key)
+		moved[key] = true
+		return err
+	}
+	pairOf := func(r rowScanner) error {
+		var k keyRow
+		err := r.Scan(&k.Key, &k.Number)
+		maybe = append(maybe, k)
+		return err
+	}
+	// touched are the numbers whose acts the read added to or changed.
+	var touched []int64
+	numberOf := func(r rowScanner) error {
+		var n int64
+		err := r.Scan(&n)
+		touched = append(touched, n)
+		return err
+	}
+	for _, step := range []struct {
 		what string
 		sql  string
 		args []any
+		scan func(rowScanner) error
 	}{
-		{"store pull requests", forgeHistoryPRsSQL, []any{id, prs}},
-		{"clear keys", forgeHistoryClearKeysSQL, []any{id, prs}},
-		{"store keys", forgeHistoryKeysSQL, []any{id, keysJSON}},
-	}
-	for _, step := range steps {
-		if _, err := tx.Exec(step.sql, step.args...); err != nil {
-			return fmt.Errorf("%s: %s: %w", action, step.what, err)
+		{"read the heads that changed", forgeHistoryHeadChangesSQL, []any{id, prs}, pairOf},
+		{"store pull requests", forgeHistoryPRsSQL, []any{id, prs}, nil},
+		{"clear keys", forgeHistoryClearKeysSQL, []any{id, prs, keysJSON}, pairOf},
+		{"store keys", forgeHistoryKeysSQL, []any{id, keysJSON}, pairOf},
+	} {
+		if err := execForgeHistory(tx, step.sql, step.args, step.scan); err != nil {
+			return ForgeHistoryChange{}, fmt.Errorf("%s: %s: %w", action, step.what, err)
 		}
 	}
 	var orphan int64
 	switch err := tx.QueryRow(forgeHistoryOrphanActSQL, id, actsJSON).Scan(&orphan); {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
-		return fmt.Errorf("%s: check acts: %w", action, err)
+		return ForgeHistoryChange{}, fmt.Errorf("%s: check acts: %w", action, err)
 	default:
-		return fmt.Errorf("%s: an act names pull request %d, which neither the read nor the store holds", action, orphan)
+		return ForgeHistoryChange{}, fmt.Errorf("%s: an act names pull request %d, which neither the read nor the store holds", action, orphan)
+	}
+	if err := execForgeHistory(tx, forgeHistoryActsSQL, []any{id, actsJSON}, numberOf); err != nil {
+		return ForgeHistoryChange{}, fmt.Errorf("%s: store acts: %w", action, err)
+	}
+	touchedJSON, err := jsonArray(touched)
+	if err != nil {
+		return ForgeHistoryChange{}, err
+	}
+	maybeJSON, err := jsonArray(maybe)
+	if err != nil {
+		return ForgeHistoryChange{}, err
 	}
 	for _, step := range []struct {
 		what string
 		sql  string
 		args []any
+		scan func(rowScanner) error
 	}{
-		{"store acts", forgeHistoryActsSQL, []any{id, actsJSON}},
-		{"prune", forgeHistoryPruneSQL, []any{id, read.WindowStart}},
+		{"read the keys of the acts", forgeHistoryActKeysSQL, []any{id, touchedJSON}, keyOf},
+		{"read the keys that moved acts", forgeHistoryMovedKeysSQL, []any{id, maybeJSON}, keyOf},
+		{"read the keys the prune moves", forgeHistoryPrunedKeysSQL, []any{id, read.WindowStart}, keyOf},
+		{"prune", forgeHistoryPruneSQL, []any{id, read.WindowStart}, nil},
 	} {
-		if _, err := tx.Exec(step.sql, step.args...); err != nil {
-			return fmt.Errorf("%s: %s: %w", action, step.what, err)
+		if err := execForgeHistory(tx, step.sql, step.args, step.scan); err != nil {
+			return ForgeHistoryChange{}, fmt.Errorf("%s: %s: %w", action, step.what, err)
 		}
 	}
+	now := was
 	if read.OwnHead != "" {
+		now.ownHead, now.parentKey = read.OwnHead, read.Parent.RepoKey
 		if _, err := tx.Exec(`UPDATE forge_history_sources SET own_head = ?2, parent_key = ?3, parent_namespace = ?4, parent_repo = ?5 WHERE id = ?1`,
 			id, read.OwnHead, read.Parent.RepoKey, read.Parent.Namespace, read.Parent.Repo); err != nil {
-			return fmt.Errorf("%s: record the repository: %w", action, err)
+			return ForgeHistoryChange{}, fmt.Errorf("%s: record the repository: %w", action, err)
 		}
 	}
 	if read.Walk != nil {
-		reach := sql.NullInt64{Int64: read.Reach, Valid: read.HasReach}
-		if _, err := tx.Exec(`UPDATE forge_history_sources SET walk = ?2, reach = ?3, owed = ?4 WHERE id = ?1`,
-			id, string(read.Walk), reach, read.Owed); err != nil {
-			return fmt.Errorf("%s: record the walk: %w", action, err)
+		now.reach, now.actsOwed = sql.NullInt64{Int64: read.Reach, Valid: read.HasReach}, read.ActsOwed
+		if !read.HasReach {
+			now.reach.Int64 = 0
+		}
+		if _, err := tx.Exec(`UPDATE forge_history_sources SET walk = ?2, reach = ?3, owed = ?4, acts_owed = ?5 WHERE id = ?1`,
+			id, string(read.Walk), now.reach, read.Owed, read.ActsOwed); err != nil {
+			return ForgeHistoryChange{}, fmt.Errorf("%s: record the walk: %w", action, err)
 		}
 	}
 	failedAt := int64(0)
 	if read.Failure != "" {
 		failedAt = read.ReadAt
 	}
-	if _, err := tx.Exec(`UPDATE forge_history_sources SET read_at = ?2, failure_kind = ?3, failure = ?4, failure_detail = ?5, failed_at = ?6 WHERE id = ?1`,
-		id, read.ReadAt, read.FailureKind, read.Failure, string(read.FailureDetail), failedAt); err != nil {
-		return fmt.Errorf("%s: record the read: %w", action, err)
+	now.kind, now.failure = read.FailureKind, read.Failure
+	if _, err := tx.Exec(`UPDATE forge_history_sources SET read_at = ?2, failure_kind = ?3, failure = ?4, failure_detail = ?5, failed_at = ?6,
+		good_at = iif(?4 = '', ?2, good_at), viewer = iif(?7 <> '', ?7, viewer) WHERE id = ?1`,
+		id, read.ReadAt, read.FailureKind, read.Failure, string(read.FailureDetail), failedAt, read.Viewer); err != nil {
+		return ForgeHistoryChange{}, fmt.Errorf("%s: record the read: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("%s: commit: %w", action, err)
+		return ForgeHistoryChange{}, fmt.Errorf("%s: commit: %w", action, err)
 	}
-	return nil
+	return ForgeHistoryChange{Keys: slices.Sorted(maps.Keys(moved)), State: now != was}, nil
+}
+
+// execForgeHistory runs one of the writer's statements, handing each row
+// it returns to scan; nil for a statement that returns none.
+func execForgeHistory(tx *sql.Tx, query string, args []any, scan func(rowScanner) error) error {
+	if scan == nil {
+		_, err := tx.Exec(query, args...)
+		return err
+	}
+	return scanMirrorRows(tx, query, args, scan)
 }
 
 // forgeHistoryPRsSQL stores a read's pull requests (?2) of source ?1.
@@ -426,22 +631,51 @@ ON CONFLICT(source_id, number) DO UPDATE SET url = excluded.url, title = exclude
 	created_at = excluded.created_at, updated_at = excluded.updated_at, merged_at = excluded.merged_at, closed_at = excluded.closed_at,
 	seen_at = excluded.seen_at`
 
-// The writer's other statements, each driven by its JSON list (?2) and
+// The writer's other statements, each driven by its JSON list and
 // reaching the stored rows of source ?1 by their keys: a read costs its
 // own rows, whatever the source holds (TestForgeHistoryWriterPlans). The
 // prune walks the source's update index below the window's start (?2).
-// An act keeps a stored name when its read names nobody.
+// An act keeps a stored name when its read names nobody. The ones that
+// return rows say what the read changed (ForgeHistoryChange):
+//   - head changes: the keys and numbers of the read's pull requests (?2)
+//     stored with another head repository, read before they are written;
+//   - clear keys: the stored keys of the read's pull requests (?2) the
+//     read does not name (?3), removed; store keys: the ones it names
+//     (?2) that are not stored, added;
+//   - acts: the numbers of the acts (?2) added, moved earlier or named;
+//   - act keys: the keys of the numbers ?2; moved keys: the keys of the
+//     list ?2 whose pull request has an act; pruned keys: the keys of the
+//     pull requests with acts the prune removes.
 const (
-	forgeHistoryClearKeysSQL = `DELETE FROM forge_history_keys WHERE source_id = CAST(?1 AS INTEGER) AND number IN (SELECT p.value ->> 'n' FROM json_each(?2) p)`
-	forgeHistoryKeysSQL      = `INSERT INTO forge_history_keys(key, source_id, number)
-SELECT DISTINCT k.value ->> 'k', ?1, k.value ->> 'n' FROM json_each(?2) k`
+	forgeHistoryHeadChangesSQL = `SELECT k.key, k.number FROM json_each(?2) p
+CROSS JOIN forge_history_prs s ON s.source_id = CAST(?1 AS INTEGER) AND s.number = p.value ->> 'n'
+CROSS JOIN forge_history_keys k ON k.source_id = s.source_id AND k.number = s.number
+WHERE s.head_repo IS NOT p.value ->> 'headRepo'`
+	forgeHistoryClearKeysSQL = `DELETE FROM forge_history_keys WHERE source_id = CAST(?1 AS INTEGER) AND number IN (SELECT p.value ->> 'n' FROM json_each(?2) p)
+	AND (key, number) NOT IN (SELECT k.value ->> 'k', CAST(k.value ->> 'n' AS INTEGER) FROM json_each(?3) k)
+RETURNING key, number`
+	forgeHistoryKeysSQL = `INSERT INTO forge_history_keys(key, source_id, number)
+SELECT DISTINCT k.value ->> 'k', ?1, k.value ->> 'n' FROM json_each(?2) k WHERE true
+ON CONFLICT(key, source_id, number) DO NOTHING
+RETURNING key, number`
 	forgeHistoryOrphanActSQL = `SELECT a.value ->> 'n' FROM json_each(?2) a WHERE NOT EXISTS (
 	SELECT 1 FROM forge_history_prs p WHERE p.source_id = CAST(?1 AS INTEGER) AND p.number = a.value ->> 'n') LIMIT 1`
 	forgeHistoryActsSQL = `INSERT INTO forge_history_acts(source_id, number, kind, login, name, at)
 SELECT ?1, a.value ->> 'n', a.value ->> 'kind', a.value ->> 'login', a.value ->> 'name', a.value ->> 'at' FROM json_each(?2) a WHERE true
-ON CONFLICT(source_id, number, kind, login) DO UPDATE SET at = min(at, excluded.at), name = iif(excluded.name <> '', excluded.name, name)`
-	forgeHistoryPruneSQL = `DELETE FROM forge_history_prs WHERE source_id = CAST(?1 AS INTEGER) AND updated_at < CAST(?2 AS INTEGER) AND NOT EXISTS (
+ON CONFLICT(source_id, number, kind, login) DO UPDATE SET at = min(at, excluded.at), name = iif(excluded.name <> '', excluded.name, name)
+	WHERE excluded.at < at OR excluded.name <> '' AND excluded.name IS NOT name
+RETURNING number`
+	forgeHistoryActKeysSQL = `SELECT DISTINCT k.key FROM json_each(?2) n
+CROSS JOIN forge_history_keys k ON k.source_id = CAST(?1 AS INTEGER) AND k.number = n.value`
+	forgeHistoryMovedKeysSQL = `SELECT DISTINCT m.value ->> 'k' FROM json_each(?2) m WHERE EXISTS (
+	SELECT 1 FROM forge_history_acts a WHERE a.source_id = CAST(?1 AS INTEGER) AND a.number = m.value ->> 'n')`
+	forgeHistoryPrunedSQL = `forge_history_prs.source_id = CAST(?1 AS INTEGER) AND forge_history_prs.updated_at < CAST(?2 AS INTEGER) AND NOT EXISTS (
 	SELECT 1 FROM forge_history_acts a WHERE a.source_id = CAST(?1 AS INTEGER) AND a.number = forge_history_prs.number AND a.at > CAST(?2 AS INTEGER) - 1)`
+	forgeHistoryPrunedKeysSQL = `SELECT DISTINCT k.key FROM forge_history_prs
+CROSS JOIN forge_history_keys k ON k.source_id = forge_history_prs.source_id AND k.number = forge_history_prs.number
+WHERE ` + forgeHistoryPrunedSQL + ` AND EXISTS (
+	SELECT 1 FROM forge_history_acts a WHERE a.source_id = forge_history_prs.source_id AND a.number = forge_history_prs.number)`
+	forgeHistoryPruneSQL = `DELETE FROM forge_history_prs WHERE ` + forgeHistoryPrunedSQL
 )
 
 // ForgeHistoryRow is a stored pull request that names a key, with its

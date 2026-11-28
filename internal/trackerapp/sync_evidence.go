@@ -193,6 +193,13 @@ func mirrorActs(acts []tracker.Act) []store.MirrorAct {
 // once for each. It reads the connection's listings alone, and each
 // project's setup once. A project's setup that cannot be read fails it.
 func (s *Service) creditBoards(row store.TrackerConnection) ([]store.MirrorActsBoard, error) {
+	return s.countingBoards(row, func(g StatusGroups) bool { return g.credit })
+}
+
+// countingBoards are the boards of connection row that a project lists
+// whose counting of row's site counts holds for, as creditBoards lists
+// those that count credit.
+func (s *Service) countingBoards(row store.TrackerConnection, counts func(StatusGroups) bool) ([]store.MirrorActsBoard, error) {
 	listed, err := s.store.ListConnectionProjectBoards(row.ID)
 	if err != nil {
 		return nil, fmt.Errorf("trackerapp: read the boards projects list of %s: %w", row.ID, err)
@@ -211,7 +218,7 @@ func (s *Service) creditBoards(row store.TrackerConnection) ([]store.MirrorActsB
 			held, err := s.heldSetupLocked(b.ProjectSlug)
 			if err == nil {
 				g := held.counting(site)
-				c = counting{counts: g.credit, groups: g}
+				c = counting{counts: counts(g), groups: g}
 			}
 			s.setupMu.Unlock()
 			if err != nil {

@@ -206,6 +206,7 @@ func TestEveryWriteThatChangesATicketsCreditReportsIt(t *testing.T) {
 		{"everything credit reads of its card changes", card(1100, func(r *MirrorRow) {
 			r.Card.StatusID, r.Card.AssigneeID, r.Card.ResolvedAt, r.Card.TypeID, r.Card.Labels = "1", "acc-user3", 0, "10004", []string{"support"}
 			r.Card.Sprints, r.Estimate = []string{"21"}, new(5.0)
+			r.Card.Key, r.Card.CreatedAt = "APP-7", r.Card.CreatedAt+1
 		})},
 		{"the board's estimate field changes", reset},
 		{"its row is read again after it", reread},

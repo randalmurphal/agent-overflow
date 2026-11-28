@@ -125,6 +125,46 @@ func TestThePacesDrillSaysHowCreditWasCounted(t *testing.T) {
 	}
 }
 
+// A forge account matched to no person that reviewed a finished ticket's
+// pull request is listed apart in the pace's drill, by the forge's name
+// for it and what it did; it counts nothing and leaves no ticket out of
+// the pace.
+func TestThePacesDrillListsAForgeAccountMatchedToNoPerson(t *testing.T) {
+	t.Parallel()
+	f := creditBoard("points")
+	f.exec(`INSERT INTO credit(sprint, at, ticket, kind, person, value, share, points, review_share, review_need, review_kinds, did, qualified, note, unmatched)
+		VALUES ('s6', %d, 't1', 'review', NULL, 0, 0, 5, 10, 2, 'commented, approved', 'approved', NULL,
+		'no person in the tracker is matched to this forge account', 'Ghost Dev (ghost on github.com)')`, ago(2))
+	a := mustEvaluate(t, evaluator(), creditOn(f), utcSprints5)
+	if got := num(widgetOf(t, a, "pace").Value); got != "1.8, 1 not counted" {
+		t.Fatalf("pace %s; want the pace without the account, 1.8, 1 not counted", got)
+	}
+	d, err := evaluator().Drill(context.Background(), creditOn(f), DrillRequest{Request: utcSprints5, Widget: "pace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows, groups []string
+	for _, r := range d.Rows {
+		if r.Heading == headingUnmatched {
+			rows = append(rows, strings.Join([]string{r.Key, r.Series, r.Assignee, fmt.Sprint(*r.Value), fmt.Sprint(r.Counted), r.Note}, " | "))
+		}
+	}
+	for _, g := range d.Groups {
+		groups = append(groups, fmt.Sprintf("%s | %s | %s | %d", g.Series, g.Heading, num(&g.Value), g.Rows))
+	}
+	wantRows := []string{"WEB-1 | Review credit |  | 0 | true | Ghost Dev (ghost on github.com): approved"}
+	wantGroups := []string{
+		"Finished tickets |  | 1.6 | 2",
+		"Review credit |  | 0.1, 1 not counted | 2",
+		"Review credit | Acted but did not qualify | 0 | 1",
+		"Review credit | On the forge, matched to no person | 0 | 1",
+		"Support credit |  | 0.1 | 1",
+	}
+	if !reflect.DeepEqual(rows, wantRows) || !reflect.DeepEqual(groups, wantGroups) {
+		t.Fatalf("rows\n%s\ngroups\n%s\nwant\n%s\nand\n%s", strings.Join(rows, "\n"), strings.Join(groups, "\n"), strings.Join(wantRows, "\n"), strings.Join(wantGroups, "\n"))
+	}
+}
+
 // While the last read of who worked on the tickets failed as a whole,
 // every value of a widget that reads the credit relation says so and why,
 // whatever its rows hold: the built-in pace, a kept number of finished

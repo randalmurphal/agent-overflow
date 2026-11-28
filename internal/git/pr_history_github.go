@@ -71,8 +71,10 @@ const githubHistoryPullFields = `number url title state isDraft headRefName head
 // githubPullHistoryQuery is one page of a repository's pull requests,
 // most recently updated first, each with its newest 50 commenting
 // reviews, its first 3 approvals and its newest 50 conversation
-// comments, beside the repository's node id and parent.
+// comments, beside the repository's node id and parent and the login of
+// the account that asks.
 var githubPullHistoryQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PullHistory($owner: String!, $name: String!, $after: String) {
+  viewer { login }
   repository(owner: $owner, name: $name) {
     id parent { owner { login } name }
     pullRequests(first: 50, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
@@ -202,7 +204,7 @@ func (f *githubForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 		return r.followLeft(b)
 	}()
 	w.More = r.more
-	out := PRHistory{OwnHead: r.ownHead, Parent: r.parent, PRs: r.prs.prs, Acts: earliestActs(r.acts)}
+	out := PRHistory{OwnHead: r.ownHead, Parent: r.parent, Viewer: r.viewer, PRs: r.prs.prs, Acts: earliestActs(r.acts)}
 	walk, encodeErr := json.Marshal(w)
 	if encodeErr != nil {
 		return out, errors.Join(err, fmt.Errorf("encode the history walk: %w", encodeErr))
@@ -210,7 +212,8 @@ func (f *githubForge) ReadPRHistory(ctx context.Context, repo RepoReference, in 
 	out.Walk = walk
 	at, ok := w.List.reach()
 	setReach(&out, streamReach{at, ok})
-	out.Owed = w.List.Gap || len(w.More) > 0
+	out.ActsOwed = len(w.More) > 0
+	out.Owed = w.List.Gap || out.ActsOwed
 	return out, err
 }
 
@@ -223,6 +226,7 @@ type githubHistoryRead struct {
 	stored      func([]int64) (map[int64]StoredPR, error)
 	clock       func() time.Time
 	ownHead     string
+	viewer      string
 	parent      *RepoReference
 	prs         historyPRs
 	acts        []PRHistoryAct
@@ -237,6 +241,9 @@ type githubHistoryRead struct {
 // stretches of acts a changed or new one leaves.
 func (r *githubHistoryRead) page(cursor string, cutoff int64) (listPage, error) {
 	var raw struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
 		Repository *struct {
 			githubRepoParentRaw
 			PullRequests struct {
@@ -253,7 +260,7 @@ func (r *githubHistoryRead) page(cursor string, cutoff int64) (listPage, error) 
 	if raw.Repository == nil {
 		return listPage{}, fmt.Errorf("GitHub answered no repository %s", r.repo.Project())
 	}
-	r.ownHead = raw.Repository.ID
+	r.ownHead, r.viewer = raw.Repository.ID, raw.Viewer.Login
 	r.parent = nil
 	if p := raw.Repository.Parent; p != nil {
 		r.parent = &RepoReference{Forge: r.repo.Forge, Host: r.repo.Host, Namespace: p.Owner.Login, Repo: p.Name}

@@ -249,6 +249,17 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 				nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user2", Name: "User 2"}}})
 			return err
 		},
+		"SetMirrorForgePeople": func(root int64) error {
+			_, err := s.SetMirrorForgePeople(root, mirrorReadOf(root, 9), []MirrorForgeMatch{{MirrorForgePerson: MirrorForgePerson{Host: "github.com", Login: "user3"}}},
+				MirrorCatalog{}, 2, []string{"10"})
+			return err
+		},
+		// The pull requests of a key no ticket has: an advance that names
+		// one a board counts is a change each time it is told.
+		"AdvanceMirrorForgeCredit": func(root int64) error {
+			_, err := s.AdvanceMirrorForgeCredit(root, []MirrorActsBoard{{BoardID: "10"}}, []string{"WEB-999"}, false)
+			return err
+		},
 	}
 }
 
@@ -256,7 +267,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 // the cleanup and the reads.
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
-	"GetMirrorSync", "GetMirrorEvidenceFailure", "ListMirrorHistoryDue", "ListMirrorActsDue", "ListMirrorBodies", "ListMirrorIssueWorklogs",
+	"GetMirrorSync", "GetMirrorEvidenceFailure", "ListMirrorHistoryDue", "ListMirrorActsDue", "ListMirrorForgePeopleDue", "MirrorForgeFailures", "ListMirrorBodies", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorBoardStatuses", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorParents", "ListMirrorUnnamedParents", "ListMirrorIssueRows", "ListMirrorTicketRows", "ListMirrorSection", "CountMirrorSections", "GetMirrorBoardPace", "ListMirrorSupport",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards", "ListMirrorSprintNames", "LastMirrorPlanRow",
 	"ReadMirrorRefreshTargets", "ReadMirrorWorklogDays",

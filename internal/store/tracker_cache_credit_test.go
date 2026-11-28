@@ -103,8 +103,8 @@ func creditAt(t *testing.T, s *Store, root int64, regroup MirrorRegroup, window 
 	}
 	rows = exportRows(t, conn, `SELECT concat_ws(' ', coalesce(sprint, '-'), coalesce(at, '-'), ticket, kind, coalesce(person, '-'),
 	    coalesce(round(value, 3), '-'), coalesce(round(share, 3), '-'), coalesce(points, '-'), coalesce(review_share, '-'), coalesce(review_need, '-'),
-	    coalesce(did, '-'), coalesce(qualified, '-'), coalesce(round(hours, 3), '-'), coalesce(hours_per_point, '-'), coalesce(note, '-'))
-	  FROM main.credit ORDER BY sprint, ticket, kind, person`)
+	    coalesce(did, '-'), coalesce(qualified, '-'), coalesce(round(hours, 3), '-'), coalesce(hours_per_point, '-'), coalesce(note, '-'), '[' || unmatched || ']')
+	  FROM main.credit ORDER BY sprint, ticket, kind, person, unmatched`)
 	people = exportRows(t, conn, `SELECT id FROM main.people ORDER BY id`)
 	return rows, people
 }
@@ -286,8 +286,8 @@ func TestMirrorEvidenceMovesTheTotalsWhenItChanges(t *testing.T) {
 }
 
 // A closed sprint counts by the rule snapshot in force at its completion
-// and the active sprint by the newest; a rule that counts approvals says
-// on each review row that they are not read, and they keep no ticket
+// and the active sprint by the newest; a rule that counts approvals, with
+// no repository for the connection's credit to read, keeps no ticket
 // unread. A ticket whose evidence read failed for it alone says why, and
 // one whose card moved since its evidence read (its history read again)
 // says so.
@@ -307,8 +307,8 @@ func TestMirrorCreditReadsTheRulesAndSaysWhyItIsNotRead(t *testing.T) {
 	rows, _ := creditOf(t, s, root, creditRegroup(t, rules))
 	want := []string{
 		"20 800 10001 finished acc-user1 5.0 1.0 5.0 - - - - - - -",
-		"20 800 10001 review acc-user2 0.0 0.0 5.0 10 2 commented 0 - - approvals are not read yet",
-		"20 800 10001 review acc-user3 0.5 0.1 5.0 10 2 commented, logged time 1 - - approvals are not read yet",
+		"20 800 10001 review acc-user2 0.0 0.0 5.0 10 2 commented 0 - - -",
+		"20 800 10001 review acc-user3 0.5 0.1 5.0 10 2 commented, logged time 1 - - -",
 		"20 - 10002 finished acc-user1 3.0 1.0 3.0 - - - - - - -",
 		"20 - 10002 review - - - 3.0 10 2 - - - - could not be read: Jira refused the comments",
 		"20 - 10003 support acc-user2 0.5 0.5 - - - - - 2.0 4 -",

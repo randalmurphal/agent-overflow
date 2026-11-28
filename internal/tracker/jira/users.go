@@ -330,6 +330,51 @@ func (c *Client) findUser(ctx context.Context, who string, picked bool, scope *A
 // eligible reports a user a value may name: active and not an app.
 func eligible(u User) bool { return u.Active && u.AccountType != "app" }
 
+// isPerson reports a user whose work is a person's: an active atlassian
+// account, not an app's or a customer's.
+func isPerson(u User) bool { return u.Active && u.AccountType == "atlassian" }
+
+// nameMatch is what UserNamed found for a name: the person, or none.
+type nameMatch struct {
+	user User
+	ok   bool
+}
+
+// UserNamed finds the one person (an active atlassian account; an app's
+// or a customer's is not one) whose display name is name, case ignored,
+// as a forge names the account that reviewed a pull request, by name
+// alone. It answers ok false when no person has the name, when several
+// do, and when more users start with it than Jira's search window holds,
+// so whether one does is not known. Each name's answer is kept as long
+// as a user is (siteAge), so a name costs one search a while however
+// often it is asked; a failed search is not kept.
+func (c *Client) UserNamed(ctx context.Context, name string) (User, bool, error) {
+	if err := c.admit(ctx); err != nil {
+		return User{}, false, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return User{}, false, notSent("a user's name is empty")
+	}
+	key := strings.ToLower(name)
+	if m, ok := c.named.get(ctx, key); ok {
+		return m.user, m.ok, nil
+	}
+	epoch := c.named.epoch()
+	u, err := c.userNamed(ctx, name, false, isPerson)
+	// The search is a walk, whose pages are all drawn under the read the
+	// transport holds when it returns.
+	mark := c.api.CredentialMark()
+	_, unmatched := errors.AsType[*MatchError](err)
+	_, unproven := errors.AsType[*UnprovenMatchError](err)
+	if err != nil && !unmatched && !unproven {
+		return User{}, false, err
+	}
+	m := nameMatch{user: u, ok: err == nil}
+	c.named.put(epoch, mark, key, m)
+	return m.user, m.ok, nil
+}
+
 // userByAccountID finds the user whose account ID is exactly id, as
 // picked: a miss is a *MatchError with Picked set.
 func (c *Client) userByAccountID(ctx context.Context, id string) (User, error) {
@@ -369,17 +414,27 @@ func (c *Client) resolveUser(ctx context.Context, who string) (User, error) {
 			return u, err
 		}
 	}
+	return c.userNamed(ctx, who, true, eligible)
+}
+
+// userNamed is the one user admit takes whose display name is who, or
+// with byEmail whose email is, case ignored, by a user search walked to
+// its end. Several are a *MatchError listing them, and none a *MatchError
+// listing the users admit takes whose name or email starts with who; more
+// users start with who than Jira's search window holds is an
+// *UnprovenMatchError, since a second exact match may lie beyond it.
+func (c *Client) userNamed(ctx context.Context, who string, byEmail bool, admit func(User) bool) (User, error) {
 	found, complete, err := c.usersMatching(ctx, who)
 	if err != nil {
 		return User{}, fmt.Errorf("jira: find user %q: %w", who, err)
 	}
 	var exact, all []User
 	for _, u := range found {
-		if !eligible(u) {
+		if !admit(u) {
 			continue
 		}
 		all = append(all, u)
-		if strings.EqualFold(u.DisplayName, who) || (u.Email != "" && strings.EqualFold(u.Email, who)) {
+		if strings.EqualFold(u.DisplayName, who) || (byEmail && u.Email != "" && strings.EqualFold(u.Email, who)) {
 			exact = append(exact, u)
 		}
 	}

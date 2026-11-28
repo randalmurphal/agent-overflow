@@ -133,7 +133,11 @@ func (a *App) readForgeHistory(ctx context.Context) error {
 // so a change of who wants it removes nothing it holds. When git cannot
 // read a project's origin, no stored source is removed, since that origin
 // may be one of them: the wanted ones are added, and unread says which
-// projects' origins git could not read.
+// projects' origins git could not read. It writes with the sources which
+// connection's credit reads which (store.ForgeHistoryUse: the origins of
+// the projects that list a board of it), and tells each connection whose
+// repositories changed to count its credit again
+// (trackerapp ForgeCreditChanged), a failure of which joins unread.
 func (a *App) syncForgeHistorySources(ctx context.Context) (_ []store.ForgeHistorySource, unread, _ error) {
 	a.forgeHistory.setMu.Lock()
 	defer a.forgeHistory.setMu.Unlock()
@@ -145,10 +149,19 @@ func (a *App) syncForgeHistorySources(ctx context.Context) (_ []store.ForgeHisto
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the projects whose pull request history the app keeps: %w", err)
 	}
+	// projects are the projects whose origin is wanted, and users the
+	// connections whose boards each lists, which read it for their credit.
 	var projects []string
+	users := map[string][]string{}
 	for _, c := range choices {
-		if c.ConnectionEnabled && !c.ProjectArchived && c.ConnectionKind != store.TrackerKindTempo && !slices.Contains(projects, c.Project) {
+		if !c.ConnectionEnabled || c.ProjectArchived || c.ConnectionKind == store.TrackerKindTempo {
+			continue
+		}
+		if !slices.Contains(projects, c.Project) {
 			projects = append(projects, c.Project)
+		}
+		if !slices.Contains(users[c.Project], c.Connection) {
+			users[c.Project] = append(users[c.Project], c.Connection)
 		}
 	}
 	var wanted []store.ForgeHistoryRef
@@ -157,6 +170,7 @@ func (a *App) syncForgeHistorySources(ctx context.Context) (_ []store.ForgeHisto
 			wanted = append(wanted, ref)
 		}
 	}
+	var uses []store.ForgeHistoryUse
 	var origins []error
 	for _, id := range projects {
 		project, err := a.store.GetProject(id)
@@ -171,7 +185,11 @@ func (a *App) syncForgeHistorySources(ctx context.Context) (_ []store.ForgeHisto
 		case origin.Error != "":
 			origins = append(origins, fmt.Errorf("project %s: %s", project.Name, origin.Error))
 		default:
-			want(forgeHistoryRef(origin.Repo))
+			ref := forgeHistoryRef(origin.Repo)
+			want(ref)
+			for _, conn := range users[id] {
+				uses = append(uses, store.ForgeHistoryUse{ConnectionID: conn, RepoKey: ref.RepoKey})
+			}
 		}
 	}
 	stored, err := a.store.ListForgeHistorySources()
@@ -189,10 +207,20 @@ func (a *App) syncForgeHistorySources(ctx context.Context) (_ []store.ForgeHisto
 		for _, s := range stored {
 			want(s.ForgeHistoryRef)
 		}
+		kept, err := a.store.ListForgeHistoryUses()
+		if err != nil {
+			return nil, nil, err
+		}
+		uses = append(uses, kept...)
 	}
-	changed, err := a.store.SetForgeHistorySources(wanted)
+	changed, moved, err := a.store.SetForgeHistorySources(wanted, uses)
 	if err != nil {
 		return nil, nil, err
+	}
+	for _, conn := range moved {
+		if err := svc.ForgeCreditChanged(conn, nil, true); err != nil {
+			unread = errors.Join(unread, err)
+		}
 	}
 	if !changed {
 		return stored, unread, nil
@@ -259,7 +287,9 @@ type forgeHistoryFailureDetail struct {
 // that wanted a fresh read joins one that just landed. A read ctx ends
 // stores nothing. A forge failure is recorded on the source with what the
 // read read before it, and logged under its correlation id; the error
-// returned is the store's, or ctx's. A source removed meanwhile, or
+// returned is the store's, ctx's, or that of telling the connections
+// whose credit reads the source what the read changed
+// (forgeCreditChanged). A source removed meanwhile, or
 // before the write, is no error: the write lands only in the source the
 // read began from.
 func (a *App) readForgeHistorySource(ctx context.Context, id int64, due func(store.ForgeHistorySource, time.Time) bool) error {
@@ -296,10 +326,36 @@ func (a *App) readForgeHistorySource(ctx context.Context, id int64, due func(sto
 		}
 		read.FailureKind, read.Failure, read.FailureDetail = fail.kind, fail.wire, detail
 	}
-	if err := a.store.ApplyForgeHistory(read); err != nil && !errors.Is(err, store.ErrForgeHistoryGone) {
+	change, err := a.store.ApplyForgeHistory(read)
+	switch {
+	case errors.Is(err, store.ErrForgeHistoryGone):
+		return nil
+	case err != nil:
 		return err
 	}
-	return nil
+	return a.forgeCreditChanged(id, change)
+}
+
+// forgeCreditChanged tells the connections whose credit reads source id
+// what a read of it changed (trackerapp ForgeCreditChanged); a read that
+// changed nothing credit counts tells nobody.
+func (a *App) forgeCreditChanged(id int64, change store.ForgeHistoryChange) error {
+	if change.Empty() {
+		return nil
+	}
+	users, err := a.store.ForgeHistoryUsers(id)
+	if err != nil || len(users) == 0 {
+		return err
+	}
+	svc, err := a.trackerService()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, conn := range users {
+		errs = append(errs, svc.ForgeCreditChanged(conn, change.Keys, change.State))
+	}
+	return errors.Join(errs...)
 }
 
 // forgeHistoryStored is what source id stores of numbers, as a reader
@@ -318,8 +374,8 @@ func forgeHistoryStored(id int64, s *store.Store, numbers []int64) (map[int64]gi
 
 // forgeHistoryRead is h as the store applies it to src.
 func forgeHistoryRead(src store.ForgeHistorySource, h gitops.PRHistory) store.ForgeHistoryRead {
-	read := store.ForgeHistoryRead{SourceID: src.ID, Source: src.ForgeHistoryRef, OwnHead: h.OwnHead, Walk: h.Walk,
-		Reach: forgeHistoryMilli(h.Reach), HasReach: h.HasReach, Owed: h.Owed}
+	read := store.ForgeHistoryRead{SourceID: src.ID, Source: src.ForgeHistoryRef, OwnHead: h.OwnHead, Viewer: h.Viewer, Walk: h.Walk,
+		Reach: forgeHistoryMilli(h.Reach), HasReach: h.HasReach, Owed: h.Owed, ActsOwed: h.ActsOwed}
 	if h.Parent != nil {
 		read.Parent = forgeHistoryRef(*h.Parent)
 	}

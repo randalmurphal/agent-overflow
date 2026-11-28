@@ -1025,6 +1025,7 @@ and writes share:
 | Structure | one board | columns, statuses, estimate, sprints, users |
 | Worklogs | an author's span of days, from the time tracker | that author's worklogs of those days, replaced whole |
 | Evidence | up to 50 issues' due comments and worklogs | each issue's comment and worklog authors, replaced per issue and source, or the source's failed attempt |
+| People | up to 25 forge accounts' names, one user search each | who each account is in the tracker, or nobody |
 
 - **Delta.** Each tick reads pages of a board's changed rows from its
   cursor. One transaction stores a page's rows and the cursor that page
@@ -1259,7 +1260,8 @@ and writes share:
   stops, pauses or starts failing is read by the round it happens in, from
   the next page on, or the next round, `Cadence.Linked` later. A linked
   tick runs the cards unit, then the names unit of an upgraded mirror
-  (above), then the history unit, then the evidence unit; the names unit makes at most 10 reads a
+  (above), then the history unit, then the evidence unit, then the people
+  unit ([forge pull request history](#forge-pull-request-history)); the names unit makes at most 10 reads a
   tick, so the linked issues' cards and history keep their tick, and the
   loop ticks again until the worklist ends.
 - **A tick's record.** A tick's successes and the failure that followed
@@ -2151,7 +2153,10 @@ named by the board's lifetime and totals revision (the board view's
 `totals_revision`, a patch's `totals.revision`), which moves with every
 change that can change a total and not with a title or rank. The totals
 carry the board's pace, so a history write of an issue in one of the
-board's closed sprints moves them too (store `mirrorPaceAdvanceSQL`). The client
+board's closed sprints moves them too (store `mirrorPaceAdvanceSQL`). An
+event that has the page count again and names no row
+(`BoardEvent.Recount`) owes the client one patch read that names no row,
+which reads the totals when their revision moved. The client
 sends the status groups version its sections were read with
 (`TotalsAt.Groups`); another version is refused as stale, and the
 client reads the board again (`readPatch` in
@@ -2443,7 +2448,9 @@ lists its pull requests without searching the forge
   next round. While git cannot read a listed project's origin, no source
   is removed, since that origin may be one of them, and the round
   reports which. A fork's parent is added at the round after the fork's
-  first read lands.
+  first read lands. The same write records which connection's credit
+  reads which origin (`forge_history_uses`, `store.ForgeHistoryUse`): the
+  connections whose boards the origin's projects list.
 - **Reads** (`readForgeHistory`): the linked loop calls
   `Deps.ReadForgeHistory` after each round it runs (every 5 minutes),
   and the round reads each source that is due once, at most 4 at once,
@@ -2461,7 +2468,47 @@ lists its pull requests without searching the forge
   landed read clears it. The writer is `store.ApplyForgeHistory`, one
   transaction a read, which lands only in the source the read began
   from: a re-read pull request's row and keys are replaced, and acts are
-  only added, so one a later read does not name stays.
+  only added, so one a later read does not name stays. It answers what
+  the read changed of what credit counts (`store.ForgeHistoryChange`):
+  the keys of the pull requests whose acts changed, and whether the
+  source's own state did.
+- **Credit** ([Credit](#credit)) reads the stored acts at read time; no
+  act is copied into the mirror. Three things keep it current:
+  - *Who an account is* (`tracker_cache_forge_people`, the linked tick's
+    people unit, `run.forgePeople`): the accounts that acted on a pull
+    request the connection's credit reads that names a ticket the mirror
+    holds are matched 25 a tick. The account whose token read the
+    repository (`forge_history_sources.viewer`) is the connection's own
+    verified account, with no search; any other is the one person whose
+    name in the tracker is the name the forge gives it
+    (`Provider.PersonNamed`, Jira's user search); an account the forge
+    does not name, whose name no person or several people have, or whose
+    search Jira withholds, is nobody. A match stands for a day and until
+    the forge names the account otherwise. A search that fails stores
+    the matches made before it and fails the tick.
+  - *What a source covers* (`forgeCreditCoversSQL`): a ticket's reviews
+    are read only when every source the connection's credit reads has a
+    reach, owes no act of a pull request it read (`acts_owed`), and has
+    read back to `ForgeHistoryClockMargin` before the ticket's creation
+    or to the window's start. While a source's reads fail, a sprint that
+    closed since its last good read (`good_at`) is not counted, and an
+    open sprint or a week counts what is stored.
+  - *Who is told* (`trackerapp.Service.ForgeCreditChanged`): the app
+    passes each read's change to the connections that use the source or
+    a fork of it (`store.ForgeHistoryUsers`). A change of keys advances
+    the totals of the boards that count credit and hold a ticket of them
+    that is done now or in a closed sprint, and names those tickets to
+    the open boards through the change funnel; a change of a source's
+    state, of the connection's sources, or of who an account is advances
+    every such board and has it count again (`BoardEvent.Recount`). A
+    read that changes nothing tells nobody. The forge writer writes no
+    tracker table; a crash between its commit and the tracker's leaves
+    the totals as they were until the next change.
+  Costs, with a pull request of four acts for every ticket, are in
+  [the measurements](../references/tracker-api-measurements.md#credit):
+  the Backlog's totals stay under twice a project's that counts no
+  credit, and the due listing walks the connection's keys and acts once
+  a linked round.
 - **Coverage** (`store.ForgeHistorySource.Covers`, the one rule): a
   source answers for a ticket created (the tracker's clock) at or after
   the window's start and at least `ForgeHistoryClockMargin` (5 minutes,
@@ -2493,10 +2540,10 @@ lists its pull requests without searching the forge
   rows. The catch-up reads the sources alone
   (`ForgeHistorySourcesForWork`).
 - **Costs**: storing a read of 500 pull requests, each with 2 keys and 4
-  acts, took at most 23 ms into a source of 4,500 and 32 ms into one of
-  45,000; a steady read of one 0.2 ms and 0.3 ms, a page's lookup of 50
+  acts, took at most 26 ms into a source of 4,500 and 33 ms into one of
+  45,000; a steady read of one 0.3 ms, a page's lookup of 50
   stored pull requests 0.1 ms, a key's read with 20 listed numbers 0.4
-  ms, and the prune of every row 61 ms and 765 ms
+  ms, and the prune of every row 70 ms and 819 ms
   (`TestForgeHistoryAtScale`, `AO_TRACKER_SCALE=4500,45000`, on a
   developer's machine). Each statement reaches the stored rows by key
   from its read's list (`TestForgeHistoryWriterPlans`). The forge
@@ -2842,7 +2889,19 @@ finish (no move into done, no resolution, a reassignment) counts the
 review of each person who never had it, and lists the actions of those
 who did as one review row not counted. Each finished ticket's row and
 review rows read one answer for who had it or why no one is named
-(`cr_f` in `mirrorCreditFinishedSQL`). A closed sprint's member carried
+(`cr_f` in `mirrorCreditFinishedSQL`). Under a rule that counts comments
+or approvals, an approval or a comment on a pull request that names the
+ticket's key counts for the person its forge account is matched to
+(`store/tracker_cache_credit_forge.go`,
+[forge pull request history](#forge-pull-request-history)): the
+connection's repositories whole, and of a fork's parent the pull
+requests whose head is the fork. An account matched to nobody is a
+review row of its own with no person, value 0 and its name in
+`unmatched`, which the drill lists under its own heading and which
+leaves no ticket out. A ticket some repository does not cover has one
+review row not counted that names the first such repository by its path,
+how many more there are, and its failure or that it is not read yet. A
+rule that counts neither reads no forge act and waits for no repository. A closed sprint's member carried
 into a later sprint counts as done at the closed sprint's end from its
 status now only when its history is read for its card
 (`mirrorStatusAtCompletionSQL`), for the pace too. Support time counts in closed
@@ -2852,7 +2911,9 @@ last whole read failed, each value of a widget that reads `credit`
 says why, whatever its rows hold (`WidgetValue.Evidence`,
 `EvidenceSentence`), on the dashboard, its proposals, a tried widget
 and the agent's `dashboard_widget`; a change of that outcome has the open boards count again
-(`BoardEvent.Recount`). A project that
+(`BoardEvent.Recount`). The same sentence names the repositories whose
+pull requests could not be read, after the evidence read's own failure,
+when a rule counts comments or approvals (`Service.evidenceFailure`). A project that
 counts no credit binds no rules, its `credit` relation is empty, and
 its pace runs the statement it ran before credit
 (`TestAPaceWithoutCreditRunsTodaysStatement`). Its costs at 2,000 and

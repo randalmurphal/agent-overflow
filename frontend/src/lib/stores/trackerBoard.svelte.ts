@@ -172,6 +172,9 @@ interface Live {
   pending: Set<string>;
   /** A full read is owed. */
   readAgain: boolean;
+  /** A read of the totals is owed: an event said what they count changed
+   * and named no row (recount). A patch that names no row reads them. */
+  totalsOwed: boolean;
   /** A full or patch read failed and is owed: nothing is read until a
    * recovery trigger (`releaseRetries`). */
   retryHeld: boolean;
@@ -272,7 +275,7 @@ async function subscribe({ key, getCtx, apply, signal }: SourceArgs): Promise<()
   const live: Live = {
     key, ref, id: '', seq: 0, joining: [], apply, aborted: false,
     state: FIRST_STATE,
-    pending: new Set(), readAgain: false, retryHeld: false, wantPage: new Set(), staleAt: -1,
+    pending: new Set(), readAgain: false, totalsOwed: false, retryHeld: false, wantPage: new Set(), staleAt: -1,
     intern: createRowInterner(), running: null, voted: visibleOf(key), settled: [], reading: false, reconciled: false, pinsSeq: 0,
   };
   lives.set(key, live);
@@ -351,6 +354,7 @@ function fold(live: Live, event: TrackerBoardEvent): void {
     next.ended = true;
     live.pending.clear();
     live.readAgain = false;
+    live.totalsOwed = false;
     update(live, next);
     // A read still out reads a subscription that ended: no write waits on it.
     settleWaiters(live);
@@ -368,6 +372,8 @@ function fold(live: Live, event: TrackerBoardEvent): void {
   if (dashboards || event.read_again) next.dashboards = live.state.dashboards + 1;
   const ids = [...(event.changed ?? []), ...(event.removed ?? [])];
   if (event.read_again || event.truncated) live.readAgain = true;
+  // The Backlog's pace counts what the dashboards do.
+  if (event.recount) live.totalsOwed = true;
   // What the dashboards count changed with no row named (recount).
   if (ids.length > 0 || event.read_again || event.truncated || dashboards?.counts || event.recount) next.changes = live.state.changes + 1;
   releaseRetries(live, next);
@@ -427,7 +433,7 @@ function drain(live: Live): Promise<void> {
 /** Whether a full or a patch read is out or owed: what the board was
  * told that it does not show yet. */
 function readOwed(live: Live): boolean {
-  return live.reading || live.readAgain || (live.state.held !== null && live.pending.size > 0);
+  return live.reading || live.readAgain || (live.state.held !== null && (live.pending.size > 0 || live.totalsOwed));
 }
 
 function settleWaiters(live: Live): void {
@@ -468,7 +474,7 @@ async function run(live: Live): Promise<void> {
       if (live.readAgain) {
         live.reading = true;
         await readWhole(live).finally(() => { live.reading = false; });
-      } else if (held && live.pending.size > 0) {
+      } else if (held && (live.pending.size > 0 || live.totalsOwed)) {
         live.reading = true;
         await readPatch(live, held).finally(() => { live.reading = false; });
       } else {
@@ -500,6 +506,7 @@ async function readWhole(live: Live): Promise<void> {
   const seq = live.seq;
   // The read sees every change an event named before it began.
   live.readAgain = false;
+  live.totalsOwed = false;
   live.pending.clear();
   const { ref } = live;
   let view: BoardView;
@@ -550,6 +557,7 @@ async function readWhole(live: Live): Promise<void> {
 async function readPatch(live: Live, held: HeldBoard): Promise<void> {
   const ids = [...live.pending];
   live.pending.clear();
+  live.totalsOwed = false;
   const sections = heldSections(held);
   let patch;
   try {

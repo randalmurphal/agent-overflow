@@ -262,3 +262,18 @@ func (c *countingStore) ListConnectionProjectBoards(connectionID string) ([]stor
 	c.count("ListConnectionProjectBoards")
 	return c.Store.ListConnectionProjectBoards(connectionID)
 }
+
+func (c *countingStore) ListMirrorForgePeopleDue(root, now int64, viewer string) ([]store.MirrorForgePersonDue, bool, error) {
+	c.count("ListMirrorForgePeopleDue")
+	return c.Store.ListMirrorForgePeopleDue(root, now, viewer)
+}
+
+func (c *countingStore) SetMirrorForgePeople(root int64, read store.MirrorRead, matches []store.MirrorForgeMatch, catalog store.MirrorCatalog, checkedAt int64, boards []string) (bool, error) {
+	c.count("SetMirrorForgePeople")
+	return c.Store.SetMirrorForgePeople(root, read, matches, catalog, checkedAt, boards)
+}
+
+func (c *countingStore) AdvanceMirrorForgeCredit(root int64, boards []store.MirrorActsBoard, keys []string, all bool) ([]string, error) {
+	c.count("AdvanceMirrorForgeCredit")
+	return c.Store.AdvanceMirrorForgeCredit(root, boards, keys, all)
+}
