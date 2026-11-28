@@ -61,6 +61,7 @@ import {
   openRail,
   openTicket,
   railFields,
+  saveSetup,
   sectionPin,
   setupFile,
   storedSetup,
@@ -348,7 +349,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
       ...SETUP, projects: [...(SETUP.projects ?? []), { id: '10009', key: 'OPS', name: 'Ops' }], boardAlso: ['OPS'],
     });
     const file = await setupFile(harness, board.projectId);
-    await writeSetup(file, JSON.stringify({ start_work: { version: 1, projects: [{ tracker: 'jira', site: board.site, project: 'OPS', branch: 'ops/{key}' }] } }));
+    await saveSetup(harness, board.projectId, { start_work: [{ tracker: 'jira', site: board.site, project: 'OPS', branch: 'ops/{key}' }] });
     await harness.open(page);
     const pane = await openIssuesPane(page, compact);
     await expect(card(pane, '10101')).toBeVisible({ timeout: 30_000 });
@@ -413,7 +414,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     const board = await connectFakeJiraBoard(harness, 'settings-time', SETUP);
     const file = await setupFile(harness, board.projectId);
     const gone = { tracker: 'jira', site: board.site, key: 'WEB-404' };
-    await writeSetup(file, JSON.stringify({ time: { version: 1, time_off: gone } }));
+    await saveSetup(harness, board.projectId, { time: { time_off: gone } });
     await harness.open(page);
     const pane = await openIssuesPane(page, compact);
     await expect(card(pane, '10101')).toBeVisible({ timeout: 30_000 });
@@ -645,8 +646,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     test.setTimeout(150_000);
     const count = 400;
     const board = await connectFakeJiraBoard(harness, 'settings-fields-many', { ...SETUP, fields: [...SETUP.fields!, ...manyFields(count)] });
-    const file = await setupFile(harness, board.projectId);
-    await writeSetup(file, JSON.stringify({ ticket_pins: { version: 1, sites: [{ tracker: 'jira', site: board.site, fields: ['customfield_11007', 'customfield_11003'] }] } }));
+    await saveSetup(harness, board.projectId, { ticket_pins: [{ tracker: 'jira', site: board.site, fields: ['customfield_11007', 'customfield_11003'] }] });
     await harness.open(page);
     const pane = await openIssuesPane(page, compact);
     await expect(card(pane, '10101')).toBeVisible({ timeout: 30_000 });
@@ -723,13 +723,7 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
         return `${sites} site${sites === 1 ? '' : 's'}: RPCs ${rpcs}; tracker requests ${routes}`;
       };
 
-      // The pins saved as a page saves them: the computer holds the file
-      // it read, so a hand edit would show only at the next save.
-      const pin = async (ticketPins: Array<Record<string, unknown>>) => {
-        const held = await harness.rpc<{ revision: string }>('ProjectTrackerSetup', board.projectId);
-        const saved = await harness.rpc<{ saved: boolean }>('SetProjectTrackerSetup', board.projectId, held.revision, { ticket_pins: ticketPins });
-        expect(saved.saved).toBe(true);
-      };
+      const pin = (ticketPins: Array<Record<string, unknown>>) => saveSetup(harness, board.projectId, { ticket_pins: ticketPins });
       await pin([{ tracker: 'jira', site: board.site, fields: [EFFORT] }]);
       const one = await measure(1);
       await pin([{ tracker: 'jira', site: board.site, fields: [EFFORT] }, { tracker: 'jira', site: verified.site, fields: ['customfield_10060'] }]);

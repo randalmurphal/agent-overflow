@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"agent-overflow/internal/gitenv"
 	"agent-overflow/internal/olderrelease"
 )
 
@@ -18,7 +19,9 @@ func main() {
 		os.Exit(2)
 	}
 	tag := os.Args[1]
-	src, err := exec.Command("git", "show", tag+":internal/transport/methods_gen.go").Output()
+	show := exec.Command("git", "show", tag+":internal/transport/methods_gen.go")
+	show.Env = gitenv.NonInteractive(os.Environ())
+	src, err := show.Output()
 	if err != nil {
 		fail("read the method table of %s: %v", tag, err)
 	}

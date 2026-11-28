@@ -142,16 +142,18 @@ func (s *Store) ThreadProjects(threadIDs []string) ([]Project, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: read the projects of %d threads: %w", len(threadIDs), err)
 	}
-	defer rows.Close()
 	var out []Project
 	for rows.Next() {
 		p, err := scanProject(rows)
 		if err != nil {
-			return nil, fmt.Errorf("store: scan a thread's project: %w", err)
+			return nil, errors.Join(fmt.Errorf("store: scan a thread's project: %w", err), rows.Close())
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: read the projects of %d threads: %w", len(threadIDs), err)
+	}
+	return out, nil
 }
 
 // GetProjectByPath looks up a project by its filesystem path. Used during

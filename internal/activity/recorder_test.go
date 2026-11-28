@@ -3,6 +3,7 @@ package activity
 import (
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -11,7 +12,18 @@ import (
 	_ "time/tzdata"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/providerpath"
 )
+
+func TestMain(m *testing.M) { os.Exit(providerpath.Run(m)) }
+
+// report is r.Report with no tie, which then has nothing to fail with.
+func report(t *testing.T, r *Recorder, conn, thread string, phone bool, sinceInput time.Duration) {
+	t.Helper()
+	if err := r.Report(conn, thread, phone, sinceInput, nil); err != nil {
+		t.Errorf("report of %s on %s: %v", thread, conn, err)
+	}
+}
 
 // fakeStore holds the spans written, as the store would: an insert takes
 // the next ID.
@@ -167,11 +179,11 @@ func ms(t time.Time) int64 { return t.UnixMilli() }
 func TestReportsAreSpansWrittenAtAFlush(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	c.add(time.Minute)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	c.add(2 * time.Minute)
-	r.Report("c1", "t1", false, 0, nil) // 09:03
+	report(t, r, "c1", "t1", false, 0) // 09:03
 	if len(f.saves) != 0 {
 		t.Fatalf("a report wrote %v", f.saves)
 	}
@@ -182,7 +194,7 @@ func TestReportsAreSpansWrittenAtAFlush(t *testing.T) {
 		t.Fatalf("stored %+v\nwant %+v", got, want)
 	}
 	c.add(time.Minute)
-	r.Report("c1", "t2", true, 0, nil) // 09:05: t1 ends here
+	report(t, r, "c1", "t2", true, 0) // 09:05: t1 ends here
 	c.add(time.Minute)
 	r.Flush() // 09:06
 	want = []store.ActivitySpan{
@@ -211,12 +223,12 @@ func TestReportsAreSpansWrittenAtAFlush(t *testing.T) {
 func TestASpanEndsAtAGapAndAtADay(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	c.add(4 * time.Minute)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	for range 24 * 60 {
 		c.add(time.Minute)
-		r.Report("c1", "t1", false, 0, nil)
+		report(t, r, "c1", "t1", false, 0)
 	}
 	r.Flush()
 	got := f.stored()
@@ -235,15 +247,15 @@ func TestASpanEndsAtAGapAndAtADay(t *testing.T) {
 func TestTheEndOfAConnectionAndOfTheRecorder(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false, 0, nil)
-	r.Report("c2", "t2", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
+	report(t, r, "c2", "t2", false, 0)
 	c.add(time.Minute)
 	r.End("c1")
 	c.add(time.Minute)
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
 	}
-	r.Report("c3", "t3", false, 0, nil)
+	report(t, r, "c3", "t3", false, 0)
 	r.Flush()
 	want := []store.ActivitySpan{
 		{ID: 1, ThreadID: "t1", StartMs: ms(nine), EndMs: ms(nine.Add(time.Minute))},
@@ -261,9 +273,9 @@ func TestTheEndOfAConnectionAndOfTheRecorder(t *testing.T) {
 func TestAFailedFlushIsKeptAndSaid(t *testing.T) {
 	t.Parallel()
 	r, f, c, changes := recorder(t)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	c.add(time.Minute)
-	r.Report("c1", "t2", false, 0, nil)
+	report(t, r, "c1", "t2", false, 0)
 	f.fail = errors.New("disk I/O error")
 	c.add(time.Minute)
 	r.Flush()
@@ -277,7 +289,7 @@ func TestAFailedFlushIsKeptAndSaid(t *testing.T) {
 	// A Close whose last write fails says what was not recorded.
 	failing, ff, _, _ := recorder(t)
 	ff.fail = errors.New("disk I/O error")
-	failing.Report("c1", "t1", false, 0, nil)
+	report(t, failing, "c1", "t1", false, 0)
 	if err := failing.Close(); err == nil || !strings.Contains(err.Error(), "disk I/O error") || !strings.Contains(err.Error(), nine.Format(time.DateTime)) {
 		t.Fatalf("a Close whose write failed answers %v", err)
 	}
@@ -299,7 +311,7 @@ func TestAFailingRecorderIsBounded(t *testing.T) {
 	r, f, c, _ := recorder(t)
 	f.fail = errors.New("disk full")
 	for i := range maxUnwritten + 10 {
-		r.Report("c1", []string{"t1", "t2"}[i%2], false, 0, nil)
+		report(t, r, "c1", []string{"t1", "t2"}[i%2], false, 0)
 		c.add(time.Second)
 	}
 	r.Flush()
@@ -335,16 +347,16 @@ func TestDaysCountEachInstantOnce(t *testing.T) {
 	r, f, c, _ := recorder(t)
 	// c1 on t1 from 09:00; c2 (the phone) on t2 from 09:02 to 09:05: the
 	// overlap is t2's.
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	c.add(2 * time.Minute)
-	r.Report("c1", "t1", false, 0, nil)
-	r.Report("c2", "t2", true, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
+	report(t, r, "c2", "t2", true, 0)
 	c.add(3 * time.Minute)
 	r.End("c2")
-	r.Report("c1", "t1", false, 0, nil) // 09:05
+	report(t, r, "c1", "t1", false, 0) // 09:05
 	r.Flush()
 	c.add(time.Minute)
-	r.Report("c1", "t1", false, 0, nil) // 09:06, written to 09:05 so far
+	report(t, r, "c1", "t1", false, 0) // 09:06, written to 09:05 so far
 	f.days = []store.ThreadDay{{Day: "2026-11-24", ThreadID: "t1"}, {Day: "2026-11-24", ThreadID: "t3"}}
 	// 23:59 to 00:01 the next night, on no thread.
 	f.spans[99] = store.ActivitySpan{ID: 99, StartMs: ms(time.Date(2026, 11, 24, 23, 59, 0, 0, time.Local)),
@@ -385,7 +397,7 @@ func mapsEqual(a, b map[string]time.Duration) bool {
 func TestAFlushWritesOnlyWhatChanged(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	c.add(3 * time.Minute)
 	r.Flush() // written to 09:03, its last report plus the window, still open
 	c.add(10 * time.Minute)
@@ -394,11 +406,11 @@ func TestAFlushWritesOnlyWhatChanged(t *testing.T) {
 		t.Fatalf("closing a span written at its end wrote %d spans", n)
 	}
 
-	r.Report("c1", "t2", false, 0, nil)
+	report(t, r, "c1", "t2", false, 0)
 	f.during = func() {
 		f.during = nil
 		c.add(time.Minute)
-		r.Report("c1", "t3", false, 0, nil) // t2 closes while the flush writes
+		report(t, r, "c1", "t3", false, 0) // t2 closes while the flush writes
 	}
 	r.Flush()
 	r.Flush()
@@ -461,16 +473,16 @@ func TestASpanIsTiedToItsConnection(t *testing.T) {
 func TestAReportCountsItsInputsTime(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	c.add(time.Minute)
-	r.Report("c1", "t1", false, 10*time.Second, nil) // input at 09:00:50
+	report(t, r, "c1", "t1", false, 10*time.Second) // input at 09:00:50
 	c.add(10 * time.Minute)
 	r.Flush()
 	if got := f.stored(); len(got) != 1 || got[0].EndMs != ms(nine.Add(50*time.Second+Window)) {
 		t.Fatalf("stored %+v; want the span ended at the input at 09:00:50 plus the window", got)
 	}
-	r.Report("c2", "t2", false, time.Hour, nil)
-	r.Report("c3", "t3", false, -time.Hour, nil)
+	report(t, r, "c2", "t2", false, time.Hour)
+	report(t, r, "c3", "t3", false, -time.Hour)
 	r.mu.Lock()
 	_, c2 := r.open["c2"]
 	c3 := r.open["c3"].StartMs
@@ -486,7 +498,7 @@ func TestAReportCountsItsInputsTime(t *testing.T) {
 func TestTheRecorderRecordsWhileOn(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	r.Ran("t1", ms(nine))
 	c.add(2 * time.Minute)
 	turn(r, f, false)
@@ -494,14 +506,14 @@ func TestTheRecorderRecordsWhileOn(t *testing.T) {
 		t.Fatalf("turned off, stored %+v and %+v with %d open; want the two minutes before, t1's day and none open", got, f.days, len(r.open))
 	}
 	c.add(time.Minute)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	r.Ran("t2", ms(c.now()))
 	r.Flush()
 	if len(f.stored()) != 1 || len(f.days) != 1 || len(r.open) != 0 || len(r.ran) != 0 {
 		t.Fatalf("while off, recorded %+v, %+v", f.stored(), f.days)
 	}
 	turn(r, f, true)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	c.add(time.Minute)
 	r.Flush()
 	if got := f.stored(); len(got) != 2 || got[1].StartMs != ms(nine.Add(3*time.Minute)) {
@@ -612,9 +624,9 @@ func TestADayWhoseMidnightIsSkippedIsCounted(t *testing.T) {
 func TestAPastWeekCountsNothingOfToday(t *testing.T) {
 	t.Parallel()
 	r, _, c, _ := recorder(t)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	c.add(2 * time.Minute)
-	r.Report("c1", "t2", false, 0, nil)
+	report(t, r, "c1", "t2", false, 0)
 	c.add(time.Minute)
 	read := func(when string) {
 		days, err := r.Days("2026-11-16", "2026-11-22")
@@ -632,9 +644,9 @@ func TestAPastWeekCountsNothingOfToday(t *testing.T) {
 func TestAReadBesideAFlushMissesNothing(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	c.add(2 * time.Minute)
-	r.Report("c1", "t2", false, 0, nil) // t1's two minutes are closed, not written
+	report(t, r, "c1", "t2", false, 0) // t1's two minutes are closed, not written
 	f.duringRead = func() {
 		f.duringRead = nil
 		// A flush that can run now, after the store was read, does.
@@ -655,10 +667,10 @@ func TestAReadBesideAFlushMissesNothing(t *testing.T) {
 func TestAnExpiredInputRecordsNothing(t *testing.T) {
 	t.Parallel()
 	r, f, c, _ := recorder(t)
-	r.Report("c1", "t1", false, 0, nil)
+	report(t, r, "c1", "t1", false, 0)
 	c.add(10 * time.Minute)
 	// A page suspended since 09:00:30 sends its trailing report at 09:10.
-	r.Report("c1", "t1", false, 9*time.Minute+30*time.Second, nil)
+	report(t, r, "c1", "t1", false, 9*time.Minute+30*time.Second)
 	r.Flush()
 	if got := f.stored(); len(got) != 1 || got[0].EndMs != ms(nine.Add(Window)) {
 		t.Fatalf("stored %+v; want the 09:00 span alone, ended by the window", got)
@@ -697,9 +709,9 @@ func TestAChangeOfWhatIsShownSplitsTheTimeAtTheReport(t *testing.T) {
 			t.Parallel()
 			r, f, c, _ := recorder(t)
 			c.add(tc.wait)
-			r.Report("c1", "t1", false, 0, nil)
+			report(t, r, "c1", "t1", false, 0)
 			c.add(tc.wait2)
-			r.Report("c1", tc.thread, tc.phone, tc.age, nil)
+			report(t, r, "c1", tc.thread, tc.phone, tc.age)
 			c.add(10 * time.Minute)
 			r.Flush()
 			if got := f.stored(); !slices.Equal(got, tc.want) {
@@ -718,7 +730,7 @@ func TestAnInputFromBeforeRecordingTurnedOnRecordsNothing(t *testing.T) {
 	c.add(55 * time.Second)
 	turn(r, f, true) // 09:00:55
 	c.add(5 * time.Second)
-	r.Report("c1", "t1", false, 50*time.Second, nil) // the input at 09:00:10
+	report(t, r, "c1", "t1", false, 50*time.Second) // the input at 09:00:10
 	r.Ran("t1", ms(nine.Add(10*time.Second)))
 	r.Flush()
 	if got := f.stored(); len(got) != 0 || len(f.days) != 0 {

@@ -463,13 +463,12 @@ func TestAdvanceMirrorForgeCreditTellsTheBoardsWhoseCreditItMoves(t *testing.T) 
 	regroup := creditRegroup(t, creditRules(true))
 	boards := []MirrorActsBoard{{BoardID: "10", Regroup: regroup}, {BoardID: "11", Regroup: regroup}}
 	totals := func() [2]int64 { return [2]int64{boardTotals(t, s, root, "10"), boardTotals(t, s, root, "11")} }
-	was := totals()
 	// 10001 is done in the closed sprint, 10005 done now in the open one,
 	// 10006 a member of the closed sprint that is not done now (it may
 	// have been at the sprint's end), 10003 is not done and in no sprint,
 	// and no ticket is WEB-999.
 	mustWriteRowPage(t, s, root, webPage("10", sectionRow("10006", "10006", "1", 1, "20")), nil)
-	was = totals()
+	was := totals()
 	issues, err := s.AdvanceMirrorForgeCredit(root, boards, []string{"WEB-10001", "WEB-10003", "WEB-10005", "WEB-10006", "WEB-999"}, false)
 	if err != nil || !slices.Equal(issues, []string{"10001", "10005", "10006"}) || totals() != [2]int64{was[0] + 1, was[1]} {
 		t.Fatalf("issues %v, %v, totals %v -> %v; want 10001, 10005 and 10006 and board 10 advanced once", issues, err, was, totals())

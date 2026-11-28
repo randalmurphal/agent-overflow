@@ -189,7 +189,15 @@ func (f *fixture) fill() Fill {
 
 func (f *fixture) board() Board { return Board{Fill: f.fill(), Epics: true} }
 
-func evaluator() *Evaluator { return NewEvaluator(func() time.Time { return testNow }) }
+// evaluator is an evaluator at testNow whose limits of time end nothing.
+// How long a count takes is the machine's and what else it is running,
+// so a test of anything but those limits runs without them, and a test
+// of one sets it where nothing but its subject can reach it.
+func evaluator() *Evaluator {
+	e := NewEvaluator(func() time.Time { return testNow })
+	e.deadline, e.metric = time.Hour, time.Hour
+	return e
+}
 
 // sprintBoard is a points board with six closed sprints a week apart (s1
 // oldest, completed 36 days ago, s6 newest, 1 day ago) and an active one,

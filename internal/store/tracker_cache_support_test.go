@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -245,13 +246,12 @@ func TestEveryIssueColumnTheTotalsReadMovesThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
 	moved := map[string]bool{}
 	of := regexp.MustCompile(`(?i)AFTER UPDATE OF ([a-z_, ]+) ON tracker_cache_issues`)
 	for rows.Next() {
 		var text string
 		if err := rows.Scan(&text); err != nil {
-			t.Fatal(err)
+			t.Fatal(errors.Join(err, rows.Close()))
 		}
 		m := of.FindStringSubmatch(text)
 		if m == nil || !strings.Contains(text, "totals_revision = totals_revision + 1") {
@@ -261,7 +261,7 @@ func TestEveryIssueColumnTheTotalsReadMovesThem(t *testing.T) {
 			moved[strings.TrimSpace(column)] = true
 		}
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		t.Fatal(err)
 	}
 	for column := range read {

@@ -441,14 +441,6 @@ func minNonZero(a, b int64) int64 {
 	return a
 }
 
-// unixMilli is t in Unix ms, 0 for the zero time.
-func unixMilli(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.UnixMilli()
-}
-
 // fromUnixMilli is ms as a time, the zero time for 0.
 func fromUnixMilli(ms int64) time.Time {
 	if ms == 0 {

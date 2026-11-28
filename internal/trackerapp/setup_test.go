@@ -77,22 +77,29 @@ func (m *mirrorFixture) listIn(t *testing.T, id string) {
 	}
 }
 
-// subscribeShown subscribes project id to the fixture's board, showing
-// the backlog, waits for the board's first read when the mirror held
-// none, and hides it, so the pump of hidden handles ticks no more and
-// every later event is one a test caused.
+// subscribeShown subscribes project id to the fixture's board with the
+// backlog's first page, its handle hidden: a board the mirror holds is
+// never shown, so its pump reads nothing, and one it does not is shown
+// for its first read alone. Every later event is one a test caused.
 func (m *mirrorFixture) subscribeShown(t *testing.T, id string) BoardSubscription {
 	t.Helper()
-	sub, err := m.svc.SubscribeBoard(id, m.scope(), []Section{{Kind: SectionBacklog}}, true, untied)
+	sub, err := m.svc.SubscribeBoard(id, m.scope(), []Section{{Kind: SectionBacklog}}, false, untied)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sub.Loaded && loadedOrEnded(t, m, sub.Seq) {
+	if sub.Loaded {
+		return sub
+	}
+	show := func(visible bool) {
+		if err := m.svc.SetSubscriptionVisible(sub.ID, visible); err != nil {
+			t.Fatal(err)
+		}
+	}
+	show(true)
+	if loadedOrEnded(t, m, sub.Seq) {
 		t.Fatal("the board ended at its first read")
 	}
-	if err := m.svc.SetSubscriptionVisible(sub.ID, false); err != nil {
-		t.Fatal(err)
-	}
+	show(false)
 	return sub
 }
 
@@ -1103,10 +1110,10 @@ func TestProjectStatusesOfferEachPlaceItsStatuses(t *testing.T) {
 			switch b {
 			case "team-a":
 				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"a-doing"}}}
-				st.Catalog.Statuses = []tracker.Status{{ID: "a-doing", Name: "In Progress", Group: tracker.GroupInProgress}}
+				st.Statuses = []tracker.Status{{ID: "a-doing", Name: "In Progress", Group: tracker.GroupInProgress}}
 			case "team-b":
 				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"b-doing"}}}
-				st.Catalog.Statuses = []tracker.Status{{ID: "b-doing", Name: "In Progress", Group: tracker.GroupInProgress}}
+				st.Statuses = []tracker.Status{{ID: "b-doing", Name: "In Progress", Group: tracker.GroupInProgress}}
 			}
 			return st, nil
 		}
@@ -1176,7 +1183,7 @@ func TestProjectStatusesListAPlacesOwnBoardsStatusesFirst(t *testing.T) {
 			st := webStructure(b)
 			if b == "2" {
 				st.Columns = []tracker.Column{{Name: "Doing", Statuses: []tracker.StatusID{"ops-doing"}}}
-				st.Catalog.Statuses = []tracker.Status{{ID: "ops-doing", Name: "Working", Group: tracker.GroupInProgress}}
+				st.Statuses = []tracker.Status{{ID: "ops-doing", Name: "Working", Group: tracker.GroupInProgress}}
 			}
 			return st, nil
 		}

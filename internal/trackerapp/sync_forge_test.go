@@ -84,16 +84,15 @@ func (f *fixture) storeStrings(t *testing.T, query string) []string {
 	if err != nil {
 		t.Fatalf("%s: %v", query, err)
 	}
-	defer rows.Close()
 	var out []string
 	for rows.Next() {
 		var s string
 		if err := rows.Scan(&s); err != nil {
-			t.Fatal(err)
+			t.Fatal(errors.Join(err, rows.Close()))
 		}
 		out = append(out, s)
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		t.Fatal(err)
 	}
 	return out

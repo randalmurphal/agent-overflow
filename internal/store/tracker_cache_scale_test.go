@@ -73,11 +73,6 @@ func (c scaleCost) String() string {
 		c.statements, c.writes)
 }
 
-// median is the median of c's times.
-func (c scaleCost) median() time.Duration {
-	return slices.Sorted(slices.Values(c.times))[len(c.times)/2]
-}
-
 // measureScale runs op scaleReps times, rep 0 first, each after its
 // untimed and uncounted prepare (if any).
 func measureScale(t *testing.T, rec *mirrorWriteRecorder, prepare func(rep int), op func(rep int) error) scaleCost {

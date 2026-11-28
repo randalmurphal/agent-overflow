@@ -62,16 +62,18 @@ func forgeActs(t *testing.T, s *Store, ref ForgeHistoryRef, number int64) []stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
 	var out []string
 	for rows.Next() {
 		var kind int
 		var login, name string
 		var at int64
 		if err := rows.Scan(&kind, &login, &name, &at); err != nil {
-			t.Fatal(err)
+			t.Fatal(errors.Join(err, rows.Close()))
 		}
 		out = append(out, strings.TrimSpace(strings.Join([]string{[]string{"", "approved", "commented"}[kind], login, strconv.FormatInt(at, 10), name}, " ")))
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
 	}
 	return out
 }

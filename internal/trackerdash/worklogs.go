@@ -157,6 +157,7 @@ func (ev *evaluation) num(r Reducer, t taken) Num {
 // day before it.
 func (ev *evaluation) lacks(c cover) (unread int, old bool) {
 	switch c {
+	case coverNone:
 	case coverOld:
 		return 0, true
 	case coverWindow:

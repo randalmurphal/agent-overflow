@@ -92,6 +92,18 @@ export async function setupFile(harness: HarnessApp, projectId: string): Promise
   return join(dirname(dirname(connection.keyFilePath)), 'projects', slug, 'tracker.json');
 }
 
+/** Saves a project's tracker setup as a page saves it. A setup a test
+ * needs in place before its page opens goes through here, never through
+ * writeSetup: the computer holds the setup it read, and the sync of a
+ * listed board reads it with no page open, so a file written by hand
+ * after the board is listed shows only when that read came second. */
+export async function saveSetup(harness: HarnessApp, projectId: string, setup: Record<string, unknown>): Promise<void> {
+  const held = await harness.rpc<{ revision: string }>('ProjectTrackerSetup', projectId);
+  const saved = await harness.rpc<{ saved: boolean; refused?: string }>('SetProjectTrackerSetup', projectId, held.revision, setup);
+  expect(saved.saved, saved.refused).toBe(true);
+}
+
+/** Writes a project's setup file by hand, as an edit outside the app. */
 export async function writeSetup(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, text, { mode: 0o600 });

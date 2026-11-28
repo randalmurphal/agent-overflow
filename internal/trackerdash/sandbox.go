@@ -123,6 +123,9 @@ type session struct {
 	// from its plan on an empty session: what a filled session's prepare
 	// says it reads.
 	asked map[string]asks
+	// deadline is how long one metric may take from its prepare:
+	// metricDeadline unless the session's evaluator sets its own.
+	deadline time.Duration
 }
 
 // connector opens the snapshot on its zone's driver (driverFor).
@@ -138,7 +141,7 @@ func openSession(ctx context.Context, loc *time.Location) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &session{sink: &rowSink{}}
+	s := &session{sink: &rowSink{}, deadline: metricDeadline}
 	if s.key, err = openSink(s.sink); err != nil {
 		return nil, err
 	}
@@ -402,7 +405,7 @@ func (s *session) wrapped(p prepared) string {
 // (span.since), so a metric of the range reads only the rows it can
 // place, and :estimates (hostParams). It answers the rows k keeps.
 func (s *session) run(ctx context.Context, p prepared, now, since int64, estimates string, k kept) ([]contribution, error) {
-	ctx, cancel := context.WithTimeout(ctx, metricDeadline-p.took)
+	ctx, cancel := context.WithTimeout(ctx, s.deadline-p.took)
 	defer cancel()
 	s.sink.reset(p.cols, p.series, k)
 	defer s.sink.reset(columns{}, nil, kept{})
@@ -416,7 +419,7 @@ func (s *session) run(ctx context.Context, p prepared, now, since int64, estimat
 	case s.sink.err != nil:
 		return nil, s.sink.err
 	case ctx.Err() != nil && errors.Is(context.Cause(ctx), context.DeadlineExceeded):
-		return nil, &MetricError{Sentence: fmt.Sprintf("This widget's query ran past its limit of %v and was stopped. Pick a shorter range, or try again when this computer is less busy.", metricDeadline), Limit: true}
+		return nil, &MetricError{Sentence: fmt.Sprintf("This widget's query ran past its limit of %v and was stopped. Pick a shorter range, or try again when this computer is less busy.", s.deadline), Limit: true}
 	case err != nil:
 		return nil, sqlError(err, denied)
 	}

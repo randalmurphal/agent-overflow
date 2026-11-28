@@ -54,8 +54,10 @@ func refuse(code, sentence string, err error) *Refusal {
 type Evaluator struct {
 	slots chan struct{}
 	now   func() time.Time
-	// deadline is how long one evaluation may take, evaluationDeadline.
+	// deadline is how long one evaluation may take, evaluationDeadline,
+	// and metric how long one metric of it may, metricDeadline.
 	deadline time.Duration
+	metric   time.Duration
 
 	readsMu sync.Mutex
 	// reads is, by kind, what each built-in metric reads of the copy, from
@@ -65,7 +67,7 @@ type Evaluator struct {
 
 // NewEvaluator is an evaluator reading the time from now.
 func NewEvaluator(now func() time.Time) *Evaluator {
-	return &Evaluator{slots: make(chan struct{}, maxEvaluations), now: now, deadline: evaluationDeadline, reads: map[Kind]map[string]asks{}}
+	return &Evaluator{slots: make(chan struct{}, maxEvaluations), now: now, deadline: evaluationDeadline, metric: metricDeadline, reads: map[Kind]map[string]asks{}}
 }
 
 func (e *Evaluator) acquire(ctx context.Context) (func(), error) {
@@ -607,7 +609,7 @@ func (e *Evaluator) open(ctx context.Context, b Board, loc *time.Location, now t
 	if err != nil {
 		return nil, err
 	}
-	s.asked = asked
+	s.asked, s.deadline = asked, e.metric
 	ev := &evaluation{s: s, loc: loc, now: now.UnixMilli()}
 	if err := ev.fill(ctx, b, relations, now.In(loc).Format(time.DateOnly)); err != nil {
 		if closeErr := s.close(); closeErr != nil {
@@ -622,7 +624,7 @@ func (ev *evaluation) fill(ctx context.Context, b Board, relations []string, log
 	export, ok, err := b.Fill(ctx, ev.s.conn, relations, loggedThrough)
 	switch {
 	case err != nil:
-		return tooSlow(ctx, fmt.Errorf("copy the board for its dashboard: %w", err))
+		return fmt.Errorf("copy the board for its dashboard: %w", err)
 	case !ok:
 		return refuse("dashboard_board_gone", "this board is no longer on this computer's list of boards; pick another board", nil)
 	}
@@ -632,7 +634,7 @@ func (ev *evaluation) fill(ctx context.Context, b Board, relations []string, log
 	ev.export = export
 	ev.estimates = estimatesOf(export.EstimateUnit)
 	if err := ev.readBoard(ctx); err != nil || !slices.Contains(relations, "worklog_days") {
-		return tooSlow(ctx, err)
+		return err
 	}
 	first, err := time.Parse(time.DateOnly, export.LoggedFrom)
 	if err != nil {
@@ -640,21 +642,22 @@ func (ev *evaluation) fill(ctx context.Context, b Board, relations []string, log
 	}
 	ev.keptFrom = placed(first, ev.loc) - 1
 	ev.readDays = map[string]bool{}
-	return tooSlow(ctx, ev.query(ctx, `SELECT day FROM worklog_days`, func(r *sql.Rows) error {
+	return ev.query(ctx, `SELECT day FROM worklog_days`, func(r *sql.Rows) error {
 		var day string
 		err := r.Scan(&day)
 		ev.readDays[day] = true
 		return err
-	}))
+	})
 }
 
 // firstReadGap is the range before's gap while the board's first read has
 // not finished: what the copy holds of either range is partial.
 const firstReadGap = "This board's first read is not finished, so its numbers are not compared."
 
-// tooSlow is err, told as the evaluation's deadline when that ended it.
+// tooSlow is err, told as the evaluation's deadline when that ended it;
+// a refusal says its own reason.
 func tooSlow(ctx context.Context, err error) error {
-	if err != nil && errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+	if _, refused := errors.AsType[*Refusal](err); err != nil && !refused && errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
 		return refuse("dashboard_too_slow", fmt.Sprintf("counting this dashboard took longer than %v and stopped; pick a shorter range, or try again when this computer is less busy", evaluationDeadline), err)
 	}
 	return err
@@ -936,6 +939,9 @@ func (e *Evaluator) begin(ctx context.Context, b Board, r Request, counts func(w
 		ev, err = e.open(ctx, b, loc, o.now, relations, asked)
 	}
 	if err != nil {
+		// Whatever step the deadline ended, planning the read, opening
+		// the copy or filling it, says the evaluation was too slow.
+		err = tooSlow(ctx, err)
 		cancel()
 		release()
 		return nil, err

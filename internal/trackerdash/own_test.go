@@ -3,11 +3,13 @@ package trackerdash
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -99,17 +101,54 @@ func TestTryCountsOneWidgetOrRefusesIt(t *testing.T) {
 	}
 }
 
-// Proposals count after the dashboard's own widgets, in the time those
-// leave: a proposal the evaluation's deadline stops, and each after it,
-// says so in its own place, and the dashboard's widgets keep their
-// numbers.
+// runaway is a query that would run for hours: the sort of every
+// eight-way pairing of the board's tickets.
+const runaway = "SELECT a.id AS ticket, a.assignee AS bucket FROM tickets a, tickets b, tickets c, tickets d, tickets e, tickets f, tickets g, tickets h ORDER BY a.created_at * b.created_at * c.created_at * d.created_at * e.created_at * f.created_at * g.created_at * h.created_at LIMIT 1"
+
+// An evaluator counts under the package's limits of time, and its limit
+// for one metric is the one its widgets' queries run under: with no time
+// for a metric, a query that would answer at once fails its widget with
+// that limit's sentence, and the evaluation answers.
+func TestAWidgetsQueryRunsUnderItsEvaluatorsLimit(t *testing.T) {
+	t.Parallel()
+	if e := NewEvaluator(time.Now); e.deadline != evaluationDeadline || e.metric != metricDeadline {
+		t.Fatalf("a new evaluator's limits = %v an evaluation, %v a metric; want %v and %v", e.deadline, e.metric, evaluationDeadline, metricDeadline)
+	}
+	e := evaluator()
+	e.metric = 0
+	b := keeping(teamBoard().board())
+	b.Own.Proposals = nil
+	a := mustEvaluate(t, e, b, Request{Dashboard: "d_1", TimeZone: "UTC"})
+	want := "This widget's query ran past its limit of 0s and was stopped. Pick a shorter range, or try again when this computer is less busy."
+	if len(a.Widgets) != 1 || a.Widgets[0].Error != want {
+		t.Fatalf("the widget = %+v; want the limit's sentence", a.Widgets)
+	}
+}
+
+// boundProposals gives the evaluations e begins after b's first copy,
+// the proposals', d to count in. The dashboard's own evaluation, whose
+// time is the machine's, began before that copy and runs unbounded, so
+// only the proposals can run out.
+func boundProposals(e *Evaluator, b *Board, d time.Duration) {
+	fill := b.Fill
+	b.Fill = func(ctx context.Context, conn *sql.Conn, relations []string, through string) (store.MirrorExport, bool, error) {
+		e.deadline = d
+		return fill(ctx, conn, relations, through)
+	}
+}
+
+// Proposals count after the dashboard's own widgets, in an evaluation of
+// their own: a proposal the evaluation's deadline stops, and each after
+// it, says so in its own place, and the dashboard's widgets keep their
+// numbers. The proposal's query would run for hours, so any deadline
+// stops it.
 func TestProposalsPastTheDeadlineFailInTheirOwnPlace(t *testing.T) {
 	t.Parallel()
 	e := evaluator()
-	e.deadline = 300 * time.Millisecond
 	b := keeping(teamBoard().board())
+	boundProposals(e, &b, 300*time.Millisecond)
 	slow := b.Own.Metrics["w_2"]
-	slow.SQL = "SELECT a.id AS ticket, a.assignee AS bucket FROM tickets a, tickets b, tickets c, tickets d, tickets e, tickets f, tickets g, tickets h ORDER BY a.created_at * b.created_at * c.created_at * d.created_at * e.created_at * f.created_at * g.created_at * h.created_at LIMIT 1"
+	slow.SQL = runaway
 	after := b.Own.Metrics["w_2"]
 	after.Name = "w_3"
 	b.Own.Metrics = maps.Clone(b.Own.Metrics)
@@ -207,36 +246,82 @@ func TestACountAsksForWhatItsQueryReads(t *testing.T) {
 // The proposals count on a copy of the board of their own, after the
 // dashboard's is closed: a proposal whose copy reads what the dashboard
 // does not, and reaches the deadline copying it, says so in its own
-// place, and the dashboard's widgets keep their numbers.
+// place, and the dashboard's widgets keep their numbers. On the bubble's
+// clock a deadline ends only once everything waits, which is the copy.
 func TestAProposalsCopyPastTheDeadlineLeavesTheDashboardWhole(t *testing.T) {
 	t.Parallel()
-	e := evaluator()
-	e.deadline = 300 * time.Millisecond
-	b := keeping(teamBoard().board())
-	history := b.Own.Metrics["w_2"]
-	history.SQL, history.Bucket = "SELECT ticket AS ticket FROM changes", ""
-	b.Own.Metrics = maps.Clone(b.Own.Metrics)
-	b.Own.Metrics["w_2"] = history
-	fill := b.Fill
-	held := -1
-	b.Fill = func(ctx context.Context, conn *sql.Conn, relations []string, through string) (store.MirrorExport, bool, error) {
-		if slices.Contains(relations, "changes") {
-			held = len(e.slots)
-			<-ctx.Done()
-			return store.MirrorExport{}, false, ctx.Err()
+	synctest.Test(t, func(t *testing.T) {
+		e := evaluator()
+		e.deadline = evaluationDeadline
+		b := keeping(teamBoard().board())
+		history := b.Own.Metrics["w_2"]
+		history.SQL, history.Bucket = "SELECT ticket AS ticket FROM changes", ""
+		b.Own.Metrics = maps.Clone(b.Own.Metrics)
+		b.Own.Metrics["w_2"] = history
+		fill := b.Fill
+		held := -1
+		b.Fill = func(ctx context.Context, conn *sql.Conn, relations []string, through string) (store.MirrorExport, bool, error) {
+			if slices.Contains(relations, "changes") {
+				held = len(e.slots)
+				<-ctx.Done()
+				return store.MirrorExport{}, false, ctx.Err()
+			}
+			return fill(ctx, conn, relations, through)
 		}
-		return fill(ctx, conn, relations, through)
+		a := mustEvaluate(t, e, b, Request{Dashboard: "d_1", TimeZone: "UTC"})
+		if len(a.Widgets) != 2 || a.Widgets[0].Error != "" || len(a.Widgets[0].Buckets) != 2 {
+			t.Fatalf("the dashboard's widget = %+v", a.Widgets)
+		}
+		if !strings.Contains(a.Widgets[1].Error, "ran out before this widget was counted") {
+			t.Errorf("the proposal: %+v", a.Widgets[1])
+		}
+		if held != 1 {
+			t.Errorf("the proposals' copy was made holding %d counting slots, not its own one", held)
+		}
+	})
+}
+
+// An evaluation whose deadline ends before its board is copied, while its
+// read is planned or its copy opened, is refused as too slow, as one the
+// deadline ends later is, for a built-in dashboard and a kept one; and
+// the proposals of a dashboard that was counted, whose own evaluation the
+// deadline ends there, say they ran out.
+func TestADeadlineBeforeTheCopyIsToldAsTooSlow(t *testing.T) {
+	t.Parallel()
+	b := keeping(teamBoard().board())
+	for _, dashboard := range []string{builtinSprintsID, "d_1"} {
+		e := evaluator()
+		e.deadline = 0
+		_, err := e.Evaluate(context.Background(), b, Request{Dashboard: dashboard, TimeZone: "UTC"})
+		if r, ok := errors.AsType[*Refusal](err); !ok || r.Code != "dashboard_too_slow" {
+			t.Errorf("%s with no time to count: %v; want the too-slow refusal", dashboard, err)
+		}
 	}
+	e := evaluator()
+	boundProposals(e, &b, 0)
 	a := mustEvaluate(t, e, b, Request{Dashboard: "d_1", TimeZone: "UTC"})
-	if len(a.Widgets) != 2 || a.Widgets[0].Error != "" || len(a.Widgets[0].Buckets) != 2 {
-		t.Fatalf("the dashboard's widget = %+v", a.Widgets)
+	if len(a.Widgets) != 2 || a.Widgets[0].Error != "" || a.Widgets[1].Error != outOfTime.Sentence {
+		t.Fatalf("the dashboard and its proposal = %+v; want the dashboard counted and the proposal out of time", a.Widgets)
 	}
-	if !strings.Contains(a.Widgets[1].Error, "ran out before this widget was counted") {
-		t.Errorf("the proposal: %+v", a.Widgets[1])
-	}
-	if held != 1 {
-		t.Errorf("the proposals' copy was made holding %d counting slots, not its own one", held)
-	}
+}
+
+// A board that left the list while the deadline ended is told as gone,
+// not as too slow: a refusal says its own reason.
+func TestABoardGoneAtTheDeadlineIsToldAsGone(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		e := evaluator()
+		e.deadline = evaluationDeadline
+		b := keeping(teamBoard().board())
+		b.Fill = func(ctx context.Context, _ *sql.Conn, _ []string, _ string) (store.MirrorExport, bool, error) {
+			<-ctx.Done()
+			return store.MirrorExport{}, false, nil
+		}
+		_, err := e.Evaluate(context.Background(), b, Request{Dashboard: "d_1", TimeZone: "UTC"})
+		if r, ok := errors.AsType[*Refusal](err); !ok || r.Code != "dashboard_board_gone" {
+			t.Fatalf("a board gone at the deadline: %v; want the board-gone refusal", err)
+		}
+	})
 }
 
 // The list of dashboards and proposals counts nothing, so it answers

@@ -14,6 +14,7 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/forgefake"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // gitCalls records every git process the app starts while the test runs,
@@ -31,9 +32,7 @@ func gitCalls(t *testing.T) func() []string {
 	bin := t.TempDir()
 	log := filepath.Join(t.TempDir(), "git.log")
 	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\t%%s\\n' \"$(pwd -P)\" \"$*\" >> %q\nexec %q \"$@\"\n", log, real)
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mockexec.WriteIn(t, bin, "git", script)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return func() []string {
 		b, err := os.ReadFile(log)

@@ -158,17 +158,6 @@ func readHistoryErr(t *testing.T, f *historyTestForge, repo RepoReference, walk 
 	return h, err
 }
 
-// served counts every request the forge served.
-func (f *factsForge) served() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	n := 0
-	for _, c := range f.seen {
-		n += c
-	}
-	return n
-}
-
 // since is the requests by kind after before.
 func (f *factsForge) since(before map[string]int) map[string]int {
 	f.mu.Lock()

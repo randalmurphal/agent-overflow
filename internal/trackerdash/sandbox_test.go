@@ -283,7 +283,7 @@ func TestOneStatementReadsStringsAndComments(t *testing.T) {
 
 // The functions a session uses are registered once per zone and outlive
 // no session's state: across opens, counts, failed fills, refused gates
-// and closes in two zones, each zone's driver registered its four
+// and closes in two zones, each zone's driver registered its five
 // functions once and no session's sink is left in the registry. A key
 // that names no open session fails the statement that uses it. Not
 // parallel: it reads the registry, which parallel tests' sessions fill.
@@ -368,7 +368,7 @@ func TestSessionsLeaveNoRegistrationBehind(t *testing.T) {
 func TestZoneDriversStopAtTheirBound(t *testing.T) {
 	ctx := context.Background()
 	zoneDrivers.mu.Lock()
-	before := map[string]bool{}
+	before, registered := map[string]bool{}, zoneDrivers.registrations
 	for name := range zoneDrivers.m {
 		before[name] = true
 	}
@@ -379,9 +379,9 @@ func TestZoneDriversStopAtTheirBound(t *testing.T) {
 		for name := range zoneDrivers.m {
 			if !before[name] {
 				delete(zoneDrivers.m, name)
-				zoneDrivers.registrations -= 4
 			}
 		}
+		zoneDrivers.registrations = registered
 	})
 	held := func() int {
 		zoneDrivers.mu.Lock()
