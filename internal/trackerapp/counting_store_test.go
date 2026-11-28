@@ -273,6 +273,16 @@ func (c *countingStore) SetMirrorForgePeople(root int64, read store.MirrorRead, 
 	return c.Store.SetMirrorForgePeople(root, read, matches, catalog, checkedAt, boards)
 }
 
+func (c *countingStore) SetTrackerForgePairing(p store.TrackerForgePairing, boards []string) (bool, error) {
+	c.count("SetTrackerForgePairing")
+	return c.Store.SetTrackerForgePairing(p, boards)
+}
+
+func (c *countingStore) DeleteTrackerForgePairing(connectionID, host, login string, boards []string) (bool, error) {
+	c.count("DeleteTrackerForgePairing")
+	return c.Store.DeleteTrackerForgePairing(connectionID, host, login, boards)
+}
+
 func (c *countingStore) AdvanceMirrorForgeCredit(root int64, boards []store.MirrorActsBoard, keys []string, all bool) ([]string, error) {
 	c.count("AdvanceMirrorForgeCredit")
 	return c.Store.AdvanceMirrorForgeCredit(root, boards, keys, all)

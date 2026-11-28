@@ -166,6 +166,14 @@ type Provider interface {
 	// Capabilities.Evidence it fails wrapping ErrUnsupported before any
 	// request.
 	PersonNamed(ctx context.Context, name string) (person User, ok bool, err error)
+	// People are the people of the tracker whose name or email starts
+	// with text, for picking who a forge account is: any person of the
+	// site, or, when the tracker names none of them (which it also does
+	// for a credential that may not browse its users), those who may be
+	// assigned in any of projects. Empty text returns none with More
+	// set. Without Capabilities.Evidence it fails wrapping ErrUnsupported
+	// before any request.
+	People(ctx context.Context, projects []ProjectID, text string) (UserList, error)
 
 	// Detail is one issue's detail.
 	Detail(ctx context.Context, issue IssueID) (Detail, error)

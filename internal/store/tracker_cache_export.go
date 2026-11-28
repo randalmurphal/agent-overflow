@@ -405,6 +405,13 @@ var mirrorExportFills = append([]mirrorExportFill{
 	{relation: "credit", name: "people credit names", needs: []string{"people"}, sql: `INSERT OR IGNORE INTO main.people(id, name)
 	  SELECT u.user_id, u.name FROM (SELECT DISTINCT person AS id FROM main.credit WHERE person IS NOT NULL) x
 	  CROSS JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = x.id`},
+	// A person a forge account is paired with whom the mirror has not
+	// read is named as picked.
+	{relation: "credit", name: "people paired names", needs: []string{"people"}, sql: `INSERT OR IGNORE INTO main.people(id, name)
+	  SELECT p.person, max(p.person_name) FROM tracker_forge_pairings p
+	  WHERE p.connection_id = ` + mirrorRootConnectionSQL + ` AND p.person <> '' AND p.person_name <> ''
+	    AND p.person IN (SELECT person FROM main.credit WHERE person IS NOT NULL)
+	  GROUP BY p.person`},
 }, slices.Concat(mirrorExportIntervalFills(), mirrorExportRelationFills())...)
 
 // mirrorExportAlways are the relations every export fills: what a range

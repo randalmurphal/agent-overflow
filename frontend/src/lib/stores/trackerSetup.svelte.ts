@@ -47,14 +47,23 @@
 // on the event and on reconnect: which tickets are support and the hours
 // a point are the setup's, read from the board's copy on its computer.
 //
+// The Points and credit page's forge accounts of a connection
+// (`TrackerForgeAccounts`) are held by the computer and the connection,
+// read on hold, on reconnect and on Read again: this computer's copy of
+// who each account is, which its own background reads move and no event
+// tells a page. A person's word on an account (`SetTrackerForgeAccount`)
+// answers the list as it then is; the words of a connection are sent one
+// at a time, and a read asked for meanwhile runs once they have settled,
+// so no answer older than a word lands over it.
+//
 // The Time page's check of its tickets (`TrackerLookup`) is held by the
 // connection asked and the keys, one read for every ticket of a
 // connection, read on hold, on reconnect and on Try again: the page's
 // computer's tracker read, which a new ticket makes a new read of.
 
-import { SvelteMap } from 'svelte/reactivity';
-import type { AgentRules, BoardPace, CreditRules, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace, SupportView, TimeTicket } from '../../../bindings/agent-overflow/internal/trackerapp/models';
-import { ProjectTrackerPace, ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, ProjectTrackerSupport, SetProjectTrackerSetup, TrackerLookup } from './bindings';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import type { AgentRules, BoardPace, CreditRules, ForgeAccountInput, ForgeAccountsView, LookupView, PinField, ProjectStatuses, Setup, SetupView, SiteStatuses, StartPlace, SupportView, TimeTicket, UserListView } from '../../../bindings/agent-overflow/internal/trackerapp/models';
+import { ProjectTrackerPace, ProjectTrackerSetup, ProjectTrackerSiteFields, ProjectTrackerStatuses, ProjectTrackerSupport, SetProjectTrackerSetup, SetTrackerForgeAccount, TrackerForgeAccounts, TrackerLookup, TrackerPeople } from './bindings';
 import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend } from '../transport/entityIndex';
@@ -219,7 +228,70 @@ class HeldTicketCheck extends HeldRead<LookupView> {
   }
 }
 
+class HeldForgeAccounts extends HeldRead<ForgeAccountsView> {
+  /** The accounts whose word is being sent, by `forgeAccountKey`. */
+  readonly saving = new SvelteSet<string>();
+  /** A read is out. */
+  busy = $state(false);
+  private words: Promise<void> = Promise.resolve();
+  private readOwed = false;
+
+  constructor(project: string, readonly on: BackendKey, readonly connection: string) {
+    super(project);
+  }
+
+  override backend(): BackendKey {
+    return this.on;
+  }
+
+  protected call(): Promise<ForgeAccountsView> {
+    return withBackendTarget(this.on, () => TrackerForgeAccounts(this.connection));
+  }
+
+  override read(): Promise<void> {
+    if (this.saving.size > 0) {
+      this.readOwed = true;
+      return this.words;
+    }
+    this.busy = true;
+    const reading = super.read();
+    void reading.finally(() => {
+      if (this.reading === null) this.busy = false;
+    });
+    return reading;
+  }
+
+  say(word: ForgeAccountInput): Promise<void> {
+    const key = forgeAccountKey(word.host, word.login);
+    if (this.saving.has(key)) return Promise.reject(new Error('This account is still saving; try again once it has saved.'));
+    this.saving.add(key);
+    const sent = this.words.then(() => this.send(word));
+    this.words = sent.then(() => undefined, () => undefined).finally(() => {
+      this.saving.delete(key);
+      if (this.saving.size === 0 && this.readOwed) {
+        this.readOwed = false;
+        void this.read();
+      }
+    });
+    return sent;
+  }
+
+  private async send(word: ForgeAccountInput): Promise<void> {
+    // A read out when the word is sent does not land over its answer.
+    const generation = ++this.generation;
+    try {
+      const view = await withBackendTarget(this.on, () => SetTrackerForgeAccount(this.connection, word));
+      if (generation === this.generation) this.settle(view);
+    } catch (err) {
+      // The computer may hold the word or not: read what it holds.
+      this.readOwed = true;
+      throw err;
+    }
+  }
+}
+
 const setups = new SvelteMap<string, HeldSetup>();
+const forgeAccounts = new SvelteMap<string, HeldForgeAccounts>();
 const statuses = new SvelteMap<string, HeldStatuses>();
 const paces = new SvelteMap<string, HeldPace>();
 const fields = new SvelteMap<string, HeldSiteFields>();
@@ -620,6 +692,65 @@ export function refreshTrackerTicketCheck(project: string, backend: BackendKey, 
   return checks.get(ticketCheckKey(project, backend, connection, keys))?.read() ?? Promise.resolve();
 }
 
+/** A forge account of a connection: its login on its host. */
+export function forgeAccountKey(host: string, login: string): string {
+  return `${host}\u0000${login}`;
+}
+
+function forgeAccountsKey(backend: BackendKey, connection: string): string {
+  return `${backend}\u0000${connection}`;
+}
+
+/** Holds the forge accounts of `connection` on computer `backend` while
+ * the caller shows them for `project`, reading them now; the returned
+ * function releases the hold. */
+export function acquireForgeAccounts(project: string, backend: BackendKey, connection: string): () => void {
+  return acquire(forgeAccounts, forgeAccountsKey(backend, connection), () => new HeldForgeAccounts(project, backend, connection));
+}
+
+/** A connection's forge accounts as the Points and credit page shows
+ * them. */
+export interface ForgeAccountsState {
+  /** The accounts as last read or answered; null until a read answers. */
+  readonly view: ForgeAccountsView | null;
+  readonly error: unknown;
+  /** A read is out. */
+  readonly reading: boolean;
+  /** The accounts whose word is being sent, by `forgeAccountKey`. */
+  readonly saving: ReadonlySet<string>;
+}
+
+const NO_SAVING: ReadonlySet<string> = new Set();
+const NO_FORGE_ACCOUNTS: ForgeAccountsState = { view: null, error: null, reading: false, saving: NO_SAVING };
+
+/** The forge accounts of `connection` on `backend` as held. Reactive. */
+export function forgeAccountsOf(backend: BackendKey, connection: string): ForgeAccountsState {
+  const entry = forgeAccounts.get(forgeAccountsKey(backend, connection));
+  return entry ? { view: entry.value, error: entry.error, reading: entry.busy, saving: entry.saving } : NO_FORGE_ACCOUNTS;
+}
+
+/** Reads the forge accounts of `connection` again if a surface holds
+ * them. */
+export function refreshForgeAccounts(backend: BackendKey, connection: string): Promise<void> {
+  return forgeAccounts.get(forgeAccountsKey(backend, connection))?.read() ?? Promise.resolve();
+}
+
+/** Sends a person's word on who a forge account of `connection` is; the
+ * held accounts then show what the computer answered. Rejects with the
+ * computer's refusal or failure, and when no surface holds the accounts. */
+export function sayForgeAccount(backend: BackendKey, connection: string, word: ForgeAccountInput): Promise<void> {
+  const entry = forgeAccounts.get(forgeAccountsKey(backend, connection));
+  if (!entry) return Promise.reject(new Error('The forge accounts are no longer shown; open the page again.'));
+  return entry.say(word);
+}
+
+/** The people of `connection`'s tracker `text` matches, for picking who
+ * a forge account is; `projects` are the tracker projects whose
+ * assignable people answer when the site's own search names none. */
+export function trackerPeople(backend: BackendKey, connection: string, projects: readonly string[], text: string): Promise<UserListView> {
+  return withBackendTarget(backend, () => TrackerPeople(connection, [...projects], text));
+}
+
 /** Reads again every held entry of a project on `backend`, or of a project
  * whose computer this window does not know. A setup being saved is read
  * once its save settles: a read sent beside the save may answer the file
@@ -643,7 +774,7 @@ onTrackerSetupUpdated(readAgainOn);
 onBackendStatusChange((backend, status) => {
   if (status.status !== 'connected') return;
   readAgainOn(backend);
-  for (const entry of [...fields.values(), ...checks.values()]) {
+  for (const entry of [...fields.values(), ...checks.values(), ...forgeAccounts.values()]) {
     const owner = entry.backend();
     if (owner === undefined || owner === backend) void entry.read();
   }
@@ -656,4 +787,5 @@ export function resetTrackerSetupForTest(): void {
   fields.clear();
   checks.clear();
   supports.clear();
+  forgeAccounts.clear();
 }

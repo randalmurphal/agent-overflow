@@ -364,10 +364,11 @@ func mirrorCreditRowsSQL(p mirrorCreditParams, weeks bool) string {
 	        WHERE c.root_id = f.root_id AND c.issue_id = f.issue_id AND c.gen = f.history_gen AND c.kind = 4 AND ` + person + ` IN (c.from_value, c.to_value)))`
 	}
 	acted := `a.root_id = CAST(?1 AS INTEGER) AND a.issue_id = f.issue_id AND a.person <> '' AND a.at <= f.hi`
-	// forge is whether f's rule counts an act the forge holds, and matched
-	// that forge act a is of a tracker person (m.person).
+	// forge is whether f's rule counts an act the forge holds, who the
+	// tracker person forge act a is of, and matched that it is of one.
 	forge := `(f.rule_commented = 1 OR f.rule_approved = 1)`
-	matched := `coalesce(m.person, '') <> ''`
+	who := mirrorCreditForgePersonSQL
+	matched := who + ` <> ''`
 	rule := `f.sprint_id, f.moment, f.issue_id, f.points, f.rule_share, f.rule_need, f.rule_commented, f.rule_approved, f.rule_logged`
 	rows := `SELECT f.sprint_id, f.moment, f.issue_id, 'finished', f.person, iif(f.done IS NULL OR f.moment IS NULL AND f.sprint_id IS NULL, NULL, coalesce(f.points, 0)),
 	    iif(f.done IS NULL OR f.moment IS NULL AND f.sprint_id IS NULL, NULL, 1), f.points, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
@@ -380,7 +381,7 @@ func mirrorCreditRowsSQL(p mirrorCreditParams, weeks bool) string {
 	    coalesce(f.unread, f.nobody), NULL
 	  FROM cr_f f WHERE f.done = 1 AND (f.unread IS NOT NULL
 	    OR f.nobody IS NOT NULL AND (EXISTS (SELECT 1 FROM tracker_cache_issue_acts a WHERE ` + acted + ` AND ` + held("a.person") + `)
-	      OR ` + forge + ` AND EXISTS (SELECT 1 FROM ` + mirrorCreditForgeActsSQL + ` AND ` + matched + ` AND ` + held("m.person") + `)))
+	      OR ` + forge + ` AND EXISTS (SELECT 1 FROM ` + mirrorCreditForgeActsSQL + ` AND ` + matched + ` AND ` + held(who) + `)))
 	  UNION ALL
 	  SELECT g.sprint_id, g.moment, g.issue_id, 'review', g.person, iif(g.qualified, coalesce(g.points, 0) * g.rule_share / 100.0, 0),
 	    iif(g.qualified, g.rule_share / 100.0, 0), g.points, g.rule_share, g.rule_need, ` + kinds("g") + `,
@@ -397,11 +398,11 @@ func mirrorCreditRowsSQL(p mirrorCreditParams, weeks bool) string {
 	      CROSS JOIN tracker_cache_issue_acts a ON a.root_id = CAST(?1 AS INTEGER) AND a.issue_id = f.issue_id
 	      WHERE f.done = 1 AND f.unread IS NULL AND a.person <> '' AND a.person IS NOT f.person AND a.at <= f.hi AND (f.nobody IS NULL OR NOT ` + held("a.person") + `)
 	      UNION ALL
-	      SELECT ` + rule + `, iif(` + matched + `, m.person, NULL), iif(` + matched + `, NULL, s.host), iif(` + matched + `, NULL, a.login), a.name,
+	      SELECT ` + rule + `, nullif(` + who + `, ''), iif(` + matched + `, NULL, s.host), iif(` + matched + `, NULL, a.login), a.name,
 	        a.kind = ` + strconv.Itoa(ForgeActCommented) + `, a.kind = ` + strconv.Itoa(ForgeActApproved) + `, 0
 	      FROM cr_f f
 	      CROSS JOIN ` + mirrorCreditForgeActsSQL + ` AND f.done = 1 AND f.unread IS NULL AND ` + forge + `
-	        AND (NOT ` + matched + ` OR m.person IS NOT f.person AND (f.nobody IS NULL OR NOT ` + held("m.person") + `))) x
+	        AND ` + who + ` IS NOT f.person AND (f.nobody IS NULL OR NOT ` + matched + ` OR NOT ` + held(who) + `)) x
 	    GROUP BY x.sprint_id, x.issue_id, x.person, x.host, x.login) d) g`
 	if p.support == "" {
 		return rows

@@ -32,7 +32,9 @@
 // fields once, with one site and with two, its RPCs and tracker requests
 // recorded as an annotation; a connected browser's changes on each page
 // saved, followed by this window's page, and a paired computer's project
-// set on that computer.
+// set on that computer. The Points and credit page's Forge accounts list
+// read from its computer, an account said to be no person and then paired
+// with a person found in the tracker, and returned to its name match.
 
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -71,6 +73,13 @@ import { showColumn, workOf } from './ticket-work-flow.js';
 import { TRACKER_TOOLS_SERVER, expandActivityRuns } from './tracker-agent-tools-helpers.js';
 import { JIRA_ACCOUNT, connectFakeJira, connectFakeJiraBoard, connectFakeLinearBoard, openIssuesPane, press, seedFakeJira, trackerRequests } from './tracker-helpers.js';
 import { recordPageWire } from './wire-cost-helpers.js';
+
+/** What `TrackerForgeAccounts` and `SetTrackerForgeAccount` answer
+ * (trackerapp.ForgeAccountsView). */
+interface ForgeAccounts {
+  accounts: Array<{ host: string; login: string; name?: string; how: string; person?: { id: string; name?: string } }>;
+  more?: boolean;
+}
 
 export interface SettingsPagesSurface {
   compact: boolean;
@@ -523,6 +532,41 @@ export function registerIssuesSettingsPagesFlow({ compact }: SettingsPagesSurfac
     await closeSettings(page, compact);
     await openIssuesPane(page, compact);
     await expect(numbers).toContainText('1 without an estimate', { timeout: 15_000 });
+  });
+
+  test('the Forge accounts list shows who each account is as its computer stores it, and pairs one with a person found in the tracker', async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    const { board } = await openBoard(harness, page, 'settings-forge-accounts', compact, { ...SETUP, estimation: EFFORT });
+    const screen = await pointsPage(page, compact);
+    await expect(screen.getByTestId('tracker-forge-accounts')).toHaveCount(0, { timeout: 15_000 });
+    await press(rule(screen, 'Count credit'), compact);
+    // No forge history is read here, so no account has acted.
+    await expect(screen.getByTestId('tracker-forge-accounts-none')).toBeVisible({ timeout: 15_000 });
+
+    // An account a person set stays listed though it acted on nothing.
+    const bot = { host: 'github.com', login: 'ci-bot', who: 'not_a_person' };
+    const stored = await harness.rpc<ForgeAccounts>('SetTrackerForgeAccount', board.connectionId, bot);
+    expect(stored.accounts).toEqual([{ host: 'github.com', login: 'ci-bot', how: 'not_a_person' }]);
+    await press(screen.getByTestId('tracker-forge-accounts-refresh'), compact);
+    const row = screen.locator('[data-testid="tracker-forge-account"][data-login="ci-bot"]');
+    await expect(row.getByTestId('tracker-forge-account-who')).toHaveText('Not a person, as set here. Its reviews count for nobody.', { timeout: 15_000 });
+
+    // The people are the tracker's, found by the text typed.
+    await press(row.getByTestId('tracker-forge-account-pick'), compact);
+    await page.getByTestId('ticket-picker-find').pressSequentially('User');
+    await press(page.getByTestId('ticket-picker-item').filter({ hasText: 'User 1' }), compact);
+    await expect(row.getByTestId('tracker-forge-account-who')).toHaveText('User 1, as set here', { timeout: 15_000 });
+    await expect(page.getByTestId('ticket-picker-find')).toHaveCount(0);
+    const paired = await harness.rpc<ForgeAccounts>('TrackerForgeAccounts', board.connectionId);
+    expect(paired.accounts).toEqual([{ host: 'github.com', login: 'ci-bot', how: 'paired', person: { id: 'acc-user1', name: 'User 1' } }]);
+    await expect(row).toBeInViewport();
+    const fits = await row.evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+    expect(fits, 'the row and its actions fit the page').toBe(true);
+
+    // By name again: with no word and no act, the account is not listed.
+    await press(row.getByTestId('tracker-forge-account-by-name'), compact);
+    await expect(screen.getByTestId('tracker-forge-accounts-none')).toBeVisible({ timeout: 15_000 });
+    expect((await harness.rpc<ForgeAccounts>('TrackerForgeAccounts', board.connectionId)).accounts).toEqual([]);
   });
 
   test('a Linear-only project\'s Fields page says it has nothing to pin', async ({ harness, page }) => {

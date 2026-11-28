@@ -841,7 +841,13 @@ in the built-in dashboard's pace and the Backlog's.
   own forge token belongs to is the connection's person, and any other
   is the one person in the tracker with the name the forge shows. An
   account that matches nobody is listed under its own heading with what
-  it did and counts nothing. A ticket whose repository is not read back
+  it did and counts nothing. Settings > Issues > Points and credit lists
+  the forge accounts that reviewed, each with the person it counts for
+  and how that is known; there you say who an account is by picking a
+  person from the tracker, say that it is not a person (a bot, whose
+  reviews then count for nobody and are not listed), or return it to
+  its name match. What you say holds for that tracker connection on
+  that computer, for every project that uses it. A ticket whose repository is not read back
   to its creation yet, or cannot be read, is listed and not counted,
   with the repository and the reason; a rule that counts neither
   comments nor approvals waits for no repository.
@@ -1041,8 +1047,18 @@ the worklog's description once posted.
   board with no estimates, every ticket the pick names is. In a project
   that counts tickets the rules say tickets in place of points, and a
   project with a board estimated in time is told that board's hours count
-  as they are. A credit section a newer version saved is said in place
-  of the group's rules and kept.
+  as they are. While a rule counts comments or approvals, Forge accounts
+  lists, for each tracker connection of the project's Jira boards, the
+  GitHub and GitLab accounts that approved or commented on a pull
+  request of the boards' tickets: its name and login, the person it
+  counts for, and whether that was set here, is the account the
+  computer reads the forge as, was matched by name, is nobody, or is
+  not matched yet. Each account offers picking a person, found in the
+  tracker by typing a name, Not a person, and, once set, Match by name.
+  The list shows what the computer stored; a change that failed says so
+  under its account, and Read again reads the list again. A credit
+  section a newer version saved is said in place of the group's rules
+  and kept.
 - Time names the ticket meetings go on, "Meetings that are not about one
   ticket", and the ticket time off goes on, each found by key or title on
   the connections of the project's Jira boards, shown with its title and

@@ -110,6 +110,10 @@ func (o oneCredential) PersonNamed(ctx context.Context, name string) (User, bool
 	return n.person, n.ok, err
 }
 
+func (o oneCredential) People(ctx context.Context, projects []ProjectID, text string) (UserList, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) (UserList, error) { return o.p.People(ctx, projects, text) })
+}
+
 func (o oneCredential) Detail(ctx context.Context, issue IssueID) (Detail, error) {
 	return trackerapi.Walk(ctx, func(ctx context.Context) (Detail, error) { return o.p.Detail(ctx, issue) })
 }

@@ -213,6 +213,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		},
 		func() error { _, _, err := s.GetMirrorRoot(jira.ID); return err },
 		func() error { _, _, err := s.ListMirrorForgePeopleDue(root, testNow, "acc-user1"); return err },
+		func() error { _, _, err := s.ListMirrorForgeAccounts(jira.ID); return err },
 		func() error { _, err := s.MirrorForgeFailures(root); return err },
 		func() error { _, _, err := s.GetMirrorSync(root, "10", testNow); return err },
 		func() error { _, _, err := s.GetMirrorSync(root, "", testNow); return err },

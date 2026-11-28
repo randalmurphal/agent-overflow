@@ -1,9 +1,13 @@
 package store
 
 import (
+	"cmp"
 	"database/sql"
+	"errors"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -42,20 +46,15 @@ type MirrorForgeMatch struct {
 	Person string
 }
 
-// mirrorForgePeopleDueSQL lists the forge accounts of root ?1 whose match
-// is due: the ones with an act on a pull request the root's credit reads
-// (cr_src, cr_heads) that names the key of an issue the mirror holds,
-// with no match, a match made for another name than the forge gives now,
-// one checked before ?2 (a wall time), or, for the account whose token
-// reads a source (viewer), a match to another person than ?3, the
-// connection's own account ("" for none). It walks each source's keys by
+// mirrorForgeAccountsSQL is the forge accounts root ?1's credit reads, as
+// a FROM item g of (host, login, name, own): the ones with an act on a
+// pull request the root's credit reads (cr_src, cr_heads) that names the
+// key of an issue the mirror holds, each with the forge's name for it and
+// whether its token reads a source (own). It walks each source's keys by
 // the source and probes the issue of each by its key, so it costs the
 // keys of the connection's repositories and their acts, whatever the
-// mirror holds, and reads each account's match once (g, then m);
-// never-matched accounts come first, then the longest unchecked.
-var mirrorForgePeopleDueSQL = `WITH ` + mirrorCreditSourcesSQL(mirrorCreditParams{rules: "1"}) + `
-	SELECT g.host, g.login, g.name, ?3 <> '' AND g.own AS own
-	FROM (SELECT s.host, a.login, max(a.name) AS name, max(s.viewer = a.login) AS own
+// mirror holds.
+const mirrorForgeAccountsSQL = `(SELECT s.host, a.login, max(a.name) AS name, max(s.viewer = a.login) AS own
 	  FROM cr_src s
 	  CROSS JOIN forge_history_keys k ON k.source_id = s.id
 	  CROSS JOIN forge_history_acts a ON a.source_id = k.source_id AND a.number = k.number
@@ -63,9 +62,22 @@ var mirrorForgePeopleDueSQL = `WITH ` + mirrorCreditSourcesSQL(mirrorCreditParam
 	    AND (s.every OR EXISTS (SELECT 1 FROM forge_history_prs pr
 	        CROSS JOIN cr_heads h ON h.source_id = pr.source_id AND h.head = pr.head_repo
 	       WHERE pr.source_id = k.source_id AND pr.number = k.number))
-	  GROUP BY s.host, a.login) g
+	  GROUP BY s.host, a.login) g`
+
+// mirrorForgePeopleDueSQL lists the forge accounts of root ?1
+// (mirrorForgeAccountsSQL) whose match is due: the ones no person paired
+// (tracker_forge_pairings) with no match, a match made for another name
+// than the forge gives now, one checked before ?2 (a wall time), or, for
+// the account whose token reads a source, a match to another person than
+// ?3, the connection's own account ("" for none). Each account's match
+// is read once; never-matched accounts come first, then the longest
+// unchecked.
+var mirrorForgePeopleDueSQL = `WITH ` + mirrorCreditSourcesSQL(mirrorCreditParams{rules: "1"}) + `
+	SELECT g.host, g.login, g.name, ?3 <> '' AND g.own AS own
+	FROM ` + mirrorForgeAccountsSQL + `
 	LEFT JOIN tracker_cache_forge_people m ON m.root_id = CAST(?1 AS INTEGER) AND m.host = g.host AND m.login = g.login
-	WHERE m.checked_at IS NULL OR m.name IS NOT g.name OR m.checked_at < CAST(?2 AS INTEGER) OR ?3 <> '' AND g.own AND m.person IS NOT ?3
+	WHERE (m.checked_at IS NULL OR m.name IS NOT g.name OR m.checked_at < CAST(?2 AS INTEGER) OR ?3 <> '' AND g.own AND m.person IS NOT ?3)
+	  AND NOT EXISTS (SELECT 1 FROM tracker_forge_pairings p WHERE p.connection_id = ` + mirrorRootConnectionSQL + ` AND p.host = g.host AND p.login = g.login)
 	ORDER BY m.checked_at IS NOT NULL, m.checked_at, g.host, g.login
 	LIMIT ` + strconv.Itoa(mirrorForgePeoplePage+1)
 
@@ -94,6 +106,102 @@ func (s *Store) ListMirrorForgePeopleDue(rootID, now int64, viewer string) (due 
 		return due[:mirrorForgePeoplePage], true, nil
 	}
 	return due, false, nil
+}
+
+// MirrorForgeAccountsPage bounds one ListMirrorForgeAccounts read.
+const MirrorForgeAccountsPage = 500
+
+// MirrorForgeAccount is a forge account a root's credit reads, with who
+// it is: Paired when a person said (Person "" then: no person, left out
+// of credit), else the name match's person once Checked, "" for nobody.
+// PersonName names the person, "" when nothing does. Own reports that
+// its token is the one the app reads its repository with.
+type MirrorForgeAccount struct {
+	MirrorForgePerson
+	Own, Paired, Checked bool
+	Person, PersonName   string
+}
+
+// mirrorForgeAccountsListSQL lists the forge accounts of root ?1
+// (mirrorForgeAccountsSQL) with their name matches and the matched
+// people's names. Its order chooses the page: the accounts a person
+// paired, whose pairings are read beside it (ListMirrorForgeAccounts),
+// then the ones matched to nobody, then by the forge's name.
+var mirrorForgeAccountsListSQL = `WITH ` + mirrorCreditSourcesSQL(mirrorCreditParams{rules: "1"}) + `
+	SELECT g.host, g.login, g.name, g.own, m.checked_at IS NOT NULL, coalesce(m.person, ''), coalesce(u.name, '')
+	FROM ` + mirrorForgeAccountsSQL + `
+	LEFT JOIN tracker_forge_pairings p ON p.connection_id = ` + mirrorRootConnectionSQL + ` AND p.host = g.host AND p.login = g.login
+	LEFT JOIN tracker_cache_forge_people m ON m.root_id = CAST(?1 AS INTEGER) AND m.host = g.host AND m.login = g.login
+	LEFT JOIN tracker_cache_users u ON u.root_id = CAST(?1 AS INTEGER) AND u.user_id = m.person AND m.person <> ''
+	ORDER BY p.login IS NULL, coalesce(m.person, '') <> '', lower(iif(g.name <> '', g.name, g.login)), g.host, g.login
+	LIMIT ` + strconv.Itoa(MirrorForgeAccountsPage+1)
+
+// ListMirrorForgeAccounts lists the forge accounts connectionID's credit
+// reads with who each is, and its pairings of accounts that acted on no
+// pull request credit reads now, so every pairing can be seen and
+// removed: the accounts that are nobody's first, then by name. It lists
+// at most MirrorForgeAccountsPage of the accounts that acted; more
+// reports that more did. A connection with no mirror lists its pairings.
+func (s *Store) ListMirrorForgeAccounts(connectionID string) (accounts []MirrorForgeAccount, more bool, err error) {
+	label := fmt.Sprintf("list the forge accounts of tracker connection %s", connectionID)
+	type listed struct {
+		accounts []MirrorForgeAccount
+		more     bool
+	}
+	out, err := mirrorReadSnapshot(s, label, func(tx sqlQueryer) (listed, error) {
+		var out listed
+		pairings, err := listTrackerForgePairings(tx, connectionID)
+		if err != nil {
+			return out, err
+		}
+		paired := make(map[MirrorForgePerson]TrackerForgePairing, len(pairings))
+		for _, p := range pairings {
+			paired[MirrorForgePerson{Host: p.Host, Login: p.Login}] = p
+		}
+		var root sql.NullInt64
+		if err := tx.QueryRow(`SELECT id FROM tracker_cache_roots WHERE connection_id = ?1`, connectionID).Scan(&root); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return out, err
+		}
+		if root.Valid {
+			err = scanMirrorRows(tx, mirrorForgeAccountsListSQL, []any{root.Int64}, func(r rowScanner) error {
+				var a MirrorForgeAccount
+				if err := r.Scan(&a.Host, &a.Login, &a.Name, &a.Own, &a.Checked, &a.Person, &a.PersonName); err != nil {
+					return err
+				}
+				key := MirrorForgePerson{Host: a.Host, Login: a.Login}
+				if p, ok := paired[key]; ok {
+					a.Paired, a.Person, a.PersonName = true, p.Person, p.PersonName
+					delete(paired, key)
+				}
+				out.accounts = append(out.accounts, a)
+				return nil
+			})
+			if err != nil {
+				return out, err
+			}
+		}
+		if len(out.accounts) > MirrorForgeAccountsPage {
+			out.accounts, out.more = out.accounts[:MirrorForgeAccountsPage], true
+		}
+		for _, p := range pairings {
+			if _, left := paired[MirrorForgePerson{Host: p.Host, Login: p.Login}]; left {
+				out.accounts = append(out.accounts, MirrorForgeAccount{MirrorForgePerson: MirrorForgePerson{Host: p.Host, Login: p.Login},
+					Paired: true, Person: p.Person, PersonName: p.PersonName})
+			}
+		}
+		// The statement's order chose the page; the pairings change who is
+		// nobody's and add accounts, so the list is ordered here.
+		slices.SortFunc(out.accounts, func(a, b MirrorForgeAccount) int {
+			named := func(a MirrorForgeAccount) string { return strings.ToLower(cmp.Or(a.Name, a.Login)) }
+			return cmp.Or(cmp.Compare(boolToInt(a.Paired || a.Person != ""), boolToInt(b.Paired || b.Person != "")),
+				cmp.Compare(named(a), named(b)), cmp.Compare(a.Host, b.Host), cmp.Compare(a.Login, b.Login))
+		})
+		return out, nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return out.accounts, out.more, nil
 }
 
 // The match statements of root ?1, ?2 the JSON list of the matches.

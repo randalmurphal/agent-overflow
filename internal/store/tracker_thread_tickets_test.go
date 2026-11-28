@@ -439,8 +439,9 @@ func TestForkCopiesTheLinkWhateverItsCut(t *testing.T) {
 }
 
 // The tracker tables are application records: a restore brings back the
-// snapshot's rows, and a link reads its copy as not checked, since the
-// restore emptied the mirror.
+// snapshot's rows, who a person said each forge account is among them,
+// and a link reads its copy as not checked, since the restore emptied
+// the mirror.
 func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 	st := snapshotTestStore(t)
 	seedSnapshotFixture(t, st, "t1", "linked")
@@ -460,6 +461,12 @@ func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pair(t, st, jira.ID, "user2", "acc-user2", "User 2")
+	pair(t, st, jira.ID, "ci", "", "")
+	pairings, err := st.ListTrackerForgePairings(jira.ID)
+	if err != nil || len(pairings) != 2 {
+		t.Fatalf("pairings before the snapshot = %+v, %v", pairings, err)
+	}
 	if row, err := st.GetThread("t1"); err != nil || row.TicketLink == nil || row.TicketLink.State != TicketLinkCurrent {
 		t.Fatalf("link before the snapshot = %+v, %v", row.TicketLink, err)
 	}
@@ -472,6 +479,12 @@ func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.DeleteTrackerConnection(tempo.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A pairing changed, one removed and one added since the snapshot.
+	pair(t, st, jira.ID, "user2", "acc-user3", "User 3")
+	pair(t, st, jira.ID, "later", "acc-user4", "User 4")
+	if _, err := st.DeleteTrackerForgePairing(jira.ID, "github.com", "ci", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.RestoreFrom(snap); err != nil {
@@ -491,6 +504,9 @@ func TestRestoreKeepsTheTrackerTables(t *testing.T) {
 	}
 	if got := mustGetThreadTicket(t, st, "t1"); got != link {
 		t.Fatalf("link after restore = %+v; want %+v", got, link)
+	}
+	if got, err := st.ListTrackerForgePairings(jira.ID); err != nil || !slices.Equal(got, pairings) {
+		t.Fatalf("pairings after restore = %+v, %v; want %+v", got, err, pairings)
 	}
 	newRoot, _, err := st.GetOrCreateMirrorRoot(jira.ID)
 	if err != nil || newRoot == root {

@@ -994,6 +994,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'forge_history_keys', reason: 'a ticket key a pull request of a repository\'s history names (v178); no linked round of the top-up reads one' },
   { table: 'forge_history_uses', reason: 'a repository a tracker connection\'s credit reads (v179), written with the sources; no linked round of the top-up reads one' },
   { table: 'tracker_cache_forge_people', reason: 'who a forge account is in a tracker, which credit reads to count a pull request\'s approval or comment (v179); the top-up\'s project has no credit section and no forge history, so no account is matched' },
+  { table: 'tracker_forge_pairings', reason: 'who a person said a forge account is in a connection\'s tracker (v180), set on the Points and credit page; no step of the top-up opens that page\'s forge accounts' },
   { table: 'tracker_agent_writes', reason: 'a tracker write an agent made through the tracker tools (v171); no step of the top-up runs an agent that writes a ticket' },
   { table: 'tracker_time_entries', reason: 'the user\'s time draft, which an agent writes through the time tools and the person approves (v173); no step of the top-up runs an agent that drafts time' },
   { table: 'chat_model_profiles', values: { reasoning_effort: ['none', 'minimal', 'low', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last' },

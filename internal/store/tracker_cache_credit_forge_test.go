@@ -283,7 +283,8 @@ func TestCreditReadsAForksPullRequestsInItsParent(t *testing.T) {
 // had it is not counted as a review and is part of the row that says so,
 // as the person's acts in the tracker are (10009 of
 // TestTheActionsOfAPossibleFinisherAreNotCounted, with User 2 acting only
-// on the forge).
+// on the forge). An act of an account matched to no person is still
+// listed, on a ticket nobody had for a time too.
 func TestAForgeActOfAPossibleFinisherIsNotCounted(t *testing.T) {
 	t.Parallel()
 	s, root := creditFixture(t)
@@ -291,7 +292,7 @@ func TestAForgeActOfAPossibleFinisherIsNotCounted(t *testing.T) {
 	r.Card.UpdatedAt, r.Card.AssigneeID = 900, "acc-user2"
 	mustWriteRowPage(t, s, root, webPage("10", r), nil)
 	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10009",
-		Changes: []MirrorChange{{Kind: MirrorChangeAssignee, At: 300, From: "acc-user1", To: "acc-user2"}}}}), MirrorCatalog{}, mirrorReadOf(root, 30)); err != nil {
+		Changes: []MirrorChange{{Kind: MirrorChangeAssignee, At: 100, To: "acc-user1"}, {Kind: MirrorChangeAssignee, At: 300, From: "acc-user1", To: "acc-user2"}}}}), MirrorCatalog{}, mirrorReadOf(root, 30)); err != nil {
 		t.Fatal(err)
 	}
 	replaceActs(t, s, root, 40, nil,
@@ -304,11 +305,13 @@ func TestAForgeActOfAPossibleFinisherIsNotCounted(t *testing.T) {
 	if got, want := reviewsOf(rows, "10009"), []string{"20 - 10009 review acc-user3 0.0 0.0 5.0 10 2 commented 0 - - -"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("before the forge acts\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	applyForge(t, s, forgeWhole(testOrigin, []ForgeHistoryPR{keyPR(7, "WEB-10009")}, approved(7, "user2", "User 2", 700), approved(7, "user3", "User 3", 710)))
-	matchForge(t, s, root, "user2", "acc-user2", "user3", "acc-user3")
+	applyForge(t, s, forgeWhole(testOrigin, []ForgeHistoryPR{keyPR(7, "WEB-10009")}, approved(7, "user2", "User 2", 700), approved(7, "user3", "User 3", 710),
+		approved(7, "ghost", "Ghost Dev", 720)))
+	matchForge(t, s, root, "user2", "acc-user2", "user3", "acc-user3", "ghost", "")
 	rows, _ = creditOf(t, s, root, creditRegroup(t, creditRules(true)))
 	want := []string{
 		"20 - 10009 review - - - 5.0 10 2 - - - - " + unknown,
+		"20 - 10009 review - 0.0 0.0 5.0 10 2 approved - - - " + unmatchedNote + " [Ghost Dev (ghost on github.com)]",
 		"20 - 10009 review acc-user3 0.5 0.1 5.0 10 2 commented, approved 1 - - -",
 	}
 	if got := reviewsOf(rows, "10009"); !reflect.DeepEqual(got, want) {

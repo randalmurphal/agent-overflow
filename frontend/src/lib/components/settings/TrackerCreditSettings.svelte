@@ -13,6 +13,8 @@
   // is counted in (BoardPace.counts). The types to pick are the boards'
   // projects' issue types, every type a person who can see the project
   // reads (stores/trackerTicketWrites.svelte.ts), read once credit is on.
+  // While a rule counts comments or approvals, the forge accounts whose
+  // reviews of pull requests count are listed (TrackerForgeAccounts).
   import type { BoardPace, CreditRules, SiteSupport } from '../../../../bindings/agent-overflow/internal/trackerapp/models';
   import { tick } from 'svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
@@ -23,6 +25,7 @@
   import { userFacingError } from '../../utils/userFacingError';
   import Segmented from '../primitives/Segmented.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
+  import TrackerForgeAccounts from './TrackerForgeAccounts.svelte';
   import type { TrackerProjectPage } from './TrackerProjectSettings.svelte';
   import { settingsComputer } from './settingsComputer';
   import { CHIP_BASE_CLASS, CHIP_RESTING_CLASS, CHIP_SELECTED_CLASS, GHOST_BUTTON_CLASS, INPUT_CLASS, NUMBER_CLASS } from './styles';
@@ -50,6 +53,9 @@
   const on = $derived(creditOn(page.setup));
   const newest = $derived(credit ? credit.rules[credit.rules.length - 1] : null);
   const locked = $derived(page.lockReason !== '');
+  // A rule that counts comments or approvals reads them from the forge's
+  // pull requests too (trackerapp's StatusGroups.forge).
+  const forge = $derived(on && (credit?.rules ?? []).some((r) => r.review_actions.includes('commented') || r.review_actions.includes('approved')));
   // The unit each board the mirror has read is counted in; before any is
   // read, the project's own pick.
   const readBoards = $derived(boards.filter((b) => b.read));
@@ -374,6 +380,9 @@
             </div>
           {/each}
         </li>
+        {#if forge}
+          <TrackerForgeAccounts project={page.project} {boards} lockReason={page.lockReason} />
+        {/if}
       {/if}
     </ul>
   {/if}

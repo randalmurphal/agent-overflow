@@ -15,6 +15,13 @@ const (
 	// AssignableUsers return at most this many, with More set when they
 	// leave a match out.
 	pickLimit = 50
+	// peopleWindow is the users one People search asks Jira for: more
+	// than pickLimit, since the accounts that are no person's are left
+	// out of them.
+	peopleWindow = 200
+	// peopleProjects is the projects whose assignable users one People
+	// search asks for when the site's search names nobody.
+	peopleProjects = 8
 	// assignableWindow is the window of users Jira's assignable search
 	// checks in one call: the largest it takes, since it examines no user
 	// past the thousandth.
@@ -242,6 +249,60 @@ func (p *Provider) parentChoices(ctx context.Context, scope tracker.FieldScope, 
 	out := tracker.ChoiceList{More: page.NextPageToken != "" || len(page.Issues) >= pickLimit || len(page.Warnings) > 0}
 	for _, is := range page.Issues[:min(len(page.Issues), pickLimit)] {
 		out.Choices = append(out.Choices, tracker.Choice{ID: is.ID, Name: is.Key + " " + is.Summary})
+	}
+	return out, nil
+}
+
+// People are the people whose name or email starts with text, at most
+// pickLimit: the site's active people (an app's or a customer's account
+// is not one), found by Jira's user search, or, when that names none or
+// is withheld, the people who may be assigned in any of projects, the
+// first peopleProjects of them. Jira answers a credential without the
+// Browse users and groups permission with no users, which is
+// indistinguishable from no match, so an empty answer asks the projects'
+// assignable users, whom that credential may see.
+func (p *Provider) People(ctx context.Context, projects []tracker.ProjectID, text string) (tracker.UserList, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return tracker.UserList{More: true}, nil
+	}
+	for _, project := range projects {
+		if err := checkProject(project); err != nil {
+			return tracker.UserList{}, err
+		}
+	}
+	found, err := p.jira.SearchUsers(ctx, text, peopleWindow)
+	if err != nil && !jira.Withheld(err) {
+		return tracker.UserList{}, fmt.Errorf("jiraprovider: people for %q: %w", text, err)
+	}
+	var out tracker.UserList
+	for _, u := range found {
+		if u.Active && u.AccountType == "atlassian" {
+			out.Users = append(out.Users, userOf(u))
+		}
+	}
+	if len(out.Users) > 0 {
+		// A full window may hold more people than it listed; so may one
+		// cut to the pick list's size.
+		out.More = len(found) >= peopleWindow || len(out.Users) > pickLimit
+		out.Users = out.Users[:min(len(out.Users), pickLimit)]
+		return out, nil
+	}
+	// No answer says that no such person exists: the search may have been
+	// withheld, and the assignable users are only some of the site's.
+	out.More = true
+	seen := map[tracker.UserID]bool{}
+	for _, project := range projects[:min(len(projects), peopleProjects)] {
+		assignable, err := p.AssignableUsers(ctx, tracker.OnCreate(project, ""), text)
+		if err != nil {
+			return tracker.UserList{}, err
+		}
+		for _, u := range assignable.Users {
+			if !seen[u.ID] && len(out.Users) < pickLimit {
+				seen[u.ID] = true
+				out.Users = append(out.Users, u)
+			}
+		}
 	}
 	return out, nil
 }

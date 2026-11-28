@@ -176,6 +176,10 @@ func (f *probedProvider) PersonNamed(ctx context.Context, _ string) (User, bool,
 	f.see(ctx)
 	return User{}, false, nil
 }
+func (f *probedProvider) People(ctx context.Context, _ []ProjectID, _ string) (UserList, error) {
+	f.see(ctx)
+	return UserList{}, nil
+}
 func (f *probedProvider) Detail(ctx context.Context, _ IssueID) (Detail, error) {
 	f.see(ctx)
 	return Detail{}, nil

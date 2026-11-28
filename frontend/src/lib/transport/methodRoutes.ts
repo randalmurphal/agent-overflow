@@ -510,6 +510,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3921109066: 'home', // SetTrackerConnectionEnabled
 	2967721565: 'home', // SetTrackerConnectionTokenExpiry
 	2301582015: 'home', // SetTrackerEstimate
+	3552836583: 'home', // SetTrackerForgeAccount
 	2154788414: 'home', // SetTrackerSubscriptionVisible
 	3937459196: 'home', // SetTrackerWidgetLimit
 	3978807241: 'home', // SetWSLDistroPreference
@@ -570,10 +571,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	440800234: 'home', // TrackerCreateFields
 	124644262: 'home', // TrackerDashboardDrill
 	3554577306: 'home', // TrackerDashboards
+	95685002: 'home', // TrackerForgeAccounts
 	2749961211: 'home', // TrackerIssueTypes
 	2754714292: 'home', // TrackerLinkTypes
 	2194444141: 'home', // TrackerLookup
 	3632796459: 'home', // TrackerMoves
+	3642610888: 'home', // TrackerPeople
 	3990595752: 'home', // TrackerPoker
 	4253452655: 'home', // TrackerPokerSupport
 	2496760576: 'home', // TrackerProjectIssueTypes

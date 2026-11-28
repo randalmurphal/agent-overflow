@@ -634,6 +634,7 @@ Durable records, restored and kept like other application records:
 |---|---|
 | `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity, time and token digest (empty for a verification recorded before v166 or one whose token changed during its call), and the token expiry the user entered. |
 | `project_tracker_boards` | Which boards an app project lists, in order, and which opens first, with the board's name and tracker project as the picker showed them (v166). Keyed by project, connection and board; the project and the connection cascade. |
+| `tracker_forge_pairings` | Who a person said a forge account is in a connection's tracker: a tracker person, or no person at all ([forge pull request history](#forge-pull-request-history)). Keyed by connection, forge host and login; the connection cascades. |
 | `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key, title and status as the link reader's mirror last held them ([Thread links](#thread-links)). Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
 
 The mirror is every table named `tracker_cache_*`. The name is the
@@ -1025,7 +1026,7 @@ and writes share:
 | Structure | one board | columns, statuses, estimate, sprints, users |
 | Worklogs | an author's span of days, from the time tracker | that author's worklogs of those days, replaced whole |
 | Evidence | up to 50 issues' due comments and worklogs | each issue's comment and worklog authors, replaced per issue and source, or the source's failed attempt |
-| People | up to 25 forge accounts' names, one user search each | who each account is in the tracker, or nobody |
+| People | up to 25 forge accounts' names, one user search each, none for an account a person paired | who each account is in the tracker, or nobody |
 
 - **Delta.** Each tick reads pages of a board's changed rows from its
   cursor. One transaction stores a page's rows and the cursor that page
@@ -1671,6 +1672,9 @@ selected computer.
 | `MintTrackerAttachmentDownloadTicket(subscriptionID, attachmentID)` | `TicketAttachment`, then the download route's `Download` | read | home |
 | `TrackerIssueTypes`, `TrackerCreateFields`, `TrackerBoardProjects`, `TrackerMoves`, `TrackerAssignableUsers`, `TrackerChoices`, `TrackerLinkTypes`, `TrackerLookup`, `TrackerSearch`, `TrackerComments` | the form reads of the same names | read | connection |
 | `CreateTrackerIssue`, `EditTrackerIssue`, `MoveTrackerIssue`, `SetTrackerEstimate`, `RankTrackerIssues`, `MoveTrackerIssuesToSprint`, `CreateTrackerSprint`, `StartTrackerSprint`, `CompleteTrackerSprint`, `EditTrackerSprint`, `AddTrackerComment`, `EditTrackerComment`, `DeleteTrackerComment`, `LinkTrackerIssues`, `UnlinkTrackerIssues`, `AddTrackerWorklog`, `EditTrackerWorklog`, `DeleteTrackerWorklog` | `Create`, `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`, `StartSprint`, `CompleteSprint`, `EditSprint`, `AddComment`, `EditComment`, `DeleteComment`, `Link`, `Unlink`, `AddWorklog`, `EditWorklog`, `DeleteWorklog` | operate | connection, budget 3m |
+| `TrackerForgeAccounts(connectionID)` | `ForgeAccounts` | read | connection |
+| `SetTrackerForgeAccount(connectionID, account)` | `SetForgeAccount` | operate | connection |
+| `TrackerPeople(connectionID, projects, text)` | `People` | read | connection |
 | `TrackerWorklogs(connectionID, author, from, to)` | `Worklogs` | read | connection |
 | `RefreshTrackerWorklogs(connectionID, author, from, to)` | `RefreshWorklogs` | read | connection |
 | `ThreadTimeEntries(threadID, callID)` | `ThreadTimeEntries` | read | thread |
@@ -2486,6 +2490,21 @@ lists its pull requests without searching the forge
     search Jira withholds, is nobody. A match stands for a day and until
     the forge names the account otherwise. A search that fails stores
     the matches made before it and fails the tick.
+    A person's word comes before the match (`tracker_forge_pairings`,
+    `Service.SetForgeAccount`): the account is the person they picked,
+    or no person at all, and then its acts are left out of credit with
+    no row; credit reads the pairing at read time
+    (`mirrorCreditForgeActsSQL`), the people unit asks the tracker for
+    no paired account, and removing the word returns the account to its
+    name match. The pairing is the connection's, kept through a restore
+    and a new mirror root. A person the mirror never read is named in a
+    dashboard by the name they were picked by. `Service.ForgeAccounts`
+    lists the accounts with who each is and how that is known, at most
+    500 of those that acted with every pairing, the paired and the
+    unmatched first. The people a word picks from are
+    `Provider.People`: Jira's user search cut to active people, and,
+    when it names none or is withheld, the people assignable in the
+    boards' projects, the first 8 of them.
   - *What a source covers* (`forgeCreditCoversSQL`): a ticket's reviews
     are read only when every source the connection's credit reads has a
     reach, owes no act of a pull request it read (`acts_owed`), and has
@@ -2500,7 +2519,9 @@ lists its pull requests without searching the forge
     that is done now or in a closed sprint, and names those tickets to
     the open boards through the change funnel; a change of a source's
     state, of the connection's sources, or of who an account is advances
-    every such board and has it count again (`BoardEvent.Recount`). A
+    every such board and has it count again (`BoardEvent.Recount`); a
+    person's word on an account advances those boards in the
+    transaction that stores it, so a word that failed is not stored. A
     read that changes nothing tells nobody. The forge writer writes no
     tracker table; a crash between its commit and the tracker's leaves
     the totals as they were until the next change.
@@ -2895,10 +2916,12 @@ ticket's key counts for the person its forge account is matched to
 (`store/tracker_cache_credit_forge.go`,
 [forge pull request history](#forge-pull-request-history)): the
 connection's repositories whole, and of a fork's parent the pull
-requests whose head is the fork. An account matched to nobody is a
+requests whose head is the fork. An account a person paired counts for
+that person whatever its name matches, and one they said is no person's
+has no row. An account matched to nobody is a
 review row of its own with no person, value 0 and its name in
-`unmatched`, which the drill lists under its own heading and which
-leaves no ticket out. A ticket some repository does not cover has one
+`unmatched`, which the drill lists under its own heading, which says
+where to say who it is, and which leaves no ticket out. A ticket some repository does not cover has one
 review row not counted that names the first such repository by its path,
 how many more there are, and its failure or that it is not read yet. A
 rule that counts neither reads no forge act and waits for no repository. A closed sprint's member carried
