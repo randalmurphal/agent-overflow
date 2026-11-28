@@ -96,6 +96,7 @@
   import { getActiveTurn, isSendInFlight } from '../../stores/threadStatuses.svelte';
   import { isThreadInterruptPending } from '../../stores/threadInterruptState.svelte';
   import { getFocusedPaneId } from '../../stores/panes.svelte';
+  import { isPaneOnScreen } from '../../stores/paneLayout.svelte';
   import { getTerminalFocused } from '../terminal/terminalStore.svelte';
   import { errString } from '../../utils/errors';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
@@ -1229,6 +1230,7 @@
           customAnswer={userInputCustomAnswer}
           submitSignal={userInputSubmitSignal}
           collapsed={userInputCollapsed}
+          onScreen={isPaneOnScreen(pane.paneId)}
           setCustomAnswerText={(value) => {
             userInputCustomAnswer = value;
             queueMicrotask(() => surface?.autosizeInput());

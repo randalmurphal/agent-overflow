@@ -91,7 +91,9 @@ mode. Every component must work in desktop and compact layouts.
 - A keyboard command that acts on a pane acts on
   `stores/panes.svelte#paneCommandTarget` and gates on `noPaneTarget`:
   compact keeps focus on a pane the list screen, or another shown pane,
-  covers, so focus alone can name a pane the screen hides.
+  covers, so focus alone can name a pane the screen hides. A key handler
+  on the window acts for a pane only while the person sees it
+  (`stores/paneLayout.svelte#isPaneOnScreen`).
 - A browser's Back runs the same ladder through the history sentinel in
   `utils/compactHistoryBack.svelte.ts`. "Away from root" is the layout
   store's screen plus the airspace registry; do not add a second surface list.

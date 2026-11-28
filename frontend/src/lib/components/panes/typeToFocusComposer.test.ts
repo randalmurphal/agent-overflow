@@ -14,6 +14,9 @@ const state = vi.hoisted(() => ({
   terminalFocused: new Set<string>(),
   trapActive: false,
   revealed: [] as string[],
+  compact: false,
+  shownPaneId: null as string | null,
+  offScreen: new Set<string>(),
 }));
 // vi.hoisted runs before this module body, so the pane shape is structural.
 type FakePaneShape = {
@@ -28,6 +31,13 @@ vi.mock('../../stores/panes.svelte', () => ({
   getPane: (id: string) => state.panes.get(id),
   iterPanes: () => state.panes.values(),
   revealPane: (id: string) => { state.revealed.push(id); },
+  paneCommandTarget: () => state.shownPaneId,
+}));
+vi.mock('../../stores/layoutMode.svelte', () => ({
+  isCompactLayout: () => state.compact,
+}));
+vi.mock('../../stores/paneLayout.svelte', () => ({
+  isPaneOnScreen: (id: string) => !state.offScreen.has(id),
 }));
 vi.mock('../../stores/composerDraftRegistry.svelte', () => ({
   getComposerDraftForPane: (id: string) => state.drafts.get(id),
@@ -93,6 +103,9 @@ beforeEach(() => {
   state.terminalFocused.clear();
   state.trapActive = false;
   state.revealed = [];
+  state.compact = false;
+  state.shownPaneId = null;
+  state.offScreen.clear();
 });
 
 afterEach(() => {
@@ -199,6 +212,42 @@ describe('redirectTypingToFocusedComposer', () => {
     addPane('pane-2', { pendingUserInputs: [{}] });
     expect(redirectTypingToFocusedComposer(keyEvent('1'), OPEN_NOTHING)).toBe(false);
     expect(redirectTypingToFocusedComposer(keyEvent('a'), OPEN_NOTHING)).toBe(false);
+  });
+
+  it('does not yield to a prompt in a pane that is not on screen, whose panel takes no keys', () => {
+    const textarea = setupFocusedPane('main');
+    addPane('pane-2', { pendingUserInputs: [{}] });
+    state.offScreen.add('pane-2');
+    expect(redirectTypingToFocusedComposer(keyEvent('1'), OPEN_NOTHING)).toBe(true);
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it('on compact types into the pane on screen, not the focused pane another pane covers', () => {
+    const covered = setupFocusedPane('main');
+    addPane('side');
+    state.drafts.set('side', { hydrating: false, threadId: 't1' });
+    const shown = mountComposer('side');
+    state.compact = true;
+    state.shownPaneId = 'side';
+
+    expect(redirectTypingToFocusedComposer(keyEvent('a'), OPEN_NOTHING)).toBe(true);
+
+    expect(document.activeElement).toBe(shown);
+    expect(document.activeElement).not.toBe(covered);
+    expect(state.revealed).toEqual(['side']);
+  });
+
+  it('on compact does nothing on the list screen or while the screen shows a pane with no composer', () => {
+    const textarea = setupFocusedPane('main');
+    state.compact = true;
+    // The list screen: no pane is the keyboard's.
+    state.shownPaneId = null;
+    expect(redirectTypingToFocusedComposer(keyEvent('a'), OPEN_NOTHING)).toBe(false);
+    // A companion over the focused thread.
+    state.shownPaneId = 'companion-review';
+    expect(redirectTypingToFocusedComposer(keyEvent('a'), OPEN_NOTHING)).toBe(false);
+    expect(document.activeElement).not.toBe(textarea);
+    expect(state.revealed).toEqual([]);
   });
 
   it('yields to a pending approval in the focused pane', () => {
