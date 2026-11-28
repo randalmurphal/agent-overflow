@@ -108,11 +108,26 @@
   // A reveal asked for while a pane is promoted waits for the demote it
   // causes: the strip does not move while a pane is laid over it.
   let revealAfterDemote: string | null = null;
+  // The pane a reveal is asked for or gliding to (paneStripReveal
+  // `heading`), null with none.
+  let headingPaneId: string | null = null;
   const reveal = createPaneStripReveal({
     getHostEl: () => hostEl,
     slotOf: paneSlotById,
     held: revealHeldByPromotion,
     yields: () => !untrack(() => compact),
+    heading: (paneId) => {
+      headingPaneId = paneId;
+      // A reveal ended. Its snap or landing has moved the strip already:
+      // the pane it shows is recorded here, not a frame later in its
+      // scroll event. A glide whose pane closed under it stopped short,
+      // and the strip goes to the pane measured there.
+      if (paneId === null) {
+        measureCompactShownPane();
+        restCompactStrip();
+      }
+      reachCompactPanes();
+    },
   });
   const promotion = createPanePromotion({
     getHostEl: () => hostEl,
@@ -197,8 +212,9 @@
 
     const nextScrollLeft = clampStripScrollLeft(el, el.scrollLeft);
     if (nextScrollLeft !== el.scrollLeft) el.scrollLeft = nextScrollLeft;
-    reveal.resolveAfterLayout();
+    // Published first: a glide this ends is measured against these offsets.
     publishPaneOffsets();
+    reveal.resolveAfterLayout();
   }
 
   let geometryReconcileFrame = 0;
@@ -215,8 +231,9 @@
     if (!el) return;
     const publishScrollPosition = (): void => {
       promotion.holdStrip(el);
-      // A scroll no reveal made does not move a compact strip.
-      if (!reveal.placed(el)) restCompactStrip();
+      // A scroll no reveal made does not move a compact strip: a reveal
+      // that ended recorded its pane in its own task (`heading`).
+      restCompactStrip();
       measureCompactShownPane();
     };
     // A horizontal wheel/trackpad gesture over the strip is user scroll
@@ -265,7 +282,7 @@
       promotion.destroy();
       reveal.cancel();
       // The record measures this strip; it ends with it.
-      noteCompactPaneShown(null);
+      recordCompactPane(null);
       if (geometryReconcileFrame) cancelAnimationFrame(geometryReconcileFrame);
     };
   });
@@ -312,7 +329,7 @@
     }
     // Sections came, went or moved under the strip's position.
     measureCompactShownPane();
-    restCompactStrip();
+    reachCompactPanes();
 
     let secondHandle = 0;
     const firstHandle = requestAnimationFrame(() => {
@@ -420,7 +437,34 @@
         break;
       }
     }
-    noteCompactPaneShown(shown);
+    recordCompactPane(shown);
+  }
+
+  function recordCompactPane(paneId: string | null): void {
+    if (untrack(compactShownPaneId) === paneId) return;
+    noteCompactPaneShown(paneId);
+    reachCompactPanes();
+  }
+
+  // On compact a pane the strip does not show is inert, as the screen not
+  // shown is (`threadInert`, the sidebar's `listInert`): Tab, a screen
+  // reader's cursor and the browser's find reach only the pane on screen,
+  // and focus never stays in a pane that left it. The pane a reveal is on
+  // its way to is reachable from the request, in the request's own task,
+  // so a caret carried into it lands (carryCaretIntoPane). With no pane
+  // recorded nothing is inert. The one writer of a section's `inert`: it
+  // runs where the record, the reveal's pane, the sections or the layout
+  // mode change.
+  function reachCompactPanes(): void {
+    const el = hostEl;
+    if (!el) return;
+    const shown = untrack(() => compact) ? untrack(compactShownPaneId) : null;
+    for (const child of el.children) {
+      if (!(child instanceof HTMLElement)) continue;
+      const paneId = child.dataset.paneId;
+      if (paneId === undefined) continue;
+      child.inert = shown !== null && paneId !== shown && paneId !== headingPaneId;
+    }
   }
 
   // On compact only a reveal moves the strip, which nobody can scroll by
@@ -429,10 +473,9 @@
   // a pane still gliding in or one the strip does not show, and it would
   // leave the strip between two panes or on one nobody opened. A glide
   // carries on over it (`yields`); a resting strip is put back in the
-  // scroll's own event, so no frame paints the move. A glide whose pane
-  // closed under it stops where it was, and the strip goes to the pane
-  // measured there. A strip at another width waits for its observer, as
-  // the measurement does.
+  // scroll's own event, so no frame paints the move, and when a reveal
+  // ends short of its pane (`heading`). A strip at another width waits for
+  // its observer, as the measurement does.
   function restCompactStrip(): void {
     const el = hostEl;
     if (!el || !untrack(() => compact) || reveal.active || promotion.shownId !== null) return;
@@ -469,7 +512,7 @@
     const leaving = !now && wasCompact;
     wasCompact = now;
     untrack(() => {
-      if (leaving) noteCompactPaneShown(null);
+      if (leaving) recordCompactPane(null);
       if (!entering) return;
       // Compact shows one pane already; a promotion does not survive it.
       demotePane();

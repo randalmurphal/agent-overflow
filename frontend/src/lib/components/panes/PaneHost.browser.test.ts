@@ -1,10 +1,11 @@
 // The pane strip in real Chromium, where scrollLeft reads back rounded: a
 // glide in flight yields to a scroll it did not make, and on compact the
 // pane recorded as shown is the pane the strip shows after the layout mode
-// or the strip's width changes, and only a reveal moves the strip.
+// or the strip's width changes, only a reveal moves the strip, and only the
+// pane it shows or reveals is reachable.
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { mount, tick, unmount } from 'svelte';
 import '../../../app.css';
 
 vi.mock('../chat/ChatView.svelte', async () => ({
@@ -23,6 +24,8 @@ import {
 } from '../../stores/layoutMode.svelte';
 import { isPaneOnScreen, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
+import { userEvent } from 'vitest/browser';
+import { carryCaretIntoPane } from './paneComposerFocus';
 
 let host: HTMLDivElement;
 let app: ReturnType<typeof mount> | null = null;
@@ -120,14 +123,30 @@ function paneLeft(id: string): number {
   return host.querySelector<HTMLElement>(`[data-pane-id="${id}"]`)?.offsetLeft ?? -1;
 }
 
+function section(id: string): HTMLElement {
+  const el = host.querySelector<HTMLElement>(`[data-pane-id="${id}"]`);
+  if (!el) throw new Error(`no pane ${id}`);
+  return el;
+}
+
 // The record and the strip agree: the pane recorded as shown is the one
-// under the strip, aligned to it, and the only pane on screen.
+// under the strip, aligned to it, the only pane on screen and the only
+// one reachable.
 function expectShown(strip: HTMLElement, id: string, others: string[]): void {
   expect(compactShownPaneId()).toBe(id);
   expect(onScreenCompactPaneId()).toBe(id);
   expect(strip.scrollLeft).toBe(paneLeft(id));
   expect(isPaneOnScreen(id)).toBe(true);
-  for (const other of others) expect(isPaneOnScreen(other)).toBe(false);
+  expect(section(id).inert).toBe(false);
+  for (const other of others) {
+    expect(isPaneOnScreen(other)).toBe(false);
+    expect(section(other).inert).toBe(true);
+  }
+}
+
+// The pane a focused element is in, null outside every pane.
+function focusedPane(): string | null {
+  return document.activeElement?.closest<HTMLElement>('[data-pane-id]')?.dataset.paneId ?? null;
 }
 
 it('entering compact records the pane the strip shows, though a reveal named the other', async () => {
@@ -265,12 +284,11 @@ it.each([
 
 // A control placed in a pane, 100px from its left edge.
 function controlIn(id: string): HTMLButtonElement {
-  const section = host.querySelector<HTMLElement>(`[data-pane-id="${id}"]`);
-  if (!section) throw new Error(`no pane ${id}`);
-  section.style.position = 'relative';
+  const pane = section(id);
+  pane.style.position = 'relative';
   const control = document.createElement('button');
   control.style.cssText = 'position:absolute;left:100px;top:0;width:40px;height:10px';
-  section.append(control);
+  pane.append(control);
   return control;
 }
 
@@ -309,30 +327,49 @@ it('a horizontal wheel over the compact strip does not stop a reveal', async () 
 
 // The glide has no pane to land on, and the strip may not rest where it
 // stopped, between a and the pane that moved up beside it.
-it('a pane closed while the compact strip glides to it leaves the strip on a pane', async () => {
+it.each([
+  { where: 'before its middle', past: 20, shown: 'a', other: 'c' },
+  { where: 'past its middle', past: 200, shown: 'c', other: 'a' },
+])('a pane closed while the compact strip glides to it, $where, leaves the strip on a pane', async ({ past, shown, other }) => {
   installViewportQuery(true);
   const strip = await mountStrip(['a', 'b', 'c'], 360);
   revealPane('a');
   await stripAtRest(strip);
 
   revealPane('b');
-  await waitFor(() => strip.scrollLeft > 20, 'the glide under way');
-  expect(strip.scrollLeft).toBeLessThan(paneLeft('b'));
+  await waitFor(() => strip.scrollLeft > past, 'the glide under way');
+  expect(strip.scrollLeft).toBeLessThan(past === 20 ? 180 : paneLeft('b'));
   setPaneLayoutItemsForTest(['a', 'c'].map((id) => ({ id, paneId: id, kind: 'thread' as const, widthPx: 480 })));
-  await raf();
+  // In the flush that removes the pane, before a frame or a scroll event.
+  await tick();
+  expectShown(strip, shown, [other]);
   await stripAtRest(strip);
-  const shown = compactShownPaneId();
-  if (shown !== 'a' && shown !== 'c') throw new Error(`the strip shows ${String(shown)}`);
-  expectShown(strip, shown, [shown === 'a' ? 'c' : 'a']);
+  expectShown(strip, shown, [other]);
 });
 
-it('the compact strip first shows the focused pane', async () => {
+// The snap that places the focused pane records it in its own task, so the
+// pane is reachable before the snap's scroll event: a composer that mounts
+// in that frame can take the caret.
+it('the compact strip first shows the focused pane, reachable as soon as the strip is on it', async () => {
   installViewportQuery(true);
-  const strip = await mountStrip(['a', 'b'], 360, 'b');
-  showCompactThread();
-  await waitFor(() => strip.scrollLeft === paneLeft('b'), 'the strip at b');
-  await stripAtRest(strip);
-  expectShown(strip, 'b', ['a']);
+  let atSnap: { recorded: string | null; inert: boolean } | null = null;
+  const seen = (event: Event): void => {
+    const strip = event.target;
+    if (atSnap || !(strip instanceof HTMLElement) || strip.dataset.testid !== 'pane-host' || strip.scrollLeft === 0) return;
+    atSnap = { recorded: compactShownPaneId(), inert: section('b').inert };
+  };
+  // Capture: before the strip's own scroll listener measures.
+  document.addEventListener('scroll', seen, true);
+  try {
+    const strip = await mountStrip(['a', 'b'], 360, 'b');
+    showCompactThread();
+    await waitFor(() => strip.scrollLeft === paneLeft('b'), 'the strip at b');
+    await stripAtRest(strip);
+    expectShown(strip, 'b', ['a']);
+    expect(atSnap).toEqual({ recorded: 'b', inert: false });
+  } finally {
+    document.removeEventListener('scroll', seen, true);
+  }
 });
 
 // The strip keeps its offset, so no scroll event follows: the structure
@@ -376,24 +413,103 @@ it.each([
 });
 
 // What moves a resting strip in the app: a pane the strip does not show
-// scrolls one of its controls into view, or takes focus.
-it.each([
-  { how: 'scrolled into view', act: (control: HTMLElement) => control.scrollIntoView({ block: 'nearest' }) },
-  { how: 'focused', act: (control: HTMLElement) => control.focus() },
-])('a control of a pane the compact strip does not show, $how, leaves the strip on its pane', async ({ act }) => {
+// scrolls one of its controls into view.
+it('a control of a pane the compact strip does not show, scrolled into view, leaves the strip on its pane', async () => {
   installViewportQuery(true);
   const strip = await mountStrip(['a', 'b'], 360);
   revealPane('a');
   await stripAtRest(strip);
   const control = controlIn('b');
 
-  act(control);
+  control.scrollIntoView({ block: 'nearest' });
   // The browser moved the strip to show the control.
   expect(strip.scrollLeft).toBeGreaterThan(0);
   await raf();
   expect(strip.scrollLeft).toBe(0);
   await stripAtRest(strip);
   expectShown(strip, 'a', ['b']);
+});
+
+// A pane the compact strip does not show is out of reach, as the screen
+// not shown is: no script focuses into it and Tab passes over it.
+it('a pane the compact strip does not show takes no focus, from a script or from Tab', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b', 'c'], 360);
+  revealPane('a');
+  await stripAtRest(strip);
+  expectShown(strip, 'a', ['b', 'c']);
+  const shown = controlIn('a');
+  const hidden = controlIn('b');
+
+  hidden.focus();
+  expect(document.activeElement).not.toBe(hidden);
+  expect(strip.scrollLeft).toBe(0);
+
+  shown.focus();
+  expect(document.activeElement).toBe(shown);
+  for (let i = 0; i < 4; i += 1) {
+    await userEvent.keyboard('{Tab}');
+    expect([null, 'a']).toContain(focusedPane());
+  }
+  await stripAtRest(strip);
+  expectShown(strip, 'a', ['b', 'c']);
+});
+
+// A pane move reveals its pane and then puts the caret in it, in one task
+// (paneNavigation): the pane is reachable from the request, not from the
+// frame the strip starts moving in.
+it('the pane a compact reveal is asked for takes focus in the same task, and the pane it leaves loses it', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b'], 360);
+  revealPane('a');
+  await stripAtRest(strip);
+  const left = controlIn('a');
+  const reached = controlIn('b');
+  left.focus();
+  expect(document.activeElement).toBe(left);
+
+  revealPane('b');
+  expect(section('b').inert).toBe(false);
+  reached.focus({ preventScroll: true });
+  expect(document.activeElement).toBe(reached);
+  await waitFor(() => strip.scrollLeft === paneLeft('b'), 'the strip at b');
+  await stripAtRest(strip);
+  expectShown(strip, 'b', ['a']);
+  expect(document.activeElement).toBe(reached);
+
+  // Back on a: the control that held focus in b, now off screen, loses it.
+  revealPane('a');
+  await waitFor(() => strip.scrollLeft === paneLeft('a'), 'the strip at a');
+  await stripAtRest(strip);
+  expectShown(strip, 'a', ['b']);
+  await waitFor(() => document.activeElement !== reached, 'focus gone from the pane left');
+});
+
+it('a caret carried into a pane on compact brings the strip to it', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b'], 360);
+  revealPane('a');
+  await stripAtRest(strip);
+  controlIn('a').focus();
+  expect(focusedPane()).toBe('a');
+
+  carryCaretIntoPane('b');
+  expect(focusedPane()).toBe('b');
+  await waitFor(() => strip.scrollLeft === paneLeft('b'), 'the strip at b');
+  await stripAtRest(strip);
+  expectShown(strip, 'b', ['a']);
+  expect(focusedPane()).toBe('b');
+});
+
+it('a pane added off screen on compact is out of reach from its first frame', async () => {
+  installViewportQuery(true);
+  const strip = await mountStrip(['a', 'b'], 360);
+  revealPane('a');
+  await stripAtRest(strip);
+  registerPaneForTest('c', createThreadPane({ paneId: 'c' }));
+  setPaneLayoutItemsForTest(['a', 'b', 'c'].map((id) => ({ id, paneId: id, kind: 'thread' as const, widthPx: 480 })));
+  await waitFor(() => host.querySelector('[data-pane-id="c"]') !== null, 'pane c mounted');
+  expectShown(strip, 'a', ['b', 'c']);
 });
 
 it('a resize during a reveal on compact lets the reveal land', async () => {
@@ -424,6 +540,8 @@ it('leaving compact ends the record of the pane it showed', async () => {
   expect(compactShownPaneId()).toBeNull();
   expect(isPaneOnScreen('a')).toBe(true);
   expect(isPaneOnScreen('b')).toBe(true);
+  expect(section('a').inert).toBe(false);
+  expect(section('b').inert).toBe(false);
 });
 
 it('unmounting the compact strip ends the record of the pane it showed', async () => {
