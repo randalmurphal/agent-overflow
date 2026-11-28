@@ -16,7 +16,7 @@ import type { CardField } from '../../stores/issuesPane.svelte';
 import { attachTrackerBoard } from '../../stores/trackerBoard.svelte';
 import { trackerBoardUpdated } from '../../stores/trackerBoardEvents';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { waitFor } from '../../../test/helpers/browserFrames';
+import { virtualRowsPlaced, waitFor } from '../../../test/helpers/browserFrames';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 const mounted: { app: object; host: HTMLElement }[] = [];
@@ -28,7 +28,12 @@ beforeEach(async () => {
   await page.viewport(1280, 800);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // A test that failed while it carried a card left the carry going, its
+  // copy and its window listeners with it: end it here, not in the next
+  // test.
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  await waitFor(() => document.querySelector('[data-testid="issues-card-carried"]') === null, 'no carry left over');
   for (const { app, host } of mounted.splice(0)) {
     unmount(app);
     host.remove();
@@ -88,6 +93,7 @@ async function mountBoard(view: BoardView = board()): Promise<HTMLElement> {
     },
   });
   mounted.push({ app, host });
+  await virtualRowsPlaced(host);
   return host;
 }
 
