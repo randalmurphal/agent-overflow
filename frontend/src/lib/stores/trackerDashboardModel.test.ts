@@ -4,7 +4,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { changeMark, drillCountWords, formatNum, GAP_TEXT, limitSide, limitWords, numValue, numWords, overLimit, pastLimitWords, showsTotal } from './trackerDashboardModel';
-import { band, labelEvery, unitScale, valueScale } from '../components/issues/charts/chartScale';
+import { formatAmount } from '../utils/dashboardAmount';
+import { along, band, labelEvery, unitScale, valueEnds, valueScale } from '../components/issues/charts/chartScale';
 
 describe('a number', () => {
   it('reads in its unit, as none, or as a gap', () => {
@@ -90,11 +91,22 @@ describe('the change mark', () => {
   });
 });
 
+describe('an amount below 0', () => {
+  it('reads as its size with a minus, time in hours or minutes as above 0', () => {
+    expect(formatAmount(-7200, 'time', 'points')).toBe('-2h');
+    expect(formatAmount(-5400, 'estimate', 'time')).toBe('-1.5h');
+    expect(formatAmount(-600, 'time', 'points')).toBe('-10m');
+    expect(formatAmount(-10, 'time', 'points')).toBe('0m');
+    expect(formatAmount(7200, 'time', 'points')).toBe('2h');
+    expect(formatAmount(-2.5, 'estimate', 'points')).toBe('-2.5');
+  });
+});
+
 describe('the charts\' geometry', () => {
   it('rounds the value axis to 1, 2 or 5 steps from 0', () => {
-    expect(valueScale(0)).toEqual({ max: 1, ticks: [0, 1] });
-    expect(valueScale(17)).toEqual({ max: 20, ticks: [0, 5, 10, 15, 20] });
-    expect(valueScale(3)).toEqual({ max: 3, ticks: [0, 1, 2, 3] });
+    expect(valueScale(0)).toEqual({ min: 0, max: 1, ticks: [0, 1] });
+    expect(valueScale(17)).toEqual({ min: 0, max: 20, ticks: [0, 5, 10, 15, 20] });
+    expect(valueScale(3)).toEqual({ min: 0, max: 3, ticks: [0, 1, 2, 3] });
     expect(valueScale(0.7).max).toBeCloseTo(0.8);
   });
 
@@ -117,11 +129,40 @@ describe('the charts\' geometry', () => {
     }
   });
 
+  it('reaches below 0 by the same step when a value is below 0, with 0 a tick', () => {
+    expect(valueScale(17, 4, -6)).toEqual({ min: -10, max: 20, ticks: [-10, 0, 10, 20] });
+    expect(valueScale(0, 4, -3)).toEqual({ min: -3, max: 0, ticks: [-3, -2, -1, 0] });
+    expect(valueScale(2, 4, -2)).toEqual({ min: -2, max: 2, ticks: [-2, -1, 0, 1, 2] });
+    // Nothing below 0 is the axis from 0, whatever is passed for it.
+    expect(valueScale(17, 4, 0)).toEqual(valueScale(17));
+    expect(valueScale(17, 4, 5)).toEqual(valueScale(17));
+    expect(valueScale(17, 4, -Infinity)).toEqual(valueScale(17));
+    expect(valueEnds([3, null, -2, 7, -5])).toEqual({ top: 7, bottom: -5 });
+    expect(valueEnds([null])).toEqual({ top: 0, bottom: 0 });
+    expect(valueEnds([4, 2])).toEqual({ top: 4, bottom: 0 });
+    const scale = valueScale(17, 4, -6);
+    expect([along(-10, scale, 90), along(0, scale, 90), along(20, scale, 90)]).toEqual([0, 30, 90]);
+  });
+
+  it('labels a time axis below 0 as its numbers read, in whole minutes below an hour', () => {
+    expect(unitScale(7200, 'time', 'points', -3600).ticks.map((t) => t.label)).toEqual(['-1h', '0m', '1h', '2h']);
+    expect(unitScale(120, 'time', 'points', -60).ticks.map((t) => t.label)).toEqual(['-1m', '0m', '1m', '2m']);
+    expect(unitScale(0, 'time', 'points', -20).ticks.map((t) => t.label)).toEqual(['-1m', '0m']);
+    expect(unitScale(5, 'estimate', 'points', -5).ticks.map((t) => [t.value, t.label])).toEqual([[-5, '-5'], [0, '0'], [5, '5']]);
+    for (let reach = 1; reach < 2 * 3600; reach += 13) {
+      const labels = unitScale(reach / 2, 'time', 'points', -reach).ticks.map((t) => t.label);
+      expect(new Set(labels).size, `down to -${reach} s: ${labels.join(', ')}`).toBe(labels.length);
+      expect(labels, `down to -${reach} s`).toContain('0m');
+    }
+  });
+
   it('counts its ticks whatever the top, the largest number included', () => {
-    expect(valueScale(1.79e308)).toEqual({ max: 1.79e308, ticks: [0, 1.79e308] });
+    expect(valueScale(1.79e308, 4, -1.79e308).ticks).toEqual([-1.79e308, 0, 1.79e308]);
+    expect(valueScale(0, 4, -Number.MIN_VALUE).ticks.length).toBeLessThanOrEqual(9);
+    expect(valueScale(1.79e308)).toEqual({ min: 0, max: 1.79e308, ticks: [0, 1.79e308] });
     expect(valueScale(Number.MAX_VALUE).ticks).toHaveLength(2);
     expect(valueScale(Number.MIN_VALUE).ticks.length).toBeLessThanOrEqual(9);
-    expect(valueScale(Infinity)).toEqual({ max: 1, ticks: [0, 1] });
+    expect(valueScale(Infinity)).toEqual({ min: 0, max: 1, ticks: [0, 1] });
   });
 
   it('lays bands along a length with the gap between them', () => {

@@ -211,7 +211,7 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 		}
 		return wrap(ForgeErrorForbidden, fmt.Sprintf("No access to %s on %s with this login.", ref.Project(), labels.host(ref.Host)))
 	case errors.As(err, &graphQL):
-		if graphQLNotFound(graphQL) {
+		if graphQLNotFound(graphQL) || graphQLRepositoryNotVisible(graphQL) {
 			return wrap(ForgeErrorNotFound, notFoundSentence(labels, ref, name))
 		}
 		kind := ForgeErrorRefused
@@ -346,6 +346,35 @@ func graphQLNotFound(graphQL *forgeapi.GraphQLError) bool {
 		}
 	}
 	return false
+}
+
+// githubSearchNotVisible is in GitHub's refusal of a search that names a
+// repository this login cannot see, which carries no type.
+const githubSearchNotVisible = "cannot be searched either because the resources do not exist or you do not have permission"
+
+// graphQLRepositoryNotVisible reports a GraphQL answer that says the
+// repository the query names does not resolve for this login: GitHub's
+// refusal of a search naming it, or its repository field not resolving.
+func graphQLRepositoryNotVisible(graphQL *forgeapi.GraphQLError) bool {
+	for _, problem := range graphQL.Problems {
+		if strings.Contains(problem.Message, githubSearchNotVisible) || strings.HasPrefix(problem.Message, "Could not resolve to a Repository") {
+			return true
+		}
+	}
+	return false
+}
+
+// RepositoryNotVisible reports a forge answer that says the repository a
+// read names does not resolve for this login, whether it is missing or
+// the login cannot see it: GitHub's refusal of a search naming it or its
+// repository field not resolving, and GitLab's 404 of the project. The
+// sentence ExplainRepoForgeError gives it names the repository.
+func RepositoryNotVisible(err error) bool {
+	if graphQL, ok := errors.AsType[*forgeapi.GraphQLError](err); ok {
+		return graphQLRepositoryNotVisible(graphQL)
+	}
+	status, ok := errors.AsType[*forgeapi.StatusError](err)
+	return ok && status.Status == http.StatusNotFound && forgeBodyMessage(status.Body) == "404 Project Not Found"
 }
 
 // graphQLHeadMoved reports a GraphQL refusal because the head moved past

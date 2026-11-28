@@ -847,6 +847,13 @@ export class WidgetValue {
     "more"?: number;
 
     /**
+     * Distinct is how many tickets a list's rows, shown and past those
+     * shown, are of, when a ticket is in more than one row; 0 when each
+     * row is its own ticket.
+     */
+    "distinct"?: number;
+
+    /**
      * NotCounted is a list's tickets that its metric could not count, by
      * the rule every number's NC follows, or the tickets of a chart's or
      * table's range that it places in no bucket (a row with no instant).
@@ -890,7 +897,7 @@ export class WidgetValue {
         const $$createField7_0 = $$createType16;
         const $$createField8_0 = $$createType22;
         const $$createField9_0 = $$createType13;
-        const $$createField12_0 = $$createType16;
+        const $$createField13_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("trend" in $$parsedSource) {
             $$parsedSource["trend"] = $$createField6_0($$parsedSource["trend"]);
@@ -905,7 +912,7 @@ export class WidgetValue {
             $$parsedSource["tickets"] = $$createField9_0($$parsedSource["tickets"]);
         }
         if ("unread" in $$parsedSource) {
-            $$parsedSource["unread"] = $$createField12_0($$parsedSource["unread"]);
+            $$parsedSource["unread"] = $$createField13_0($$parsedSource["unread"]);
         }
         return new WidgetValue($$parsedSource as Partial<WidgetValue>);
     }

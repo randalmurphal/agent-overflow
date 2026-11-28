@@ -164,6 +164,10 @@ func (a *App) newForgeFailure(err error, read string, summary func(correlationID
 		// the supported floor) says that sentence.
 		if refused, ok := errors.AsType[*gitops.ForgeActionError](err); ok && refused.Kind == gitops.ForgeErrorRefused {
 			f.wire = refused.Message
+		} else if gitops.RepositoryNotVisible(err) {
+			// The forge says the repository is not there for this login:
+			// the sentence names it and the login to check.
+			f.wire = explain(err).Error()
 		}
 	}
 	return f

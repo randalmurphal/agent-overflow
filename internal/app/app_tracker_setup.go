@@ -81,14 +81,15 @@ func (a *App) ProjectTrackerSupport(ctx context.Context, projectID, connectionID
 // ProjectTrackerSiteFields are the fields the tickets of a Jira site can
 // pin, as the project's Fields page lists them for each site its boards
 // or its pins name, read from the tracker's field catalog, which the
-// computer caches. projectID names the project whose computer answers.
+// computer caches, through an account one of the project's boards is
+// listed through when there is one (trackerapp.Service.SiteFields).
 // Each site is its own call, so a site that fails or stalls holds up no
 // other.
 //
 //ao:scope tracker:read
 func (a *App) ProjectTrackerSiteFields(ctx context.Context, projectID, tracker, site string) ([]trackerapp.PinField, error) {
 	return trackerFormRead(a, ctx, "ProjectTrackerSiteFields", "Listing a site's fields", func(ctx context.Context, svc *trackerapp.Service) ([]trackerapp.PinField, error) {
-		return svc.SiteFields(ctx, tracker, site)
+		return svc.SiteFields(ctx, projectID, tracker, site)
 	})
 }
 

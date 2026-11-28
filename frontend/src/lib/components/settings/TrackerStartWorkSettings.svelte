@@ -95,6 +95,14 @@
         {@render placeRows(page, place, defaultsAt(page.setup, place))}
       {/each}
     {/if}
+    {#if places.length > 0}
+      <!-- A board can show tickets of a project it is not listed under (a
+           Jira board of two projects): the computer lists a project once
+           the setup holds defaults for it. -->
+      <p class="text-[0.71875rem] text-fg-hint" data-testid="tracker-start-work-unlisted-project">
+        A ticket of a project not listed here starts with no saved choices. Check "Save as defaults" in its Start work form to list its project here.
+      </p>
+    {/if}
     <p class="text-[0.71875rem] text-fg-hint">Ask is separate: it starts a thread with the ticket attached and changes nothing on the ticket.</p>
   {/snippet}
 </TrackerProjectSettings>

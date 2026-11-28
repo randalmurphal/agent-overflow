@@ -226,6 +226,44 @@ func TestSearchTicketWorkSearchesEachRepositoryOnce(t *testing.T) {
 	}
 }
 
+// A repository the forge says is not there for the login, a clone of one
+// the login cannot see, is a ForgeProblem whose sentence names it.
+func TestSearchTicketWorkNamesARepositoryTheLoginCannotSee(t *testing.T) {
+	t.Parallel()
+	f := newWorkSearchFixture(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "example/web", Pulls: []forgefake.Pull{{Number: 1, Title: "WEB-1 Fix the login", HeadRef: "fix-login"}}},
+	}})
+	for i, origin := range []string{"https://github.com/example/private.git", "https://gitlab.com/grp/private.git"} {
+		project := forgeProjectRepo(t, f.a, origin)
+		p, err := f.a.store.GetProject(project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.linkThread(t, fmt.Sprintf("t%d", i), project, p.Path)
+	}
+	work, err := f.a.SearchTicketWork(f.ctx, f.conn.ID, "10101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, p := range work.ForgeProblems {
+		got[p.Repo.Key()] = p.ErrorKind + ": " + p.Error
+		if p.ErrorDetails == nil {
+			t.Errorf("problem of %s has no details", p.Repo.Key())
+		}
+	}
+	want := map[string]string{
+		"github:example/private": forgeFailureForge + ": example/private was not found on GitHub, or this login cannot see it.",
+		"gitlab:grp/private":     forgeFailureForge + ": grp/private was not found on GitLab, or this login cannot see it.",
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("problems = %q\nwant %q", got, want)
+	}
+	if len(work.PullRequests) != 1 {
+		t.Errorf("pull requests = %+v; want the visible repository's", work.PullRequests)
+	}
+}
+
 // A repository whose search fails is a ForgeProblem of its kind, in the
 // terms the Pull requests page shows a failed read in, and the rest of
 // the answer stands: the stored rows, the other repository's rows. A

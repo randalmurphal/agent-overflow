@@ -3,7 +3,7 @@
   // first, as a small line to the tile's measured width. Decorative: the
   // tile says the value and its change in words, and opens its rows.
   import { numValue, type Num } from '../../../stores/trackerDashboardModel';
-  import { valueScale } from './chartScale';
+  import { along, valueEnds, valueScale } from './chartScale';
 
   interface Props {
     points: readonly Num[];
@@ -12,7 +12,10 @@
   let { points }: Props = $props();
   let width = $state(0);
   const HEIGHT = 24;
-  const top = $derived(valueScale(Math.max(0, ...points.map((p) => numValue(p) ?? 0))).max);
+  const scale = $derived.by(() => {
+    const ends = valueEnds(points.map((p) => numValue(p)));
+    return valueScale(ends.top, 4, ends.bottom);
+  });
   const d = $derived.by(() => {
     let out = '';
     let pen = false;
@@ -23,7 +26,7 @@
         return;
       }
       const x = points.length <= 1 ? width / 2 : 2 + (i / (points.length - 1)) * (width - 4);
-      const y = HEIGHT - 2 - (v / top) * (HEIGHT - 4);
+      const y = HEIGHT - 2 - along(v, scale, HEIGHT - 4);
       out += `${pen ? 'L' : 'M'}${x},${y}`;
       pen = true;
     });

@@ -155,6 +155,36 @@ func TestTimeReadAnswersEachDay(t *testing.T) {
 	refused(t, err, "tracker_connection_unverified", "example.atlassian.net: this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings")
 }
 
+// Two connections of one site read in one answer: each logged worklog,
+// drafted entry, question and unread connection says whose it is, by the
+// name an approval gives that connection (postAccount).
+func TestTimeReadNamesTheAccountWhereTwoShareASite(t *testing.T) {
+	t.Parallel()
+	named := timeJira
+	named.Label, named.Email = "Work", "user1@example.com"
+	second := trackerapp.TicketSource{ID: "conn-jira-b", Site: timeJira.Site, Kind: "jira", Account: "acc-user2", Email: "user2@example.com"}
+	third := trackerapp.TicketSource{ID: "conn-jira-c", Site: timeJira.Site, Kind: "jira", Account: "acc-user3", Email: "user3@example.com"}
+	f := &fakeTracker{sources: []trackerapp.TicketSource{named, second, third}, time: map[string]trackerapp.WorklogDays{
+		named.ID: {
+			Worklogs: []trackerapp.WorklogView{{ID: "20001", Key: "WEB-1", Day: "2026-11-24", SpentSeconds: 3600}},
+			Drafted:  []trackerapp.TimeEntryView{{ID: 2, Day: "2026-11-24", Key: "WEB-2", Minutes: 30, By: "agent", State: "drafted"}},
+		},
+		second.ID: {
+			Worklogs: []trackerapp.WorklogView{{ID: "20002", Key: "WEB-1", Day: "2026-11-24", SpentSeconds: 1800}},
+			Drafted:  []trackerapp.TimeEntryView{{ID: 3, Day: "2026-11-24", Minutes: 15, Reason: "Standup", By: "agent", State: "drafted"}},
+		},
+	}}
+	answer, err := timeCall(t, timeServer(f, &fakeHost{}), "time_read", map[string]any{"from": "2026-11-24", "to": "2026-11-24"})
+	want := `{"days":[{"day":"2026-11-24","logged":[{"key":"example.atlassian.net/WEB-1","account":"Work","hours":1},` +
+		`{"key":"example.atlassian.net/WEB-1","account":"user2@example.com","hours":0.5}],` +
+		`"drafted":[{"id":2,"key":"example.atlassian.net/WEB-2","account":"Work","hours":0.5,"by":"agent","state":"drafted"}],` +
+		`"questions":[{"id":3,"account":"user2@example.com","hours":0.25,"reason":"Standup"}]}],` +
+		`"unread":[{"site":"example.atlassian.net","account":"user3@example.com","error":"this connection has no verified account, so whose time it is is not known; check the connection in the Issues settings"}]}`
+	if err != nil || answer != want {
+		t.Fatalf("time_read = %s, %v\nwant %s", answer, err, want)
+	}
+}
+
 // time_draft resolves each key, an entry's or an offer's, to its Jira
 // ticket and drafts them on that connection; a call that changed the
 // draft writes one timeline row naming the call and its days; the answer

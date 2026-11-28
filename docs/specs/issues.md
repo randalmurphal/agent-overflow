@@ -347,7 +347,8 @@ avatar.
 - A summary row sits above the columns. It is one line of chips until
   expanded into tiles. Its tiles are dashboard widgets pinned to the board,
   at most five. A tile that stands for a set of tickets filters the board
-  when clicked. The row is edited in place: remove a tile, add one from a
+  when clicked, and a list's chip counts those tickets, each once however
+  many of the list's rows it is in. The row is edited in place: remove a tile, add one from a
   dashboard, or ask the agent for a new one. A board with no tiles offers
   Add a tile in the row's place.
 - A card shows type, key, title, epic, labels, priority, points, assignee
@@ -740,6 +741,8 @@ the credit rules in How this is counted.
   why. A metric with series lists its rows under each series, and under
   a heading within one where its rows carry one, each with the number
   of its rows alone.
+- A value below 0 (a net change) is a bar or a point on the other side
+  of 0's line, on an axis that reaches as far below 0 as the values do.
 - A chart lists the tickets it draws in no bar or point (a finish whose
   time is not known) in a "not counted" that opens the whole chart. A
   chart or table that shows only its first 12 bars or 50 rows says how

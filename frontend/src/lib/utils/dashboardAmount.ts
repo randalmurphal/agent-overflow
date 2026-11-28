@@ -23,7 +23,11 @@ export function inTime(unit: DashboardUnit, estimates: string): boolean {
  * place, time as hours or minutes (inTime), tickets whole unless
  * averaged. */
 export function formatAmount(v: number, unit: DashboardUnit, estimates: string): string {
-  if (inTime(unit, estimates)) return formatEstimate(v, 'time') ?? '0m';
+  if (inTime(unit, estimates)) {
+    // Time below 0 (a net change) reads as its size with a minus.
+    const size = formatEstimate(Math.abs(v), 'time') ?? '0m';
+    return v < 0 && size !== '0m' ? `-${size}` : size;
+  }
   return trim(v);
 }
 

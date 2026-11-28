@@ -48,6 +48,7 @@
   import { fieldTarget, ticketWrites } from '../../stores/trackerTicketWrites.svelte';
   import { TOAST_MS } from '../../pageTiming';
   import { DEFAULT_MAX_ATTACHMENT_COUNT } from '../../types/attachment';
+  import { focusTrap } from '../../utils/focusTrap';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import TicketPicker, { type PickItem } from './TicketPicker.svelte';
   import TicketWriteNote from './TicketWriteNote.svelte';
@@ -205,6 +206,15 @@
     moves = { state: 'reading' };
   }
 
+  /** A drill's list is in a dialog, whose focus trap its portaled menus
+   * and form are outside of. */
+  const inDialog = $derived(variant === 'drill');
+
+  /** The button an action's anchor wraps. */
+  function triggerOf(anchor: HTMLElement | undefined): HTMLElement | undefined {
+    return anchor?.querySelector('button') ?? undefined;
+  }
+
   function close(reason?: PopoverCloseReason, anchor?: HTMLElement): void {
     endAction();
     restorePickerFocus(reason, { triggerEl: anchor });
@@ -356,8 +366,18 @@
   </div>
 {/if}
 
-<Popover anchor={moveAnchor} open={open === 'move'} onClose={(reason) => close(reason, moveAnchor?.querySelector('button') ?? undefined)} placement="bottom-end" ariaLabel="Move {many(acting.length)} to">
-  <Menu ariaLabel="Move {many(acting.length)} to" onClose={() => close(undefined, moveAnchor?.querySelector('button') ?? undefined)} minWidthClass="min-w-[220px]">
+<!-- A drill is a dialog and these lists are outside its focus trap: Tab
+     closes a menu back onto its button, and stays inside the thread form. -->
+<Popover
+  anchor={moveAnchor}
+  open={open === 'move'}
+  onClose={(reason) => close(reason, triggerOf(moveAnchor))}
+  placement="bottom-end"
+  ariaLabel="Move {many(acting.length)} to"
+  claimTab={inDialog}
+  restoreFocusTo={inDialog ? triggerOf(moveAnchor) : undefined}
+>
+  <Menu ariaLabel="Move {many(acting.length)} to" onClose={() => close(undefined, triggerOf(moveAnchor))} minWidthClass="min-w-[220px]">
     <p class="px-3 pt-2 pb-1 text-[0.75rem] font-medium text-fg" data-testid="ticket-list-move-title">Move {many(acting.length)} to</p>
     {#if moves.state === 'reading'}
       <MenuItem label="Reading where they can move…" disabled testId="ticket-list-move-reading" />
@@ -384,10 +404,12 @@
   clearLabel="Unassigned"
   onPick={(person) => void assign(person)}
   onClose={endAction}
+  dialogTrigger={inDialog ? triggerOf(assignAnchor) : undefined}
 />
 
-<Popover anchor={threadAnchor} open={open === 'thread'} onClose={(reason) => close(reason, threadAnchor?.querySelector('button') ?? undefined)} placement="bottom-end" ariaLabel="Start a thread">
+<Popover anchor={threadAnchor} open={open === 'thread'} onClose={(reason) => close(reason, triggerOf(threadAnchor))} placement="bottom-end" ariaLabel="Start a thread">
   <form
+    use:focusTrap={{ active: inDialog }}
     class="flex w-[300px] flex-col gap-1.5 rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 p-2.5 shadow-menu compact:w-full"
     data-testid="ticket-list-thread-form"
     onsubmit={(e) => { e.preventDefault(); void startThread(); }}

@@ -80,6 +80,9 @@ describe('<TrackerStartWorkSettings>', () => {
     expect(w.getByTestId('tracker-start-work-branch-example').textContent?.trim()).toBe('WEB-123-short-title');
     expect(within(place('OPS')).getByTestId('tracker-start-work-branch-example').textContent?.trim()).toBe('ops/OPS-123');
     expect((w.getByTestId('tracker-start-work-repository') as HTMLSelectElement).value).toBe('p1');
+    // A board can show tickets of a project not listed: the page says how one gets listed.
+    expect(screen.getByTestId('tracker-start-work-unlisted-project').textContent?.trim())
+      .toBe('A ticket of a project not listed here starts with no saved choices. Check "Save as defaults" in its Start work form to list its project here.');
   });
 
   it('turns the move on at the first status counted in progress, and moves it to the one picked', async () => {
@@ -194,5 +197,6 @@ describe('<TrackerStartWorkSettings>', () => {
     stored = { revision: '', setup: { status_groups: [], ticket_pins: [], start_work: [] } } as SetupView;
     render(TrackerStartWorkSettings);
     await screen.findByTestId('settings-tracker-start-work-empty');
+    expect(screen.queryByTestId('tracker-start-work-unlisted-project')).toBeNull();
   });
 });

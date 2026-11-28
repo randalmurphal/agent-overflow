@@ -34,9 +34,12 @@ type timeReadArgs struct {
 	To   string `json:"to"`
 }
 
-// loggedTime is a worklog of a day.
+// loggedTime is a worklog of a day. Account names the connection it is
+// of when another connection is of the same site (postAccount), as it
+// does on every row of time_read.
 type loggedTime struct {
 	Key         string  `json:"key"`
+	Account     string  `json:"account,omitempty"`
 	Title       string  `json:"title,omitempty"`
 	Hours       float64 `json:"hours"`
 	Description string  `json:"description,omitempty"`
@@ -45,21 +48,23 @@ type loggedTime struct {
 // draftedTime is an entry of the draft on a ticket: by agent or you,
 // the person; State is drafted, sent or unknown.
 type draftedTime struct {
-	ID     int64   `json:"id"`
-	Key    string  `json:"key"`
-	Hours  float64 `json:"hours"`
-	Reason string  `json:"reason,omitempty"`
-	By     string  `json:"by,omitempty"`
-	State  string  `json:"state,omitempty"`
+	ID      int64   `json:"id"`
+	Key     string  `json:"key"`
+	Account string  `json:"account,omitempty"`
+	Hours   float64 `json:"hours"`
+	Reason  string  `json:"reason,omitempty"`
+	By      string  `json:"by,omitempty"`
+	State   string  `json:"state,omitempty"`
 }
 
 // timeQuestion is an open question of the draft: hours whose ticket the
 // person picks, what the time was and the keys it offers.
 type timeQuestion struct {
-	ID     int64    `json:"id"`
-	Hours  float64  `json:"hours"`
-	Reason string   `json:"reason"`
-	Offer  []string `json:"offer,omitempty"`
+	ID      int64    `json:"id"`
+	Account string   `json:"account,omitempty"`
+	Hours   float64  `json:"hours"`
+	Reason  string   `json:"reason"`
+	Offer   []string `json:"offer,omitempty"`
 }
 
 // timeDay is a day of time_read: the time logged and drafted, and what
@@ -97,8 +102,9 @@ type commitLine struct {
 const commitsShown = 30
 
 // timeUnread is a connection whose time could not be read from its
-// tracker: Account names it in a post's answer (postAccount); the answer
-// holds what this computer read before, and Days are those it never read.
+// tracker: Account names it when another connection is of its site
+// (postAccount); the answer holds what this computer read before, and
+// Days are those it never read.
 type timeUnread struct {
 	Site    string   `json:"site"`
 	Account string   `json:"account,omitempty"`
@@ -194,6 +200,7 @@ func (s *Server) timeRead(ctx context.Context, caller Caller, raw json.RawMessag
 	var failed error
 	failures := 0
 	for _, src := range jira {
+		account := postAccount(jira, src)
 		got, err := s.t.ReadTime(ctx, src.ID, from, to)
 		if err != nil {
 			// A refusal the model can read (a connection turned off, one
@@ -208,19 +215,19 @@ func (s *Server) timeRead(ctx context.Context, caller Caller, raw json.RawMessag
 				failed = onSite(src.Site, err)
 			}
 			failures++
-			out.Unread = append(out.Unread, timeUnread{Site: src.Site, Error: message})
+			out.Unread = append(out.Unread, timeUnread{Site: src.Site, Account: account, Error: message})
 			continue
 		}
 		switch {
 		case got.Failure != nil:
-			out.Unread = append(out.Unread, timeUnread{Site: src.Site, Error: got.Failure.Message, Days: got.Unread})
+			out.Unread = append(out.Unread, timeUnread{Site: src.Site, Account: account, Error: got.Failure.Message, Days: got.Unread})
 		case got.More:
-			out.Unread = append(out.Unread, timeUnread{Site: src.Site, Error: "these days hold more worklogs than one answer shows; ask for fewer days"})
+			out.Unread = append(out.Unread, timeUnread{Site: src.Site, Account: account, Error: "these days hold more worklogs than one answer shows; ask for fewer days"})
 		}
 		key := qualifier(sources, src.Site)
 		for _, w := range got.Worklogs {
 			if day := byDay[w.Day]; day != nil {
-				day.Logged = append(day.Logged, loggedTime{Key: key(w.Key), Title: w.Title, Hours: float64(w.SpentSeconds) / 3600,
+				day.Logged = append(day.Logged, loggedTime{Key: key(w.Key), Account: account, Title: w.Title, Hours: float64(w.SpentSeconds) / 3600,
 					Description: strings.TrimSpace(w.Description)})
 			}
 		}
@@ -230,13 +237,13 @@ func (s *Server) timeRead(ctx context.Context, caller Caller, raw json.RawMessag
 			case day == nil || e.State == "posted" || e.State == "left_out":
 				// A posted entry is among the logged worklogs.
 			case e.Key == "":
-				q := timeQuestion{ID: e.ID, Hours: float64(e.Minutes) / 60, Reason: e.Reason}
+				q := timeQuestion{ID: e.ID, Account: account, Hours: float64(e.Minutes) / 60, Reason: e.Reason}
 				for _, o := range e.Offers {
 					q.Offer = append(q.Offer, key(o.Key))
 				}
 				day.Questions = append(day.Questions, q)
 			default:
-				day.Drafted = append(day.Drafted, draftedTime{ID: e.ID, Key: key(e.Key), Hours: float64(e.Minutes) / 60, Reason: e.Reason,
+				day.Drafted = append(day.Drafted, draftedTime{ID: e.ID, Key: key(e.Key), Account: account, Hours: float64(e.Minutes) / 60, Reason: e.Reason,
 					By: byName(e.By), State: e.State})
 			}
 		}
@@ -375,7 +382,7 @@ func fitTime(out timeReadAnswer) (timeReadAnswer, error) {
 			c := timeDay{Day: d.Day, Logged: make([]loggedTime, len(d.Logged)), Active: d.Active, Phone: d.Phone, Tickets: d.Tickets,
 				CommitsMore: d.CommitsMore}
 			for j, w := range d.Logged {
-				c.Logged[j] = loggedTime{Key: w.Key, Hours: w.Hours, Title: clip(), Description: clip()}
+				c.Logged[j] = loggedTime{Key: w.Key, Account: w.Account, Hours: w.Hours, Title: clip(), Description: clip()}
 			}
 			for _, e := range d.Drafted {
 				e.Reason = clip()

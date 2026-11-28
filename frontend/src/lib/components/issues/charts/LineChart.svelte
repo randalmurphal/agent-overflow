@@ -10,7 +10,7 @@
   import { formatNum, numValue, numWords, type Num } from '../../../stores/trackerDashboardModel';
   import { formatAmount, unitWord, type DashboardUnit } from '../../../utils/dashboardAmount';
   import { isLocalEnter } from '../../../utils/localEnter';
-  import { labelEvery, SERIES_COLORS, unitScale } from './chartScale';
+  import { along, labelEvery, SERIES_COLORS, unitScale, valueEnds } from './chartScale';
 
   interface Props {
     title: string;
@@ -32,8 +32,8 @@
   const BOTTOM = 22;
   const TOP = 10;
   const named = $derived(series.length > 1 || series[0] !== '');
-  const top = $derived(Math.max(0, ...buckets.flatMap((b) => b.cells.map((c) => numValue(c as Num) ?? 0))));
-  const scale = $derived(unitScale(top, unit, estimates));
+  const ends = $derived(valueEnds(buckets.flatMap((b) => b.cells.map((c) => numValue(c as Num)))));
+  const scale = $derived(unitScale(ends.top, unit, estimates, ends.bottom));
   const plotW = $derived(Math.max(0, width - LEFT - 12));
   const plotH = HEIGHT - BOTTOM - TOP;
   const every = $derived(labelEvery(buckets.length, plotW));
@@ -54,7 +54,7 @@
     return LEFT + (buckets.length <= 1 ? plotW / 2 : (i / (buckets.length - 1)) * plotW);
   }
   function y(v: number): number {
-    return TOP + plotH - (v / scale.max) * plotH;
+    return TOP + plotH - along(v, scale, plotH);
   }
   /** The line of series s, broken where a period has no value. */
   function path(s: number): string {

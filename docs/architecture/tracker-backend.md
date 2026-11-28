@@ -587,8 +587,13 @@ no step runs at root creation, restore or start.
   site: the page works out the sites itself, from the project's boards,
   the computer's connections and the setup's `ticket_pins` it already
   holds, so a pin saved elsewhere or a connection removed shows with no
-  read. A site's read goes through the first connection to it that is
-  on; a site whose connections are all off is `ErrDisabled`, and one no
+  read. Jira lists the fields its account can see, so a site's read goes
+  through a connection to it that is on and that one of the project's
+  boards is listed through, then through the site's other connections
+  that are on: the first that answers is the answer, so an account
+  whose token stopped working holds up no other, and the first failure
+  is the answer when none does. A site whose connections are all off is
+  `ErrDisabled`, and one no
   connection reaches is `NoSiteConnectionError`, which the app words as
   `tracker_site_unreached`. Each read has its own deadline, error line
   and Try again, so a site that fails or stalls holds up no other. A
@@ -3686,7 +3691,10 @@ worklogs and the Jira issues they name
 (`TestAWeeksDraftCostsBoundedRequests`). Each day answers its worklogs (`logged`), the draft's entries not yet logged
 (`drafted`, by `agent` or `you`, in state drafted, sent or unknown) and
 its open questions. A connection whose read failed is named in `unread`
-with its sentence; the call fails only when every connection did. The
+with its sentence; the call fails only when every connection did. Where
+two connections on are of one site, each worklog, entry, question and
+unread connection carries `account`, the name a post's approval gives
+that connection (`trackertools.postAccount`). The
 answer names the tickets the thread's project's Time settings put
 meeting and time-off hours on (`meetings_ticket`, `time_off_ticket`,
 each absent when not set, and written as [Keys](#agent-tools) are),

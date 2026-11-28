@@ -127,3 +127,72 @@ describe('bars by period', () => {
     expect(bars.map((p) => p.closest('[data-testid="dashboard-bar"]')?.getAttribute('aria-label'))).toEqual(['Sprint 1, 5 points', 'Sprint 2, 3 points (so far)']);
   });
 });
+
+describe('a value below 0', () => {
+  function bars(title: string, horizontal: boolean): HTMLElement {
+    const host = document.createElement('div');
+    host.style.width = '480px';
+    document.body.append(host);
+    const app = mount(BarChart, { target: host, props: { title, buckets: NET, series: [''], unit: 'estimate', estimates: 'points', onPick: vi.fn(), horizontal } });
+    mounted.push({ app, host });
+    flushSync();
+    return host;
+  }
+  const NET = [day('week:1', 'Week 1', { v: 6 }), day('week:2', 'Week 2', { v: -4 }), day('week:3', 'Week 3', { v: 0 })];
+
+  it('is a bar under 0\'s line beside the bars above it, and a bar of 0 is none', async () => {
+    const host = bars('Net change', false);
+    await waitFor(() => host.querySelectorAll('[data-testid="dashboard-bar"] path').length === 2, 'the chart drew a bar for each value that is not 0');
+    const ticks = [...host.querySelectorAll('[data-testid="dashboard-axis-tick"]')];
+    expect(ticks.map((t) => t.textContent)).toEqual(['-5', '0', '5', '10']);
+    const zero = ticks[1].getBoundingClientRect();
+    const zeroY = zero.top + zero.height / 2;
+    const [up, down] = [...host.querySelectorAll<SVGPathElement>('[data-testid="dashboard-bar"] path')].map((p) => p.getBoundingClientRect());
+    // The bar of 6 stands on 0's line; the bar of -4 hangs from it, two thirds as long.
+    expect(Math.abs(up.bottom - zeroY)).toBeLessThan(3);
+    expect(Math.abs(down.top - zeroY)).toBeLessThan(3);
+    expect(up.height).toBeGreaterThan(20);
+    expect(down.height / up.height).toBeCloseTo(4 / 6, 1);
+    expect(host.querySelectorAll('[data-testid="dashboard-bar"] path[data-below]')).toHaveLength(1);
+    expect([...host.querySelectorAll('[data-testid="dashboard-bar"]')].map((b) => b.getAttribute('aria-label'))).toEqual(['Week 1, 6 points', 'Week 2, -4 points', 'Week 3, 0 points']);
+    // Every bar, the one below 0 included, is inside the chart's box.
+    const box = host.querySelector('svg')!.getBoundingClientRect();
+    expect(down.bottom).toBeLessThanOrEqual(box.bottom);
+  });
+
+  it('is a bar left of 0\'s line on bars that lie flat', async () => {
+    const host = bars('Net change by person', true);
+    await waitFor(() => host.querySelectorAll('[data-testid="dashboard-bar"] path').length === 2, 'the chart drew a bar for each value that is not 0');
+    const lines = [...host.querySelectorAll<SVGLineElement>('[data-testid="dashboard-bar-zero"]')].map((l) => l.getBoundingClientRect());
+    expect(lines).toHaveLength(3);
+    const [right, left] = [...host.querySelectorAll<SVGPathElement>('[data-testid="dashboard-bar"] path')].map((p) => p.getBoundingClientRect());
+    expect(Math.abs(right.left - lines[0].left)).toBeLessThan(3);
+    expect(Math.abs(left.right - lines[1].left)).toBeLessThan(3);
+    expect(left.width / right.width).toBeCloseTo(4 / 6, 1);
+    const plot = host.querySelector('svg')!.getBoundingClientRect();
+    expect(left.left).toBeGreaterThanOrEqual(plot.left - 1);
+  });
+
+  it('is a point under 0\'s line on a line chart, inside the chart', async () => {
+    const host = document.createElement('div');
+    host.style.width = '480px';
+    document.body.append(host);
+    const app = mount(LineChart, { target: host, props: { title: 'Net change', buckets: NET, series: [''], unit: 'estimate', estimates: 'points', onPick: vi.fn() } });
+    mounted.push({ app, host });
+    flushSync();
+    await waitFor(() => host.querySelectorAll('[data-testid="dashboard-point"] circle').length === 3, 'the chart drew its points');
+    const ticks = [...host.querySelectorAll('[data-testid="dashboard-axis-tick"]')];
+    expect(ticks.map((t) => t.textContent)).toEqual(['-5', '0', '5', '10']);
+    const zero = ticks[1].getBoundingClientRect();
+    const zeroY = zero.top + zero.height / 2;
+    const centers = [...host.querySelectorAll('[data-testid="dashboard-point"] circle')].map((c) => {
+      const r = c.getBoundingClientRect();
+      return r.top + r.height / 2;
+    });
+    expect(centers[0]).toBeLessThan(zeroY - 10);
+    expect(centers[1]).toBeGreaterThan(zeroY + 10);
+    expect(Math.abs(centers[2] - zeroY)).toBeLessThan(3);
+    const box = host.querySelector('svg')!.getBoundingClientRect();
+    expect(centers[1]).toBeLessThan(box.bottom - 20);
+  });
+});

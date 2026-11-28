@@ -5008,6 +5008,25 @@ describe("the board's summary row", () => {
     view.unmount();
   });
 
+  it('counts the tickets of a pinned list whose rows name a ticket more than once', async () => {
+    install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['w_1'] } as Partial<BoardView>) });
+    setBindingMock('TrackerDashboards', async () => ({ dashboards: [OVERVIEW, KEPT], proposals: [], ask: '', tiles: { limits: {}, proposed: [], max: 5 } }));
+    const range = { id: 'weeks_4', label: 'Last 4 weeks', periods: [], previous: '' };
+    const listRow = (n: number, id: string) => ({ row: n, id, key: `WEB-${id}`, title: `Ticket ${id}`, status: 'To Do', counted: true });
+    const value = { id: 'w_1', tickets: [listRow(0, '1'), listRow(1, '1'), listRow(2, '2')], distinct: 2 };
+    const evaluate = setBindingMock('EvaluateTrackerDashboard', async () => ({ range, estimates: 'points', at: 1, widgets: [value], logged: {} }));
+    setBindingMock('RefreshTrackerSubscription', async () => undefined);
+    setBindingMock('ReadTrackerWorklogDays', async () => undefined);
+    const view = mount();
+    const chip = await view.findByTestId('board-row-chip');
+    await waitFor(() => expect(chip.textContent).toContain('2 tickets'));
+    // A list of a row a ticket counts its rows, shown and not.
+    evaluate.mockImplementation(async () => ({ range, estimates: 'points', at: 2, widgets: [{ id: 'w_1', tickets: [listRow(0, '1'), listRow(1, '2')], more: 3 }], logged: {} }));
+    await fireEvent.click(view.getByTestId('issues-refresh'));
+    await waitFor(() => expect(chip.textContent).toContain('5 tickets'));
+    view.unmount();
+  });
+
   it("has the board's Refresh read no logged time when no pinned tile needs it", async () => {
     install({ view: kanban({ rows: [row('1', 'a', 's1')] }, { rows: [] }, { pins: ['stuck'] } as Partial<BoardView>) });
     setBindingMock('TrackerDashboards', async () => listing());

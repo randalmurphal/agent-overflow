@@ -20,7 +20,7 @@
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { isLocalEnter } from '../../utils/localEnter';
   import { settingsComputerName } from '../../stores/settings.svelte';
-  import { countsTickets, creditOn, withCreditOn, withCreditRules, withSupport, type CreditChange, type SupportChange } from '../../stores/trackerSetup.svelte';
+  import { countsTickets, creditActionIsLast, creditOn, withCreditOn, withCreditRules, withSupport, type CreditChange, type SupportChange } from '../../stores/trackerSetup.svelte';
   import { boardProjects, boardWriteContext, loadBoardProjects, loadProjectIssueTypes, projectIssueTypes } from '../../stores/trackerTicketWrites.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import Segmented from '../primitives/Segmented.svelte';
@@ -249,12 +249,15 @@
             {#each ACTIONS as a (a.id)}
               {@const chosen = r.review_actions.includes(a.id)}
               {@const last = chosen && r.review_actions.length === 1}
+              {@const earlierLast = chosen && !last && creditActionIsLast(credit?.rules ?? [], a.id, every === 'every')}
               <button
                 type="button"
                 class="{CHIP_BASE_CLASS} {chosen ? CHIP_SELECTED_CLASS : CHIP_RESTING_CLASS}"
                 aria-pressed={chosen}
-                disabled={locked || last}
-                title={last ? 'A reviewer is counted by at least one kind of action.' : page.lockReason || undefined}
+                disabled={locked || last || earlierLast}
+                title={last ? 'A reviewer is counted by at least one kind of action.'
+                  : earlierLast ? 'An earlier sprint counts reviewers by this kind of action alone. Choose "This sprint on" to stop counting it from now.'
+                  : page.lockReason || undefined}
                 onclick={() => toggleAction(a.id)}
                 data-testid="tracker-credit-action"
                 data-action={a.id}

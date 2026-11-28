@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -115,6 +116,38 @@ func TestExplainRepoForgeErrorNamesTheProject(t *testing.T) {
 	}
 	if err := ExplainRepoForgeError(repo, ActionRead, nil); err != nil {
 		t.Fatalf("nil = %v", err)
+	}
+}
+
+// A forge answer that says the repository does not resolve for this login
+// is told from every other, and its sentence names the repository.
+func TestRepositoryNotVisible(t *testing.T) {
+	t.Parallel()
+	repo := RepoReference{Forge: "github", Host: "github.com", Namespace: "example", Repo: "web"}
+	search := &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Path: []any{"search"},
+		Message: "The listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them."}}}
+	field := &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Type: "NOT_FOUND", Path: []any{"repository"},
+		Message: "Could not resolve to a Repository with the name 'example/web'."}}}
+	project := &forgeapi.StatusError{Method: "GET", Status: http.StatusNotFound, Body: `{"message":"404 Project Not Found"}`}
+	for _, err := range []error{search, field, project, fmt.Errorf("list: %w", search)} {
+		if !RepositoryNotVisible(err) {
+			t.Errorf("RepositoryNotVisible(%v) = false", err)
+		}
+		explained, ok := errors.AsType[*ForgeActionError](ExplainRepoForgeError(repo, ActionRead, err))
+		if !ok || explained.Kind != ForgeErrorNotFound || !strings.HasPrefix(explained.Message, "example/web was not found on ") {
+			t.Errorf("ExplainRepoForgeError(%v) = %+v, want the not-found sentence naming the repository", err, explained)
+		}
+	}
+	for _, err := range []error{
+		&forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Type: "NOT_FOUND", Message: "Could not resolve to a PullRequest with the number of 5."}}},
+		&forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Message: "Something went wrong while executing your query."}}},
+		&forgeapi.StatusError{Method: "GET", Status: http.StatusNotFound, Body: `{"message":"404 Not Found"}`},
+		&forgeapi.StatusError{Method: "GET", Status: http.StatusForbidden, Body: `{"message":"404 Project Not Found"}`},
+		errors.New("decode body: unexpected EOF"),
+	} {
+		if RepositoryNotVisible(err) {
+			t.Errorf("RepositoryNotVisible(%v) = true", err)
+		}
 	}
 }
 

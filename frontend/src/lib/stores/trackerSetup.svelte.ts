@@ -626,13 +626,24 @@ function withCreditChange(r: CreditRules, change: CreditChange): CreditRules {
 /** `setup` with `change` made to its credit rules: for every sprint, in
  * each snapshot, each keeping when it took effect; else from this sprint,
  * as a new newest snapshot with no time, which the computer stamps from
- * the save (trackerapp's stampCredit). */
+ * the save (trackerapp's stampCredit). For every sprint, an earlier
+ * snapshot that counts fewer kinds of action than the number needed
+ * needs all it counts, since the page's bound is the newest snapshot's. */
 export function withCreditRules(setup: Setup, change: CreditChange, everySprint: boolean): Setup {
   const credit = setup.credit!;
+  const newest = credit.rules.length - 1;
   const rules = everySprint
-    ? credit.rules.map((r) => withCreditChange(r, change))
+    ? credit.rules.map((r, i) => withCreditChange(r, i < newest && 'review_need' in change
+      ? { review_need: Math.min(change.review_need, r.review_actions.length) } : change))
     : [...credit.rules, { ...withCreditChange(credit.rules[credit.rules.length - 1], change), from: undefined }];
   return { ...setup, credit: { ...credit, rules } };
+}
+
+/** Whether turning review action `action` off would leave a snapshot of
+ * `rules` that the change reaches counting none: the newest, and for
+ * every sprint each earlier one. The computer refuses such a rule. */
+export function creditActionIsLast(rules: readonly CreditRules[], action: string, everySprint: boolean): boolean {
+  return (everySprint ? rules : rules.slice(-1)).some((r) => r.review_actions.length === 1 && r.review_actions[0] === action);
 }
 
 /** One change to which tickets of a site are support, as the person

@@ -282,6 +282,29 @@ describe('the Credit group', () => {
     expect(saves[1].credit!.rules.map((r) => r.review_actions)).toEqual([['commented', 'logged_time'], ['commented', 'approved', 'logged_time']]);
   });
 
+  it('makes no every-sprint change an earlier snapshot cannot hold', async () => {
+    answerTypes();
+    // The older rule counts comments only; the newest all three, needing 2.
+    const older = rules({ review_actions: ['commented'], review_need: 1 });
+    stored = setupWith(undefined, { on: true, rules: [older, rules({ from: 1_800_000_000_000 })], support: [] });
+    render(TrackerPointsSettings);
+    await screen.findByTestId('tracker-credit-review');
+    const action = (id: string) => screen.getAllByTestId('tracker-credit-action').find((b) => b.dataset.action === id) as HTMLButtonElement;
+    // From this sprint on, comments can stop counting: the newest keeps two.
+    expect(action('commented').disabled).toBe(false);
+    await fireEvent.click(screen.getByRole('radio', { name: 'Every sprint' }));
+    // For every sprint, the older rule would count nothing.
+    await waitFor(() => expect(action('commented').disabled).toBe(true));
+    expect(action('commented').title).toContain('An earlier sprint counts reviewers by this kind of action alone');
+    expect(action('approved').disabled).toBe(false);
+    // The number needed: the older rule needs all it counts, never more.
+    await change('tracker-credit-need', 3);
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(saves[0].credit!.rules.map((r) => r.review_need)).toEqual([1, 3]);
+    await fireEvent.click(screen.getByRole('radio', { name: 'This sprint on' }));
+    await waitFor(() => expect(action('commented').disabled).toBe(false));
+  });
+
   /** Makes the page's held setup stale: a reread fails and the page keeps
    * showing the last setup read, so the next save reads it again first;
    * that read answers when the returned function is called. */

@@ -248,6 +248,10 @@ type WidgetValue struct {
 	// More is a list's rows past those it shows, or the buckets a widget
 	// that ranks its buckets left out (DrillRequest.Rest opens them).
 	More int `json:"more,omitempty"`
+	// Distinct is how many tickets a list's rows, shown and past those
+	// shown, are of, when a ticket is in more than one row; 0 when each
+	// row is its own ticket.
+	Distinct int `json:"distinct,omitempty"`
 	// NotCounted is a list's tickets that its metric could not count, by
 	// the rule every number's NC follows, or the tickets of a chart's or
 	// table's range that it places in no bucket (a row with no instant).
@@ -1659,15 +1663,22 @@ func (ev *evaluation) widget(w Widget, m Metric, c counted, sp span) (out Widget
 		rows := slices.Clone(t.rows)
 		sortDrill(rows, ev.keyOf)
 		out.NotCounted = notCounted(t.rows)
+		distinct := map[string]struct{}{}
+		counted := 0
 		for _, r := range rows {
 			if !r.counted {
 				continue
 			}
+			counted++
+			distinct[r.ticket] = struct{}{}
 			if len(out.Tickets) == maxListRows {
 				out.More++
 				continue
 			}
 			out.Tickets = append(out.Tickets, ev.ticket(r, m, c.p.cols, len(out.Tickets)))
+		}
+		if len(distinct) < counted {
+			out.Distinct = len(distinct)
 		}
 	case FormBars, FormLine, FormTable:
 		out.Series = seriesOf(m, c.p.cols)

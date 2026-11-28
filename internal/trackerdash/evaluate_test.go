@@ -636,3 +636,31 @@ func TestMoreOpensTheBucketsTheWidgetLeftOut(t *testing.T) {
 		t.Fatalf("the whole table = %+v, %v; want its 54 rows, 58 points", whole, err)
 	}
 }
+
+// A list whose metric places a ticket in more than one row says how many
+// tickets its rows are of; one of a row a ticket says nothing, since its
+// rows are its tickets.
+func TestAListSaysHowManyTicketsItsRowsAreOf(t *testing.T) {
+	t.Parallel()
+	f := sprintBoard()
+	f.ticket(ticket{id: "t1", key: "WEB-1", status: "3", group: "in_progress", created: ago(20), historyFrom: ago(20)})
+	f.ticket(ticket{id: "t2", key: "WEB-2", status: "3", group: "in_progress", created: ago(20), historyFrom: ago(20)})
+	f.stay("t1", "1", ago(6), ago(4)).stay("t1", "3", ago(4), 0).stay("t2", "3", ago(3), 0)
+	metric := func(name, sql string, bucket Bucket) Metric {
+		return Metric{Name: name, Title: name, Words: []string{"Each row."}, SQL: sql, Reduce: ReduceCount, Unit: UnitTickets, Bucket: bucket}
+	}
+	b := f.board()
+	b.Own = Own{Dashboards: []Dashboard{{ID: "mine", Title: "Mine", Widgets: []Widget{
+		{ID: "moves", Metric: "moves", Form: FormList, Width: 6}, {ID: "each", Metric: "each", Form: FormList, Width: 6},
+	}}}, Metrics: map[string]Metric{
+		"moves": metric("moves", `SELECT ticket, from_at AS at FROM status_intervals`, BucketPeriod),
+		"each":  metric("each", `SELECT id AS ticket FROM tickets`, ""),
+	}}
+	a := mustEvaluate(t, evaluator(), b, Request{Dashboard: "mine", Range: RangeSprints3, TimeZone: "UTC"})
+	if w := widgetOf(t, a, "moves"); w.Error != "" || len(w.Tickets) != 3 || w.Distinct != 2 {
+		t.Errorf("a list of 3 moves of 2 tickets = %d rows of %d tickets, %q; want 3 rows of 2", len(w.Tickets), w.Distinct, w.Error)
+	}
+	if w := widgetOf(t, a, "each"); w.Error != "" || len(w.Tickets) != 2 || w.Distinct != 0 {
+		t.Errorf("a list of a row a ticket = %+v, distinct %d, %q; want 2 rows and no count beside them", w.Tickets, w.Distinct, w.Error)
+	}
+}
