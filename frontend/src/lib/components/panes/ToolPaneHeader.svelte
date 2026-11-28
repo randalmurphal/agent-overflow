@@ -6,6 +6,9 @@
   // so it can fill the segments (a breadcrumb, a filter summary, a ticket's
   // controls); ToolPane and TicketPane render it bare while the body chunk
   // loads. A tool's title is its kind's; a ticket pane passes its own.
+  // Under compact the title is no handle, and a tool whose first segment
+  // already names where the person is leaves it out (`compactTitle`), so
+  // that segment keeps the phone's width.
   //
   // Back has one meaning at a time. With a detail step open the tool passes
   // `onBack` and the control steps back to its list; otherwise the compact
@@ -34,6 +37,8 @@
     backLabel?: string;
     backTestId?: string;
     titleTestId?: string;
+    /** False leaves the title out under compact. */
+    compactTitle?: boolean;
     children?: Snippet;
   } & ({ kind: ToolPaneKind; title?: never } | { kind?: never; title: string });
 
@@ -42,6 +47,7 @@
     kind,
     title: ownTitle,
     titleTestId = 'tool-pane-title',
+    compactTitle = true,
     onPaneDragStart,
     onBack,
     backLabel = 'Back',
@@ -69,6 +75,7 @@
   {/if}
   <!-- The title is the pane drag handle, as a thread pane's is. A tool has
        no name of its own to edit, so there is no rename. -->
+  {#if compactTitle || !compact}
   <button
     type="button"
     draggable={onPaneDragStart != null && !compact}
@@ -80,6 +87,7 @@
       onPaneDragStart && !compact ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
     ].join(' ')}
   >{title}</button>
+  {/if}
   <div class="flex min-w-0 flex-1 items-center">
     {@render children?.()}
   </div>

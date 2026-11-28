@@ -36,7 +36,7 @@
   import { getThreadById } from '../../stores/threads.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { askAgentAboutDashboards, createTrackerDashboard, takeShownWidget, type DashboardSource } from '../../stores/trackerDashboard.svelte';
-  import { FIRST_READ_TEXT } from '../../stores/trackerDashboardModel';
+  import { FIRST_READ_TEXT, limitSide, limitWords } from '../../stores/trackerDashboardModel';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { scopeGrant } from '../../transport/scopes';
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
@@ -201,6 +201,13 @@
     return pins.length >= tiles.max
       ? `Asked for the board row, which already shows ${tiles.max} tiles: Keep adds it to a dashboard only.`
       : 'Keep also shows it on the board row.';
+  }
+
+  // The limit a proposal's agent asked for, which Keep sets: said before
+  // Keep, since the tile shows a limit only once its number is past it.
+  function keepLimitText(p: ProposalView): string {
+    const limit = tiles?.limits[p.view.id];
+    return limit ? `Keep also warns ${limitSide(p.view.good ?? '')} ${limitWords(limit)}.` : '';
   }
 
   let asking = $state(false);
@@ -398,6 +405,9 @@
                 <Button size="xs" variant="tinted" testId="dashboard-keep" loading={store.busy.has(p.view.id)} disabled={!!editBlocked} title={editBlocked ?? (store.ownShown ? `Keep it on ${store.dashboard?.title}` : undefined)} onclick={(e) => pressKeep(p, e.currentTarget as HTMLElement)}>{store.ownShown ? 'Keep' : 'Keep…'}</Button>
                 {#if keepPinText(p)}
                   <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-keep-pin">{keepPinText(p)}</span>
+                {/if}
+                {#if keepLimitText(p)}
+                  <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-keep-limit">{keepLimitText(p)}</span>
                 {/if}
               </span>
             {/snippet}

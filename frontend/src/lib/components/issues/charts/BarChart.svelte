@@ -101,7 +101,7 @@
             <g
               role="button"
               tabindex="0"
-              aria-label={cellText(b, s)}
+              aria-label="{cellText(b, s)}{b.partial ? ' (so far)' : ''}"
               class="cursor-pointer outline-none focus-visible:[&>rect]:stroke-accent"
               data-testid="dashboard-bar"
               data-bucket={b.key}
@@ -116,7 +116,9 @@
               <!-- The hit target is the whole band's height, wider than the bar. -->
               <rect x={outer.start + inner.start} y="0" width={inner.size} height={plotH + 8} fill="transparent" stroke-width="2" />
               {#if h > 0}
-                <path d={vBar(outer.start + inner.start, inner.size, h)} fill={SERIES_COLORS[s]} opacity={b.partial ? 0.7 : 1} />
+                <!-- A period still running is outlined in its series color and
+                     filled lighter, so its edge keeps the color's contrast. -->
+                <path d={vBar(outer.start + inner.start, inner.size, h)} fill={SERIES_COLORS[s]} fill-opacity={b.partial ? 0.4 : 1} stroke={b.partial ? SERIES_COLORS[s] : 'none'} stroke-width="1.5" data-partial={b.partial ? '' : undefined} />
               {/if}
             </g>
           {/each}

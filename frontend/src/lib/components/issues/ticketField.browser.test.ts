@@ -47,6 +47,35 @@ async function typeInto(host: HTMLElement, keys: string): Promise<HTMLInputEleme
   return input;
 }
 
+describe('the narrow ticket\'s row of fields', () => {
+  it('gives a long value its width while the short ones leave room, and shares the row when they do not', async () => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;width:380px';
+    document.body.appendChild(row);
+    const fields = [['Status', 'status', 'Waiting for review'], ['Assignee', 'assignee', 'User 2'], ['Priority', 'priority', ''], ['Points', 'points', '3']];
+    for (const [label, field, value] of fields) {
+      const app = mount(TicketField, {
+        target: row,
+        context: ticketWriteSurfaceContext(() => true),
+        props: { label, field, value, editor: null, ticketKey: 'k', target: field, fieldName: (id: string) => id, inline: true },
+      });
+      mounted.push({ app, host: row });
+    }
+    await raf();
+    const text = (field: string) => row.querySelector<HTMLElement>(`[data-field="${field}"] [data-testid="ticket-field-value"] span`)!;
+    for (const [, field] of fields) {
+      expect(text(field).scrollWidth, `${field} is not cut`).toBeLessThanOrEqual(text(field).clientWidth);
+    }
+    expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+
+    // Too narrow for them all: the row still holds them, cutting text.
+    row.style.width = '160px';
+    await raf();
+    expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+    expect(text('status').scrollWidth).toBeGreaterThan(text('status').clientWidth);
+  });
+});
+
 describe('a typed ticket field', () => {
   it('saves nothing for text that is not a number and says what the field takes', async () => {
     const { host, saves } = mountField('number', '3');

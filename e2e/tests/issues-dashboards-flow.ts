@@ -650,7 +650,9 @@ export function registerDashboardsFlow({ compact }: DashboardsSurface): void {
     await expect(epics.locator('[data-testid="dashboard-bar"][data-bucket="10611"]')).toHaveCount(0);
     await press(epics.getByTestId('dashboard-more'), compact);
     await expect(page.getByRole('dialog', { name: 'Open work by epic, 2 more epics' })).toBeVisible();
-    await expect(drill.getByTestId('dashboard-drill-count')).toHaveText('3 tickets');
+    // The board counts tickets, so the value is the count and is said once.
+    await expect(drill.getByTestId('dashboard-drill-value')).toHaveText('3 tickets');
+    await expect(drill.getByTestId('dashboard-drill-count')).toHaveCount(0);
     expect(await keys()).toEqual(['WEB-756', 'WEB-757', 'WEB-758']);
     await page.keyboard.press('Escape');
     await expect(drill).toHaveCount(0);

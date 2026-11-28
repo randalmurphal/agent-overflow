@@ -3,7 +3,8 @@
 // value to zero on the sprint's last day, each point saying what is left
 // and, on hover, what the pace would leave; a day still to come has no
 // point. A chart of periods draws no pace. Both charts label their value
-// axis in the unit their numbers read in.
+// axis in the unit their numbers read in. Bars by period outline the bar
+// of a period still running.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -101,5 +102,28 @@ describe('the value axis', () => {
   it('reads logged time in hours on a line chart and on bars', async () => {
     expect(await ticks(LineChart)).toEqual(['0m', '30m', '1h', '1.5h', '2h']);
     expect(await ticks(BarChart)).toEqual(['0m', '30m', '1h', '1.5h', '2h']);
+  });
+});
+
+describe('bars by period', () => {
+  it('outline the bar of a period still running and fill it lighter, and no other bar', async () => {
+    const host = document.createElement('div');
+    host.style.width = '480px';
+    document.body.append(host);
+    const buckets = [day('sprint:1', 'Sprint 1', { v: 5 }), day('sprint:2', 'Sprint 2', { v: 3 }, { partial: true })];
+    const app = mount(BarChart, { target: host, props: { title: 'Finished per sprint', buckets, series: [''], unit: 'estimate', estimates: 'points', onPick: vi.fn(), horizontal: false } });
+    mounted.push({ app, host });
+    flushSync();
+    await waitFor(() => host.querySelectorAll('[data-testid="dashboard-bar"] path').length === 2, 'the chart drew its bars');
+    const bars = [...host.querySelectorAll<SVGPathElement>('[data-testid="dashboard-bar"] path')];
+    expect(bars.map((p) => [p.getAttribute('fill-opacity'), p.getAttribute('stroke')])).toEqual([
+      ['1', 'none'],
+      ['0.4', 'var(--chart-series-1)'],
+    ]);
+    // The outline is the series color at full strength; the fill is the same color.
+    const stroke = getComputedStyle(bars[1]).stroke;
+    expect(stroke).toBe(getComputedStyle(bars[0]).fill);
+    expect(getComputedStyle(bars[1]).fill).toBe(stroke);
+    expect(bars.map((p) => p.closest('[data-testid="dashboard-bar"]')?.getAttribute('aria-label'))).toEqual(['Sprint 1, 5 points', 'Sprint 2, 3 points (so far)']);
   });
 });

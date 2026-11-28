@@ -74,6 +74,7 @@
     type Num,
   } from '../../stores/trackerDashboardModel';
   import { formatAmount, unitWord, type DashboardUnit } from '../../utils/dashboardAmount';
+  import { randomId } from '../../utils/randomId';
   import type { DrillTarget, LoggedTimeRead } from '../../stores/trackerDashboard.svelte';
   import BarChart from './charts/BarChart.svelte';
   import LineChart from './charts/LineChart.svelte';
@@ -137,6 +138,8 @@
   // listing could not name it.
   const how = $derived(value?.range_words ? { ...view.how, range: value.range_words } : view.how);
   const amount = $derived(numWords(value?.value as Num | undefined, unit, estimates));
+  // The number's lines under it, which its button names as its description.
+  const detailId = `dashboard-number-detail-${randomId().slice(0, 8)}`;
   const side = $derived(limitSide(view.good ?? ''));
   const over = $derived(view.form === 'number' && !value?.error && overLimit(value?.value as Num | undefined, unit, estimates, limit, view.good ?? ''));
 
@@ -256,12 +259,15 @@
           class="flex flex-col items-start gap-1 rounded-[var(--radius-control)] text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           data-testid="dashboard-number"
           aria-label="{view.title}: {formatNum(value?.value as Num | undefined, unit, estimates)}. Show its tickets"
+          aria-describedby={detailId}
           onclick={() => onDrill({ widget: view.id })}
         >
           <span class="flex items-baseline gap-1">
             <span class="text-2xl font-semibold tabular-nums text-fg" data-testid="dashboard-number-value">{amount.amount}</span>
             {#if amount.word}<span class="text-[0.75rem] text-fg-muted">{amount.word}</span>{/if}
           </span>
+          <!-- What the label does not say: read after it as the description. -->
+          <span id={detailId} class="contents" data-testid="dashboard-number-detail">
           {#if amount.notCounted}
             <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-number-not-counted">{amount.notCounted}</span>
           {/if}
@@ -287,6 +293,7 @@
           {:else if mark?.kind === 'gap'}
             <span class="text-[0.6875rem] text-fg-muted" data-testid="dashboard-change-gap">Not compared: {mark.text}</span>
           {/if}
+          </span>
         </button>
         {#if value.trend && value.trend.length > 1}
           <Sparkline points={value.trend as Num[]} />

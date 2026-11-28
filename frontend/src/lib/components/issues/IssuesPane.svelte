@@ -457,7 +457,7 @@
 {/snippet}
 
 <div class="flex h-full min-h-0 flex-col" data-testid="issues-pane">
-  <ToolPaneHeader {paneId} kind="issues" {onPaneDragStart} onBack={compact && ticket ? () => { stepBack(); } : undefined} backTestId="issues-back">
+  <ToolPaneHeader {paneId} kind="issues" compactTitle={false} {onPaneDragStart} onBack={compact && ticket ? () => { stepBack(); } : undefined} backTestId="issues-back">
     <div class="flex min-w-0 flex-1 items-center gap-1">
       <BoardPicker
         {choices}

@@ -108,7 +108,7 @@
   }
 </script>
 
-<div class="group/pin flex min-w-0 flex-col gap-0.5 {inline ? 'flex-1' : 'py-1'}" data-testid="ticket-field" data-field={field} title={inline ? label : undefined}>
+<div class="group/pin flex min-w-0 flex-col gap-0.5 {inline ? 'flex-auto' : 'py-1'}" data-testid="ticket-field" data-field={field} title={inline ? label : undefined}>
   <div class="flex min-w-0 items-center gap-2 text-sm">
     {#if !inline}
       <span class="w-24 shrink-0 truncate text-xs text-fg-muted" title={label}>{label}</span>

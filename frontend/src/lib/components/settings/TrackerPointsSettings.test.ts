@@ -561,7 +561,7 @@ describe('the Forge accounts item', () => {
     await screen.findAllByTestId('tracker-forge-account');
     expect(screen.getAllByTestId('tracker-forge-account').map((el) => el.textContent?.replace(/\s+/g, ' ').trim().split(' Pick a person')[0].split(' Change person')[0])).toEqual([
       'Ghost Dev · ghost on github.com Nobody: no person in the tracker, or more than one, has this name. Its reviews count for nobody.',
-      'nameless · nameless on github.com Nobody: the forge gives this account no name. Its reviews count for nobody.',
+      'nameless on github.com Nobody: the forge gives this account no name. Its reviews count for nobody.',
       'New Dev · new on github.com Not matched yet. The tracker is asked within a few minutes.',
       'CI · ci on github.com Not a person, as set here. Its reviews count for nobody.',
       'User One · me on github.com User 1, the account this computer reads the forge as',
@@ -574,6 +574,13 @@ describe('the Forge accounts item', () => {
     expect(buttons('alias')).toEqual(['Change person…', 'Not a person', 'Match by name']);
     expect(reads).toBe(1);
     expect(screen.queryByTestId('tracker-forge-accounts-more')).toBeNull();
+  });
+
+  it('names an account once where the forge gives its login as its name', async () => {
+    listed = [account('same', 'unchecked', { name: 'same' })];
+    render(TrackerPointsSettings);
+    const row = await screen.findByTestId('tracker-forge-account');
+    expect(row.textContent?.replace(/\s+/g, ' ').trim().split(' Pick a person')[0]).toBe('same on github.com Not matched yet. The tracker is asked within a few minutes.');
   });
 
   it('shows only while credit is on and a rule counts comments or approvals', async () => {

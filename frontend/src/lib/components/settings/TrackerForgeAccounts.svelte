@@ -169,7 +169,7 @@
             <li class="flex min-w-0 flex-col gap-0.5" data-testid="tracker-forge-account" data-login={a.login} data-host={a.host} data-how={a.how}>
               <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 {compact ? 'min-h-9' : ''}">
                 <div class="flex min-w-0 flex-1 basis-56 flex-col">
-                  <span class="text-[0.75rem] text-fg wrap-anywhere">{a.name || a.login} <span class="text-fg-muted">· {a.login} on {a.host}</span></span>
+                  <span class="text-[0.75rem] text-fg wrap-anywhere">{#if a.name && a.name !== a.login}{a.name} <span class="text-fg-muted">· {a.login} on {a.host}</span>{:else}{a.login} <span class="text-fg-muted">on {a.host}</span>{/if}</span>
                   <span class="text-[0.71875rem] {a.how === 'nobody' ? 'text-warning' : 'text-fg-hint'}" data-testid="tracker-forge-account-who">{whoText(a)}</span>
                 </div>
                 <div class="flex flex-wrap items-center gap-1.5">

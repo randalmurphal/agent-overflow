@@ -39,6 +39,9 @@ describe('a number', () => {
     const mark = getByTestId('dashboard-change');
     expect(mark.dataset.tone).toBe('good');
     expect(mark.textContent).toContain('Up 3 points from 9, the 5 sprints before');
+    // The button's name is its number; the lines under it are its description.
+    const described = document.getElementById(getByTestId('dashboard-number').getAttribute('aria-describedby') ?? '');
+    expect(described?.textContent?.trim()).toBe('Up 3 points from 9, the 5 sprints before');
     await fireEvent.click(getByTestId('dashboard-number'));
     expect(onDrill).toHaveBeenCalledWith({ widget: 'pace' });
   });
@@ -96,6 +99,26 @@ describe('a number with tickets not counted', () => {
     const d = drill(n);
     expect(d.getByTestId('dashboard-drill-value').textContent).toBe('3 tickets');
     expect(d.getByTestId('dashboard-drill-value-not-counted').textContent).toBe('2 not counted');
+  });
+
+  it('names the drill by its whole title, which wraps, and leaves out a count of tickets its value already says', () => {
+    const title = 'Committed, added, removed and completed, Sprint E, Added';
+    const same = drill({ v: 3 }, { title, count: 3, tickets: 3 });
+    expect(same.getByRole('dialog', { name: title })).toBeTruthy();
+    const heading = same.getByTestId('dashboard-drill-heading');
+    expect(heading.textContent).toBe(title);
+    expect(heading.className).not.toContain('truncate');
+    expect(same.getByTestId('dashboard-drill-value').textContent).toBe('3 tickets');
+    expect(same.queryByTestId('dashboard-drill-count')).toBeNull();
+    same.unmount();
+
+    // Rows beside the tickets, or a value in another unit, still say the count.
+    const rows = drill({ v: 3 }, { count: 4, tickets: 3 });
+    expect(rows.getByTestId('dashboard-drill-count').textContent).toBe('4 rows, 3 tickets');
+    rows.unmount();
+    const points = drill({ v: 3 }, { unit: 'estimate', count: 3, tickets: 3 });
+    expect(points.getByTestId('dashboard-drill-value').textContent).toBe('3 points');
+    expect(points.getByTestId('dashboard-drill-count').textContent).toBe('3 tickets');
   });
 
   it('lists a ticket that counts twice as two rows with their periods, and says so in its header', () => {

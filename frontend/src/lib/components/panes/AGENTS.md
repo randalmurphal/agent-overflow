@@ -8,7 +8,9 @@ each pane renders its own header from the shared title controls
 
 Tool panes (`pulls`, `workflows`) have no ThreadPane. `ToolPane.svelte` loads
 the tool body lazily and the body renders `ToolPaneHeader.svelte`, whose title
-is the drag handle. Open, close and placement belong to
+is the drag handle. Under compact the title is no handle, and a tool whose
+first segment names where the person is passes `compactTitle={false}` (the
+Issues pane's board). Open, close and placement belong to
 `stores/toolPanes.svelte.ts`; titles and icons to `toolPaneMeta.ts`.
 A ticket pane (`ticket`) has no ThreadPane either: `TicketPane.svelte`
 loads the Issues chunk's `issues/TicketPaneBody.svelte`. Every state of

@@ -36,6 +36,8 @@
   const answer = $derived(drill.answer);
   const unit = $derived((answer?.unit ?? 'tickets') as DashboardUnit);
   const valueWords = $derived(answer ? numWords(answer.value as Num, unit, answer.estimates) : null);
+  // The rows and tickets listed, left out where the value already says it.
+  const countWords = $derived(answer ? drillCountWords(answer.count, answer.tickets) : '');
   const atFirst = $derived(drill.loading || !answer || answer.page === 0);
   const atLast = $derived(drill.loading || !answer || answer.page >= answer.pages - 1);
   // Captured once per failure, so Details and copy describe the one shown.
@@ -64,7 +66,14 @@
   }
 </script>
 
-<Modal open={true} title={answer?.title ?? 'Tickets'} {onClose} width="lg" padding="none">
+<!-- The dialog's own header wraps the title: it ends with the series or
+     person the list is of, which an ellipsis would cut on a phone. -->
+<Modal open={true} ariaLabel={answer?.title ?? 'Tickets'} {onClose} width="lg" padding="none">
+  {#snippet header()}
+    <header class="border-b border-border-subtle px-5 pt-4 pb-3">
+      <h2 class="text-base font-semibold text-fg wrap-anywhere" data-testid="dashboard-drill-heading">{answer?.title ?? 'Tickets'}</h2>
+    </header>
+  {/snippet}
   <div class="flex min-h-0 flex-col" data-testid="dashboard-drill" aria-busy={drill.loading}>
     {#if failure}
       <ErrorNotice message="Could not list this number's tickets: {failure.report.reason}" captured={failure} testId="dashboard-drill-error" />
@@ -78,7 +87,9 @@
         {#if valueWords?.notRead}
           <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-value-not-read">{valueWords.notRead}</span>
         {/if}
-        <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-count">{drillCountWords(answer.count, answer.tickets)}</span>
+        {#if countWords !== valueWords?.value}
+          <span class="text-[0.75rem] text-fg-muted" data-testid="dashboard-drill-count">{countWords}</span>
+        {/if}
       </div>
       {#if answer.reading}
         <p class="border-b border-border-subtle bg-surface-1 px-5 py-1.5 text-[0.75rem] text-fg-muted" role="status" data-testid="dashboard-drill-reading">{FIRST_READ_TEXT}</p>

@@ -512,6 +512,8 @@ describe('the Issues pane', () => {
     const mocks = install();
     const view = mount();
     await view.findAllByTestId('issues-card');
+    // The board's name is the header's first word on a phone: no tool title beside it.
+    expect(view.queryByTestId('tool-pane-title')).toBeNull();
     const tabs = view.getAllByTestId('issues-column-tab');
     expect(tabs.map((t) => t.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['To Do 1 · 2 pts', 'In Progress 1 · 2 pts']);
     // The first column in progress shows first.

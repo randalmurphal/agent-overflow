@@ -423,6 +423,22 @@ describe("a widget's limit and pin", () => {
     expect(within(proposal).queryByTestId('dashboard-limit-toggle')).toBeNull();
   });
 
+  it('says the limit Keep sets for a proposal whose number is within it', async () => {
+    const { screen } = mount({ pins: [], limits: { w_9: { value: 30, unit: 'tickets' } }, proposed: [] }, { proposals: [PROPOSED] });
+    await flush();
+    const proposal = cell(screen, 'w_9');
+    expect(proposal.dataset.over).toBe('false');
+    expect(within(proposal).queryByTestId('dashboard-over')).toBeNull();
+    expect(within(proposal).getByTestId('dashboard-keep-limit').textContent).toBe('Keep also warns above 30 tickets.');
+  });
+
+  it('says no limit for a proposal whose agent asked for none', async () => {
+    const { screen } = mount({ pins: [], limits: {}, proposed: [] }, { proposals: [PROPOSED] });
+    await flush();
+    expect(within(cell(screen, 'w_9')).getByTestId('dashboard-keep')).toBeTruthy();
+    expect(within(cell(screen, 'w_9')).queryByTestId('dashboard-keep-limit')).toBeNull();
+  });
+
   it('warns below a limit where up is good news', async () => {
     const { screen } = mount({ pins: ['pace'], limits: { pace: { value: 25, unit: 'points' } }, proposed: [] });
     await flush();
